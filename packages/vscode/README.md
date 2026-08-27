@@ -5,15 +5,15 @@
 <p align="center"><b>The Best VS Code AI Harness</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origami-coder-vscode" alt="Marketplace version" />
-  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origami-coder-vscode" alt="Installs" />
+  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origamicoder" alt="Marketplace version" />
+  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origamicoder" alt="Installs" />
   <img src="https://img.shields.io/badge/license-Origami--Proprietary-orange" alt="License" />
 </p>
 
 <p align="center">
   🌐 <a href="https://origamilabs.nl">Website</a> •
   📖 <a href="https://origamilabs.nl/docs.html">Docs</a> •
-  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origami-coder-vscode">Marketplace</a>
+  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origamicoder">Marketplace</a>
 </p>
 
 ---

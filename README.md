@@ -5,15 +5,15 @@
 <p align="center"><b>The Best VS Code AI Harness</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origami-coder-vscode" alt="Marketplace version" />
-  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origami-coder-vscode" alt="Installs" />
+  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origamicoder" alt="Marketplace version" />
+  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origamicoder" alt="Installs" />
   <img src="https://img.shields.io/badge/license-Origami--Proprietary-orange" alt="License" />
 </p>
 
 <p align="center">
   🌐 <a href="https://origamilabs.nl">Website</a> •
   📖 <a href="https://origamilabs.nl/docs.html">Docs</a> •
-  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origami-coder-vscode">Marketplace</a>
+  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origamicoder">Marketplace</a>
 </p>
 
 ---
@@ -27,7 +27,7 @@ This harness is built from the ground up on the following foundations:
 | **As simple as you need it as complex as you want it** | Open a chat and get building — but within the UI you have deep analytics and levers to make it yours. |
 
 **Published** on the VS Marketplace as
-[`OrigamiLabs.origami-coder-vscode`](https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origami-coder-vscode)
+[`OrigamiLabs.origamicoder`](https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origamicoder)
 since 0.4.58 (2026-08-26). The store page with the full feature tour lives at
 [`packages/vscode/README.md`](packages/vscode/README.md); the public landing repo is
 [github.com/PassingByPixels/Origami-Coder](https://github.com/PassingByPixels/Origami-Coder).
@@ -52,7 +52,7 @@ rebuild of the other.
 | VS Code extension (`.vsix`)| `packages/vscode`   | `npm run package`                      |
 
 The engine provides the CLI and the terminal UI. The VS Code extension
-(`origami-coder-vscode`) provides the dashboard and chat UI and runs the engine for
+(`origamicoder`) provides the dashboard and chat UI and runs the engine for
 its sessions. The RELEASE artifact is the **merged platform VSIX**
 (`scripts/package-merged.ps1`) — extension + engine + vendored ripgrep in one file;
 a plain `npm run package` VSIX contains no engine.

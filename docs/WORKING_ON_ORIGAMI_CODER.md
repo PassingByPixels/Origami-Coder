@@ -340,7 +340,7 @@ Grep the *installed* bundle for a symbol you know your change added, and for a
 symbol from previous work that must still be there:
 
 ```bash
-EXT=~/.vscode/extensions/origamilabs.origami-coder-vscode-<version>
+EXT=~/.vscode/extensions/origamilabs.origamicoder-<version>
 grep -rl "mySymbolFromThisChange" "$EXT/out" "$EXT/webview"
 grep -rl "aSymbolFromLastRelease" "$EXT/out" "$EXT/webview"
 ```
