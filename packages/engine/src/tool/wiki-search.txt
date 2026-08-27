@@ -1,0 +1,22 @@
+Search this workspace's OWN knowledge base - the wiki under `wiki/` and the agent memory under
+`.origami/memory/` - by tag, topic, or approximate phrase.
+
+WHEN TO USE IT: any how / why / decision / "have we done this before" question about this
+workspace. Design decisions, gotchas, rituals, verified claims and past conclusions live in
+these pages. SEARCH THE WIKI BEFORE YOU GREP THE CODEBASE: grep only finds the exact phrasing
+somebody happened to write, this finds the page by what it is filed under.
+
+WHAT COMES BACK: METADATA ONLY - page id, tags, a one-line description, and why each row
+matched. Page bodies are never searched and never returned, so one round costs a few hundred
+tokens. That is the discipline, and it is two stages: search here first, then READ the one or
+two best pages with the read tool. A page id is the workspace-relative path without `.md`, so
+`wiki/pages/deploy` is read as `wiki/pages/deploy.md`.
+
+ITERATE - EACH ROUND IS CHEAP. Every reply ends with the next move. On hits you get
+`related tags:` - the tags that co-occur with your results - so you can narrow. On a miss you
+get `nearest tags:` - the closest tags in the vocabulary with their page counts, plus the top
+pages under the closest one - so a miss tells you what this workspace actually calls the thing.
+Feed either back in as `tags` and search again rather than giving up or falling back to grep.
+
+Pass `tags` alone to list a topic, `query` alone to match loosely on titles, headings, ids and
+descriptions, or both together to filter a query down to one topic. At least one is required.

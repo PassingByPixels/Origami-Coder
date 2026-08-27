@@ -1,0 +1,7 @@
+Capture the user's screen - the whole desktop, outside the browser - as a PNG image you can look at.
+Use it to see what the user sees: a native error dialog, an installer, another application's window, or the VS Code window itself.
+This is NOT the browser tool: `browser` with action screenshot captures one web page rendered inside VS Code, while this captures the real display.
+Set display to "primary" for the main monitor (the default), or "all" for every monitor in one image.
+The picture can hold anything that is on the desktop - passwords, private messages, other people's data - so it asks the user for permission EVERY time it runs. There is no standing approval, and a refusal is a normal answer rather than a fault.
+It works on Windows and macOS. On Linux it returns an explanation instead of an image.
+On macOS it captures the main display only, even for "all", and the first ever capture needs the Screen Recording permission.

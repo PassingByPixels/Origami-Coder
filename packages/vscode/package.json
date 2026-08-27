@@ -1,0 +1,343 @@
+{
+  "name": "origami-coder-vscode",
+  "displayName": "Origami Coder",
+  "description": "Origami Coder - Model Agnostic AI Coding Harness focused on VS Code",
+  "version": "0.4.59",
+  "publisher": "OrigamiLabs",
+  "icon": "media/icon.png",
+  "license": "Origami-Proprietary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PassingByPixels/Origami-Coder"
+  },
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "local",
+    "agent",
+    "origami",
+    "coding-agent"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "origami.toggleSidebar",
+        "title": "Origami: Toggle Sidebar"
+      },
+      {
+        "command": "origami.newSession",
+        "title": "Origami: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "origami.newChat",
+        "title": "Origami: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "origami.openChat",
+        "title": "Origami: Open Chat",
+        "icon": {
+          "light": "media/origami-icon-light.svg",
+          "dark": "media/origami-icon-dark.svg"
+        }
+      },
+      {
+        "command": "origami.switchModel",
+        "title": "Origami: Switch Model",
+        "icon": "$(server)"
+      },
+      {
+        "command": "origami.openHistory",
+        "title": "Origami: Recall Past Chat",
+        "icon": "$(history)"
+      },
+      {
+        "command": "origami.openChatInEditor",
+        "title": "Origami: Open Chat in Editor",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "origami.toggleTheme",
+        "title": "Origami: Toggle Theme (Meadow/Quiet)",
+        "icon": "$(color-mode)"
+      },
+      {
+        "command": "origami.openAgentProfile",
+        "title": "Origami: View Agent Profile"
+      },
+      {
+        "command": "origami.init",
+        "title": "Origami: Get Started"
+      },
+      {
+        "command": "origami.openAgentManager",
+        "title": "Origami: Folds (Agent Manager)"
+      },
+      {
+        "command": "origami.resetSavedPermissions",
+        "title": "Origami: Reset saved permissions"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "origami.toggleSidebar",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l"
+      },
+      {
+        "command": "origami.newSession",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n"
+      },
+      {
+        "command": "origami.switchModel",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m"
+      },
+      {
+        "command": "origami.openChat",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o"
+      }
+    ],
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "origami-chat",
+          "title": "Origami",
+          "icon": "media/origami-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "origami-chat": [
+        {
+          "id": "origami.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "origami.openChat",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "origami.newChat",
+          "when": "view == origami.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "origami.openHistory",
+          "when": "view == origami.chatView",
+          "group": "navigation"
+        },
+        {
+          "command": "origami.openChatInEditor",
+          "when": "view == origami.chatView",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "origami.openChat"
+        },
+        {
+          "command": "origami.newSession"
+        },
+        {
+          "command": "origami.switchModel"
+        },
+        {
+          "command": "origami.openHistory"
+        },
+        {
+          "command": "origami.openChatInEditor"
+        },
+        {
+          "command": "origami.openAgentProfile"
+        }
+      ]
+    },
+    "themes": [
+      {
+        "label": "Origami Meadow",
+        "uiTheme": "vs-dark",
+        "path": "./media/themes/origami-meadow.json"
+      },
+      {
+        "label": "Origami Harbour",
+        "uiTheme": "vs-dark",
+        "path": "./media/themes/origami-harbour.json"
+      },
+      {
+        "label": "Origami Ember",
+        "uiTheme": "vs",
+        "path": "./media/themes/origami-ember.json"
+      },
+      {
+        "label": "Origami Midnight",
+        "uiTheme": "vs-dark",
+        "path": "./media/themes/origami-midnight.json"
+      },
+      {
+        "label": "Origami Custom",
+        "uiTheme": "vs-dark",
+        "path": "./media/themes/origami-custom.json"
+      }
+    ],
+    "configuration": {
+      "title": "Origami",
+      "properties": {
+        "origami.engineUrl": {
+          "type": "string",
+          "default": "http://localhost:1234/v1",
+          "description": "Inference engine endpoint (OpenAI-compatible /v1 base URL) the origami-acp bridge connects to. When set, this overrides the ORIGAMI_API_BASE environment variable. Leave at the default for a local LM Studio on this machine; point it elsewhere (e.g. http://192.0.2.10:1234/v1) to use a remote engine."
+        },
+        "origami.devEngineSource": {
+          "type": "string",
+          "default": "",
+          "description": "DEV ONLY. Absolute path to a checked-out packages/engine source tree. When set, the extension runs the engine straight from source via Bun (bun run --conditions=browser <path>/src/index.ts acp) instead of the compiled ~/.origami/bin/origami.exe, so engine edits take effect on a window reload with no binary rebuild. Requires Bun installed (~/.bun/bin). Leave empty for the normal compiled-binary path."
+        },
+        "origami.agentName": {
+          "type": "string",
+          "default": "",
+          "description": "The name other Origami agent sessions on this machine see for this window, in list_agents and on the messages it sends. Leave empty to use the folder name. Set it per workspace when two windows share a folder name, or when you want a role name (\"reviewer\", \"docs\") instead. Takes effect when the engine next starts — reload the window after changing it."
+        },
+        "origami.experimentalCodeMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "EXPERIMENTAL. Replace the individual MCP tools with one `execute` tool that runs a confined JavaScript program: the model writes a short script that calls several MCP tools, including in parallel, and returns a structured result. It changes how the model reaches MCP tools, so it is off until you have tried it. Takes effect when the engine next starts — reload the window after changing it."
+        },
+        "origami.syncVsCodeTheme": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "default": "ask",
+          "enumDescriptions": [
+            "Prompt each time the dashboard theme changes",
+            "Always switch VS Code's theme to match",
+            "Never switch VS Code's theme"
+          ],
+          "description": "When you change the Origami dashboard theme, should VS Code's colour theme switch to match?"
+        },
+        "origami.workflow.enable_briefing": {
+          "type": "boolean",
+          "default": false,
+          "description": "Session-start briefing (file-dump layer)."
+        },
+        "origami.workflow.enable_decision_loopback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Replay recent policy decisions into each turn's system block."
+        },
+        "origami.workflow.enable_plan_auto_trigger": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-enter plan mode for Create / Refactor / Multi / RepoWide tasks."
+        },
+        "origami.workflow.enable_recon": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pre-action RECON phase for file-artifact tasks."
+        },
+        "origami.workflow.enable_task_shape": {
+          "type": "boolean",
+          "default": false,
+          "description": "Extract numbered sub-tasks from the user's request before the first turn."
+        },
+        "origami.workflow.enable_best_of_n": {
+          "type": "boolean",
+          "default": false,
+          "description": "Best-of-N plans with critic scoring."
+        },
+        "origami.workflow.best_of_n_k": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 2,
+          "maximum": 5,
+          "description": "Target candidate count for a best-of-N wave."
+        },
+        "origami.workflow.enable_reflective_retry": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reflective retry after a Failure Recovery rollback."
+        },
+        "origami.workflow.enable_ask_user_question": {
+          "type": "boolean",
+          "default": false,
+          "description": "Expose the inverted ask_user_question tool to the model."
+        },
+        "origami.workflow.enable_reasoning_trace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Record reasoning-trace rows to SQLite for review."
+        },
+        "origami.workflow.enable_briefing_llm": {
+          "type": "boolean",
+          "default": false,
+          "description": "Distill the file-dump briefing through an LLM before injection. Requires enable_briefing."
+        },
+        "origami.workflow.enable_shape_llm": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask the model for a task shape when the heuristic returns empty. Requires enable_task_shape."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.js",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json --noEmit",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test": "npm run test:unit",
+    "knip": "knip",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "0.21.0",
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.1"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/svelte": "^5.2.0",
+    "@types/marked": "^5.0.2",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vitest/ui": "^2.1.0",
+    "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.24.0",
+    "esbuild-svelte": "^0.8.0",
+    "jsdom": "^25.0.0",
+    "knip": "5",
+    "svelte": "^5.0.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

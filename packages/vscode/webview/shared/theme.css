@@ -1,0 +1,239 @@
+/* Origami — product-family theme system.
+   Toggle via data-theme attribute on :root.
+   All colors as CSS custom properties.
+
+   Four brand themes, one per Origami Labs product, plus a user-editable
+   Custom slot (see ThemeEditor):
+     Meadow   — green,  Origami Folio   (the brand green)
+     Harbour  — blue,   Origami Coder   (this product's own hue)
+     Ember    — bronze, Origami Games   (warm paper, matches games.html)
+     Midnight — navy,   reserved 4th product
+   Each block sets --og-crane, the signature colour of the crane mark, so
+   the brand glyph recolours with the theme (CraneMark reads var(--og-crane)). */
+
+:root,
+:root[data-theme="meadow"] {
+  /* Origami Meadow — the brand: deep green-black with a crane-green accent.
+     Palette lifted from the parity explainer (2026-06-27). */
+  --og-bg: #0e1411;
+  --og-surface: #16201b;
+  --og-surface-alt: #131c18;
+  --og-border: #2a3a31;
+  --og-text: #e7efe9;
+  --og-text-secondary: #9fb3a7;
+  --og-text-muted: #6f8678;
+  --og-accent: #3f7268;
+  --og-accent-2: #d9b15a;
+  --og-chat: #5fa382;
+  --og-crane: #5fa382;
+  --og-success: #5fa382;
+  --og-error: #d9776a;
+  --og-warning: #d9b15a;
+  /* Sidebar row status — waiting for the user (a permission approval or an
+     agent question is open). A cool periwinkle-blue, clearly off the green
+     success / gold warning / terracotta error hues above. */
+  --og-status-waiting: #6c8fd6;
+  --og-success-text: #bfe8d2;
+  --og-warning-text: #e9d49a;
+  --og-error-text: #f0bdb4;
+  --og-success-soft: rgba(95, 163, 130, 0.16);
+  --og-warning-soft: rgba(217, 177, 90, 0.16);
+  --og-error-soft: rgba(217, 119, 106, 0.16);
+  --og-input-bg: #1b271f;
+  --og-input-border: #2a3a31;
+  --og-btn-bg: #1b271f;
+  --og-btn-hover: #243430;
+  --og-btn-text: #e7efe9;
+  --og-pane-header: #131c18;
+  --og-scrollbar: rgba(159, 179, 167, 0.14);
+  --og-scrollbar-hover: rgba(159, 179, 167, 0.26);
+}
+
+:root[data-theme="harbour"] {
+  /* Origami Harbour — Origami Coder's own blue: a deep blue-black harbour
+     at dusk, steel-blue accent, the brand gold kept as the warm second
+     accent. Anchored on the Coder site swatch #2F6E8F, brightened for a
+     dark UI. (2026-07-01) */
+  --og-bg: #0b1418;
+  --og-surface: #12212a;
+  --og-surface-alt: #0f1c24;
+  --og-border: #263a48;
+  --og-text: #e6eef4;
+  --og-text-secondary: #9fb4c4;
+  --og-text-muted: #6d8598;
+  --og-accent: #3f7e9a;
+  --og-accent-2: #d9b15a;
+  --og-chat: #5aa9d4;
+  --og-crane: #5aa9d4;
+  --og-success: #5fb39c;
+  --og-error: #e0897a;
+  --og-warning: #d9b15a;
+  /* Sidebar row status — waiting for the user. Harbour's own accent/chat are
+     already blue, so this leans violet instead, off green/gold/blue alike. */
+  --og-status-waiting: #9083d9;
+  --og-success-text: #bfe8dd;
+  --og-warning-text: #e9d49a;
+  --og-error-text: #f0c2b8;
+  --og-success-soft: rgba(95, 179, 156, 0.16);
+  --og-warning-soft: rgba(217, 177, 90, 0.16);
+  --og-error-soft: rgba(224, 137, 122, 0.16);
+  --og-input-bg: #14232d;
+  --og-input-border: #263a48;
+  --og-btn-bg: #16262f;
+  --og-btn-hover: #1f3340;
+  --og-btn-text: #e6eef4;
+  --og-pane-header: #0f1c24;
+  --og-scrollbar: rgba(159, 180, 196, 0.14);
+  --og-scrollbar-hover: rgba(159, 180, 196, 0.26);
+}
+
+:root[data-theme="ember"] {
+  /* Origami Ember — Origami Games' bronze on warm origami paper, matching
+     games.html (cream sheet + Ember-Bronze accent #A85A32). The retint of
+     the old 'quiet' theme: same high-contrast light base, garish red/yellow
+     accents swapped for the warm bronze family. (2026-07-01) */
+  --og-bg: #e8dcc4;
+  --og-surface: #ddcfb2;
+  --og-surface-alt: #d2c2a3;
+  --og-border: rgba(160, 145, 120, 1);
+  --og-text: #37342f;
+  --og-text-secondary: #1d1c1b;
+  --og-text-muted: #413e39;
+  --og-accent: #a85a32;
+  --og-accent-2: #c2410c;
+  --og-chat: #8c4a28;
+  --og-crane: #a85a32;
+  --og-success: #7dbe68;
+  --og-error: #e85540;
+  --og-warning: #d4a520;
+  /* Sidebar row status — waiting for the user. Deepened/saturated indigo, the
+     same "readable on warm paper" treatment as the *-text variants below. */
+  --og-status-waiting: #5b4fae;
+  /* Higher-contrast text variants for readability against the warm paper bg */
+  --og-success-text: #2d6a1f;
+  --og-warning-text: #7a5500;
+  --og-error-text: #9f2d1d;
+  --og-success-soft: rgba(45, 106, 31, 0.22);
+  --og-warning-soft: rgba(122, 85, 0, 0.22);
+  --og-error-soft: rgba(159, 45, 29, 0.22);
+  --og-input-bg: #d2c2a3;
+  --og-input-border: rgba(120, 110, 92, 1);
+  --og-btn-bg: #b88a5a;
+  --og-btn-hover: #9a7548;
+  --og-btn-text: #f0e8dc;
+  --og-pane-header: #d2c2a3;
+  --og-scrollbar: rgba(89, 78, 60, 0.30);
+  --og-scrollbar-hover: rgba(126, 110, 85, 0.45);
+}
+
+:root[data-theme="midnight"] {
+  /* Midnight — deep navy with purple accents */
+  --og-bg: #07091a;
+  --og-surface: #0d0f22;
+  --og-surface-alt: #090b1c;
+  --og-border: rgba(124, 58, 237, 0.15);
+  --og-text: #c8c8e0;
+  --og-text-secondary: #9090b8;
+  --og-text-muted: #6a6a8a;
+  --og-accent: #7c3aed;
+  --og-accent-2: #c084fc;
+  --og-chat: #a78bfa;
+  --og-crane: #a78bfa;
+  --og-success: #4ade80;
+  --og-error: #f87171;
+  --og-warning: #fbbf24;
+  /* Sidebar row status — waiting for the user. Midnight's own accent/chat are
+     already violet, so this leans sky-blue instead, off green/gold/violet. */
+  --og-status-waiting: #38bdf8;
+  --og-success-text: #4ade80;
+  --og-warning-text: #fbbf24;
+  --og-error-text: #f87171;
+  --og-success-soft: rgba(74, 222, 128, 0.15);
+  --og-warning-soft: rgba(251, 191, 36, 0.15);
+  --og-error-soft: rgba(248, 113, 113, 0.15);
+  --og-input-bg: #0d0f22;
+  --og-input-border: rgba(124, 58, 237, 0.20);
+  --og-btn-bg: #1a1c30;
+  --og-btn-hover: #2a2648;
+  --og-btn-text: #c8c8e0;
+  --og-pane-header: #090b1c;
+  --og-scrollbar: rgba(124, 58, 237, 0.12);
+  --og-scrollbar-hover: rgba(124, 58, 237, 0.25);
+}
+
+:root[data-theme="custom"] {
+  /* Custom — user-editable palette, seeded from the brand Dark theme.
+     The ThemeEditor overrides individual --og-* vars at runtime and
+     persists them via an injected style block. */
+  --og-bg: #0e1411;
+  --og-surface: #16201b;
+  --og-surface-alt: #131c18;
+  --og-border: #2a3a31;
+  --og-text: #e7efe9;
+  --og-text-secondary: #9fb3a7;
+  --og-text-muted: #6f8678;
+  --og-accent: #3f7268;
+  --og-accent-2: #d9b15a;
+  --og-chat: #5fa382;
+  --og-crane: #5fa382;
+  --og-success: #5fa382;
+  --og-error: #d9776a;
+  --og-warning: #d9b15a;
+  --og-status-waiting: #6c8fd6;
+  --og-success-text: #bfe8d2;
+  --og-warning-text: #e9d49a;
+  --og-error-text: #f0bdb4;
+  --og-success-soft: rgba(95, 163, 130, 0.16);
+  --og-warning-soft: rgba(217, 177, 90, 0.16);
+  --og-error-soft: rgba(217, 119, 106, 0.16);
+  --og-input-bg: #1b271f;
+  --og-input-border: #2a3a31;
+  --og-btn-bg: #1b271f;
+  --og-btn-hover: #243430;
+  --og-btn-text: #e7efe9;
+  --og-pane-header: #131c18;
+  --og-scrollbar: rgba(159, 179, 167, 0.14);
+  --og-scrollbar-hover: rgba(159, 179, 167, 0.26);
+}
+
+/* Reset & base */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--vscode-font-family, 'Segoe UI', system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--og-text);
+  background: var(--og-bg);
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar styling — applied to all elements including nested panels */
+*, *::before, *::after {
+  scrollbar-color: var(--og-scrollbar) transparent;
+  scrollbar-width: thin;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--og-scrollbar);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--og-scrollbar-hover);
+}

@@ -1,0 +1,76 @@
+You are running /dream — a memory-curation pass (the "dreams" methodology). You mine recent
+session history for durable facts, produce a cleaner CURATED version of the memory store, and
+let the user APPROVE / REVISE / DISAPPROVE it before anything is adopted. The live store is
+NEVER modified until the user explicitly approves. The native `dream` tool does the heavy
+lifting (session mining, staging, the change summary, the approval prompt, the backup and the
+adopt) — you drive it.
+
+Optional focus from the user: $ARGUMENTS
+
+There are two memory layouts. The `dream` tool detects which one you are in and its gather
+output tells you — FOLDERED (a `memory/` directory: `MEMORY.md` index plus one file per topic)
+or FLAT (a single `memory.md`). Follow the matching branch in step 3.
+
+Follow these steps IN ORDER.
+
+1. PICK THE SCOPE(S).
+   - Default: curate BOTH stores — project (scope "project" — ${path}/.origami/) first,
+     then global (scope "global" — ${origami}/, cross-project) — running steps 2-4 once
+     per scope. Finish one scope's full gather -> curate -> review cycle, including the
+     user's Approve/Revise/Disapprove answer, before starting the other, so the two
+     approvals are never mixed into one question.
+   - If the user's focus names only one store ("global", "global only", "just global",
+     "project", "project only", etc.), curate only that scope and skip the other.
+
+2. GATHER. Call the `dream` tool with action:"gather" and that scope. It returns the current
+   store plus thin transcripts of recent sessions. Read them for DURABLE facts worth keeping
+   across sessions — decisions, preferences, conventions, recurring gotchas, project
+   constraints. Ignore transient task chatter, one-off debugging, and anything already stale.
+   If it reports there is nothing to curate, that scope is a clean no-op: say so, then move on
+   to the next scope (or finish, if this was the only or last scope in play).
+
+3a. CURATE — FOLDERED store. Gather has already staged `memory.candidate/` next to the store,
+    holding a copy of the index and every topic file. Curate by EDITING THE FILES IN THAT
+    DIRECTORY with the edit/write tools. Never edit the live `memory/` directory.
+    - REFILE `inbox.md`: move EVERY bullet out of it into the topic file it belongs to —
+      an existing topic when one fits, a new topic file when none does. The inbox should end
+      up empty, or delete it once it is.
+    - MERGE duplicates and near-duplicates, inside a topic file and across topic files that
+      cover the same subject. Fold the losing file's facts into the winner, then delete the
+      losing file.
+    - REWRITE HOOKS in `MEMORY.md` for any topic whose file has drifted from what its hook
+      claims, and add an index entry for every topic file you create. A hook is one line:
+      `- [topic](topic.md) - what this file is about`.
+    - ADD durable new facts from the sessions, as `- [YYYY-MM-DD] fact` bullets, to the topic
+      they belong to. Preserve each existing fact's original date; date new facts today.
+    - EVERY EXISTING FACT MUST REMAIN FINDABLE. Move and reword freely — review pairs a moved
+      or reworded bullet back to its original. DELETE a fact only when it is stale or
+      contradicted; every deletion is listed verbatim to the user in the review summary.
+
+3b. CURATE — FLAT store. Synthesise the reorganised store yourself:
+    - MERGE duplicates and near-duplicates into one clear bullet.
+    - DROP entries that are stale or contradicted, keeping only the latest truth.
+    - ADD durable new facts from the sessions that aren't already captured.
+    - Keep every bullet to one concise line; keep the total at 100 bullets or fewer.
+    - Reproduce the exact format: the "# Origami Memory" header block, one blank line, then
+      bullets of the form `- [YYYY-MM-DD] fact` (newest last). Preserve each fact's original
+      date; date any genuinely new fact with today's date.
+    Then STAGE it: write it with the write tool to memory.candidate.md next to the store —
+    ${path}/.origami/memory.candidate.md for project scope, ${origami}/memory.candidate.md for
+    global. (That staged file is what the user will see diffed against the live store.)
+
+4. REVIEW. Call the `dream` tool with action:"review" and the same scope. It shows the user
+   what changed — a per-topic summary of added / moved / reworded / dropped facts and the new
+   hooks for the foldered store, a diff for the flat one — and asks Approve / Revise /
+   Disapprove, then:
+   - Approve — it backs the live store up (foldered: `memory.bak-<timestamp>/`, never
+     overwriting an earlier backup; flat: `memory.bak.md`) and adopts your candidate.
+   - Disapprove — it discards the candidate; the store is untouched.
+   - Revise — the store is untouched and the user will send a steer as the next message. For a
+     FOLDERED store your staged draft is kept: apply the steer by editing the files in
+     `memory.candidate/` again. For a FLAT store, re-write memory.candidate.md. Either way,
+     call action:"review" again afterwards.
+
+Report the outcome in one line per scope curated. Never write the live memory store yourself —
+only the `dream` tool adopts, and only on an explicit Approve. If anything is unclear, stop and
+leave the store as-is — a no-op dream is always safe.

@@ -1,0 +1,16 @@
+{
+  "provider": {},
+  "permission": {},
+  "references": {
+    "effect": {
+      "repository": "github.com/Effect-TS/effect-smol",
+      "description": "Use for Effect v4 and effect-smol implementation details",
+    },
+    "origami-local": {
+      "path": "~/.local/share/origami",
+      "description": "Contains origami logs and data",
+    },
+  },
+  "mcp": {},
+  "tools": {},
+}

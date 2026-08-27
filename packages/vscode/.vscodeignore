@@ -1,0 +1,16 @@
+**/.git
+**/.gitignore
+**/.dockerignore
+../**
+../../**
+**/.turbo
+**/node_modules
+**/tsconfig.json
+**/tsconfig.webview.json
+**/vitest.config.mts
+**/esbuild.js
+**/knip.ts
+**/src/
+**/webview/**/*.test.ts
+**/webview/**/__tests__/
+!.vscodeignore

@@ -1,0 +1,21 @@
+Set, clear, or report this session's GOAL: one completion condition the session keeps working toward across turns, without the user having to say "carry on".
+
+How a goal behaves once it is set:
+- At the end of EVERY turn, an independent reviewer is spawned. It is told the condition and NOTHING else - not this conversation, not your plan, not your account of what you did. It gathers its own evidence (reads files, runs tests, runs builds, diffs the tree) and returns MET or NOT MET.
+- NOT MET: its report is handed straight back to you as your next turn, and you keep working. Each of those costs one round.
+- MET: the goal is cleared and the session stops on its own.
+- The round budget runs out, or the reviewer fails twice in a row: the goal is cleared and you are told to report honestly to the user.
+
+Actions:
+- `set` - start a goal. Requires `condition`. Optional `max_rounds` (default 10, the number of continuation rounds allowed). Setting a goal replaces any existing one and restarts the round count.
+- `clear` - stop the loop. Use this the moment the user says to stop, changes direction, or the goal stops making sense. A user message does NOT clear a goal by itself; only this does.
+- `status` - report the current goal, whether it is active, and how many rounds it has spent.
+
+Writing the condition. This is the whole tool. The condition is judged by someone who cannot see what you did, so it has to be checkable from the workspace alone:
+- GOOD: "packages/engine/test/session/goal.test.ts exists and `bun test test/session/goal.test.ts` passes with no failures, and `tsc -p packages/engine --noEmit` reports no new errors."
+- GOOD: "The /login route returns 401 for a bad password and 200 with a session cookie for a good one, proven by a test that runs both."
+- BAD: "Refactor the auth module properly." - nothing to check.
+- BAD: "Finish the task." - the reviewer does not know what the task is.
+- BAD: "Explain the design to the user." - not verifiable from the workspace.
+
+Do not set a goal for a question, a one-step edit, or anything you will finish in this turn. It costs an extra model run at every turn end. Set one when the user has asked for an outcome that plainly takes several turns, or has said to keep going until something is true.

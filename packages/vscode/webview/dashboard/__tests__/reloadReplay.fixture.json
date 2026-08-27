@@ -1,0 +1,90 @@
+[
+  {
+    "sessionId": "ses_ffa753d46ffeZIfu1W9DH5MTXw",
+    "update": {
+      "sessionUpdate": "session_info_update",
+      "title": "E2E Title"
+    }
+  },
+  {
+    "sessionId": "ses_ffa753d46ffeZIfu1W9DH5MTXw",
+    "update": {
+      "sessionUpdate": "user_message_chunk",
+      "messageId": "msg_0058ac2dc001JBA5DkM7BYZloO",
+      "content": {
+        "type": "text",
+        "text": "Read CAPTURE.md please."
+      }
+    }
+  },
+  {
+    "sessionId": "ses_ffa753d46ffeZIfu1W9DH5MTXw",
+    "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "call_1",
+      "title": "Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md",
+      "kind": "read",
+      "status": "pending",
+      "locations": [
+        {
+          "path": "C:\\Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md"
+        }
+      ],
+      "rawInput": {
+        "filePath": "C:\\Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md"
+      },
+      "_meta": {
+        "origami_tool_name": "read"
+      }
+    }
+  },
+  {
+    "sessionId": "ses_ffa753d46ffeZIfu1W9DH5MTXw",
+    "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "call_1",
+      "status": "completed",
+      "title": "Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md",
+      "content": [
+        {
+          "type": "content",
+          "content": {
+            "type": "text",
+            "text": "# capture fixture\nline two"
+          }
+        }
+      ],
+      "rawOutput": {
+        "output": "<path>C:\\Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md</path>\n<type>file</type>\n<content>\n1: # capture fixture\n2: line two\n\n(End of file - total 2 lines)\n</content>",
+        "metadata": {
+          "preview": "# capture fixture\nline two",
+          "truncated": false,
+          "loaded": [],
+          "display": {
+            "type": "file",
+            "path": "C:\\Users\\dev\\AppData\\Local\\Temp\\oc-cli-VoyTjs\\CAPTURE.md",
+            "text": "# capture fixture\nline two",
+            "lineStart": 1,
+            "lineEnd": 2,
+            "totalLines": 2,
+            "truncated": false
+          }
+        }
+      },
+      "_meta": {
+        "origami_tool_name": "read"
+      }
+    }
+  },
+  {
+    "sessionId": "ses_ffa753d46ffeZIfu1W9DH5MTXw",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "messageId": "msg_0058ac406001jZ0bMpCuaHSAXD",
+      "content": {
+        "type": "text",
+        "text": "read the file"
+      }
+    }
+  }
+]

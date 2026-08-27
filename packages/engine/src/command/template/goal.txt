@@ -1,0 +1,18 @@
+The user ran `/goal` with these arguments:
+
+$ARGUMENTS
+
+If the arguments are EMPTY: call the `goal` tool with action="status", report the one line it gives you back, and stop. Do no other work.
+
+If the arguments say to stop, cancel, drop, or clear the goal: call the `goal` tool with action="clear", say so in one line, and stop.
+
+Otherwise the arguments describe an outcome the user wants this session to keep working toward. Do this, in order:
+
+1. Distil the arguments into ONE completion condition that can be checked against the workspace by a reviewer who cannot see this conversation. It must name observable facts - a file that exists and what is in it, a command and the result of running it, a behaviour and the test that proves it. Strip out anything about how to do the work; the condition is about the finished state, not the route to it.
+   - If the arguments name a command, a test, or a file, put it in the condition verbatim.
+   - If the arguments are too vague to check (for example "make it better", "finish the refactor"), do NOT guess a condition. Say in one line what is missing, ask the user for it, and stop without setting a goal.
+2. Call the `goal` tool with action="set" and that condition.
+3. Confirm to the user in ONE line: the condition you set, and the round budget. No preamble, no restating these instructions.
+4. Then start working on it.
+
+Remember what setting a goal does: at the end of every turn from now on, an independent reviewer checks that condition against the workspace and reports MET or NOT MET, and a NOT MET report comes straight back to you as your next turn. The condition is the only thing that reviewer will ever see, so its wording is the whole contract.

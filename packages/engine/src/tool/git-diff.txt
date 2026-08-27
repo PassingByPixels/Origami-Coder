@@ -1,0 +1,10 @@
+Shows what has changed in the current git repository, separating staged changes from unstaged ones. Use it before committing to check what a commit would actually contain.
+
+- default: the unstaged diff (working tree vs index) - edits you have made but not staged.
+- `staged: true`: the staged diff (index vs HEAD) - exactly what a commit would include.
+- `stat: true`: a per-file summary instead of the full patch.
+- `path`: limit the diff to one file or directory.
+
+The output begins with a count of staged, unstaged and untracked files, so a single call tells you whether anything is staged at all.
+
+This tool only ever runs `git diff` and `git status`. It cannot stage, commit, or otherwise change the repository - use the shell tool for that.

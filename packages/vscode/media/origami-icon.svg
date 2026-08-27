@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="currentColor" aria-hidden="true">
+  <!-- Origami crane (tsuru) — the canonical brand mark lifted from the
+       Origami Folio assets (personal/projects/origami/assets/crane.svg),
+       flattened to a solid single-colour silhouette so it reads cleanly as
+       the VS Code activity-bar monochrome mask: forked head + beak upper-left,
+       a tall folded wing peaking at top, a triangular body, a long tail
+       sweeping to the lower right. -->
+  <polygon points="30,40 47,40 52,11"/>
+  <polygon points="26,40 48,40 43,7"/>
+  <polygon points="44,40 62,29 47,48"/>
+  <polygon points="28,39 48,41 36,55"/>
+  <polygon points="21,44 28,39 36,55"/>
+  <polygon points="9,12 15,13 28,41 22,44"/>
+  <polygon points="9,12 15,13 14,19 2,17"/>
+</svg>

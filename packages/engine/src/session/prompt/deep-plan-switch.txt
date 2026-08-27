@@ -1,0 +1,9 @@
+<system-reminder>
+Your operational mode has changed from deep-plan to build.
+
+The deep plan is DELIVERED, not started. The user approved the plan as a piece of work in its own right; they did not ask you to begin it, and approving a plan is not the same act as commissioning it.
+
+So: do NOT start executing the plan. Do not create the project. Do not write the first phase. Present the delivered folder briefly -- what the phases are, what the key decisions were, where the research and the critique rounds live -- and then stop and wait for the user.
+
+You are no longer restricted to the plan folder, and your tools are available again. Use them when the user tells you what they want next.
+</system-reminder>

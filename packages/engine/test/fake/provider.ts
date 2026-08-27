@@ -1,0 +1,108 @@
+import { Effect, Layer } from "effect"
+import { Provider } from "@/provider/provider"
+import { ProviderV2 } from "@origami/core/provider"
+import { ModelV2 } from "@origami/core/model"
+
+export namespace ProviderTest {
+  export function model(override: Partial<Provider.Model> = {}): Provider.Model {
+    const id = override.id ?? ModelV2.ID.make("gpt-5.2")
+    const providerID = override.providerID ?? ProviderV2.ID.make("openai")
+    return {
+      id,
+      providerID,
+      name: "Test Model",
+      capabilities: {
+        toolcall: true,
+        attachment: false,
+        reasoning: false,
+        temperature: true,
+        interleaved: false,
+        input: { text: true, image: false, audio: false, video: false, pdf: false },
+        output: { text: true, image: false, audio: false, video: false, pdf: false },
+      },
+      api: { id, url: "https://example.com", npm: "@ai-sdk/openai" },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 200_000, output: 10_000 },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2025-01-01",
+      ...override,
+    }
+  }
+
+  export function info(override: Partial<Provider.Info> = {}, mdl = model()): Provider.Info {
+    const id = override.id ?? mdl.providerID
+    return {
+      id,
+      name: "Test Provider",
+      source: "config",
+      env: [],
+      options: {},
+      models: { [mdl.id]: mdl },
+      ...override,
+    }
+  }
+
+  /**
+   * A provider service over an explicit set of models, for code that is handed a
+   * `Provider.Interface` directly rather than a layer. A model outside the set
+   * fails with the real `ModelNotFoundError`, which is how the live registry
+   * answers a binding it does not have — the case a health chain walks past.
+   * Everything else dies loudly rather than answering something invented.
+   */
+  export function registry(models: readonly Provider.Model[]): Provider.Interface {
+    const unused = (name: string) => Effect.die(new Error(`ProviderTest.registry.${name} not configured`))
+    return Provider.Service.of({
+      list: () => unused("list"),
+      getProvider: () => unused("getProvider"),
+      getModel: (providerID, modelID) => {
+        const hit = models.find((item) => item.providerID === providerID && item.id === modelID)
+        if (hit) return Effect.succeed(hit)
+        return Effect.fail(new Provider.ModelNotFoundError({ providerID, modelID }))
+      },
+      getLanguage: () => unused("getLanguage"),
+      closest: () => unused("closest"),
+      getSmallModel: () => unused("getSmallModel"),
+      defaultModel: () => unused("defaultModel"),
+      invalidate: () => unused("invalidate"),
+    })
+  }
+
+  export function fake(override: Partial<Provider.Interface> & { model?: Provider.Model; info?: Provider.Info } = {}) {
+    const mdl = override.model ?? model()
+    const row = override.info ?? info({}, mdl)
+    return {
+      model: mdl,
+      info: row,
+      layer: Layer.succeed(
+        Provider.Service,
+        Provider.Service.of({
+          list: Effect.fn("TestProvider.list")(() => Effect.succeed({ [row.id]: row })),
+          getProvider: Effect.fn("TestProvider.getProvider")((providerID) => {
+            if (providerID === row.id) return Effect.succeed(row)
+            return Effect.die(new Error(`Unknown test provider: ${providerID}`))
+          }),
+          getModel: Effect.fn("TestProvider.getModel")((providerID, modelID) => {
+            if (providerID === row.id && modelID === mdl.id) return Effect.succeed(mdl)
+            return Effect.die(new Error(`Unknown test model: ${providerID}/${modelID}`))
+          }),
+          getLanguage: Effect.fn("TestProvider.getLanguage")(() =>
+            Effect.die(new Error("ProviderTest.getLanguage not configured")),
+          ),
+          closest: Effect.fn("TestProvider.closest")((providerID) =>
+            Effect.succeed(providerID === row.id ? { providerID: row.id, modelID: mdl.id } : undefined),
+          ),
+          getSmallModel: Effect.fn("TestProvider.getSmallModel")((providerID) =>
+            Effect.succeed(providerID === row.id ? mdl : undefined),
+          ),
+          defaultModel: Effect.fn("TestProvider.defaultModel")(() =>
+            Effect.succeed({ providerID: row.id, modelID: mdl.id }),
+          ),
+          invalidate: Effect.fn("TestProvider.invalidate")(() => Effect.void),
+          ...override,
+        }),
+      ),
+    }
+  }
+}

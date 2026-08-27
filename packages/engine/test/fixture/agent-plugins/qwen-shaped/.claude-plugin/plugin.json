@@ -1,0 +1,13 @@
+{
+  "name": "qwen-shaped-blender",
+  "version": "1.0.0",
+  "description": "Fixture mirroring QwenLM/Qwen-MM-Plugins src/capabilities/blender/.claude-plugin/plugin.json as fetched 2026-08-11: no $schema, a `skills` array of plugin-relative dirs, and an embedded mcpServers record whose server declares no `type`.",
+  "skills": ["./skill"],
+  "mcpServers": {
+    "qwen-shaped-blender": {
+      "command": "uvx",
+      "args": ["--from", "qwen-mm-plugins[blender] @ git+https://github.com/QwenLM/Qwen-MM-Plugins.git@main", "qwen-mm-plugins-blender"],
+      "env": { "QWEN_MM_AUTOLAUNCH": "1" }
+    }
+  }
+}

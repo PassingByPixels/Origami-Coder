@@ -1,0 +1,7 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "standard.fixture",
+  "version": "2.1.0",
+  "description": "A conforming agent-plugins.org 1.0.0 package: closed manifest, skills by layout, servers in mcp.json.",
+  "keywords": ["fixture"]
+}

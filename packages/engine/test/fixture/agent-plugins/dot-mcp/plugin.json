@@ -1,0 +1,5 @@
+{
+  "name": "dot-mcp",
+  "version": "0.1.0",
+  "description": "Claude-format plugin that ships a dot-prefixed .mcp.json instead of embedding mcpServers, mirroring Qwen src/capabilities/blender/.mcp.json."
+}

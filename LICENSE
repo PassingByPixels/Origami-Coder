@@ -1,0 +1,36 @@
+Origami Coder License (Origami-Proprietary)
+Copyright (c) 2026 Origami Labs
+
+1. Grant
+   You may install and use Origami Coder, free of charge, for any personal
+   or commercial purpose.
+
+2. Restrictions
+   You may not:
+   a. sell, resell, rent, lease, or charge for the Software, or for access
+      to the Software;
+   b. modify or adapt the Software, in whole or in part, to create a product
+      or service that you sell or charge for;
+   c. redistribute the Software outside the official distribution channels
+      (the Visual Studio Marketplace and releases published by Origami Labs),
+      except free-of-charge copies within your own organisation;
+   d. remove or alter copyright, license, or attribution notices.
+
+3. Third-party components
+   Origami Coder is a derivative of OpenCode (MIT License, Copyright (c)
+   the OpenCode contributors) and bundles other open-source components,
+   including ripgrep. Those components remain under their own licenses;
+   this license does not replace them, and their notices are preserved.
+
+4. No warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO FITNESS FOR A PARTICULAR
+   PURPOSE. YOU USE IT AT YOUR OWN RISK.
+
+5. Limitation of liability
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, ORIGAMI LABS IS NOT LIABLE FOR
+   ANY DAMAGES ARISING FROM THE USE OF, OR INABILITY TO USE, THE SOFTWARE.
+
+6. Termination
+   This license ends automatically if you breach it. On termination you
+   must uninstall the Software.

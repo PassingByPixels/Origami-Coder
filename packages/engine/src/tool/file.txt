@@ -1,0 +1,15 @@
+Performs the filesystem operations that read, write and edit do not cover: copying, moving/renaming, deleting, and creating directories.
+
+Use this instead of shell commands (cp, mv, rm, mkdir, Copy-Item, Move-Item, Remove-Item, New-Item) - it works the same on every platform, validates the paths, and asks for permission per operation.
+
+Operations:
+- copy: copy `path` to `destination`. Directories are copied recursively. Missing parent directories of `destination` are created.
+- move: move or rename `path` to `destination`. Falls back to copy-then-delete when the two paths are on different volumes.
+- delete: remove the file or directory at `path`. A directory that is not empty requires `recursive: true`.
+- mkdir: create the directory at `path`, including any missing parents. Succeeds quietly if it already exists.
+
+Rules:
+- Prefer absolute paths. A relative path is resolved against the current working directory.
+- copy and move refuse to overwrite an existing `destination` unless `overwrite: true`.
+- delete never recurses unless you ask for it, and refuses to remove a filesystem root, the home directory, the project directory, or a git repository root. Delete the specific paths you mean rather than a parent directory.
+- To create or change the CONTENTS of a file, use the write or edit tool instead.

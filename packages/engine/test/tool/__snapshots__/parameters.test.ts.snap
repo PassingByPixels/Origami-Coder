@@ -1,0 +1,646 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`tool parameters JSON Schema (wire shape) apply_patch 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "patchText": {
+      "description": "The full patch text that describes all changes to be made",
+      "type": "string",
+    },
+  },
+  "required": [
+    "patchText",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "background": {
+      "description": "Run the command detached and return immediately with a task id instead of waiting for it. Use this for servers, watchers and any job that has no end - never a blocking call with a long timeout. Output streams to a file whose path is in the result; check status with task_list and stop it with task_stop.",
+      "type": "boolean",
+    },
+    "command": {
+      "description": "The command to execute",
+      "type": "string",
+    },
+    "explanation": {
+      "description": "A concise one-line explanation of what this command does, written for the user (120 characters maximum)",
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string",
+    },
+    "timeout": {
+      "description": "Optional timeout in milliseconds. May not exceed 600000.",
+      "exclusiveMinimum": 0,
+      "maximum": 600000,
+      "type": "integer",
+    },
+    "workdir": {
+      "description": "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "explanation",
+    "command",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "filePath": {
+      "description": "The absolute path to the file to modify",
+      "type": "string",
+    },
+    "newString": {
+      "description": "The text to replace it with (must be different from oldString)",
+      "type": "string",
+    },
+    "oldString": {
+      "description": "The text to replace",
+      "type": "string",
+    },
+    "replaceAll": {
+      "description": "Replace all occurrences of oldString (default false)",
+      "type": "boolean",
+    },
+  },
+  "required": [
+    "filePath",
+    "oldString",
+    "newString",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "path": {
+      "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
+      "type": "string",
+    },
+    "pattern": {
+      "description": "The glob pattern to match files against",
+      "type": "string",
+    },
+  },
+  "required": [
+    "pattern",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) grep 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "include": {
+      "description": "File pattern to include in the search (e.g. "*.js", "*.{ts,tsx}")",
+      "type": "string",
+    },
+    "path": {
+      "description": "The directory to search in. Defaults to the current working directory.",
+      "type": "string",
+    },
+    "pattern": {
+      "description": "The regex pattern to search for in file contents",
+      "type": "string",
+    },
+  },
+  "required": [
+    "pattern",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) invalid 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "error": {
+      "type": "string",
+    },
+    "tool": {
+      "type": "string",
+    },
+  },
+  "required": [
+    "tool",
+    "error",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) lsp 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "character": {
+      "description": "The character offset (1-based, as shown in editors)",
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer",
+    },
+    "filePath": {
+      "description": "The absolute or relative path to the file",
+      "type": "string",
+    },
+    "line": {
+      "description": "The line number (1-based, as shown in editors)",
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer",
+    },
+    "operation": {
+      "description": "The LSP operation to perform",
+      "enum": [
+        "goToDefinition",
+        "findReferences",
+        "hover",
+        "documentSymbol",
+        "workspaceSymbol",
+        "goToImplementation",
+        "prepareCallHierarchy",
+        "incomingCalls",
+        "outgoingCalls",
+      ],
+      "type": "string",
+    },
+    "query": {
+      "description": "Search query for workspaceSymbol. Empty string requests all symbols.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "operation",
+    "filePath",
+    "line",
+    "character",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) plan 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {},
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) question 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "questions": {
+      "description": "Questions to ask",
+      "items": {
+        "properties": {
+          "header": {
+            "description": "Very short label (max 30 chars)",
+            "type": "string",
+          },
+          "multiple": {
+            "description": "Allow selecting multiple choices",
+            "type": "boolean",
+          },
+          "options": {
+            "description": "Available choices",
+            "items": {
+              "properties": {
+                "description": {
+                  "description": "Explanation of choice",
+                  "type": "string",
+                },
+                "label": {
+                  "description": "Display text (1-5 words, concise)",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "label",
+                "description",
+              ],
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "question": {
+            "description": "Complete question",
+            "type": "string",
+          },
+        },
+        "required": [
+          "question",
+          "header",
+          "options",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "questions",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) read 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "filePath": {
+      "description": "The absolute path to the file or directory to read",
+      "type": "string",
+    },
+    "limit": {
+      "description": "The maximum number of lines to read (defaults to 2000)",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
+    "offset": {
+      "description": "The line number to start reading from (1-indexed)",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer",
+    },
+  },
+  "required": [
+    "filePath",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) skill 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "name": {
+      "description": "The name of the skill from available_skills",
+      "type": "string",
+    },
+  },
+  "required": [
+    "name",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) task 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "background": {
+      "description": "Defaults to true: the agent runs in the background and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set false only when your very next step needs the result inline, which blocks this conversation until the agent finishes",
+      "type": "boolean",
+    },
+    "command": {
+      "description": "The command that triggered this task",
+      "type": "string",
+    },
+    "description": {
+      "description": "A short (3-5 words) description of the task",
+      "type": "string",
+    },
+    "prompt": {
+      "description": "The task for the agent to perform",
+      "type": "string",
+    },
+    "subagent_type": {
+      "description": "The type of specialized agent to use for this task",
+      "type": "string",
+    },
+    "task_id": {
+      "description": "The id of a previous task, to CONTINUE that same subagent session instead of creating a fresh one. It keeps every message, file and tool output from before, so pass only what is new. Use this whenever you are answering an agent's question or asking it to carry on — a multi-step exchange is one resumed task, not several new ones.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "description",
+    "prompt",
+    "subagent_type",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "todos": {
+      "description": "The updated todo list",
+      "items": {
+        "properties": {
+          "content": {
+            "description": "Brief description of the task",
+            "type": "string",
+          },
+          "priority": {
+            "description": "Priority level of the task: high, medium, low",
+            "type": "string",
+          },
+          "status": {
+            "description": "Current status of the task: pending, in_progress, completed, cancelled",
+            "type": "string",
+          },
+        },
+        "required": [
+          "content",
+          "status",
+          "priority",
+        ],
+        "type": "object",
+      },
+      "type": "array",
+    },
+  },
+  "required": [
+    "todos",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) webfetch 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "format": {
+      "default": "markdown",
+      "description": "The format to return the content in (text, markdown, or html). Defaults to markdown.",
+      "enum": [
+        "text",
+        "markdown",
+        "html",
+      ],
+      "type": "string",
+    },
+    "timeout": {
+      "description": "Optional timeout in seconds (max 120)",
+      "type": "number",
+    },
+    "url": {
+      "description": "The URL to fetch content from",
+      "type": "string",
+    },
+  },
+  "required": [
+    "url",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) websearch 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "contextMaxCharacters": {
+      "description": "Maximum characters for context string optimized for LLMs (default: 10000)",
+      "type": "number",
+    },
+    "livecrawl": {
+      "description": "Live crawl mode - 'fallback': use live crawling as backup if cached content unavailable, 'preferred': prioritize live crawling (default: 'fallback')",
+      "enum": [
+        "fallback",
+        "preferred",
+      ],
+      "type": "string",
+    },
+    "numResults": {
+      "description": "Number of search results to return (default: 8)",
+      "type": "number",
+    },
+    "query": {
+      "description": "Websearch query",
+      "type": "string",
+    },
+    "type": {
+      "description": "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search",
+      "enum": [
+        "auto",
+        "fast",
+        "deep",
+      ],
+      "type": "string",
+    },
+  },
+  "required": [
+    "query",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) write 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "content": {
+      "description": "The content to write to the file",
+      "type": "string",
+    },
+    "filePath": {
+      "description": "The absolute path to the file to write (must be absolute, not relative)",
+      "type": "string",
+    },
+  },
+  "required": [
+    "content",
+    "filePath",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_repos 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {},
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_tickets 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "id": {
+      "description": "Ticket id, e.g. t-8k2fq1. Returns that one ticket in full instead of the list.",
+      "type": "string",
+    },
+    "repo": {
+      "description": "Repo name or absolute root, as listed by board_repos. Use "." for this session's own repo.",
+      "type": "string",
+    },
+    "status": {
+      "description": "Only list tickets with this status (triage, todo, pending, in_progress, done, merged, closed).",
+      "type": "string",
+    },
+  },
+  "required": [
+    "repo",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_create 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "acceptance": {
+      "description": "Acceptance criteria, one per item. Supplying any lands the ticket in Todo instead of Triage.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "body": {
+      "description": "Markdown brief: objective, constraints, notes. Written below the frontmatter.",
+      "type": "string",
+    },
+    "labels": {
+      "description": "Short labels, e.g. ui, engine.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "priority": {
+      "description": "low, normal or high. Default normal.",
+      "type": "string",
+    },
+    "repo": {
+      "description": "Repo name or absolute root, as listed by board_repos. Use "." for this session's own repo.",
+      "type": "string",
+    },
+    "title": {
+      "description": "One-line ticket title.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "repo",
+    "title",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_update 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "acceptance": {
+      "description": "Replacement acceptance list. Prefix an item with [x] to tick it; unchanged items keep their tick.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "claim": {
+      "description": "Take the ticket under this name. Refused if somebody else already holds it.",
+      "type": "string",
+    },
+    "comment": {
+      "description": "One line appended to the ticket's Log section.",
+      "type": "string",
+    },
+    "id": {
+      "description": "Ticket id, e.g. t-8k2fq1.",
+      "type": "string",
+    },
+    "labels": {
+      "description": "Replacement label list.",
+      "items": {
+        "type": "string",
+      },
+      "type": "array",
+    },
+    "priority": {
+      "description": "low, normal or high.",
+      "type": "string",
+    },
+    "repo": {
+      "description": "Repo name or absolute root, as listed by board_repos. Use "." for this session's own repo.",
+      "type": "string",
+    },
+    "status": {
+      "description": "New status. Agents may set only triage, todo, closed — the rest are stamped by the fold lifecycle.",
+      "type": "string",
+    },
+    "title": {
+      "description": "Replacement title.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "repo",
+    "id",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_register 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "init": {
+      "description": "Run git init in the folder first. Only for a folder that is not a repo yet. Default false.",
+      "type": "boolean",
+    },
+    "name": {
+      "description": "Board name for the repo, used as the repo param everywhere else. Defaults to the folder name.",
+      "type": "string",
+    },
+    "path": {
+      "description": "Folder to put on the board. The repo's ROOT — absolute, or relative to this session's repo.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "path",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) board_worktrees 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "repo": {
+      "description": "Repo name or absolute root, as listed by board_repos. Use "." for this session's own repo.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "repo",
+  ],
+  "type": "object",
+}
+`;

@@ -1,0 +1,6 @@
+Read-only inspection of the processes running on this machine and of the TCP ports being listened on. Use it when a server looks hung, a port is already taken, or you need to know whether something you started is still alive.
+
+- kind "processes": lists running processes as `PID  NAME`. Optional `filter` keeps only processes whose name contains that text, case-insensitive.
+- kind "ports": lists listening TCP sockets as `ADDRESS  PID  NAME`. Optional `filter` keeps only rows containing that text, so either a port number or a process name works.
+
+This tool only reports. It cannot start, stop, signal or kill anything. If a process needs to be stopped, tell the user which PID and let them do it.

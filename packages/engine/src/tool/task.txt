@@ -1,0 +1,23 @@
+Launch a new agent to handle complex, multistep tasks autonomously.
+
+When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+
+A subagent is CONTEXT COMPRESSION as much as it is parallelism. It can read thirty files and hand you back three sentences. Send it the noisy work - the searching, the reading, the sweeping - and keep the conclusion, not the file dumps. Doing that work yourself fills your own context with material you will never need again, and a fuller context means earlier compaction, which is where detail actually gets lost.
+
+When NOT to use the Task tool:
+- If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
+- If you are searching for a specific class definition like "class Foo", use the Grep tool instead, to find the match more quickly
+- If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
+- If no available agent is a good fit for the task, use other tools directly
+
+
+Usage notes:
+1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
+2. Once you have delegated work to an agent, do not duplicate that work yourself. Continue with non-overlapping tasks, or wait for the result. For background tasks, you will be notified automatically when the result is ready.
+3. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. Every result carries a task_id (`<task id="...">`) — keep it, you need it for point 6.
+4. When starting a NEW agent, your prompt should contain a highly detailed task description for the agent to perform autonomously, and you should specify exactly what information the agent should return back to you in its final and only message to you. It CANNOT see this conversation, so brief it completely: absolute paths rather than "the file we discussed", what "done" means as something objectively checkable, and what it must not touch. A vague brief does not produce vague work - it produces confident wrong work you then pay to redo.
+5. Tell the agent to VERIFY the premises you gave it against the actual files before building on them. Your description of the code can be wrong - it is the one looking at the source. An agent that silently builds on a false premise wastes the whole run; one that checks first tells you your premise was wrong, which is worth more than the task.
+6. RESUME rather than re-launch. When an agent's result asks you a question, reports missing information, or is a step in work you want it to continue, call this tool again with that agent's task_id and pass only the new information as the prompt. The agent resumes its OWN session — it still has everything it read, wrote and reasoned about, so you do not restate the task. Launching a fresh agent instead throws all of that away: the new agent has no memory of the exchange and will re-derive, contradict, or repeat the previous one. A multi-step exchange with an agent (it asks, you answer, it continues) is ALWAYS one task_id resumed repeatedly, never a chain of new agents.
+7. The agent's outputs should generally be trusted
+8. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
+9. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.

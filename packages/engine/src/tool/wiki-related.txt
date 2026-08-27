@@ -1,0 +1,20 @@
+Walk the LINK GRAPH of this workspace's knowledge base out from one page: what that page links
+to, what links TO it, and which pages share its tags.
+
+WHEN TO USE IT: after wiki_search names a page, or whenever you need the neighbourhood of a
+topic rather than a single page - the surrounding decisions, the pages that cite this one, the
+siblings filed under the same tags.
+
+INBOUND LINKS ARE THE POINT. "Which pages point at this one" is the question grep cannot answer
+cheaply, because a link is written as a bare name while the page lives at a path - and the
+context you are missing is usually in the page that cites yours, not in the page itself.
+Outbound targets with no page behind them are marked `(unwritten)`: those are known gaps in the
+wiki, not broken output.
+
+WHAT COMES BACK: METADATA ONLY - page ids, tags, one-line descriptions. No page bodies. Follow
+up by READING the one or two best neighbours with the read tool.
+
+`page` takes an exact page id, a bare filename, or an approximate name - the reply always says
+how it resolved, and an unresolvable name comes back as the nearest page ids rather than an
+error. `depth: 2` adds one more hop on the outbound and inbound sets, indented, under the same
+output cap.

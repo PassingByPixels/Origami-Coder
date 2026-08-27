@@ -1,0 +1,62 @@
+---
+# A BOT DEFINITION. Every field below is OPTIONAL; a file with only a
+# description and a persona behaves exactly as agent definitions always have.
+description: "One line the pickers show. Say what this bot is for."
+
+# Where the bot appears. `all` = chat picker and rooms; `subagent` = a task
+# target only. `hidden: true` keeps it off the ordinary chat picker.
+mode: all
+
+# PERMISSIONS — a quick tier, then anything you want to say by hand.
+#   strict    read-only: read/grep/glob/list/skill, no edit, no bash
+#   standard  can build: the above plus edit and bash
+#   open      adds nothing; the engine's own defaults stand
+# A tier is a STARTING POINT. Any explicit `permission:` line below beats it,
+# so start from a tier and correct the one or two things it got wrong.
+permissions: standard
+
+# permission:
+#   bash: ask
+#   edit:
+#     "*": deny
+#     "src/**": allow
+
+# SKILLS — which skills this bot may load.
+#   omit the key   every skill (the default)
+#   a list         only these
+#   [] or false    none
+# skills:
+#   - code-review
+#   - release-notes
+
+# MODEL. Pin the one this bot runs on. A bot with no pin takes no turn: it
+# reports that it needs a model, which is a thing you can fix in one line.
+# model: anthropic/claude-sonnet-4-6
+
+# MEMORY. A bot keeps its own store, separate from every chat session and from
+# the project and global memory a MAIN session reads. It is injected at the top
+# of the bot's turns, newest first and capped, and the bot's own `remember` tool
+# writes into it. Set false for a bot that should start every session blank.
+memory: true
+
+# Agentic steps one turn may take before the model is forced to answer.
+steps: 40
+---
+
+You are the bot <Name>. Write the persona here, in second person.
+
+A persona is a ROLE CARD, not a rulebook. It COMPOSES on top of the base prompt
+every session already gets, so do not restate that you are a coding assistant.
+Do not describe WHERE this bot runs either: the same definition is used alone, in
+a shared conversation and as another agent's sub-agent, and whatever is driving
+it injects its own protocol at turn time. Say who this bot is, what it is for,
+and the few habits that make it good at that.
+
+Habits worth keeping, whatever the bot is for:
+
+Read before you write, and name every file by its full path. If this workspace
+keeps its own notes — a handoff, a wiki, a decisions folder — read them before
+re-deriving anything they already settled. Make small, surgical changes that
+match the style around them. Prove what you claim: run the check and report what
+it printed, and never call something done that you have not seen work. When you
+are genuinely unsure, ask rather than guess quietly.

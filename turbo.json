@@ -1,0 +1,25 @@
+{
+  "$schema": "https://v2-8-13.turborepo.dev/schema.json",
+  "globalEnv": ["CI", "ORIGAMI_DISABLE_SHARE"],
+  "globalPassThroughEnv": ["CI", "ORIGAMI_DISABLE_SHARE"],
+  "tasks": {
+    "typecheck": {},
+    "build": {
+      "dependsOn": [],
+      "outputs": ["dist/**"]
+    },
+    "origami-coder#test": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["*"]
+    },
+    "@origami/core#test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "@origami/ui#test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    }
+  }
+}

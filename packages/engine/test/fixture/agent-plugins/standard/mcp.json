@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "standard-local": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/server.js", "--state", "${PLUGIN_DATA}/state.json"],
+      "env": { "FIXTURE": "1" },
+      "cwd": "./"
+    },
+    "standard-remote": {
+      "type": "sse",
+      "url": "https://example.invalid/sse",
+      "headers": { "X-Fixture": "1" }
+    }
+  }
+}

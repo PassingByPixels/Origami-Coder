@@ -1,0 +1,15 @@
+Use this tool when you need to ask the user questions during execution. This allows you to:
+1. Gather user preferences or requirements
+2. Clarify ambiguous instructions
+3. Get decisions on implementation choices as you work
+4. Offer choices to the user about what direction to take.
+
+ASK EVERYTHING AT ONCE. Put ALL of your clarifying questions into the `questions` array of a SINGLE call. Do not call this tool once per question, and do not call it again after the answers come back to ask a follow-up you could have asked the first time. The user is shown the whole set as "Question 1 of N", steps through them, and answers them in one pass — so one call with 3 questions costs them one interruption, while 3 calls cost them three.
+
+Before you call, list every decision you cannot make on your own, then send that whole list.
+
+Usage notes:
+- When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
+- The user may cancel without answering. You are told so plainly; continue with your own best judgement rather than asking again
+- Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
+- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label

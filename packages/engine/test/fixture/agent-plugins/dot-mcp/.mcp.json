@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dot-server": {
+      "command": "uvx",
+      "args": ["--from", "pkg", "entry"]
+    }
+  }
+}

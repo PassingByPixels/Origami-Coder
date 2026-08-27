@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "outDir": "out/webview",
+    "rootDir": "webview",
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  },
+  "include": ["webview/**/*"],
+  "comment": "Stage 5B foundation: the donor's __tests__ assert the deleted v1 ACP contract (plan 05 §3.6) and are excluded from the type-gate until rewritten; vitest runs them via vitest.config.mts.",
+  "exclude": ["node_modules", "out", "webview/**/__tests__/**", "webview/**/*.test.ts"]
+}
