@@ -76,6 +76,149 @@ describe('ChatTranscript — a fixed message list becomes the rows it names', ()
   });
 });
 
+// FOCUS VIEW (0.4.61) — the same fixed list, rendered as "just the conversation".
+//
+// The dispositions themselves are chatFocus.test.ts's job, and the fold and its
+// wording are focusGaps.test.ts's, both with no DOM in the way. What is
+// asserted HERE is the thing only a render can show: that the props are
+// actually WIRED, that the divider stands where the hidden rows were rather
+// than at the end or nowhere, and that leaving focus off changes nothing.
+
+/** The rows a focused transcript must draw, from the MESSAGES fixture above:
+ *  the prose (user, agent with its rewind wrapper, peer, error) with a counted
+ *  divider standing where each RUN of hidden rows was — ids 2-3 between the
+ *  user and the agent, ids 5-7 between the agent and the peer.
+ *
+ *  0.4.62: the count was four before the dividers existed. It is six because
+ *  the transcript now says what it hid, not because the filter changed — the
+ *  four prose rows are the same four, in the same order. */
+const CONVERSATION_ONLY = [
+  'div.row.user', 'div.focus-gap', 'div.agent-row', 'div.focus-gap', 'div.peer-row', 'div.row.error',
+];
+
+function signatures(container: Element): string[] {
+  return ([...container.children] as HTMLElement[]).map(
+    (el) => `${el.tagName.toLowerCase()}.${[...el.classList].filter((c) => !c.startsWith('svelte-')).join('.')}`,
+  );
+}
+
+function transcript(focusMode: boolean | undefined) {
+  const props: Record<string, unknown> = {
+    messages: MESSAGES,
+    sessionId: 'sess-1',
+    inFlight: false,
+    currentThoughtMsgId: null,
+    currentAgentMsgId: null,
+    openThoughtIds: [],
+    onThoughtOpenIds: () => {},
+    onImageClick: () => {},
+    onRewind: () => {},
+  };
+  // ABSENT, not `false`: the default is half the guarantee, and passing the
+  // prop explicitly would never exercise it.
+  if (focusMode !== undefined) props.focusMode = focusMode;
+  return render(ChatTranscript, props).container;
+}
+
+describe('ChatTranscript — focus view keeps the conversation and drops the rest', () => {
+  it('renders the prose rows in order, each hidden run replaced by ONE divider', () => {
+    const rows = signatures(transcript(true));
+    expect(rows.length, 'four conversation rows and two dividers out of nine messages').toBe(CONVERSATION_ONLY.length);
+    CONVERSATION_ONLY.forEach((want, i) => {
+      expect(rows[i], `focused row ${i}`).toContain(want.split('.').slice(1).join('.'));
+    });
+  });
+
+  it('puts the counts BETWEEN the messages, saying what each run held', () => {
+    // The owner's ask: message, "38 Tools, 2 Read Files", message. The wording
+    // is focusGaps.test.ts's contract; what is proved here is that THIS run's
+    // count lands between THESE two rows — a divider that summed the whole
+    // transcript once, or landed at the end, would pass the sequence check
+    // above and still lose the context it exists to keep.
+    const dividers = [...transcript(true).querySelectorAll('.focus-gap')];
+    expect(dividers.map((d) => d.textContent?.trim())).toEqual(['1 file read · 1 thought', '3 steps']);
+  });
+
+  it('makes TWO dividers for two runs — it never merges them into one', () => {
+    // Ids 2-3 and 5-7 are separated by the agent's answer. Merging them would
+    // report work done after that answer as if it had happened before it.
+    expect(transcript(true).querySelectorAll('.focus-gap')).toHaveLength(2);
+  });
+
+  it('draws a divider for a run at the START and at the END of a transcript', () => {
+    // Both edges, which the MESSAGES fixture has neither of: it opens on a user
+    // row and closes on an error row. A fold that only ran between two visible
+    // rows would pass every assertion above.
+    const edged: Message[] = [
+      { id: 1, kind: 'thought', label: '', text: 'first' },
+      { id: 2, kind: 'user', label: 'You', text: 'go' },
+      { id: 3, kind: 'tool', label: 'bash: npm test', text: '', toolKind: 'execute', toolName: 'bash', toolStatus: 'completed' },
+    ];
+    const c = render(ChatTranscript, {
+      messages: edged, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {}, focusMode: true,
+    }).container;
+    expect(signatures(c)).toEqual(['div.focus-gap', 'div.row.user', 'div.focus-gap']);
+    expect([...c.querySelectorAll('.focus-gap')].map((d) => d.textContent?.trim()))
+      .toEqual(['1 thought', '1 command']);
+  });
+
+  it('draws NO divider when focus is off, or when nothing was hidden', () => {
+    // The other half of the guarantee. A divider in the full transcript would
+    // be furniture announcing rows that are right there.
+    expect(transcript(false).querySelector('.focus-gap')).toBeNull();
+    expect(transcript(undefined).querySelector('.focus-gap')).toBeNull();
+    const prose: Message[] = [
+      { id: 1, kind: 'user', label: 'You', text: 'hi' },
+      { id: 2, kind: 'agent', label: 'Tsuru', text: 'hello' },
+    ];
+    const c = render(ChatTranscript, {
+      messages: prose, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {}, focusMode: true,
+    }).container;
+    expect(c.querySelector('.focus-gap'), 'nothing was hidden, so nothing to say').toBeNull();
+  });
+
+  it('drops every tool card, thought, todo snapshot, verdict and compaction marker', () => {
+    // Named individually rather than inferred from the count above: a filter
+    // that dropped the right NUMBER of rows for the wrong reason would pass a
+    // length check and fail a user.
+    const c = transcript(true);
+    expect(c.querySelector('.tool-card'), 'tool activity').toBeNull();
+    expect(c.querySelector('.thought-block'), 'reasoning').toBeNull();
+    expect(c.querySelector('.todo-summary-msg'), 'the todo snapshot').toBeNull();
+    expect(c.querySelector('.turn-verdict'), 'the turn verdict').toBeNull();
+    expect(c.querySelector('.compaction-block'), 'the compaction marker').toBeNull();
+  });
+
+  it('renders EVERYTHING with focus off, and again with the prop absent', () => {
+    // The other half. Absent is the case every existing caller is in — the live
+    // pane before anyone clicks the eye, and SubagentTranscriptView, which
+    // passes no such prop at all.
+    expect(signatures(transcript(false)).length).toBe(MESSAGES.length);
+    expect(signatures(transcript(undefined)).length).toBe(MESSAGES.length);
+  });
+
+  it('is a VIEW: the same rows come back when focus is turned off again', async () => {
+    // The owner asked for a back-and-forth toggle, so the important guarantee
+    // is not what focus hides but that leaving it restores the transcript
+    // whole — a filter that mutated `messages` would pass every test above.
+    const props = {
+      messages: MESSAGES, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {}, onRewind: () => {},
+      focusMode: true,
+    };
+    const view = render(ChatTranscript, props);
+    expect(signatures(view.container).length).toBe(CONVERSATION_ONLY.length);
+    await view.rerender({ ...props, focusMode: false });
+    expect(signatures(view.container).length, 'every hidden row is back').toBe(MESSAGES.length);
+    expect(MESSAGES.length, 'and the source list was never edited').toBe(9);
+  });
+});
+
 // READ-ONLY MODE — the sub-agent transcript's whole safety story.
 //
 // These rows are HISTORY. Three controls in the live renderer act on the

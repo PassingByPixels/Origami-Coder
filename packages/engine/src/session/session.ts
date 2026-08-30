@@ -1030,6 +1030,11 @@ const layer: Layer.Layer<
               status: todo.status,
               priority: todo.priority,
               position: todo.position,
+              // Explicit field map, so a column left out here is a column the
+              // fork silently loses. Nesting is part of the plan's shape, not
+              // decoration - a fork that flattened it would read as a different
+              // plan.
+              depth: todo.depth,
             })),
           )
           .run()

@@ -12,6 +12,10 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { tick } from 'svelte';
 import ModelPicker from './ModelPicker.svelte';
 import { usageLine } from '../../../src/dashboard/providerUsage';
+// The host predicate that decides whether a pick costs an eject+reload. Read
+// here so the "picking current is free" claim is checked against the REAL rule
+// the DashboardPanel applies, not a restatement of it in a comment.
+import { shouldReloadLocalModel } from '../../../src/dashboard/firstFold';
 
 const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -106,7 +110,16 @@ describe('ModelPicker — per-chat model selection', () => {
     expect(chips[0].closest('button')?.getAttribute('title')).toBe('lmstudio/qwen-30b');
   });
 
-  it('picking the ALREADY-LOADED model skips the context prompt and posts NO contextLength (no reload)', async () => {
+  // …and the SECOND half of that replacement, which the first shipped without:
+  // re-picking the loaded model short-circuited to a bare re-pick, so the window
+  // it is actually loaded at was never shown and could not be changed from here
+  // at all (the only route was: switch to another model, then switch back). The
+  // row marked `current` now opens the SAME load prompt every other LM Studio
+  // pick opens — seeded with, and labelled by, the real loaded window. The
+  // no-reload guarantee did not move: it lives in the host's
+  // shouldReloadLocalModel, which skips the eject+load on a model+window match.
+  /** Open the picker on an LM Studio provider holding `qwen-30b` at 32k. */
+  async function openWithLoaded32k() {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
     postFromHost({ type: 'providerStatus', providers: [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' }] });
@@ -115,19 +128,132 @@ describe('ModelPicker — per-chat model selection', () => {
       current: '',
       options: [{ value: 'lmstudio/qwen-30b', name: 'qwen-30b', configured: true }],
     });
-    postFromHost({ type: 'modelStatus', sessionId: SID, contextWindow: 65536, loadedModelId: 'qwen-30b' });
+    // `loadedContextLength` is the LOCAL server's own loaded window (a global
+    // fact on every modelStatus post); `contextWindow` is THIS session's model's
+    // window. They coincide for a local chat — the remote case is pinned below.
+    postFromHost({ type: 'modelStatus', sessionId: SID, contextWindow: 32768, loadedContextLength: 32768, loadedModelId: 'qwen-30b' });
+  }
+  /** The `setModel` message the picker posted (undefined = it posted none). */
+  function setModelCall(): Record<string, unknown> | undefined {
+    return globalThis.__vscodeApiMock.postMessage.mock.calls
+      .map((c: unknown[]) => c[0] as Record<string, unknown>)
+      .find((a) => a?.type === 'setModel');
+  }
+  /** What DashboardPanel's setModel handler would do with that message: the
+   *  picker's contextLength wins, else the probed loaded window. */
+  function hostWouldReload(posted: Record<string, unknown> | undefined, loadedCtx: number): boolean {
+    const requested = typeof posted?.contextLength === 'number' && posted.contextLength > 0
+      ? posted.contextLength as number
+      : loadedCtx;
+    return shouldReloadLocalModel({
+      requestedModelId: 'qwen-30b',
+      requestedContext: requested,
+      loaded: { ok: true, modelId: 'qwen-30b', contextLength: loadedCtx },
+    });
+  }
+
+  it('picking the ALREADY-LOADED model opens the context prompt, pre-filled with AND labelled by the loaded window', async () => {
+    await openWithLoaded32k();
 
     await fireEvent.click(await screen.findByText('qwen-30b'));
 
-    // No context prompt at all — the loaded window IS the answer.
-    expect(screen.queryByLabelText(/Context length/i)).toBeNull();
-    // And no contextLength on the wire: omitting it is what lets the host resolve
-    // "same model, same window" and skip the unload+load entirely.
+    // The prompt is the ONLY place the loaded window is legible, so it must both
+    // seed the input and say the number in words — a blank box would read as
+    // "no window set" for a model that has one.
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    expect(ctx.value).toBe('32768');
+    expect(screen.getByText(/currently loaded at 32k/i)).toBeInTheDocument();
+    // Nothing is sent until the user confirms — the old short-circuit posted here.
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel' }),
+    );
+  });
+
+  it('a NEW window on the loaded model rides setModel as contextLength — and the host then RELOADS', async () => {
+    await openWithLoaded32k();
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    await fireEvent.input(ctx, { target: { value: '86016' } });
+    await fireEvent.click(screen.getByText('Load'));
+
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
       type: 'setModel',
       modelId: 'lmstudio/qwen-30b',
       sessionId: SID,
+      contextLength: 86016,
     });
+    // Same model, DIFFERENT window → the host must eject and reload at 84k.
+    expect(hostWouldReload(setModelCall(), 32768)).toBe(true);
+  });
+
+  it('confirming the loaded window UNCHANGED lands in the host\'s "kept as is" skip — no eject+reload', async () => {
+    await openWithLoaded32k();
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+
+    // Straight to Load, leaving the seeded 32768 alone: the "I only wanted to
+    // check the window" path, which must cost nothing.
+    await fireEvent.click(await screen.findByText('Load'));
+
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'setModel',
+      modelId: 'lmstudio/qwen-30b',
+      sessionId: SID,
+      contextLength: 32768,
+    });
+    expect(hostWouldReload(setModelCall(), 32768)).toBe(false);
+  });
+
+  it('confirming the loaded model with a BLANK window also skips — the host inherits the probed one', async () => {
+    await openWithLoaded32k();
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    await fireEvent.input(ctx, { target: { value: '' } });
+    await fireEvent.click(screen.getByText('Load'));
+
+    // Blank = no usable number on the wire; DashboardPanel then falls back to
+    // `this.contextWindow` (its own probe of the loaded window), which matches.
+    expect(setModelCall()?.modelId).toBe('lmstudio/qwen-30b');
+    expect(setModelCall()?.contextLength).toBeUndefined();
+    expect(hostWouldReload(setModelCall(), 32768)).toBe(false);
+  });
+
+  it('a CLOUD chat\'s own 200k window never becomes the loaded model\'s "currently loaded" number', async () => {
+    // The hazard the short-circuit used to hide. `contextWindow` on modelStatus is
+    // THIS session's model's window — for a chat sitting on OpenRouter that is the
+    // cloud model's 200k, while LM Studio holds qwen-30b at 32k. Reading that as
+    // the loaded window would print a false "currently loaded at 195k" AND seed
+    // `lms load -c 200000`, which is a VRAM blowout one confirm away. The picker
+    // reads `loadedContextLength` (the local server's own window) instead.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' }] });
+    postFromHost({ type: 'modelOptions', current: '', options: [{ value: 'lmstudio/qwen-30b', name: 'qwen-30b', configured: true }] });
+    postFromHost({ type: 'modelStatus', sessionId: SID, contextWindow: 200000, loadedContextLength: 32768, loadedModelId: 'qwen-30b' });
+
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    expect(ctx.value).toBe('32768');
+    expect(screen.getByText(/currently loaded at 32k/i)).toBeInTheDocument();
+    expect(screen.queryByText(/195k/)).toBeNull();
+
+    await fireEvent.click(screen.getByText('Load'));
+    expect(setModelCall()?.contextLength).toBe(32768);
+    expect(hostWouldReload(setModelCall(), 32768)).toBe(false);
+  });
+
+  it('cancelling the loaded model\'s prompt posts NOTHING — reading the window is not a pick', async () => {
+    // The old short-circuit posted the moment the row was clicked, so "let me see
+    // what it is loaded at" and "switch this chat to it" were the same gesture.
+    // They are two now, and backing out must leave this chat's model alone.
+    await openWithLoaded32k();
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+    await fireEvent.click(await screen.findByText('Cancel'));
+
+    expect(setModelCall()).toBeUndefined();
+    expect(await screen.findByText('qwen-30b')).toBeInTheDocument();
   });
 
   it('another chat\'s modelStatus cannot masquerade as this chat\'s loaded model', async () => {
@@ -141,11 +267,16 @@ describe('ModelPicker — per-chat model selection', () => {
     });
     // Tagged for a DIFFERENT session — must be ignored (same guard that stops a
     // background chat's 131k window pre-filling this chat's `lms load -c`).
-    postFromHost({ type: 'modelStatus', sessionId: 'some-other-session', contextWindow: 65536, loadedModelId: 'qwen-30b' });
+    postFromHost({ type: 'modelStatus', sessionId: 'some-other-session', contextWindow: 65536, loadedContextLength: 65536, loadedModelId: 'qwen-30b' });
 
     await fireEvent.click(await screen.findByText('qwen-30b'));
-    // Falls back to the normal local path: prompt, do not silently claim it's loaded.
-    expect(await screen.findByLabelText(/Context length/i)).toBeInTheDocument();
+    // Prompt, yes — but EMPTY and unlabelled. Now that every local pick prompts,
+    // the seeded number and the "currently loaded" line are the only things that
+    // still tell the two cases apart, so they are what this guard asserts.
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    expect(ctx.value).toBe('');
+    expect(screen.queryByText(/currently loaded at/i)).toBeNull();
+    expect(screen.queryByText('current')).toBeNull();
   });
 
   it('OpenRouter: picking a model switches live (setModel + sessionId), no context prompt', async () => {
@@ -604,6 +735,38 @@ describe('ModelPicker — the sub-agent target', () => {
     });
   });
 
+  // The sub-agent target is UNCHANGED by the "picking current shows its window"
+  // work: it never reached the loaded-model short-circuit in the first place
+  // (its own branch returns before it), and it drives no `lms load`, so there is
+  // no loaded window to reveal — its number is the CHILDREN's compaction budget,
+  // which is not the parent's loaded window and must not be seeded from it.
+  it('the loaded model on the SUB-AGENT target still gets the blank override prompt, not the load prompt', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' }] });
+    postFromHost({ type: 'modelOptions', current: '', options: [{ value: 'lmstudio/qwen-30b', name: 'qwen-30b', configured: true }] });
+    postFromHost({ type: 'modelStatus', sessionId: SID, contextWindow: 32768, loadedModelId: 'qwen-30b' });
+
+    await fireEvent.click(await screen.findByRole('button', { name: /^Sub-agents$/ }));
+    await fireEvent.click(await screen.findByText('qwen-30b'));
+
+    // The override prompt (Set), not the load prompt (Load) — and blank, not
+    // seeded with the parent's 32k.
+    const ctx = await screen.findByLabelText(/Context length/i) as HTMLInputElement;
+    expect(ctx.value).toBe('');
+    expect(screen.queryByText('Load')).toBeNull();
+    await fireEvent.click(screen.getByText('Set'));
+
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'setSubagentModel',
+      modelId: 'lmstudio/qwen-30b',
+      sessionId: SID,
+    });
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel' }),
+    );
+  });
+
   it('cancelling the sub-agent context prompt posts nothing and returns to the model list', async () => {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
@@ -838,6 +1001,13 @@ describe('ModelPicker — subscription usage readout (OAuth-active model)', () =
     expect(screen.queryByText(/used/i)).toBeNull();
   });
 
+  it('asks the host WHICH providers can report usage, once, on mount', async () => {
+    // Config-only on the host side, so it answers before any chat exists — the
+    // pill for a key-bought plan must not wait for a session to open.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'providerUsageCapableRequest' });
+  });
+
   it('refreshes on turnDone for THIS session — not a timer, and not another session\'s turn', async () => {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
@@ -850,6 +1020,109 @@ describe('ModelPicker — subscription usage readout (OAuth-active model)', () =
 
     globalThis.__vscodeApiMock.postMessage.mockReset();
     postFromHost({ type: 'turnDone', stopReason: 'end_turn', sessionId: 'some-other-session' });
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'providerUsageRequest' }),
+    );
+  });
+});
+
+// OpenCode GO is a FLAT-RATE plan bought with an API key, so it has no OAuth
+// credential to light the gate above — and it is metered nowhere, so the cost
+// badge it used to show was a price nobody pays. The pill has to read
+// CONSUMPTION for it instead, which means the gate needs a second way in:
+// `providerUsageCapable`, an id list the host reads from the config file.
+describe('ModelPicker — subscription usage for a key-bought plan (opencode-go)', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  /** Seed the picker with an active model, then reopen so the gate can fire. */
+  async function openWith(container: HTMLElement, model: string, seed: Record<string, unknown>[]) {
+    const trigger = () => container.querySelector('.mp-trigger') as HTMLElement;
+    await fireEvent.click(trigger());
+    postFromHost({ type: 'sessionModels', models: { [SID]: model } });
+    for (const m of seed) postFromHost(m);
+    await fireEvent.click(trigger()); // close
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+    await fireEvent.click(trigger()); // reopen — it now knows enough to ask
+  }
+
+  it('asks for usage and renders the Weekly line when the host says opencode-go is capable', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'opencode-go/deepseek-v4-flash', [
+      { type: 'providerUsageCapable', ids: ['opencode-go'] },
+    ]);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'providerUsageRequest',
+      providerId: 'opencode-go',
+    });
+
+    postFromHost({
+      type: 'providerUsageData',
+      providerId: 'opencode-go',
+      plan: 'go',
+      lines: ['Weekly: 12% used, resets in 3d 11h', '5-hour: 30% used, resets in 2h 30m', 'Monthly: 6% used'],
+    });
+    // The pill shows the FIRST line only — the Weekly cap is the budget a user
+    // actually manages.
+    expect(await screen.findByText('Weekly: 12% used, resets in 3d 11h')).toBeInTheDocument();
+    expect(screen.queryByText(/Monthly/)).toBeNull();
+  });
+
+  it('asks NOTHING and shows NOTHING for opencode-go when the host did not report it capable', async () => {
+    // No key in the config = the engine would refuse. Firing anyway would put an
+    // ext round-trip on every turn end for a provider that can never answer.
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'opencode-go/deepseek-v4-flash', [{ type: 'providerUsageCapable', ids: [] }]);
+
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'providerUsageRequest' }),
+    );
+    postFromHost({ type: 'providerUsageData', providerId: 'opencode-go', lines: ['5-hour: 30% used'] });
+    await tick();
+    expect(screen.queryByText(/30% used/)).toBeNull();
+  });
+
+  it('capability is PER PROVIDER — a capable opencode-go does not unlock OpenCode Zen', async () => {
+    // `opencode` and `opencode-go` are two providers on one host. Zen is metered
+    // per token and has no usage route; asking for it would earn a refusal.
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'opencode/deepseek-v4-flash', [{ type: 'providerUsageCapable', ids: ['opencode-go'] }]);
+
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'providerUsageRequest' }),
+    );
+  });
+
+  it('an OLDER host that never sends providerUsageCapable leaves the OAuth path working', async () => {
+    // Version skew: a new webview against an engine/host build without the
+    // capability message must not lose the pill it already had.
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'openai/gpt-5-turbo', [
+      { type: 'providerAuthData', methods: {}, connected: { openai: { type: 'oauth' } } },
+    ]);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'providerUsageRequest',
+      providerId: 'openai',
+    });
+  });
+
+  it('a capability list does not disturb the OAuth providers already in it', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'xai/grok-4', [
+      { type: 'providerAuthData', methods: {}, connected: { xai: { type: 'oauth' } } },
+      { type: 'providerUsageCapable', ids: ['opencode-go'] },
+    ]);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'providerUsageRequest',
+      providerId: 'xai',
+    });
+  });
+
+  it('a malformed capability payload closes the gate rather than opening it', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await openWith(container, 'opencode-go/deepseek-v4-flash', [{ type: 'providerUsageCapable', ids: 'opencode-go' }]);
+
     expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'providerUsageRequest' }),
     );

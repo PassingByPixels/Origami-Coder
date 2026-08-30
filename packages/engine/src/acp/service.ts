@@ -968,12 +968,21 @@ export function make(input: {
         // The client's wire shape. `activeForm` mirrors what the live todowrite
         // path sends (it falls back to `content`), so a restored strip and a
         // live one render the same.
-        todos: todos.map((todo, index) => ({
-          id: index,
-          content: todo.content,
-          activeForm: todo.content,
-          status: todo.status,
-        })),
+        // `depth` is read STRUCTURALLY, not off the SDK's row type: that type is
+        // generated from the checked-in OpenAPI document (script/generate.ts)
+        // and is regenerated on its own cadence, so it lags a schema field by
+        // however long that takes. The value itself comes off the engine's own
+        // encoder, and the client clamps whatever arrives.
+        todos: todos.map((todo, index) => {
+          const depth = (todo as Record<string, unknown>).depth
+          return {
+            id: index,
+            content: todo.content,
+            activeForm: todo.content,
+            status: todo.status,
+            depth: typeof depth === "number" ? depth : 0,
+          }
+        }),
       }).catch(() => {}),
     )
   })

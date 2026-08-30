@@ -76,46 +76,51 @@
 </script>
 
 <div class="bash-card">
-  <div class="bash-row">
-    <span class="bash-rail bash-rail-in">IN</span>
-    <div class="bash-cell">
-      {#if shell?.cwd || shell?.timeout}
-        <div class="bash-chips">
-          {#if shell?.cwd}<span class="bash-chip" title={shell.cwd}>{shell.cwd}</span>{/if}
-          {#if shell?.timeout}<span class="bash-chip">timeout {Math.round(shell.timeout / 1000)}s</span>{/if}
-        </div>
-      {/if}
-      <pre class="bash-block bash-in">{command}</pre>
-    </div>
-  </div>
-
-  <div class="bash-row">
-    <span class="bash-rail bash-rail-out">OUT</span>
-    <div class="bash-cell">
-      <div class="bash-chips">
-        {#if running}
-          <span class="bash-chip bash-run">running…</span>
-        {:else if typeof shell?.exit === 'number'}
-          <span class="bash-chip" class:bash-ok={shell.exit === 0} class:bash-fail={shell.exit !== 0}>exit {shell.exit}</span>
-        {:else if shell?.exit === null}
-          <span class="bash-chip bash-fail">killed</span>
+  <!-- IN and OUT stack on a narrow card and sit side by side on a wide one.
+       The decision is a CONTAINER query on .bash-card, so the same card is
+       right in the 380px sidebar and in a full-width editor tab. -->
+  <div class="bash-cols">
+    <div class="bash-row">
+      <span class="bash-rail bash-rail-in">IN</span>
+      <div class="bash-cell">
+        {#if shell?.cwd || shell?.timeout}
+          <div class="bash-chips">
+            {#if shell?.cwd}<span class="bash-chip" title={shell.cwd}>{shell.cwd}</span>{/if}
+            {#if shell?.timeout}<span class="bash-chip">timeout {Math.round(shell.timeout / 1000)}s</span>{/if}
+          </div>
         {/if}
-        {#if truncated}
-          {#if fullPath}
-            <button class="bash-chip bash-trunc" title={`Open the full output: ${fullPath}`} onclick={() => openFull(fullPath!)}>truncated — open full output</button>
-          {:else}
-            <span class="bash-chip bash-trunc">truncated</span>
+        <pre class="bash-block bash-in">{command}</pre>
+      </div>
+    </div>
+
+    <div class="bash-row">
+      <span class="bash-rail bash-rail-out">OUT</span>
+      <div class="bash-cell">
+        <div class="bash-chips">
+          {#if running}
+            <span class="bash-chip bash-run">running…</span>
+          {:else if typeof shell?.exit === 'number'}
+            <span class="bash-chip" class:bash-ok={shell.exit === 0} class:bash-fail={shell.exit !== 0}>exit {shell.exit}</span>
+          {:else if shell?.exit === null}
+            <span class="bash-chip bash-fail">killed</span>
           {/if}
+          {#if truncated}
+            {#if fullPath}
+              <button class="bash-chip bash-trunc" title={`Open the full output: ${fullPath}`} onclick={() => openFull(fullPath!)}>truncated — open full output</button>
+            {:else}
+              <span class="bash-chip bash-trunc">truncated</span>
+            {/if}
+          {/if}
+        </div>
+        {#if out.body}
+          <pre class="bash-block bash-out">{out.body}</pre>
+        {:else}
+          <div class="bash-empty">{running ? 'no output yet' : '(no output)'}</div>
+        {/if}
+        {#if out.note}
+          <div class="bash-note">{out.note}</div>
         {/if}
       </div>
-      {#if out.body}
-        <pre class="bash-block bash-out">{out.body}</pre>
-      {:else}
-        <div class="bash-empty">{running ? 'no output yet' : '(no output)'}</div>
-      {/if}
-      {#if out.note}
-        <div class="bash-note">{out.note}</div>
-      {/if}
     </div>
   </div>
 </div>
@@ -127,6 +132,27 @@
     gap: 6px;
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11px;
+    /* The card is its own query container. The layout question is how wide THIS
+       CARD is, which a viewport @media query cannot answer: the same card
+       renders in the 380px sidebar and in a full-width editor tab. */
+    container: bash-card / inline-size;
+  }
+
+  /* Stacked on a narrow card, exactly as before. */
+  .bash-cols {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  /* Wide enough for two readable columns: the command on the left, what came
+     back on the right, with OUT taking the larger share because it is the half
+     that runs long. Both tracks are min-width:0 (below) so a long path or an
+     unbroken line of output still wraps instead of stretching the track. */
+  @container bash-card (min-width: 480px) {
+    .bash-cols {
+      grid-template-columns: 2fr 3fr;
+      align-items: start;
+    }
   }
 
   /* Rail + cell: the IN/OUT label sits in a fixed gutter so the two blocks
@@ -135,6 +161,7 @@
     display: flex;
     align-items: flex-start;
     gap: 7px;
+    min-width: 0;
   }
   .bash-rail {
     flex: 0 0 26px;

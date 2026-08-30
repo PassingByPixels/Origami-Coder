@@ -23,7 +23,7 @@ import { mergeLiveModels } from './liveModelMerge';
 import { sweepEntitledModels } from './gatewayEntitlements';
 import { probeConcurrently, PROVIDER_PROBE_TIMEOUT_MS } from './providerProbe';
 import { setupProvider } from './setupProvider';
-import { refreshingWriter, type RefreshTarget } from './providerRefresh';
+import { refreshingChangeWriter, refreshingWriter, type RefreshTarget } from './providerRefresh';
 import { KEY_ONLY_PRESETS, checkProviderKey, fetchCatalogIds, pickDefaultModel } from './keyOnlyPresets';
 import { readSpend, accrueSessionSpend, readBudget, writeBudget, isOverBudget, budgetBlocks, accrueSessionSpendUnlessOAuth } from './spend';
 import { PermissionBannerState } from './permissionBanner';
@@ -2266,6 +2266,16 @@ export class DashboardPanel {
    *  completion all take effect without a window reload (providerRefresh.ts). */
   private readonly writeProviderConfig = refreshingWriter(writeModelConfig, () => this.engineRefreshTargets());
 
+  /** writeModelContextLimit + "tell the running engines" — the SAME reload wall,
+   *  for the context window instead of the key. A probed window that only lands
+   *  in origami.json is invisible to a chat already open: the engine froze
+   *  `limit.context` in its provider list at instance start, so session/
+   *  overflow.ts kept auto-compacting against the old one (owner: five
+   *  compactions in four minutes at 27k, on a model loaded at 86k). Fires only
+   *  when the write actually changed the file — providerRefresh.ts says why the
+   *  no-op path must stay silent. */
+  private readonly writeContextLimit = refreshingChangeWriter(writeModelContextLimit, () => this.engineRefreshTargets());
+
   /** Crons view backing service, built per request so it always reads the
    *  CURRENT workspace and binary (both can change under a long-lived panel).
    *  defaultBackend picks the real schtasks backend on Windows and an honest
@@ -2518,7 +2528,7 @@ export class DashboardPanel {
       { label: 'LM Studio', description: 'Local — runs on your own GPU (recommended)', id: 'lmstudio' },
       { label: 'OpenAI (API)', description: 'Cloud — needs an API key', id: 'openai' },
       { label: 'Grok (API)', description: 'Cloud — needs an API key', id: 'xai' },
-      { label: 'Anthropic (API)', description: 'Cloud — needs an API key', id: 'anthropic' },
+      { label: 'Claude (Anthropic API)', description: 'Cloud — needs an API key', id: 'anthropic' },
     ];
     const pick = await vscode.window.showQuickPick(providers, {
       title: 'firstfold — choose your model provider',
@@ -2555,7 +2565,7 @@ export class DashboardPanel {
     const defaults: Record<string, { name: string; model: string }> = {
       openai: { name: 'OpenAI', model: 'gpt-5' },
       xai: { name: 'xAI', model: 'grok-4' },
-      anthropic: { name: 'Anthropic', model: 'claude-sonnet-4-5' },
+      anthropic: { name: 'Claude', model: 'claude-sonnet-5' },
     };
     const d = defaults[pick.id];
     const apiKey = await vscode.window.showInputBox({
@@ -5439,8 +5449,13 @@ export class DashboardPanel {
     // the "not configured" branch below was built to reject. Ask the engine's auth
     // store which of them actually hold a credential, but only when such a block
     // exists — no keyless block, no ACP round-trip on the 20s status tick.
+    // `undefined` = the store COULD NOT be asked (no chat has spawned an engine
+    // yet, or the list call failed) — a different answer from "nobody signed in".
     const keyless = Object.values(providers).some(b => !b?.options?.baseURL && !b?.options?.apiKey);
-    const oauthIds = this.oauthProviderIds = keyless ? await oauthConnectedIds(this.getActiveSession()?.client ?? [...this.sessions.values()][0]?.client) : new Set<string>();
+    const oauthIds = keyless ? await oauthConnectedIds(this.getActiveSession()?.client ?? [...this.sessions.values()][0]?.client) : new Set<string>();
+    // Spend/budget exclusion keeps its LAST KNOWN set through an unanswerable
+    // beat — an engine hiccup must not start billing an OAuth provider's turns.
+    if (oauthIds) this.oauthProviderIds = oauthIds;
     type StatusRow = { id: string; name: string; live: boolean; reason?: string; kind: 'local' | 'compat' | 'cloud'; baseURL?: string; primary: boolean; flavor?: 'lmstudio' | 'ollama' | 'other' };
     // Every provider probes AT THE SAME TIME (providerProbe.ts). This was a `for`
     // loop awaiting one real network call per provider, so opening the picker cost
@@ -5461,6 +5476,9 @@ export class DashboardPanel {
         }
         let live = false;
         let reason: string | undefined;
+        // False only for a verdict that was never actually reached (the auth
+        // store could not be asked) — caching that would serve a guess for 20s.
+        let cacheable = true;
         // Which local server this is, so the picker offers only controls that work
         // against it (lms eject/context vs Ollama's own API vs honest display).
         let flavor: 'lmstudio' | 'ollama' | 'other' = 'other';
@@ -5501,20 +5519,32 @@ export class DashboardPanel {
             // Cloud provider (OpenAI / xAI / Anthropic) with a models.dev-baked
             // catalog — a key is present; we don't spend a request validating it.
             live = true;
-          } else if (oauthIds.has(id)) {
+          } else if (oauthIds !== undefined && oauthIds.has(id)) {
             // Signed in over OAuth. Same class of proof as the key above — the
             // credential exists — and the same refusal to spend a request on it.
             // An UNAUTHENTICATED probe is not available here in any case: the block
             // has no baseURL to probe, and the provider's public endpoint would
             // answer 401 and be read as "down" while the model answers fine.
             live = true;
+          } else if (oauthIds === undefined) {
+            // The auth store COULD NOT BE ASKED — the boot-time probe runs
+            // before any chat has spawned an engine. Absence of an answer is
+            // not absence of a credential: caching "not configured" here put
+            // the alarm banner on every fresh ChatGPT chat while the model
+            // answered fine. The neutral probing sentinel (the one
+            // sessionModelStatus already emits for a MISSING cache row) keeps
+            // the copy honest, and skipping the cache means the next status
+            // tick — which fires when the chat's engine connects — asks the
+            // real store instead of serving this guess for 20 seconds.
+            reason = 'Checking provider…';
+            cacheable = false;
           } else {
             reason = 'not configured';
           }
         } catch (e) {
           reason = e instanceof Error ? e.message : String(e);
         }
-        this.providerStatusCache.set(id, { live, reason, at: now, flavor });
+        if (cacheable) this.providerStatusCache.set(id, { live, reason, at: now, flavor });
         return { id, name, live, reason, kind, baseURL, primary, flavor };
       },
       // Only a probe that never SETTLES reaches this — every branch above already
@@ -5615,17 +5645,23 @@ export class DashboardPanel {
     // limit.context = 0 ⇒ auto-compaction disabled for every local model.
     const local = detectLocalProvider();
     if (local && this.modelInfo.ok && this.modelInfo.modelId && this.modelInfo.contextLength > 0) {
-      writeModelContextLimit(local.id, this.modelInfo.modelId, this.modelInfo.contextLength, { onError: contextLimitWarner(m => this.post(m), this.activeSessionId ?? '', local.id, this.modelInfo.modelId) });
+      this.writeContextLimit(local.id, this.modelInfo.modelId, this.modelInfo.contextLength, { onError: contextLimitWarner(m => this.post(m), this.activeSessionId ?? '', local.id, this.modelInfo.modelId) });
     }
     this.broadcastModelStatus();
   }
 
   /** Provider-aware probe target for the GIVEN session's model: resolve the base
    *  URL from that model's provider block so status/context reflect the real
-   *  provider (vLLM's own endpoint), not the single fixed LM Studio engine URL. */
-  private resolveModelProbe(session: Session | undefined): { apiBase: string | undefined; providerId: string | null; modelId: string | null; apiKey?: string } {
+   *  provider (vLLM's own endpoint), not the single fixed LM Studio engine URL.
+   *
+   *  `isLocal` is the ONE definition of "this session runs on the local server",
+   *  and it is the same rule sessionModelStatus uses: the model id's PROVIDER
+   *  PREFIX equals detectLocalProvider()'s id. It used to be inferred instead
+   *  from "did we end up with a base URL", and the two disagreed — see below. */
+  private resolveModelProbe(session: Session | undefined): { apiBase: string | undefined; providerId: string | null; modelId: string | null; apiKey?: string; isLocal: boolean } {
     const active = session?.client.getModelOption()?.current || detectModel() || '';
     const i = active.indexOf('/');
+    const localId = detectLocalProvider()?.id;
     if (i > 0) {
       const providerId = active.slice(0, i);
       const modelId = active.slice(i + 1);
@@ -5634,9 +5670,18 @@ export class DashboardPanel {
       // context gauge and auto-compaction while the model itself answers fine.
       const block = readGlobalProviders()[providerId];
       const baseURL = block?.options?.baseURL;
-      if (typeof baseURL === 'string' && baseURL) return { apiBase: baseURL, providerId, modelId, apiKey: block?.options?.apiKey };
+      if (typeof baseURL === 'string' && baseURL) return { apiBase: baseURL, providerId, modelId, apiKey: block?.options?.apiKey, isLocal: providerId === localId };
+      // A CLOUD provider block carries NO baseURL: every keyless OAuth connect
+      // writes providerId/name/npm/models and nothing else (providerAuthPane's
+      // `finish`), and the key-only presets for xai/openai/anthropic carry no
+      // URL either (keyOnlyPresets.ts). Falling through to the engine URL below
+      // made LM STUDIO this session's probe target, and refreshModelInfoFor then
+      // stamped LM Studio's LOADED window onto a grok chat — the "194k/36k
+      // (100%)" gauge, and compaction pressure read off the wrong denominator.
+      // There is nothing here to probe, so say so: no apiBase, not local.
+      if (providerId !== localId) return { apiBase: undefined, providerId, modelId, apiKey: block?.options?.apiKey, isLocal: false };
     }
-    return { apiBase: this.resolveEngineUrl() ?? readSettings().apiBase, providerId: null, modelId: null, apiKey: primaryLocalApiKey() };
+    return { apiBase: this.resolveEngineUrl() ?? readSettings().apiBase, providerId: null, modelId: null, apiKey: primaryLocalApiKey(), isLocal: true };
   }
 
   private async refreshActiveModelInfo(): Promise<void> {
@@ -5651,15 +5696,19 @@ export class DashboardPanel {
    *  from its OWN /v1/models (max_model_len) and NEVER borrows the local window on a
    *  miss (that was the cross-contamination) — it stays unknown (0) instead. When the
    *  session is the active one, mirror into the globals the status broadcast reads and
-   *  re-broadcast so the gauge / 'N ctx' / Vision reflect the focused chat. */
+   *  re-broadcast so the gauge / 'N ctx' / Vision reflect the focused chat.
+   *
+   *  The local/remote split is `p.isLocal` — the model id's provider prefix — and
+   *  NOT "p.providerId is null". Null used to mean BOTH "no provider prefix" and
+   *  "a cloud provider whose block has no baseURL", so a keyless grok session
+   *  took this branch and wore LM Studio's window and VLM flag. */
   private async refreshModelInfoFor(session: Session | undefined): Promise<void> {
     if (!session) return;
     const p = this.resolveModelProbe(session);
     // Tag the cache with the model it was probed FOR — a later model switch
     // makes this window a stale lie, and readers/recovery key off the tag.
     session.modelWindowFor = session.client?.getModelOption()?.current || detectModel() || '';
-    const localId = detectLocalProvider()?.id;
-    if (!p.providerId || p.providerId === localId) {
+    if (p.isLocal) {
       session.modelWindow = this.modelInfo.contextLength;
       session.modelIsVlm = this.modelInfo.ok && this.modelInfo.type === 'vlm';
       // No write-back here: the local window belongs to whatever LM Studio has
@@ -5715,7 +5764,7 @@ export class DashboardPanel {
           // already carries hand-set (deliberately lower) windows for vLLM models.
           // Fill the 0 that breaks compaction; never overrule a chosen number.
           if (p.providerId && p.modelId && win > 0 && (!info.modelId || info.modelId === p.modelId)) {
-            writeModelContextLimit(p.providerId, p.modelId, win, { onlyWhenUnset: true, onError: contextLimitWarner(m => this.post(m), session.id, p.providerId, p.modelId) });
+            this.writeContextLimit(p.providerId, p.modelId, win, { onlyWhenUnset: true, onError: contextLimitWarner(m => this.post(m), session.id, p.providerId, p.modelId) });
           }
           // This probe IS a liveness observation — record it so the banner reads
           // fresh truth (a boot/focus window-probe of a live Spark must not leave

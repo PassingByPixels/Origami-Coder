@@ -106,18 +106,18 @@ async function listPayload(host: ProviderAuthHost): Promise<Record<string, unkno
   }
 }
 
-/** Which providers hold an OAUTH credential right now, for the LIVENESS read: a
- *  signed-in block carries no baseURL and no apiKey, so broadcastProviderStatus
- *  used to call it "not configured" and every Grok chat wore a false
- *  "unreachable" banner while Grok answered. Empty on ANY failure — a liveness
- *  read must degrade, never throw. Tested: oauthLiveness.test.ts. */
-export async function oauthConnectedIds(client: ProviderAuthClient | undefined): Promise<Set<string>> {
-  if (!client) return new Set();
+/** Which providers hold an OAUTH credential, for the LIVENESS read: a signed-in
+ *  block has no baseURL/apiKey, so it used to read "not configured" and wear a
+ *  false "unreachable" banner. `undefined` = COULD NOT ASK (no engine client, or
+ *  the call failed) — NOT an empty set (asked; nobody signed in), which cached
+ *  a false verdict. Degrades, never throws. Tested: oauthLiveness.test.ts. */
+export async function oauthConnectedIds(client: ProviderAuthClient | undefined): Promise<Set<string> | undefined> {
+  if (!client) return undefined;
   try {
     const result = (await client.extMethod('provider_auth_list', {})) as unknown as ListResult;
     const oauth = Object.entries(result?.connected ?? {}).filter(([, cred]) => cred?.type === 'oauth');
     return new Set(oauth.map(([id]) => id));
-  } catch { return new Set(); }
+  } catch { return undefined; }
 }
 
 /** Everything both completion paths ("auto" and pasted-code) share: write the

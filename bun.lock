@@ -503,7 +503,7 @@
     },
     "packages/vscode": {
       "name": "origamicoder",
-      "version": "0.4.59",
+      "version": "0.4.65",
       "dependencies": {
         "@agentclientprotocol/sdk": "0.21.0",
         "highlight.js": "^11.11.1",

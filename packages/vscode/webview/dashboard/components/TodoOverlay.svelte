@@ -24,6 +24,9 @@
     content: string;
     activeForm: string;
     status: 'pending' | 'in_progress' | 'completed';
+    /** Nesting level; absent means top level. Passed straight through to the
+     *  strip, which is where the list is normalised and drawn. */
+    depth?: number;
   }
 
   interface Props {

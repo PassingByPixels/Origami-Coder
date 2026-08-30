@@ -1322,3 +1322,59 @@ describe('InputBar - the third session mode', () => {
     expect(sent('setMode')).toEqual([]);
   });
 });
+
+// 0.4.61 UAT, second round: "the eye sits at the far right, above the Send
+// button, and the whole row floats with a band of empty space under it".
+//
+// The utility row was a SIBLING of `.input-row`, so it spanned the full footer
+// and `margin-left: auto` pushed the eye past the textarea and over Send. The
+// fix puts the row and the textarea in one column, `.input-col`, with the
+// button column beside it — so the row can only ever be as wide as the box it
+// belongs to.
+//
+// WHAT THIS SUITE CANNOT DO: prove the alignment. jsdom has no layout engine
+// and vitest.config.mts loads no stylesheet, so widths, the gap and the eye's
+// right edge are all invisible here — `getComputedStyle` would return '' and
+// an assertion on it would look rigorous and check nothing. The PARENTAGE is
+// what makes the alignment possible, and parentage is checkable. The pixels
+// need a human eye.
+describe('InputBar — the utility row belongs to the textarea, not to the footer', () => {
+  const mountFooter = (props: Record<string, unknown> = {}) =>
+    render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+        sessionId: SID, onSend: () => {}, onCancel: () => {}, onToggleFocus: () => {}, ...props,
+      },
+    }).container;
+
+  it('puts the changes row and the textarea in ONE column, with Send outside it', () => {
+    const c = mountFooter();
+    const col = c.querySelector('.input-row > .input-col');
+    expect(col, 'the textarea needs a column of its own to align the row to').not.toBeNull();
+    // Both children of the same column — this is the whole fix.
+    expect(col!.querySelector(':scope > .changes-row')).not.toBeNull();
+    expect(col!.querySelector(':scope > textarea.input')).not.toBeNull();
+    // ...and the buttons are NOT in it, or the row would span them again.
+    expect(col!.querySelector('.btn-col'), 'Send must stay outside the column').toBeNull();
+    expect(c.querySelector('.input-row > .btn-col'), 'Send is the column\'s sibling').not.toBeNull();
+  });
+
+  it('draws the row ABOVE the box, not below it', () => {
+    // Order is the difference between a row that sits on the textarea and one
+    // that sits under it; both would satisfy "same parent".
+    const kids = [...mountFooter().querySelector('.input-col')!.children].map((el) => el.className);
+    expect(kids[0]).toContain('changes-row');
+    expect(kids[1]).toContain('input');
+  });
+
+  it('a BARE composer puts the textarea in the same column and NOTHING above it', () => {
+    // The collab composer passes no onToggleFocus and has no changes, so the
+    // row must not render — the wrapper must not cost it a line of height.
+    const c = mountFooter({ bare: true, onToggleFocus: undefined, sessionId: null });
+    const col = c.querySelector('.input-row > .input-col');
+    expect(col).not.toBeNull();
+    expect(col!.querySelector('.changes-row'), 'no transcript, no row').toBeNull();
+    expect(col!.querySelector('textarea.input')).not.toBeNull();
+    expect(col!.children.length, 'the box alone').toBe(1);
+  });
+});

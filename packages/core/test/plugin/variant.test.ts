@@ -43,6 +43,44 @@ describe("VariantPlugin", () => {
     }),
   )
 
+  // origami_change: the boundary mirrored from the engine's `ProviderTransform`
+  // - 5.3 and later take the standard efforts, everything older still gets
+  // nothing here.
+  it.effect("adds standard efforts for GLM newer than 5.2 and nothing for older ids", () =>
+    Effect.gen(function* () {
+      const service = yield* Catalog.Service
+      const ids = ["glm-5.3-flash-ablit", "glm-5p3", "glm-6", "glm-4.6", "glm-5.1", "glm-130b"]
+      yield* service.transform((catalog) => {
+        for (const id of ids) {
+          catalog.model.update(ProviderV2.ID.opencode, ModelV2.ID.make(id), (model) => {
+            model.api = {
+              id: ModelV2.ID.make(id),
+              type: "aisdk",
+              package: "@ai-sdk/openai-compatible",
+            }
+          })
+        }
+      })
+      yield* VariantPlugin.Plugin.effect(host({ catalog: catalogHost(service) }))
+
+      const variantsFor = Effect.fn(function* (id: string) {
+        const model = yield* service.model.get(ProviderV2.ID.opencode, ModelV2.ID.make(id))
+        return model?.variants
+      })
+
+      for (const id of ["glm-5.3-flash-ablit", "glm-5p3", "glm-6"]) {
+        expect(yield* variantsFor(id), id).toEqual([
+          expect.objectContaining({ id: "low", body: { reasoning_effort: "low" } }),
+          expect.objectContaining({ id: "medium", body: { reasoning_effort: "medium" } }),
+          expect.objectContaining({ id: "high", body: { reasoning_effort: "high" } }),
+        ])
+      }
+      for (const id of ["glm-4.6", "glm-5.1", "glm-130b"]) {
+        expect(yield* variantsFor(id), id).toEqual([])
+      }
+    }),
+  )
+
   it.effect("keeps explicit variants over generated defaults", () =>
     Effect.gen(function* () {
       const service = yield* Catalog.Service

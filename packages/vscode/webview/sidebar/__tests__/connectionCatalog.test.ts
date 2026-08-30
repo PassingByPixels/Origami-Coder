@@ -26,6 +26,7 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
 import ControlStrip from '../ControlStrip.svelte';
+import { classifySection } from '../connectionSection';
 import { SETUP_PROVIDERS } from '../setupCatalog';
 
 const catalogIds = (): string[] => SETUP_PROVIDERS.map((p) => p.id);
@@ -58,6 +59,53 @@ describe('the Labs entries pair each lab with its own OAuth twin', () => {
     // SETUP_PROVIDERS[0] is the fallback for an unknown id, and 'lmstudio' is the
     // initial selection. A reorder that moved it would change the form on open.
     expect(catalogIds()[0]).toBe('lmstudio');
+  });
+});
+
+// The Claude entry, 0.4.60. It was there before under the company's name
+// ("Anthropic (API)", model claude-sonnet-4-5) and read as a lab nobody had
+// heard of next to "OpenAI" and "Grok" — the product people actually ask for is
+// Claude. Three separate facts are pinned because each fails differently:
+//
+//   label  — what the picker shows. Cosmetic, and the only one a user sees.
+//   name   — the pill/chip face AND the `name` written into the provider block
+//            (providerIdentity.setupProviderPayload -> writeModelConfig). The
+//            sidebar chip is `name.slice(0,2).toUpperCase()`, so this is what
+//            makes the chip read CL rather than AN.
+//   id     — 'anthropic', unchanged. It is the engine catalog id, the auth.json
+//            key and the `provider.<id>` block. Renaming it to match the label
+//            would orphan every connection already on disk and quietly detach
+//            the engine's own anthropic support, which is the whole point of
+//            this being a separate field from the two above.
+describe('the Anthropic entry presents as Claude', () => {
+  const claude = () => SETUP_PROVIDERS.find((p) => p.id === 'anthropic')!;
+
+  it('is labelled for the product, named for the pill, and still keyed on the provider id', () => {
+    expect(claude(), 'the anthropic entry must not be renamed out of the catalog').toBeTruthy();
+    expect(claude().label).toBe('Claude (Anthropic API)');
+    expect(claude().name).toBe('Claude');
+    expect(claude().id).toBe('anthropic');
+  });
+
+  it('starts on the current Sonnet id, and stays a keyed cloud entry with no base URL', () => {
+    // claude-sonnet-4-5 was two generations stale. The id must be one the engine's
+    // baked models.dev snapshot actually carries, or the first message 404s.
+    expect(claude().model).toBe('claude-sonnet-5');
+    expect(claude().kind).toBe('cloud');
+    expect(claude().baseURL).toBeUndefined();
+    expect(claude().keyOnly).toBeUndefined();
+  });
+
+  it('is still classified into Labs — the section reads the id, not the label', () => {
+    expect(classifySection({ id: claude().id })).toBe('labs');
+  });
+
+  it('renders under Labs with its new face', async () => {
+    render(ControlStrip);
+    await fireEvent.click(screen.getByRole('button', { name: /Add provider/ }));
+    await fireEvent.click(screen.getByRole('button', { name: /^Labs/ }));
+    expect(screen.getByRole('button', { name: 'Claude (Anthropic API)' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Anthropic (API)' })).toBeNull();
   });
 });
 
@@ -105,7 +153,7 @@ describe('the "Other (OpenAI-compatible)" form and a blank API key', () => {
     render(ControlStrip);
     await fireEvent.click(screen.getByRole('button', { name: /Add provider/ }));
     await fireEvent.click(screen.getByRole('button', { name: /^Labs/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Anthropic (API)' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Claude (Anthropic API)' }));
     await fireEvent.input(screen.getByLabelText('Model id'), { target: { value: 'claude-sonnet-4-5' } });
 
     expect((screen.getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(true);
@@ -191,7 +239,7 @@ describe('a self-hosted preset can carry an OPTIONAL API key', () => {
     render(ControlStrip);
     await fireEvent.click(screen.getByRole('button', { name: /Add provider/ }));
     await fireEvent.click(screen.getByRole('button', { name: /^Labs/ }));
-    await fireEvent.click(screen.getByRole('button', { name: 'Anthropic (API)' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Claude (Anthropic API)' }));
     // Still the plain "API key" label, not the optional one — cloud is untouched.
     expect(screen.getByLabelText('Provider API key')).toBeInTheDocument();
     expect(screen.queryByLabelText('Provider API key (optional)')).toBeNull();

@@ -357,6 +357,10 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
             "description": "Brief description of the task",
             "type": "string",
           },
+          "depth": {
+            "description": "Nesting level. Omit or 0 for a top-level task; a sub-task is its parent's depth + 1 and must come directly after that parent in the list. Maximum 3.",
+            "type": "number",
+          },
           "priority": {
             "description": "Priority level of the task: high, medium, low",
             "type": "string",

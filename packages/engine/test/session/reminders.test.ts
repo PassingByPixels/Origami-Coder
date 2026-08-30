@@ -333,6 +333,27 @@ describe("SessionReminders todo list", () => {
       expect(reminder!).toContain("Keep it current with todowrite.")
     }))
 
+  // The reminder renders nesting as INDENTATION, and a model rebuilding the
+  // list from it re-sends the text without the `depth` field that produced the
+  // indent - so the tree it just described is flattened by its own next write
+  // (owner-reproduced on ses_fae2ce20afferpNfEuYnUJtCYF). The store now carries
+  // a dropped depth forward, but a model told to keep the field is cheaper than
+  // a repair on every write, so the instruction says it out loud.
+  it("tells the model that the indentation is nesting and must be re-sent as depth", () =>
+    Effect.gen(function* () {
+      const nested: Todo.Info[] = [
+        { content: "the major", status: "in_progress", priority: "high", depth: 0 },
+        { content: "the sub-task", status: "pending", priority: "high", depth: 1 },
+      ]
+      const parts = yield* applyWith([toolCall("read", { filePath: "/tmp/x" })], nested)
+      const [reminder] = todoReminders(parts)
+      expect(reminder).toBeDefined()
+      // The indent is what the sentence is ABOUT, so both have to be there.
+      expect(reminder!).toContain("  - [pending] the sub-task (priority: high)")
+      expect(reminder!).toContain("depth")
+      expect(reminder!.toLowerCase()).toContain("nested")
+    }))
+
   it("stays quiet while the model can still see the same list", () =>
     Effect.gen(function* () {
       const parts = yield* applyWith([todoCall(stored), toolCall("read", { filePath: "/tmp/x" })], stored)

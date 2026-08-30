@@ -31,8 +31,10 @@
   import TodoStrip from './TodoStrip.svelte';
   import ThoughtPill from './ThoughtPill.svelte';
   import PeerMessageRow from './PeerMessageRow.svelte';
+  import FocusGapRow from './FocusGap.svelte';
   import CraneMark from '../../shared/CraneMark.svelte';
   import { isThoughtOpen, withThoughtOpen } from '../panes/thoughtOpenState';
+  import { foldForFocus, isFocusGap } from './focusGaps';
   import type { Message } from '../panes/chatMessage';
 
   interface Props {
@@ -79,6 +81,12 @@
      * transcript, and it mutates nothing.
      */
     readOnly?: boolean;
+    /** FOCUS VIEW — draw only what was SAID (user, agent and peer prose), each
+     *  run of hidden rows folded to ONE counted divider so the work between two
+     *  answers survives as a number. Default false, so a caller that does not
+     *  ask for it — the live pane, the read-only sub-agent transcript — renders
+     *  what it always did. The rule is chatFocus.ts's, the fold focusGaps.ts's. */
+    focusMode?: boolean;
   }
   let {
     messages,
@@ -91,10 +99,16 @@
     onImageClick,
     onRewind,
     readOnly = false,
+    focusMode = false,
   }: Props = $props();
+  /** A VIEW, never an edit: `messages` is untouched and every kept row passes
+   *  through BY IDENTITY, so leaving focus puts every hidden row back. */
+  const rows = $derived(focusMode ? foldForFocus(messages) : messages);
 </script>
-{#each messages as msg (msg.id)}
-  {#if msg.kind === 'tool'}
+{#each rows as msg (isFocusGap(msg) ? msg.key : msg.id)}
+  {#if isFocusGap(msg)}
+    <FocusGapRow label={msg.label} />
+  {:else if msg.kind === 'tool'}
     <ToolCard
       title={msg.label}
       kind={msg.toolKind || 'other'}

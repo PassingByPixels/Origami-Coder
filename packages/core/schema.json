@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "aee15856-140a-4564-af65-462d020edcdf",
+  "id": "722e5dde-9436-41ca-89da-712b8b97ac68",
   "prevIds": [
-    "33e0cef4-a9d0-4632-ad79-361481837f53"
+    "aee15856-140a-4564-af65-462d020edcdf"
   ],
   "ddl": [
     {
@@ -629,6 +629,26 @@
       "default": null,
       "generated": null,
       "name": "objective",
+      "entityType": "columns",
+      "table": "collab"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "concurrency",
+      "entityType": "columns",
+      "table": "collab"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "flavor",
       "entityType": "columns",
       "table": "collab"
     },
@@ -1889,6 +1909,16 @@
       "default": null,
       "generated": null,
       "name": "position",
+      "entityType": "columns",
+      "table": "todo"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "depth",
       "entityType": "columns",
       "table": "todo"
     },

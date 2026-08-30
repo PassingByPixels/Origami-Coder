@@ -26,12 +26,14 @@
   import { hasOpenWork, todoOverlayVisible } from './todoScratchbook';
   import { flushQueuedSend } from './queuedFlush';
   import { rewindSlice } from './rewindSlice';
+  import { aggregateSessionChanges } from './sessionChanges';
   import { echoTextFor, consumeEcho } from './userEcho';
   import { armInterject, drainInterject, resolveInterject } from './interjectSplit';
   import { retryAsPrompt } from './interjectRetry';
   import { adoptAnnouncement, acceptsReplayedLog, glyphOf } from './sessionReplay';
   import { verdictForStopReason, verdictLabel } from './turnVerdict';
   import ImageLightbox from '../components/ImageLightbox.svelte';
+  import ChatFind from '../components/ChatFind.svelte';
   // The per-message rows themselves. EXTRACTED into ChatTranscript.svelte so a
   // read-only transcript can later render them through the SAME renderer; the
   // Message/TodoInfo shapes went to chatMessage.ts for the same reason (a type
@@ -159,6 +161,10 @@
      *  roster; the transcript's own card is untouched either way. */
     subagentsDismissed?: string[];
     openThoughtIds?: number[]; // user-opened thought ids; survives stream deltas (thoughtOpenState.ts)
+    /** Focus view for THIS cell — transcript down to the conversation, composer
+     *  eye lit (chatFocus.ts). Per-cell: a grid focuses one chat, not all twelve.
+     *  NOT persisted, because a view that hides work by default hides mistakes. */
+    focusMode?: boolean;
     /**
      * Does this transcript FOLLOW the stream? `undefined` = yes, so no session
      * construction site has to remember to set it and a recalled session
@@ -1719,7 +1725,7 @@
   >
     {#each visibleCells as cellSession (cellSession.id)}
       <div
-        class="chat-cell"
+        class="chat-cell" data-session-id={cellSession.id}
         class:active={cellSession.id === activeSessionId}
         class:single={chatLayout === 'single'}
       >
@@ -1796,6 +1802,9 @@
           onDismiss={(key) => { cellSession.subagentsDismissed = [...(cellSession.subagentsDismissed ?? []), key]; sessions = [...sessions]; }}
         />
 
+        <!-- Ctrl+F. Mounted OUTSIDE the scroller below, or the search would walk
+             the bar's own text; it claims the key for itself (ChatFind.svelte). -->
+        <ChatFind sessionId={cellSession.id} />
         <div class="cell-messages" data-session-id={cellSession.id} bind:this={messagesEl}
           onwheel={(ev) => onMessagesWheel(cellSession, ev)}
           onscroll={(ev) => onMessagesScroll(cellSession, ev)}>
@@ -1819,6 +1828,7 @@
             onThoughtOpenIds={(ids) => (cellSession.openThoughtIds = ids)}
             onImageClick={openLightbox}
             onRewind={rewindTo}
+            focusMode={cellSession.focusMode ?? false}
           />
           {#if cellSession.revertStash && cellSession.revertStash.length > 0}
             <!-- Staged-rewind banner: the working tree is restored; the dropped
@@ -1882,6 +1892,10 @@
           />
         {/if}
 
+        <!-- `changes` is DERIVED per cell from that cell's own transcript, never
+             from a running counter: a template expression IS a $derived, so it
+             recomputes when those messages change and rebuilds itself after a
+             webview reload — a live tally would silently restart at zero. -->
         <InputBar
           inFlight={cellSession.inFlight}
           agentName={cellSession.agentName}
@@ -1900,6 +1914,9 @@
           onExport={() => exportSession(cellSession)}
           canExport={cellSession.messages.length > 0}
           interjecting={cellSession.interjecting ?? false}
+          changes={aggregateSessionChanges(cellSession.messages)}
+          focused={cellSession.focusMode ?? false}
+          onToggleFocus={() => { cellSession.focusMode = !(cellSession.focusMode ?? false); }}
           onInterject={(text) => { armInterject(cellSession, text); sessions = [...sessions]; vscode.postMessage({ type: 'interject', sessionId: cellSession.id, text }); }}
         />
       </div>

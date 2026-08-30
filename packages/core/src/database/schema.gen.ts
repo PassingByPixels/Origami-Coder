@@ -293,6 +293,7 @@ export default {
           \`status\` text NOT NULL,
           \`priority\` text NOT NULL,
           \`position\` integer NOT NULL,
+          \`depth\` integer DEFAULT 0 NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,
           CONSTRAINT \`todo_pk\` PRIMARY KEY(\`session_id\`, \`position\`),

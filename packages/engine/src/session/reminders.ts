@@ -137,6 +137,19 @@ function taskPollStreak(calls: readonly ToolCall[]) {
 export const TODO_REMINDER_HEAD = "Your todo list for this session (kept with the session, not in this transcript):"
 
 /**
+ * ONE sentence, because this text rides EVERY todo reminder.
+ *
+ * The list above is rendered with indentation and nothing else - a model that
+ * rebuilds it from this block copies the words and drops the `depth` field that
+ * produced the indent, so the tree it described a moment ago is flattened by its
+ * own next write. Owner-reproduced: a 4-major outline came back as 16 flat rows
+ * after a compaction. The store now carries a dropped depth forward, but the
+ * cheap fix is the model not dropping it.
+ */
+const TODO_REMINDER_NESTING =
+  "Indented items are nested sub-tasks: when you rewrite this list, send each item's `depth` again (0 = top level)."
+
+/**
  * The todo list the model can STILL SEE, read off the newest `todowrite` call
  * left in the window, or `undefined` when the window has none.
  *
@@ -173,7 +186,7 @@ function todoReminder(input: { messages: readonly SessionV1.WithParts[]; todos: 
   const stored = renderTodoList(input.todos)
   const visible = visibleTodos(input.messages)
   if (visible && renderTodoList(visible) === stored) return undefined
-  return `<system-reminder>\n${TODO_REMINDER_HEAD}\n${stored}\nKeep it current with todowrite.\n</system-reminder>`
+  return `<system-reminder>\n${TODO_REMINDER_HEAD}\n${stored}\nKeep it current with todowrite.\n${TODO_REMINDER_NESTING}\n</system-reminder>`
 }
 
 function waitLoopReminder(count: number) {

@@ -44,7 +44,7 @@
   }
 
   import { getVsCodeApi } from '../../shared/vscodeApi';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     repulsionForce, clampVelocity, clampToBounds, annealAlpha,
     mergeNodePositions, hasNewNodes, spiralSeed, SETTLE_ITERS,
@@ -67,6 +67,9 @@
     LINK_ALPHA, META_ALPHA, LINK_WIDTH, META_WIDTH, EDGE_CURVE,
     NODE_DIM, RING_DIM, GLOW, HUB_HALO, HUB_HALO_R, VIGNETTE,
   } from './wikiGraphTheme';
+  // The pure half of buildGraph(): the deterministic key->number tables and the
+  // link-target resolution rules, out where they can be tested without a canvas.
+  import { evenHues, folderOf, hash01, resolveLinkEdges } from './wikiGraphBuild';
   import { matchesSearch } from './paneSearch';
   import { marked } from 'marked';
   const vscode = getVsCodeApi();
@@ -102,6 +105,12 @@
   let colorBy: 'branch' | 'namespace' | 'tag' | 'theme' = $state('namespace');
   // Draggable preview/read box height (px). Clamped to the pane on drag.
   let previewH = $state(200);
+  // …and whether the box is showing at all. COLLAPSED by default: at 200px it
+  // took half of the 380px sidebar host before anything was selected, and it
+  // held that space in the "Select a node…" empty state too. Selecting a node
+  // does NOT auto-expand — the always-visible header names the page instead, so
+  // what the box costs stays a decision the reader makes, not a surprise.
+  let previewCollapsed = $state(true);
 
   // Graph state
   let nodes: GraphNode[] = [];
@@ -113,23 +122,6 @@
   // nodeId → set of directly-connected nodeIds, for hover-to-highlight.
   let adjacency = new Map<string, Set<string>>();
 
-  // Deterministic hue from a string — same key always yields the same colour,
-  // for any wiki, no hardcoded map. S/L tuned to read on dark + light themes.
-  function hash01(s: string): number {
-    let h = 2166136261;
-    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-    return ((h >>> 0) % 10000) / 10000;
-  }
-  function evenHues(keys: string[]): Map<string, number> {
-    const sorted = [...new Set(keys)].sort();
-    const m = new Map<string, number>();
-    sorted.forEach((k, i) => m.set(k, sorted.length === 1 ? 200 : (i / sorted.length) * 360));
-    return m;
-  }
-  function folderOf(p: { namespace?: string }): string {
-    const ns = (p.namespace || '').replace(/\/$/, '').replace(/^\.$/, '');
-    return ns || '(root)';
-  }
   let branchHues = new Map<string, number>();
   let folderHues = new Map<string, number>();
   let tagHues = new Map<string, number>();
@@ -171,7 +163,7 @@
     // resized canvas backing store stays in sync.
     let ro: ResizeObserver | undefined;
     if (paneEl && typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => { clampPreview(); onCanvasLayout(); render(); });
+      ro = new ResizeObserver(onLayoutChanged);
       ro.observe(paneEl);
     }
     // The host broadcasts workspaceData once at bootstrap; this pane can mount
@@ -224,15 +216,18 @@
   function persistPrefs() {
     try {
       const s = (vscode.getState?.() as Record<string, unknown>) || {};
-      vscode.setState?.({ ...s, memoryGraph: { colorBy, previewH, labelMode } });
+      vscode.setState?.({ ...s, memoryGraph: { colorBy, previewH, labelMode, previewCollapsed } });
     } catch { /* setState unavailable — prefs just don't persist */ }
   }
   function restorePrefs() {
     try {
-      const mg = (vscode.getState?.() as { memoryGraph?: { colorBy?: string; previewH?: number; labelMode?: string } } | undefined)?.memoryGraph;
+      const mg = (vscode.getState?.() as { memoryGraph?: { colorBy?: string; previewH?: number; labelMode?: string; previewCollapsed?: boolean } } | undefined)?.memoryGraph;
       if (mg?.colorBy === 'theme' || mg?.colorBy === 'namespace' || mg?.colorBy === 'tag' || mg?.colorBy === 'branch') colorBy = mg.colorBy;
       if (isLabelMode(mg?.labelMode)) labelMode = mg.labelMode;
       if (typeof mg?.previewH === 'number' && mg.previewH >= 80) previewH = mg.previewH;
+      // Absent (state written by a build before the box could collapse) means
+      // collapsed — the new default wins over the old build's implied `false`.
+      if (typeof mg?.previewCollapsed === 'boolean') previewCollapsed = mg.previewCollapsed;
     } catch { /* getState unavailable — use defaults */ }
     clampPreview();
   }
@@ -241,6 +236,21 @@
   function clampPreview() {
     const max = Math.max(120, (paneEl?.clientHeight ?? 400) - 140);
     previewH = Math.max(80, Math.min(max, previewH));
+  }
+  // The canvas box changed under us: re-clamp the read box to the pane, place
+  // the graph if this is its first LIVE canvas, and repaint. The pane's own
+  // ResizeObserver and the preview toggle are both callers — the toggle needs
+  // it because the PANE does not resize when the read box opens or shuts, so
+  // nothing else would hand the canvas the rows it just won or lost.
+  function onLayoutChanged() { clampPreview(); onCanvasLayout(); render(); }
+
+  async function togglePreview() {
+    previewCollapsed = !previewCollapsed;
+    persistPrefs();
+    // Measure AFTER the flush: render() reads the canvas's client height, which
+    // is still the pre-toggle one until Svelte has applied the DOM change.
+    await tick();
+    onLayoutChanged();
   }
 
   // Drag the divider to resize the read box. Dragging UP grows it; clamped to
@@ -382,56 +392,11 @@
       });
     });
 
-    // Rule 4 — page↔page link edges. Resolve each page's raw link targets
-    // ([[wikilinks]] / md links) to page ids. Priority: exact id → path
-    // resolved relative to the SOURCE page's folder (md links are written
-    // source-relative, e.g. ../guide/setup.md) → UNAMBIGUOUS basename →
-    // UNAMBIGUOUS title. Separate maps so a title can't clobber another page's
-    // basename, and a key shared across folders (index.md, _overview.md, a
-    // repeated H1) is skipped rather than silently resolving to the last page.
-    const norm = (s: string) => s.toLowerCase().trim();
-    const base = (s: string) => norm(s.split(/[\\/]/).pop()!.replace(/\.md$/i, ''));
-    const dirOf = (id: string) => { const i = id.lastIndexOf('/'); return i >= 0 ? id.slice(0, i) : ''; };
-    // Resolve a source-relative path (handling ./ and ../) into a normalised id key.
-    const joinNorm = (dir: string, rel: string) => {
-      const parts = dir ? dir.split('/') : [];
-      for (const seg of rel.split(/[\\/]/)) {
-        if (seg === '' || seg === '.') continue;
-        if (seg === '..') parts.pop();
-        else parts.push(seg);
-      }
-      return norm(parts.join('/'));
-    };
-    const byId = new Map<string, string>();
-    const byBase = new Map<string, string | null>();
-    const byTitle = new Map<string, string | null>();
-    // First writer wins; a second writer marks the key ambiguous (null → skip).
-    const claim = (m: Map<string, string | null>, k: string, v: string) => {
-      if (k) m.set(k, m.has(k) ? null : v);
-    };
-    for (const p of allPages) {
-      const nid = `page:${p.id}`;
-      byId.set(norm(p.id), nid);
-      claim(byBase, base(p.id), nid);
-      claim(byTitle, norm(p.title), nid);
-    }
-    const seenLink = new Set<string>();
-    for (const p of allPages) {
-      const src = `page:${p.id}`;
-      const srcDir = dirOf(p.id);
-      for (const raw of p.links ?? []) {
-        const n = norm(raw);
-        let tgt = byId.get(n);
-        if (!tgt && /[\\/]|\.md$/i.test(raw)) tgt = byId.get(joinNorm(srcDir, raw));
-        if (!tgt) tgt = byBase.get(base(raw)) ?? undefined;
-        if (!tgt) tgt = byTitle.get(n) ?? undefined;
-        if (!tgt || tgt === src) continue;
-        const key = src < tgt ? `${src}|${tgt}` : `${tgt}|${src}`;
-        if (seenLink.has(key)) continue;
-        seenLink.add(key);
-        edges.push({ source: src, target: tgt, kind: 'link' });
-      }
-    }
+    // Rule 4 — page↔page link edges. The resolution ladder (exact id → path
+    // resolved relative to the SOURCE page's folder → UNAMBIGUOUS basename →
+    // UNAMBIGUOUS title, self-links and reciprocal pairs collapsed) lives in
+    // wikiGraphBuild.resolveLinkEdges, where every branch has a test.
+    for (const e of resolveLinkEdges(allPages)) edges.push(e);
 
     // Degree drives centre-gravity so the most-connected nodes anchor the core;
     // adjacency drives hover-to-highlight.
@@ -1183,30 +1148,47 @@
       {/if}
     </div>
 
-    <div
-      class="resize-handle"
-      role="separator"
-      aria-orientation="horizontal"
-      title="Drag to resize the read box"
-      onpointerdown={onResizeDown}
-    ></div>
+    {#if !previewCollapsed}
+      <div
+        class="resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        title="Drag to resize the read box"
+        onpointerdown={onResizeDown}
+      ></div>
+    {/if}
 
-    {#if selectedResult}
-      <div class="preview" style="height: {previewH}px">
-        <div class="preview-header">
-          <span class="preview-title">{selectedResult.title}</span>
-          <span class="preview-date">{selectedResult.updated}</span>
+    <!-- Always on screen, collapsed or open: one line, and the only way back
+         into the read box. It names the selected page so a click is enough. -->
+    <button
+      class="preview-toggle"
+      onclick={togglePreview}
+      aria-expanded={!previewCollapsed}
+      title={previewCollapsed ? 'Show the page preview' : 'Hide the page preview'}
+    >
+      <span class="preview-chevron">{previewCollapsed ? '▸' : '▾'}</span>
+      <span>Preview</span>
+      {#if selectedResult}<span class="preview-toggle-page">{selectedResult.title}</span>{/if}
+    </button>
+
+    {#if !previewCollapsed}
+      {#if selectedResult}
+        <div class="preview" style="height: {previewH}px">
+          <div class="preview-header">
+            <span class="preview-title">{selectedResult.title}</span>
+            <span class="preview-date">{selectedResult.updated}</span>
+          </div>
+          <div class="preview-meta">
+            <span class="preview-ns">{selectedResult.namespace}</span>
+            {#if selectedResult.tags.length > 0}
+              <div class="preview-tags">{#each selectedResult.tags as tag}<span class="tag">{tag}</span>{/each}</div>
+            {/if}
+          </div>
+          <div class="preview-body">{@html pagePreviewHtml(selectedResult)}</div>
         </div>
-        <div class="preview-meta">
-          <span class="preview-ns">{selectedResult.namespace}</span>
-          {#if selectedResult.tags.length > 0}
-            <div class="preview-tags">{#each selectedResult.tags as tag}<span class="tag">{tag}</span>{/each}</div>
-          {/if}
-        </div>
-        <div class="preview-body">{@html pagePreviewHtml(selectedResult)}</div>
-      </div>
-    {:else}
-      <div class="preview empty-preview" style="height: {previewH}px">Select a node or page to preview</div>
+      {:else}
+        <div class="preview empty-preview" style="height: {previewH}px">Select a node or page to preview</div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -1305,6 +1287,15 @@
     touch-action: none;
   }
   .resize-handle:hover { opacity: 1; background: var(--og-accent); }
+
+  /* The read box's header — the whole of what the preview costs while it is
+     collapsed, and the control that opens it. One line, always present. */
+  .preview-toggle { display: flex; align-items: center; gap: 6px; width: 100%; flex: 0 0 auto; padding: 4px 8px; background: var(--og-surface); color: var(--og-text-muted); border: none; border-top: 1px solid var(--og-border); font-family: inherit; font-size: 10px; text-align: left; cursor: pointer; }
+  .preview-toggle:hover { color: var(--og-text); }
+  .preview-chevron { font-size: 9px; }
+  /* The selected page's title, so the collapsed header still says WHAT one
+     click would open. Truncates rather than wrapping the row to two lines. */
+  .preview-toggle-page { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text); }
 
   /* Preview — height is drag-controlled via an inline style (previewH). */
   .preview { width: 100%; flex: 0 0 auto; min-height: 0; overflow-y: auto; padding: 12px; }

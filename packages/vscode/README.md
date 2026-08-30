@@ -1,19 +1,20 @@
 <p align="center">
-  <img src="images/origami-coder-icon.png" width="128" alt="Origami Coder" />
+  <img src="images/origami-coder-icon.png" width="128" alt="Origami Code" />
 </p>
-<h1 align="center">Origami Coder</h1>
+<h1 align="center">Origami Code</h1>
 <p align="center"><b>The Best VS Code AI Harness</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origamicoder" alt="Marketplace version" />
-  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origamicoder" alt="Installs" />
+  <img src="https://vsmarketplacebadges.dev/version/OrigamiLabs.origamicoder.svg" alt="Marketplace version" />
+  <img src="https://vsmarketplacebadges.dev/installs-short/OrigamiLabs.origamicoder.svg" alt="Installs" />
   <img src="https://img.shields.io/badge/license-Origami--Proprietary-orange" alt="License" />
 </p>
 
 <p align="center">
   🌐 <a href="https://origamilabs.nl">Website</a> •
   📖 <a href="https://origamilabs.nl/docs.html">Docs</a> •
-  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origamicoder">Marketplace</a>
+  🧩 <a href="https://marketplace.visualstudio.com/items?itemName=OrigamiLabs.origamicoder">Marketplace</a> •
+  ⭐ <a href="https://github.com/PassingByPixels/Origami-Coder">GitHub</a>
 </p>
 
 ---
@@ -181,7 +182,7 @@ This harness is built from the ground up on the following foundations:
 
 ## Getting started
 
-1. Install Origami Coder from the VS Code Marketplace.
+1. Install Origami Code from the VS Code Marketplace.
 2. Open it from the activity bar — the crane icon — and the panel docks on the right.
 3. Add a connection. Pick a local or self-hosted server, a provider, or a lab account, then paste a key or sign in. Everything you have connected stays visible in one list, with usage and reset timers where the provider reports them.
 
@@ -195,7 +196,7 @@ This harness is built from the ground up on the following foundations:
 
 ## Support the project
 
-Origami Coder is free, has no ads and sells you nothing. If it saves you time, you can throw something in the tin.
+Origami Code is free, has no ads and sells you nothing. If it saves you time, you can throw something in the tin.
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-yellow)](https://buymeacoffee.com/passingbypixels)
 

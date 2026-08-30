@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { usable } from "@/session/overflow"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -613,6 +614,153 @@ describe("session.compaction.isOverflow", () => {
       }),
     ),
   )
+
+  // ─── The compaction storm on small-context models ─────────────────────
+  // A 36096-window LM Studio model produced ELEVEN compaction streams inside
+  // four minutes, because its config block carries `output: 0` and the reserve
+  // was the 32k REQUEST default: usable = 36096 - 32000 = 4096. Every turn
+  // overflowed, and so did the summary the previous compaction had just
+  // written — the loop is the storm.
+  it.live(
+    "STORM: a 36096 window with no declared output does not compact on an ordinary turn",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 36_096, output: 0 })
+        // 20K of a 36K window is a normal working turn, not an overflow.
+        const tokens = { input: 18_000, output: 2_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+      }),
+    ),
+  )
+
+  it.live(
+    "STORM: the summary a compaction just wrote does not immediately re-overflow",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 36_096, output: 0 })
+        // Post-compaction state: system prompt + summary. Under the old 4096
+        // usable this re-triggered at once, which is what made it a LOOP.
+        const tokens = { input: 6_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
+      }),
+    ),
+  )
+
+  it.live(
+    "STORM: it still compacts near genuine fullness on that same window",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 36_096, output: 0 })
+        const tokens = { input: 27_072, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
+      }),
+    ),
+  )
+})
+
+// The reservation `usable()` holds back for the model's next reply. Split out
+// of isOverflow because the exact arithmetic — not just the boolean — is what
+// regressed, and because these are pure: no session row, no tmpdir.
+//
+// THE RULE: a DECLARED output limit is honoured verbatim (it is what the model
+// may actually emit, so under-reserving would overflow mid-generation). An
+// output limit of 0 or absent means UNKNOWN — the engine's config schema makes
+// `output` a REQUIRED sibling of `context`
+// (packages/core/src/v1/config/provider.ts:41-46), so every probed local model
+// is written with `output: 0` and lands here — and an unknown reserve is capped
+// at a QUARTER of the window instead of taking the 32k request default whole.
+//
+// WHY THAT IS SAFE: floor(context / 4) only bites below 128_000
+// (= 4 x ProviderTransform.OUTPUT_TOKEN_MAX). At or above that window the two
+// formulas return the same number, so no large model moves, whether or not it
+// declares an output limit. Every "unchanged" figure below was measured against
+// the pre-fix code before the fix was written.
+describe("session.overflow.usable — the output reservation", () => {
+  const cfg = {} as ConfigV1.Info
+  const reserved = (model: Provider.Model) => model.limit.context - usable({ cfg, model })
+
+  test("the storm's own limit block: 36096/0 holds back a quarter, not the 32k default", () => {
+    const model = createModel({ context: 36_096, output: 0 })
+    expect(reserved(model)).toBe(9_024) // floor(36096 / 4)
+    expect(usable({ cfg, model })).toBe(27_072) // 75.0% of the window (was 4096 = 11.3%)
+  })
+
+  test("the smaller the window the worse it was: 8192/0 used to leave ZERO usable context", () => {
+    expect(usable({ cfg, model: createModel({ context: 8_192, output: 0 }) })).toBe(6_144) // was 0
+  })
+
+  test("a non-positive output limit is UNKNOWN, never a NEGATIVE reservation", () => {
+    // Schema.Finite permits a negative. `Math.min(-5, 32000) || 32000` kept the
+    // -5, so usable came out at 36101 — ABOVE the window, and isOverflow could
+    // then never fire at all. Same input class as 0, so it takes the same path.
+    const model = createModel({ context: 36_096, output: -5 })
+    expect(usable({ cfg, model })).toBe(27_072)
+    expect(usable({ cfg, model })).toBeLessThanOrEqual(model.limit.context)
+  })
+
+  test("context 0 still yields 0 — the 'window unknown' escape hatch is untouched", () => {
+    expect(usable({ cfg, model: createModel({ context: 0, output: 0 }) })).toBe(0)
+    expect(usable({ cfg, model: createModel({ context: 0, output: 32_000 }) })).toBe(0)
+  })
+
+  // Pinned from the PRE-FIX code. These must not move.
+  test.each([
+    ["100k / 32k", 100_000, 32_000, undefined, 68_000],
+    ["131072 / 32k", 131_072, 32_000, undefined, 99_072],
+    ["200k / 32k", 200_000, 32_000, undefined, 168_000],
+    ["200k / 64k — clamped by OUTPUT_TOKEN_MAX, as before", 200_000, 64_000, undefined, 168_000],
+    ["500k / 32k", 500_000, 32_000, undefined, 468_000],
+    ["400k, input 272k / 128k", 400_000, 128_000, 272_000, 252_000],
+    ["200k, input 200k / 32k", 200_000, 32_000, 200_000, 180_000],
+    ["8192 / 4096 — a small DECLARED output is honoured verbatim", 8_192, 4_096, undefined, 4_096],
+  ])("a declared output limit is unchanged: %s", (_name, context, output, input, expected) => {
+    expect(usable({ cfg, model: createModel({ context, output, input }) })).toBe(expected)
+  })
+
+  // Unknown output, at and above the crossover. Also pinned pre-fix.
+  test.each([
+    ["exactly 128000 — where the two formulas meet", 128_000, 96_000],
+    ["131072", 131_072, 99_072],
+    ["200k", 200_000, 168_000],
+    ["500k", 500_000, 468_000],
+  ])("an UNKNOWN output limit is unchanged at/above 4 x OUTPUT_TOKEN_MAX: %s", (_name, context, expected) => {
+    expect(usable({ cfg, model: createModel({ context, output: 0 }) })).toBe(expected)
+  })
+
+  test("just below the crossover the proportional cap takes over", () => {
+    // 120000: floor(120000 / 4) = 30000 < 32000, so the reserve shrinks.
+    expect(usable({ cfg, model: createModel({ context: 120_000, output: 0 }) })).toBe(90_000) // was 88_000
+  })
+
+  test("the limit.input branch gets the same proportional reserve, not the 20k buffer", () => {
+    // Both branches read the reservation, so a small window with an input cap
+    // is fixed too: reserved was min(20000, 32000) = 20000 of a 36096 window.
+    const model = createModel({ context: 36_096, input: 36_096, output: 0 })
+    expect(usable({ cfg, model })).toBe(27_072) // was 16_096 (44.6%)
+  })
+
+  test("ORIGAMI_EXPERIMENTAL_OUTPUT_TOKEN_MAX still caps the reserve", () => {
+    const model = createModel({ context: 36_096, output: 0 })
+    // Flag BELOW the proportional cap wins, exactly as before the fix.
+    expect(usable({ cfg, model, outputTokenMax: 8_000 })).toBe(28_096)
+    // Flag ABOVE it no longer swallows the window whole (was 0 usable).
+    expect(usable({ cfg, model, outputTokenMax: 64_000 })).toBe(27_072)
+  })
+
+  test("an explicit cfg.compaction.reserved still wins outright", () => {
+    const explicit = { compaction: { reserved: 5_000 } } as ConfigV1.Info
+    const model = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+    expect(usable({ cfg: explicit, model })).toBe(195_000)
+  })
+
+  test("a session threshold override still wins over any reserve", () => {
+    const model = createModel({ context: 36_096, output: 0 })
+    expect(usable({ cfg, model, thresholdOverride: { kind: "percent", value: 0.5 } })).toBe(18_048)
+    expect(usable({ cfg, model, thresholdOverride: { kind: "tokens", value: 1_000 } })).toBe(1_000)
+  })
 })
 
 describe("session.compaction.create", () => {

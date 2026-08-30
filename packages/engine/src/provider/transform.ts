@@ -814,6 +814,27 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   const glm52 = ["glm-5.2", "glm-5-2", "glm-5p2"].some(
     (name) => id.includes(name) || model.api.id.toLowerCase().includes(name),
   )
+  // origami_change: GLM ids NEWER than 5.2 are not excluded below.
+  //
+  // The blanket `glm` entry in the exclusion list is inherited from upstream,
+  // where it means "this family's endpoints reject reasoning_effort" - true of
+  // GLM 4.x and of the 5.0/5.1 endpoints. 5.2 was already carved out by hand
+  // (upstream "expose High/Max thinking variants for GLM-5.2"); GLM 5.3 and
+  // later, including self-hosted vLLM builds, accept the OpenAI-compatible
+  // knob. Being optimistic is now recoverable as well: SessionDegrade strips
+  // `reasoningEffort`/`reasoning_effort` and retries when an endpoint refuses
+  // it, and remembers the refusal for the rest of the session.
+  //
+  // The major version is read as a SINGLE digit on purpose, so `glm-130b`
+  // parses as major 1 and stays excluded. That also means a hypothetical
+  // `glm-10` would stay excluded - the safe direction, and the boundary can
+  // move again when such an id exists.
+  const glmNewerThan52 = [id, model.api.id.toLowerCase()].some((value) =>
+    Array.from(value.matchAll(/glm-?(\d)(?:[.\-p](\d+))?/g)).some(([, major, minor]) => {
+      const version = Number(major)
+      return version > 5 || (version === 5 && Number(minor ?? "0") >= 3)
+    }),
+  )
   if (
     model.api.id.toLowerCase().includes("minimax-m3") &&
     ["@ai-sdk/anthropic", "@ai-sdk/openai-compatible"].includes(model.api.npm)
@@ -865,7 +886,7 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     id.includes("deepseek-r1") ||
     id.includes("deepseek-v3") ||
     id.includes("minimax") ||
-    (id.includes("glm") && !glm52) ||
+    (id.includes("glm") && !glm52 && !glmNewerThan52) ||
     id.includes("kimi") ||
     id.includes("k2p") ||
     id.includes("qwen") ||
@@ -1765,7 +1786,25 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
 }
 
 export function reasoningVariants(model: ModelsDev.Model, target: Provider.Model): Provider.Model["variants"] {
-  const options = model.reasoning_options
+  return reasoningOptionVariants(model.reasoning_options, target)
+}
+
+/**
+ * The variants a model DECLARES, independent of where the declaration came
+ * from.
+ *
+ * origami_change: split out of `reasoningVariants` so a config model can carry
+ * the same `reasoning_options` shape models.dev publishes. `variants` below is
+ * a name-regex heuristic over a catalog it knows; it cannot know what a
+ * self-hosted endpoint accepts, so an operator has to be able to say it.
+ *
+ * `undefined` means "nothing was declared" - the caller falls back to the
+ * heuristic. `{}` means "declared, and it produces no variants".
+ */
+export function reasoningOptionVariants(
+  options: ModelsDev.Model["reasoning_options"],
+  target: Provider.Model,
+): Provider.Model["variants"] {
   if (options === undefined) return
   if (options.length === 0) return {}
 

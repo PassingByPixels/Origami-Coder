@@ -78,6 +78,56 @@ describe('BashCard — IN/OUT rails', () => {
   });
 });
 
+// IN over OUT wastes the right half of a wide card and pushes the output that
+// much further down. Side by side is a LAYOUT claim, and jsdom loads no
+// stylesheet at all (vitest.config.mts sets no `css: true`), so getComputedStyle
+// here would return '' and assert nothing while looking rigorous. What jsdom CAN
+// prove is the structure the rule needs — one grid holding exactly the two rows,
+// IN first — and what the file can prove is that the rule is the right KIND.
+// Whether it reads well at 480px is a UAT question and stays one.
+describe('BashCard — IN and OUT side by side on a wide card', () => {
+  const twoCol = () => {
+    const { container } = render(BashCard, {
+      result: 'PASS', title: 'npm test', status: 'completed', shell: { command: 'npm test', exit: 0 },
+    });
+    return container.querySelector('.bash-cols') as HTMLElement;
+  };
+
+  it('puts both rails in ONE grid, IN first and OUT second', () => {
+    const cols = twoCol();
+    expect(cols).not.toBeNull();
+    const rows = [...cols.children].filter((el) => el.classList.contains('bash-row'));
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector('.bash-rail-in')?.textContent).toBe('IN');
+    expect(rows[1].querySelector('.bash-rail-out')?.textContent).toBe('OUT');
+  });
+
+  it('keeps the command in the IN track and the output in the OUT track', () => {
+    const rows = [...twoCol().children] as HTMLElement[];
+    expect(rows[0].querySelector('.bash-in')?.textContent).toBe('npm test');
+    expect(rows[1].querySelector('.bash-out')?.textContent).toBe('PASS');
+    // A chip that drifted into the wrong track would read as the wrong verdict.
+    expect(rows[0].querySelector('.bash-chip')).toBeNull();
+    expect(rows[1].querySelector('.bash-chip')?.textContent).toBe('exit 0');
+  });
+
+  it('switches columns on the CARD\'s width, not the window\'s, and with no JS', () => {
+    const src = readFileSync(join(__dirname, 'BashCard.svelte'), 'utf-8');
+    // A viewport @media query answers the wrong question: the same card renders
+    // in the 380px sidebar and in a full-width editor tab, and a media query
+    // would give both the same layout.
+    expect(src).toMatch(/\.bash-card\s*\{[^}]*container:\s*bash-card\s*\/\s*inline-size/);
+    expect(src).toMatch(/@container bash-card \(min-width: 480px\)/);
+    // OUT takes the larger share — it is the half that runs long.
+    expect(src).toMatch(/grid-template-columns:\s*2fr 3fr/);
+    // Both tracks must be able to shrink, or one long unbroken output line
+    // stretches its track and the card scrolls sideways.
+    expect(src).toMatch(/\.bash-row\s*\{[^}]*min-width:\s*0/);
+    // Pure CSS: no resize listener, no width state, no measuring.
+    expect(src).not.toMatch(/ResizeObserver|addEventListener\(\s*'resize'|clientWidth|offsetWidth/);
+  });
+});
+
 // The 30s Kill button shipped in 0.3.58 and then never appeared on a live
 // running bash card. The gate was not the timer and not the status: ToolCard
 // mounts the card BODY only `{#if expanded}`, and a card starts collapsed, so

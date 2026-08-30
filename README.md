@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="packages/vscode/images/origami-coder-icon.png" width="128" alt="Origami Coder" />
+  <img src="packages/vscode/images/origami-coder-icon.png" width="128" alt="Origami Code" />
 </p>
-<h1 align="center">Origami Coder</h1>
+<h1 align="center">Origami Code</h1>
 <p align="center"><b>The Best VS Code AI Harness</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/visual-studio-marketplace/v/OrigamiLabs.origamicoder" alt="Marketplace version" />
-  <img src="https://img.shields.io/visual-studio-marketplace/i/OrigamiLabs.origamicoder" alt="Installs" />
+  <img src="https://vsmarketplacebadges.dev/version/OrigamiLabs.origamicoder.svg" alt="Marketplace version" />
+  <img src="https://vsmarketplacebadges.dev/installs-short/OrigamiLabs.origamicoder.svg" alt="Installs" />
   <img src="https://img.shields.io/badge/license-Origami--Proprietary-orange" alt="License" />
 </p>
 
@@ -34,7 +34,7 @@ since 0.4.58 (2026-08-26). The store page with the full feature tour lives at
 The Marketplace VSIX is the only supported install for users — everything below is for
 building from this source tree.
 
-Origami Coder is a heavily reworked fork of
+Origami Code is a heavily reworked fork of
 [OpenCode](https://github.com/anomalyco/opencode). Upstream references that survive in
 this repo (package names, docs links) are inherited history and do not point at this
 project.

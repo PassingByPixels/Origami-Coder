@@ -12,6 +12,17 @@ export const Info = Schema.Struct({
   priority: Schema.String.annotate({
     description: "Priority level of the task: high, medium, low",
   }),
+  // Nesting, expressed by POSITION rather than by reference: the list is stored
+  // full-list-replace with the array index as the only identity, so there is no
+  // stable id for a child to point at. `Schema.Number` and not a non-negative
+  // int on purpose - a model that sends -1 or 1.5 must still get its list
+  // written (the readers clamp), where a stricter check would fail the whole
+  // call and lose every item in it.
+  depth: Schema.optional(Schema.Number).annotate({
+    description:
+      "Nesting level. Omit or 0 for a top-level task; a sub-task is its parent's depth + 1 and must come " +
+      "directly after that parent in the list. Maximum 3.",
+  }),
 }).annotate({ identifier: "Todo" })
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 

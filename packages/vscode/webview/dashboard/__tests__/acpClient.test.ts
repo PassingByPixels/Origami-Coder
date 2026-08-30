@@ -338,7 +338,29 @@ describe('first-class origami/* notification decode (U2)', () => {
     });
     expect(handlers.onTodoUpdate).toHaveBeenCalledWith({
       source: 'model_write',
-      todos: [{ id: 1, content: 'write parser', activeForm: 'Writing parser', status: 'in_progress' }],
+      // A snapshot with no depth on it reads as a flat list, which is what every
+      // list looked like before nesting existed.
+      todos: [{ id: 1, content: 'write parser', activeForm: 'Writing parser', status: 'in_progress', depth: 0 }],
+    });
+  });
+
+  it('origami/todoSnapshot carries depth — the RESTORE feed is nested too, not only the live one', async () => {
+    await impl.extNotification('_origami/todoSnapshot', {
+      source: 'session_restore',
+      todos: [
+        { id: 0, content: 'parent', activeForm: 'parent', status: 'in_progress', depth: 0 },
+        { id: 1, content: 'child', activeForm: 'child', status: 'completed', depth: 1 },
+        // Garbage stays a row; it just loses its indent.
+        { id: 2, content: 'junk', activeForm: 'junk', status: 'pending', depth: 'deep' },
+      ],
+    });
+    expect(handlers.onTodoUpdate).toHaveBeenCalledWith({
+      source: 'session_restore',
+      todos: [
+        { id: 0, content: 'parent', activeForm: 'parent', status: 'in_progress', depth: 0 },
+        { id: 1, content: 'child', activeForm: 'child', status: 'completed', depth: 1 },
+        { id: 2, content: 'junk', activeForm: 'junk', status: 'pending', depth: 0 },
+      ],
     });
   });
 

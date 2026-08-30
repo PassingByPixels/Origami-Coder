@@ -15,9 +15,10 @@
 //     catalogued in `wiki/index.md`) — the same place /wrap distils into.
 //
 // `slash: true` is set ONLY on the user-invoked skills (grill-me, to-spec,
-// to-tickets, triage, handoff). The model-invoked ones (tdd, diagnosing-bugs,
-// code-review, wayfinder) are loaded when they are relevant, and putting them in
-// the / palette would advertise a command whose answer is "I already do this".
+// to-tickets, triage, handoff, optimize-code). The model-invoked ones (tdd,
+// diagnosing-bugs, code-review, wayfinder) are loaded when they are relevant, and
+// putting them in the / palette would advertise a command whose answer is "I
+// already do this".
 
 const GRILL_ME = `---
 name: grill-me
@@ -338,6 +339,161 @@ wiki depth in one pass. This skill is the when-and-what guide around it.
   costs the next session more than it saves.
 `;
 
+// optimize-code is an ADAPTATION of saurabhkumar8112/cyclomatic-complexity-skill
+// (Apache-2.0), which the body credits. Upstream is a single-pass "measure then
+// refactor" instruction; this one is staged, because the target here is a whole
+// repository rather than the function in front of you. Three things the stages
+// add: a Stage 0 that pins a GREEN baseline from the project's own gates (a
+// behaviour-preserving refactor is only meaningful against a known-green start),
+// a batch cap in Stage 2 (a 40-file complexity diff is unreviewable, and one bad
+// extraction poisons the whole of it), and a Stage 4 that re-runs those same
+// gates before anything is reported. Upstream's two load-bearing rules — the
+// project's own configured threshold wins, and complexity must MOVE into
+// well-named functions rather than vanish into cleverness — are kept verbatim in
+// spirit and reinforced with this workspace's own honest-verification wording.
+const OPTIMIZE_CODE = `---
+name: optimize-code
+category: quality
+description: Reduce cyclomatic complexity across a codebase in reviewable batches — baseline the project's gates, measure complexity per function, refactor the worst hotspots, re-verify green, report before and after. Use when asked to optimize, clean up, simplify, or de-spaghetti a repository.
+slash: true
+---
+
+# /optimize-code — measure, refactor, prove
+
+Six stages, in order. Do not skip one. Do not start Stage 3 until Stage 0 is
+green. Behaviour-preserving changes only.
+
+## Stage 0 — Baseline
+
+1. Confirm the working tree is clean (\`git status --short\` prints nothing). If it
+   is dirty, stop and ask — a refactor mixed with unrelated edits is unreviewable.
+2. Find the project's OWN gates. Read the package manifest, the build config and
+   any CI workflow for the real commands — typecheck, test, lint, build. Do not
+   invent commands.
+3. Run every gate and record the exact output.
+
+> **House rule.** Refactoring starts from green and every batch ends green.
+
+A gate that is already red before you touch anything ends the run — say which
+one, quote the output, and stop. A project with no tests does not end the run,
+but say so plainly, refactor conservatively, and carry the risk into the report.
+
+## Stage 1 — Measure
+
+Cyclomatic complexity = decision points + 1. Decision points are \`if\`, \`else if\`,
+each \`case\`, every loop, \`catch\`, the ternary, and each \`&&\` or \`||\` inside a
+condition.
+
+Use a real tool wherever one exists. Never estimate when you can measure.
+
+| Language | Command |
+|---|---|
+| Python | \`radon cc -s -a <path>\` |
+| JS / TS | the eslint \`complexity\` rule |
+| Go | \`gocyclo <path>\` |
+| Mixed / other | \`lizard <path>\` |
+
+No tool available — count the decision points by hand, per function, and show the
+count next to the function so a reader can check it.
+
+**The project's own threshold wins.** If an eslint config, a radon or flake8
+setting, a sonar profile or similar already declares a complexity limit, that
+number is the bar. Only when the project declares none, use these defaults.
+
+- 1-5 — fine, leave it alone
+- 6-10 — watch, refactor only if you are in the file anyway
+- 11-15 — refactor now
+- 16+ — split, no debate
+
+Record two secondary signals, but never refactor on them alone — they choose
+between equal-scoring hotspots. File-length outliers (files far longer than the
+median for that language) and obvious duplication (the same block in three or
+more places).
+
+## Stage 2 — Prioritise
+
+Rank every measured function by score, worst first, and PUBLISH the table before
+you edit anything.
+
+\`\`\`
+| Function | Location | Score | Technique |
+|---|---|---|---|
+| parseOrder | src/order.ts:88 | 24 | guard clauses + extract |
+\`\`\`
+
+Then cut it to a batch of at most five hotspots. A large repository is cleaned in
+batches, not in one pass — a forty-file complexity diff cannot be reviewed, and
+one bad extraction inside it poisons the rest. Name the hotspots you are
+deferring to the next batch, so nothing looks finished that is not.
+
+## Stage 3 — Refactor
+
+One function at a time, in this order of preference.
+
+1. **Guard clauses.** Invert the condition, return early, delete a nesting level.
+2. **Extract function.** Every extracted piece gets a name that says WHAT it does,
+   not how. The name is the documentation.
+3. **Lookup table.** A map keyed by the value replaces an if-else or switch chain.
+4. **Named predicates.** \`if (isEligibleForRefund(order))\` beats four clauses of
+   boolean soup.
+5. **Flatten nesting.** Extract the loop body, and \`continue\` instead of wrapping
+   the rest of the loop in an \`if\`.
+
+Rules that are not negotiable.
+
+- **Never game the metric.** Complexity must MOVE into well-named functions, not
+  disappear into cleverness. A dense one-liner hiding six branches is worse than
+  the honest if-chain it replaced. Never silence a lint rule, raise a configured
+  threshold, or add an inline disable comment to make a number go down.
+- **Match the surrounding style.** Same naming, same file layout, same error
+  handling as the code you are editing.
+- **Stay inside the hotspot.** Do not rename a public API, change an exported
+  signature, retype adjacent code or tidy a neighbour. If the fix genuinely needs
+  a signature change, ask first.
+- **One responsibility per function.** If the new name needs an "and", split again.
+- Keep each hotspot a separate commit or a separate staged change, so a bad one
+  can be dropped without losing the batch.
+
+## Stage 4 — Verify
+
+For every batch, in this order.
+
+1. Re-run the Stage 0 gates. All green, with the output.
+2. Re-measure the batch's functions with the SAME tool and the SAME command as
+   Stage 1. A different command is a different number.
+3. Build the per-function before and after table.
+
+A gate that went red IS the result — report it red, with its output, and fix or
+revert before you move on. Never report a batch whose gates you did not re-run.
+
+## Stage 5 — Report
+
+\`\`\`
+## Complexity report
+
+| Function | Location | Before | After |
+|---|---|---|---|
+| parseOrder | src/order.ts:88 | 24 | 5 |
+
+Extracted: validateHeader, resolveDiscount, isEligibleForRefund
+Gates: verified by running <command>, output was <counts>
+Not touched: <function> — <why>
+Next batch: <the next hotspots by score>
+\`\`\`
+
+- State what you VERIFIED and how — "verified by running X, output was Y". If
+  something is unverified, write "untested — would confirm by Z". Never write
+  "should work".
+- Name what you deliberately did NOT touch and why (no tests around it, public
+  API, generated file, out of scope). A skipped hotspot with a reason is
+  information; a silently skipped one is a hole.
+- Numbers and diffs do the talking. Keep the prose short.
+
+---
+
+Adapted from \`saurabhkumar8112/cyclomatic-complexity-skill\` (Apache-2.0).
+`;
+
 /**
  * Default skills seeded into `.origami/skills/<name>/SKILL.md` on /firstfold,
  * keyed by skill name. The key is also the directory name, and must match the
@@ -355,4 +511,5 @@ export const DEFAULT_SKILLS: Record<string, string> = {
   'code-review': CODE_REVIEW,
   wayfinder: WAYFINDER,
   handoff: HANDOFF,
+  'optimize-code': OPTIMIZE_CODE,
 };

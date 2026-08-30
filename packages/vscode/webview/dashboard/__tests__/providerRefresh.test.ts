@@ -12,13 +12,18 @@
 // `packages/engine/src/acp/agent.ts`'s `case "provider_refresh"`; a rename on
 // either side has to break something, and this is the something.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   PROVIDER_REFRESH_METHOD,
   refreshEngineProviders,
+  refreshingChangeWriter,
   refreshingWriter,
   type RefreshTarget,
 } from '../../../src/dashboard/providerRefresh';
+import { writeModelContextLimit } from '../../../src/dashboard/firstFold';
 
 const client = (extMethod = vi.fn().mockResolvedValue({ ok: true })) => ({ extMethod });
 
@@ -122,5 +127,119 @@ describe('refreshingWriter', () => {
 
     expect(wrapped({})).toEqual({ path: 'p', model: 'openrouter/m' });
     await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalled());
+  });
+});
+
+// The CONTEXT-WINDOW half of the same seam.
+//
+// THE DEFECT (owner, this morning): the model was picked at 84k, `lms load -c
+// 86016` ran, and `writeModelContextLimit` put `context: 86016` in origami.json
+// — where it stayed. The running engine had frozen `limit.context` at the 36096
+// a smaller earlier load left behind, so the session auto-compacted five times
+// in four minutes at ~27.1k, which is `usable()` for a 36096 window. Same shape
+// as the API key above: a write nothing tells the engine about.
+//
+// It cannot ride `refreshingWriter`, which fires after any write that did not
+// throw. `writeModelContextLimit` answers `false` for its legitimate no-ops —
+// the limit was already right, `onlyWhenUnset` declined to overrule a hand-set
+// window, the provider is not configured — and reprobeModel runs on every model
+// switch and every status tick, so an unconditional refresh would drop every
+// engine's provider caches for nothing, repeatedly.
+//
+// These drive the REAL writer against a temp XDG dir, for configWriters.test.ts's
+// reason: the writer honours XDG_CONFIG_HOME, so a mocked homedir would pass
+// just as happily against a defect. The assertion is always "did the engines get
+// told", paired with what actually landed in the file.
+describe('refreshingChangeWriter — the probed context window', () => {
+  let tmp: string;
+  let cfgPath: string;
+  let savedXdg: string | undefined;
+
+  const seed = (context?: number) => {
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      provider: {
+        lmstudio: {
+          name: 'LM Studio',
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:1234/v1' },
+          models: {
+            'qwen3.5-35b': context === undefined ? { name: 'q' } : { name: 'q', limit: { context, output: 0 } },
+          },
+        },
+      },
+    }, null, 2) + '\n', 'utf8');
+  };
+  const persisted = () =>
+    JSON.parse(fs.readFileSync(cfgPath, 'utf8')).provider.lmstudio.models['qwen3.5-35b'].limit.context;
+
+  beforeEach(() => {
+    savedXdg = process.env.XDG_CONFIG_HOME;
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'origami-ctx-refresh-'));
+    process.env.XDG_CONFIG_HOME = tmp;
+    cfgPath = path.join(tmp, 'origami', 'origami.json');
+  });
+
+  afterEach(() => {
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('the owner repro: a stale 36096 rewritten to 86016 tells the engines', async () => {
+    seed(36_096);
+    const c = client();
+    const write = refreshingChangeWriter(writeModelContextLimit, () => [{ client: c, cwd: '/work/repo' }]);
+
+    expect(write('lmstudio', 'qwen3.5-35b', 86_016)).toBe(true);
+    expect(persisted()).toBe(86_016);
+    await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo' }));
+  });
+
+  it('the SECOND probe of the same window tells no one', async () => {
+    // reprobeModel runs on every model switch and every status tick. Once the
+    // file is right the writer answers false, and a refresh here would be pure
+    // cost: dropped SDK clients and a rebuilt provider list for no change.
+    seed(86_016);
+    const c = client();
+    const write = refreshingChangeWriter(writeModelContextLimit, () => [{ client: c, cwd: '/work/repo' }]);
+
+    expect(write('lmstudio', 'qwen3.5-35b', 86_016)).toBe(false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(c.extMethod).not.toHaveBeenCalled();
+  });
+
+  it('onlyWhenUnset declining a hand-set window tells no one either', async () => {
+    // refreshModelInfoFor's remote path: the server reports its static maximum
+    // and the user has deliberately capped lower. Nothing is written, so there
+    // is nothing to tell the engine about.
+    seed(65_536);
+    const c = client();
+    const write = refreshingChangeWriter(writeModelContextLimit, () => [{ client: c, cwd: '/work/repo' }]);
+
+    expect(write('lmstudio', 'qwen3.5-35b', 1_048_576, { onlyWhenUnset: true })).toBe(false);
+    expect(persisted()).toBe(65_536);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(c.extMethod).not.toHaveBeenCalled();
+  });
+
+  it('fills a hole and tells the engines — the compaction-off case', async () => {
+    // No limit block at all: the engine resolves context 0 and isOverflow()
+    // hard-returns false, so auto-compaction is OFF until this lands.
+    seed(undefined);
+    const c = client();
+    const write = refreshingChangeWriter(writeModelContextLimit, () => [{ client: c, cwd: '/work/repo' }]);
+
+    expect(write('lmstudio', 'qwen3.5-35b', 131_072, { onlyWhenUnset: true })).toBe(true);
+    expect(persisted()).toBe(131_072);
+    await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalledTimes(1));
+  });
+
+  it('a writer that THREW tells no one, and the throw still reaches the caller', () => {
+    const c = client();
+    const write = refreshingChangeWriter(() => { throw new Error('config is corrupt'); }, () => [{ client: c }]);
+
+    expect(() => write()).toThrow('config is corrupt');
+    expect(c.extMethod).not.toHaveBeenCalled();
   });
 });

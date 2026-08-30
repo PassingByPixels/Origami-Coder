@@ -20,7 +20,7 @@ const DRAINED = Symbol("drained")
 type TodoSnapshot = {
   sessionId?: string
   source?: string
-  todos?: { id?: number; content?: string; activeForm?: string; status?: string }[]
+  todos?: { id?: number; content?: string; activeForm?: string; status?: string; depth?: number }[]
 }
 type Notification = { method?: string; params?: Record<string, unknown> }
 
@@ -74,9 +74,14 @@ function initializeParams() {
   }
 }
 
+// NESTED, and one item deliberately carries no depth at all. This list has to
+// survive the tool schema, the todo table, the HTTP encoder and the ACP
+// notification - four places that each drop an undeclared field in silence -
+// so a flat fixture would prove only that the text came back.
 const TODOS = [
-  { content: "reproduce the failure", status: "completed", priority: "high" },
-  { content: "fix the parser", status: "in_progress", priority: "high" },
+  { content: "reproduce the failure", status: "completed", priority: "high", depth: 0 },
+  { content: "read the stack trace", status: "completed", priority: "high", depth: 1 },
+  { content: "fix the parser", status: "in_progress", priority: "high", depth: 0 },
   { content: "run the suite", status: "pending", priority: "medium" },
 ]
 
@@ -129,10 +134,15 @@ describe("origami acp todo restore subprocess", () => {
         // The provenance the client renders in the strip's tooltip, and the
         // proof this came off the row rather than the replayed transcript.
         expect(params.source).toBe("session_restore")
-        expect(params.todos?.map((todo) => [todo.content, todo.status])).toEqual([
-          ["reproduce the failure", "completed"],
-          ["fix the parser", "in_progress"],
-          ["run the suite", "pending"],
+        // Content, status AND nesting. The depth is the end-to-end proof: it
+        // was written by one process through the tool and read by another off
+        // the store, so a field lost at any hop shows up as a 0 here. The last
+        // item named no depth and comes back flat.
+        expect(params.todos?.map((todo) => [todo.content, todo.status, todo.depth])).toEqual([
+          ["reproduce the failure", "completed", 0],
+          ["read the stack trace", "completed", 1],
+          ["fix the parser", "in_progress", 0],
+          ["run the suite", "pending", 0],
         ])
       }),
     180_000,

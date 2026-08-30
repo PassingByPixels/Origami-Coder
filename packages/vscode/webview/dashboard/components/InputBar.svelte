@@ -6,6 +6,8 @@
   import { onMount } from 'svelte';
   import ImageStrip from './ImageStrip.svelte';
   import InterjectingChip from './InterjectingChip.svelte';
+  import ChangesPill from './ChangesPill.svelte';
+  import type { SessionChanges } from '../panes/sessionChanges';
   import ModelPicker from './ModelPicker.svelte';
 
   import SlashDropdown from './SlashDropdown.svelte';
@@ -15,7 +17,7 @@
   import VisionProfileMenu from './VisionProfileMenu.svelte';
   import type { VisionState } from './visionPinState';
   import { readComposerImage } from './composerImages';
-  import { bannerState, probingText } from './modelBanner';
+  import ModelWarning from './ModelWarning.svelte';
   import { applyMention, filterMentions, mentionQuery, type MentionCandidate } from '../../chat/collabMentions';
 
   interface Props {
@@ -64,6 +66,11 @@
      *  and the engine has not acknowledged them yet. The parent owns the flag
      *  because it owns the lines (interjectSplit.ts). */
     interjecting?: boolean;
+    /** What this chat has CHANGED so far, rolled up by the CALLER from its own
+     *  transcript (panes/sessionChanges.ts). Absent = nothing to show. */
+    changes?: SessionChanges;
+    /** Focus view for THIS chat (ChangesPill's eye): its lit state, and the flip behind it. `onToggleFocus` absent — the bare collab composer — draws no eye at all. */
+    focused?: boolean; onToggleFocus?: () => void;
     /** Deliver a line typed DURING a turn into that turn, now. Its absence is
      *  what makes a mount refuse to send mid-turn at all: the draft is kept
      *  rather than handed to nobody. */
@@ -97,7 +104,7 @@
   /** What LEAVES this component — no local id, which is the strip's bookkeeping. */
   interface ComposerImage { dataUrl: string; name: string; }
 
-  let { inFlight, agentName, modelName, modelOnline = false, modelReason = '', isVlm = false, visionState = 'auto-off', providerLabel = '', providerIsLocal = true, sessionId = null, onImageClick, onCompact, onSend, onCancel, onExport, canExport = false, interjecting = false, onInterject, commands, passthroughSlash = false, disabled = false, placeholder = '', bare = false, participants, allowImages = false }: Props = $props();
+  let { inFlight, agentName, modelName, modelOnline = false, modelReason = '', isVlm = false, visionState = 'auto-off', providerLabel = '', providerIsLocal = true, sessionId = null, onImageClick, onCompact, onSend, onCancel, onExport, canExport = false, interjecting = false, changes, focused = false, onToggleFocus, onInterject, commands, passthroughSlash = false, disabled = false, placeholder = '', bare = false, participants, allowImages = false }: Props = $props();
   /** ONE gate for the strip, the paste handler and the drop handler, so the
    *  three cannot end up answering differently. */
   const imagesOn = $derived(!bare || allowImages);
@@ -656,27 +663,10 @@
     <SlashDropdown items={mentionRows} selectedIdx={mentionIdx} onPick={selectMention} onHover={(i) => (mentionIdx = i)} emptyText="No matching participants" />
   {/if}
 
-  <!-- Model connectivity banner: shown until THIS chat's provider confirms a
-       model. Provider-aware: names the RIGHT server to go start — a Spark/vLLM
-       chat must never be told to "start LM Studio". And it does NOT cry wolf
-       while the probe is still out: `probing` is a neutral, unstyled line that
-       asks for nothing (modelBanner.ts owns which of the three this is). -->
-  {#if !bare && !modelOnline}
-    {@const banner = bannerState(modelOnline, modelReason, providerIsLocal)}
-    <div class="model-warning" class:probing={banner === 'probing'}
-      title={banner === 'probing' ? 'Waiting for the provider to answer — this settles on its own.' : (modelReason || 'No model reported by the harness yet.')}>
-      <span class="warn-dot"></span>
-      <span class="warn-text">
-        {#if banner === 'probing'}
-          {probingText(providerLabel)}
-        {:else if providerIsLocal}
-          No model detected yet — start LM Studio and type a message to retry.
-        {:else}
-          {providerLabel || 'Provider'} unreachable — check the server, then type a message to retry.
-        {/if}
-      </span>
-    </div>
-  {/if}
+  <!-- Model connectivity strip (ModelWarning.svelte owns the copy and the "do
+       not cry wolf while probing" rule). A bare composer has no engine session
+       behind it, so there is no provider for it to report on. -->
+  {#if !bare}<ModelWarning online={modelOnline} reason={modelReason} {providerLabel} {providerIsLocal} />{/if}
 
   <!-- Monthly spend cap: amber warning from 80%, red block at 100% (cloud turns
        are refused host-side; +$5 raises the cap inline). Local models are free. -->
@@ -790,19 +780,21 @@
     </div>
   {/if}
 
-  {#if imagesOn && images.length > 0}
-    <ImageStrip {images} onRemove={removeImage} onOpen={onImageClick} />
-  {/if}
+  {#if imagesOn && images.length > 0}<ImageStrip {images} onRemove={removeImage} onOpen={onImageClick} />{/if}
 
   <!-- A line typed during the turn, on its way INTO it: the composer is already
        clear, so this is what stands in for it until the host answers. -->
-  {#if !bare}
-    <InterjectingChip {interjecting} />
-  {/if}
+  {#if !bare}<InterjectingChip {interjecting} />{/if}
 
-  <!-- Input + send/cancel -->
+  <!-- Input + send/cancel. The utility row rides INSIDE the textarea's own
+       column rather than across the whole footer, so the focus eye ends at the
+       textarea's right edge instead of hanging above Send, and nothing sits
+       between the row and the box it belongs to (0.4.61 UAT). -->
   <div class="input-row">
-    <textarea bind:this={inputEl} bind:value={inputText} oninput={handleInput} onkeydown={handleKeydown} onpaste={imagesOn ? handlePaste : undefined} ondrop={imagesOn ? handleDrop : undefined} ondragover={imagesOn ? handleDragOver : undefined} rows="2" {disabled} placeholder={placeholder || (inFlight ? 'Type to interrupt — Enter sends it into the running turn…' : 'Type a message or / for commands...')} class="input"></textarea>
+    <div class="input-col">
+      <ChangesPill {changes} {focused} {onToggleFocus} />
+      <textarea bind:this={inputEl} bind:value={inputText} oninput={handleInput} onkeydown={handleKeydown} onpaste={imagesOn ? handlePaste : undefined} ondrop={imagesOn ? handleDrop : undefined} ondragover={imagesOn ? handleDragOver : undefined} rows="2" {disabled} placeholder={placeholder || (inFlight ? 'Type to interrupt — Enter sends it into the running turn…' : 'Type a message or / for commands...')} class="input"></textarea>
+    </div>
     <div class="btn-col">
       <button class="btn send" onclick={doSend} {disabled} title={inFlight ? 'Send this into the running turn now' : 'Send'}>Send</button>
       {#if !bare}
@@ -905,7 +897,8 @@
 <style>
   .input-area { border-top: 1px solid var(--og-border); background: var(--og-pane-header); flex-shrink: 0; position: relative; }
 
-  .model-warning { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: rgba(251, 191, 36, 0.12); border-bottom: 1px solid var(--og-border); }
+  /* The connectivity strip's own rules moved to ModelWarning.svelte with its
+     markup — Svelte scopes styles per component. */
 
   /* Monthly spend-cap banner — amber approaching, red at the cap. */
   .budget-banner { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: rgba(251, 191, 36, 0.14); border-bottom: 1px solid var(--og-border); }
@@ -915,15 +908,6 @@
   .budget-text { font-size: 10px; color: var(--og-text-secondary); flex: 1; line-height: 1.35; }
   .budget-raise { font-size: 10px; font-weight: 600; padding: 2px 8px; border: 1px solid var(--og-border); border-radius: 4px; background: var(--og-btn-bg); color: var(--og-text-secondary); cursor: pointer; font-family: inherit; flex-shrink: 0; }
   .budget-raise:hover { border-color: var(--og-error); color: var(--og-text); }
-  /* PROBING is not a warning. It keeps the row (so the composer does not jump
-     when the verdict lands) and drops every alarm cue: no amber wash, no glow,
-     a muted dot. The pulse stays — something IS still happening. */
-  .model-warning.probing { background: transparent; }
-  .warn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--og-warning); box-shadow: 0 0 6px var(--og-warning); flex-shrink: 0; animation: pulse 1.6s infinite; }
-  .model-warning.probing .warn-dot { background: var(--og-text-muted); box-shadow: none; }
-  .warn-text { font-size: 10px; color: var(--og-text-secondary); }
-  .model-warning.probing .warn-text { color: var(--og-text-muted); }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
   /* --- Model bar (above input) --- */
   .model-bar {
@@ -1019,7 +1003,16 @@
 
   /* --- Input row --- */
   .input-row { display: flex; gap: 8px; padding: 6px 12px; align-items: flex-end; }
-  .input { flex: 1; min-height: 24px; max-height: 120px; padding: 6px 8px; font-family: inherit; font-size: 12px; color: var(--og-text); background: var(--og-input-bg); border: 1px solid var(--og-input-border); border-radius: 4px; resize: vertical; outline: none; }
+  /* The TEXTAREA'S COLUMN. The utility row is a child of it, so it spans the
+     box's width exactly: the eye stops at the textarea's right edge instead of
+     sitting over Send, and the row hugs the box. 2px, not more — the whole
+     complaint was the band of empty space (0.4.61 UAT). `min-width: 0` because
+     a flex item's default `min-width: auto` would let the textarea refuse to
+     shrink below its intrinsic width in a narrow grid cell. */
+  .input-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  /* `width` rather than `flex: 1`: the flex axis in this column is VERTICAL, so
+     growing along it is not what this box wants. */
+  .input { width: 100%; min-height: 24px; max-height: 120px; padding: 6px 8px; font-family: inherit; font-size: 12px; color: var(--og-text); background: var(--og-input-bg); border: 1px solid var(--og-input-border); border-radius: 4px; resize: vertical; outline: none; }
   .input:focus { border-color: var(--og-chat); }
   .input::placeholder { color: var(--og-text-muted); }
   .input:disabled { opacity: 0.5; }

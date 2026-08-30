@@ -5,6 +5,7 @@ import { Database } from "@origami/core/database/database"
 import { eq } from "drizzle-orm"
 import { asc } from "drizzle-orm"
 import { TodoTable } from "@origami/core/session/sql"
+import { TodoReconcile } from "@origami/core/session/todo-reconcile"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionTodo } from "@origami/schema/session-todo"
 
@@ -27,27 +28,45 @@ const layer = Layer.effect(
     const { db } = yield* Database.Service
 
     const update = Effect.fn("Todo.update")(function* (input: { sessionID: SessionID; todos: ReadonlyArray<Info> }) {
-      yield* db
+      // READ-MODIFY-WRITE, inside the transaction. The write is a full-list
+      // replace, so what the model left out is only recoverable from the rows
+      // about to be deleted - the two rules, and why they live at this seam,
+      // are in @origami/core/session/todo-reconcile.
+      const stored = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
+            const previous = yield* tx
+              .select()
+              .from(TodoTable)
+              .where(eq(TodoTable.session_id, input.sessionID))
+              .orderBy(asc(TodoTable.position))
+              .all()
+            const next = TodoReconcile.reconcileTodos(previous, input.todos)
             yield* tx.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
-            if (input.todos.length === 0) return
+            if (next.length === 0) return next
             yield* tx
               .insert(TodoTable)
               .values(
-                input.todos.map((todo, position) => ({
+                next.map((todo, position) => ({
                   session_id: input.sessionID,
                   content: todo.content,
                   status: todo.status,
                   priority: todo.priority,
                   position,
+                  // Stored AS SENT - see the core twin for why the write does
+                  // not clamp. Carry-forward is not clamping: it fills a field
+                  // the model omitted, it never rewrites one it sent.
+                  depth: todo.depth,
                 })),
               )
               .run()
+            return next
           }),
         )
         .pipe(Effect.orDie)
-      yield* events.publish(Event.Updated, input)
+      // The list that was STORED, not the one that arrived - so a subscriber
+      // rendering the event and one re-reading the table agree.
+      yield* events.publish(Event.Updated, { sessionID: input.sessionID, todos: stored })
     })
 
     const get = Effect.fn("Todo.get")(function* (sessionID: SessionID) {
@@ -58,10 +77,13 @@ const layer = Layer.effect(
         .orderBy(asc(TodoTable.position))
         .all()
         .pipe(Effect.orDie)
+      // `depth` is always a number here: the column is NOT NULL DEFAULT 0, so a
+      // row written before the column existed reads back flat.
       return rows.map((row) => ({
         content: row.content,
         status: row.status,
         priority: row.priority,
+        depth: row.depth,
       }))
     })
 

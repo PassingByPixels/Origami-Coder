@@ -98,7 +98,7 @@
       </span>
       <span class="brand-name">Origami — Collab</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
     </div>
     <div class="chat-fill">
@@ -114,7 +114,7 @@
       </span>
       <span class="brand-name">Origami — Map</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
     </div>
     <div class="chat-fill">
@@ -130,7 +130,7 @@
       </span>
       <span class="brand-name">Origami — Compare</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
     </div>
     <div class="chat-fill">
@@ -146,7 +146,7 @@
       </span>
       <span class="brand-name">Origami — {boardViewName}</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
     </div>
     <div class="chat-fill">
@@ -164,7 +164,7 @@
       </span>
       <span class="brand-name">Origami — Memory</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
     </div>
     <div class="chat-fill">
@@ -181,7 +181,7 @@
       </span>
       <span class="brand-name">Origami</span>
       {#if version}
-        <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+        <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
       {/if}
       <span
         class="status"

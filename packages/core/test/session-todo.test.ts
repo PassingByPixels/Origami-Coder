@@ -59,35 +59,186 @@ describe("SessionTodo", () => {
           { content: "first", status: "in_progress", priority: "high" },
         ],
       })
+      // A write that names no depth reads back flat - the shape every stored
+      // list had before the column existed.
       expect(yield* todos.get(sessionID)).toEqual([
-        { content: "second", status: "pending", priority: "low" },
-        { content: "first", status: "in_progress", priority: "high" },
+        { content: "second", status: "pending", priority: "low", depth: 0 },
+        { content: "first", status: "in_progress", priority: "high", depth: 0 },
       ])
       expect(
         (yield* db.select().from(TodoTable).orderBy(asc(TodoTable.position)).all().pipe(Effect.orDie)).map((row) => ({
           content: row.content,
           position: row.position,
+          depth: row.depth,
         })),
       ).toEqual([
-        { content: "second", position: 0 },
-        { content: "first", position: 1 },
+        { content: "second", position: 0, depth: 0 },
+        { content: "first", position: 1, depth: 0 },
       ])
 
       yield* todos.update({ sessionID, todos: [{ content: "replacement", status: "completed", priority: "medium" }] })
-      expect(yield* todos.get(sessionID)).toEqual([{ content: "replacement", status: "completed", priority: "medium" }])
+      expect(yield* todos.get(sessionID)).toEqual([
+        { content: "replacement", status: "completed", priority: "medium", depth: 0 },
+      ])
 
       yield* todos.update({ sessionID, todos: [] })
       expect(yield* todos.get(sessionID)).toEqual([])
+      // The event carries what was STORED, not what arrived: every row has its
+      // resolved depth, so a subscriber rendering the event and one re-reading
+      // the table cannot disagree about the same write.
       expect(published.map((event) => event.data)).toEqual([
         {
           sessionID,
           todos: [
-            { content: "second", status: "pending", priority: "low" },
-            { content: "first", status: "in_progress", priority: "high" },
+            { content: "second", status: "pending", priority: "low", depth: 0 },
+            { content: "first", status: "in_progress", priority: "high", depth: 0 },
           ],
         },
-        { sessionID, todos: [{ content: "replacement", status: "completed", priority: "medium" }] },
+        { sessionID, todos: [{ content: "replacement", status: "completed", priority: "medium", depth: 0 }] },
         { sessionID, todos: [] },
+      ])
+    }),
+  )
+
+  // Nesting is stored as a depth per row rather than a parent reference,
+  // because a row has no identity to reference: the list is replaced whole on
+  // every write and its ONLY identity is the position. Depth composes with
+  // that; an id would have to be invented and then kept stable across a
+  // full-list replace, which nothing here does.
+  it.effect("persists depth through a write and reads it back in list order", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const todos = yield* SessionTodo.Service
+
+      // The grandchild is COMPLETED, not pending: a completed `child` sitting
+      // over an open grandchild is exactly the lie the write seam now refuses
+      // to record (see the demotion cases below), and it would settle this
+      // depth round-trip on a status change rather than on the depths.
+      const nested = [
+        { content: "parent", status: "in_progress", priority: "high", depth: 0 },
+        { content: "child", status: "completed", priority: "high", depth: 1 },
+        { content: "grandchild", status: "completed", priority: "low", depth: 2 },
+        { content: "sibling", status: "pending", priority: "low", depth: 0 },
+      ]
+      yield* todos.update({ sessionID, todos: nested })
+      expect(yield* todos.get(sessionID)).toEqual(nested)
+
+      // Stored AS SENT: the write does not clamp, so a reader still sees what
+      // the model actually claimed and can say so.
+      yield* todos.update({
+        sessionID,
+        todos: [{ content: "wrong", status: "pending", priority: "low", depth: 9 }],
+      })
+      expect(
+        (yield* db.select().from(TodoTable).orderBy(asc(TodoTable.position)).all().pipe(Effect.orDie)).map(
+          (row) => row.depth,
+        ),
+      ).toEqual([9])
+
+      // A partly-nested list: the rows that named no depth are flat, and the
+      // one that did keeps it. Nothing is dropped or reordered.
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "a", status: "pending", priority: "low" },
+          { content: "b", status: "pending", priority: "low", depth: 1 },
+          { content: "c", status: "pending", priority: "low" },
+        ],
+      })
+      expect(yield* todos.get(sessionID)).toEqual([
+        { content: "a", status: "pending", priority: "low", depth: 0 },
+        { content: "b", status: "pending", priority: "low", depth: 1 },
+        { content: "c", status: "pending", priority: "low", depth: 0 },
+      ])
+    }),
+  )
+
+  // THE COMPACTION REPRO, at the seam. The model re-emits the same list from a
+  // rendered summary and every `depth` is gone; without carry-forward the tree
+  // it just built is flattened by its own next write.
+  it.effect("carries a dropped depth forward from the row already stored", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const todos = yield* SessionTodo.Service
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "major one", status: "in_progress", priority: "high", depth: 0 },
+          { content: "sub a", status: "completed", priority: "high", depth: 1 },
+          { content: "sub b", status: "pending", priority: "medium", depth: 1 },
+        ],
+      })
+
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "major one", status: "in_progress", priority: "high" },
+          { content: "sub a", status: "completed", priority: "high" },
+          { content: "sub b", status: "pending", priority: "medium" },
+        ],
+      })
+      expect((yield* todos.get(sessionID)).map((todo) => todo.depth)).toEqual([0, 1, 1])
+    }),
+  )
+
+  // An explicit number is the model saying where the row goes - including an
+  // explicit 0, which is a promotion, not a gap to fill from the old row.
+  it.effect("lets an explicit depth override the stored one", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const todos = yield* SessionTodo.Service
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "parent", status: "pending", priority: "low", depth: 0 },
+          { content: "child", status: "pending", priority: "low", depth: 1 },
+        ],
+      })
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "parent", status: "pending", priority: "low", depth: 0 },
+          { content: "child", status: "pending", priority: "low", depth: 0 },
+        ],
+      })
+      expect((yield* todos.get(sessionID)).map((todo) => todo.depth)).toEqual([0, 0])
+    }),
+  )
+
+  // A parent that says it is done while its own sub-tasks are open is a lie the
+  // next agent reads as fact. The store refuses to record it.
+  it.effect("stores a completed parent as in_progress while a child is still open", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const todos = yield* SessionTodo.Service
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "major", status: "completed", priority: "high", depth: 0 },
+          { content: "sub", status: "pending", priority: "high", depth: 1 },
+        ],
+      })
+      expect((yield* todos.get(sessionID)).map((todo) => todo.status)).toEqual(["in_progress", "pending"])
+    }),
+  )
+
+  it.effect("keeps a completed parent completed once every child is terminal", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const todos = yield* SessionTodo.Service
+      yield* todos.update({
+        sessionID,
+        todos: [
+          { content: "major", status: "completed", priority: "high", depth: 0 },
+          { content: "done", status: "completed", priority: "high", depth: 1 },
+          { content: "dropped", status: "cancelled", priority: "low", depth: 1 },
+        ],
+      })
+      expect((yield* todos.get(sessionID)).map((todo) => todo.status)).toEqual([
+        "completed",
+        "completed",
+        "cancelled",
       ])
     }),
   )

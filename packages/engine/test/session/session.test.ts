@@ -254,9 +254,13 @@ describe("Session", () => {
       const created = yield* Effect.acquireRelease(session.create({ title: "with-todos" }), (info) =>
         session.remove(info.id).pipe(Effect.ignore),
       )
+      // NESTED on purpose: the fork's insert is an explicit field map, so a
+      // column left out of it is a column the fork silently drops - and a plan
+      // that arrives flattened reads as a different plan.
       const todos = [
-        { content: "reproduce the failure", status: "completed", priority: "high" },
-        { content: "fix the parser", status: "in_progress", priority: "high" },
+        { content: "reproduce the failure", status: "completed", priority: "high", depth: 0 },
+        { content: "read the stack trace", status: "completed", priority: "high", depth: 1 },
+        { content: "fix the parser", status: "in_progress", priority: "high", depth: 0 },
       ]
       yield* todo.update({ sessionID: created.id, todos })
 
@@ -264,7 +268,8 @@ describe("Session", () => {
         session.remove(info.id).pipe(Effect.ignore),
       )
 
-      // Order matters as much as content: the list is a sequence of steps.
+      // Order matters as much as content: the list is a sequence of steps, and
+      // with nesting the order is also what says which step owns which.
       expect(yield* todo.get(fork.id)).toEqual(todos)
       // And the copy is a copy - writing the fork's list must not move the
       // parent's.

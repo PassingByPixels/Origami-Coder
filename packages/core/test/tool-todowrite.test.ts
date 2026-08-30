@@ -100,7 +100,58 @@ describe("TodoWriteTool", () => {
         },
       })
       expect(assertions).toMatchObject([{ sessionID, action: "todowrite", resources: ["*"], save: ["*"] }])
-      expect(yield* service.get(sessionID)).toEqual(todoList)
+      // BACK-COMPAT: a call that names no depth is echoed to the model byte for
+      // byte as it was sent (the JSON above), and reads back off the store as a
+      // flat list.
+      expect(yield* service.get(sessionID)).toEqual([{ ...todoList[0]!, depth: 0 }])
+    }),
+  )
+
+  // Nesting reaches the store through the TOOL, not only through the service:
+  // the tool's input schema has to declare `depth` or the decoder drops it as an
+  // unknown field and the list arrives flat with no error anywhere.
+  it.effect("accepts a nested list and persists each item's depth", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const service = yield* SessionTodo.Service
+      const nested: ReadonlyArray<SessionTodo.Info> = [
+        { content: "Add the export button", status: "in_progress", priority: "high", depth: 0 },
+        { content: "Wire the click handler", status: "completed", priority: "high", depth: 1 },
+        { content: "Update the docs", status: "pending", priority: "low", depth: 0 },
+      ]
+
+      expect(yield* executeTool(registry, call(nested))).toEqual({
+        type: "text",
+        value: JSON.stringify(nested, null, 2),
+      })
+      expect(yield* service.get(sessionID)).toEqual(nested)
+    }),
+  )
+
+  // FAIL-OPEN. A depth the model got wrong must cost that row its indent, never
+  // the whole call: the readers clamp, so the schema deliberately accepts any
+  // number rather than a non-negative integer.
+  it.effect("accepts an out-of-range or fractional depth instead of failing the call", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const service = yield* SessionTodo.Service
+      const odd: ReadonlyArray<SessionTodo.Info> = [
+        { content: "negative", status: "pending", priority: "low", depth: -3 },
+        { content: "fractional", status: "pending", priority: "low", depth: 1.5 },
+        { content: "far too deep", status: "pending", priority: "low", depth: 99 },
+      ]
+
+      expect(yield* executeTool(registry, call(odd))).toEqual({
+        type: "text",
+        value: JSON.stringify(odd, null, 2),
+      })
+      expect((yield* service.get(sessionID)).map((todo) => todo.content)).toEqual([
+        "negative",
+        "fractional",
+        "far too deep",
+      ])
     }),
   )
 
@@ -118,7 +169,9 @@ describe("TodoWriteTool", () => {
         type: "error",
         value: "Unable to update todos",
       })
-      expect(yield* service.get(sessionID)).toEqual([{ content: "keep", status: "pending", priority: "low" }])
+      expect(yield* service.get(sessionID)).toEqual([
+        { content: "keep", status: "pending", priority: "low", depth: 0 },
+      ])
       expect(assertions).toMatchObject([{ sessionID, action: "todowrite", resources: ["*"], save: ["*"] }])
     }),
   )

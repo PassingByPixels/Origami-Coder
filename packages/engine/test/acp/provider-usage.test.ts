@@ -23,13 +23,16 @@ import { Effect, Layer } from "effect"
 import {
   ACPProviderUsage,
   fetchChatgptUsage,
+  fetchGoUsage,
   fetchGrokUsage,
   parseChatgptUsage,
+  parseGoUsage,
   parseGrokUsage,
   usageGate,
   type FetchLike,
 } from "@/acp/provider-usage"
 import { Auth } from "@/auth"
+import { Config } from "@/config/config"
 
 /** 2026-08-15T10:00:00Z — a fixed clock so `resetsAt` maths is checkable. */
 const NOW = 1_786_874_400_000
@@ -78,6 +81,28 @@ const grokCreditsBody = {
   },
 }
 
+// OPENCODE GO FIXTURES — the field names and the three lane keys are read from
+// the upstream route that serves this body (anomalyco/opencode,
+// packages/console/app/src/routes/zen/go/v1/usage.ts, commit 2b8a5969) and were
+// confirmed against ONE live 200 on 2026-08-28. The percentages and the
+// timestamps below are invented; the SHAPE is not, and no account data is here.
+
+/** 2026-08-28T14:26:47Z in epoch millis — `Date.parse`'s own answer. */
+const GO_ROLLING_RESET = 1_787_927_207_000
+/** 2026-08-31T00:00:00Z in epoch millis. */
+const GO_WEEKLY_RESET = 1_788_134_400_000
+/** 2026-09-21T07:47:07Z in epoch millis. */
+const GO_MONTHLY_RESET = 1_789_976_827_000
+
+/** All three lanes, in the order the endpoint serves them. */
+const goUsageBody = {
+  usage: {
+    rolling: { status: "ok", percent: 30, resetsAt: "2026-08-28T14:26:47.000Z" },
+    weekly: { status: "ok", percent: 12, resetsAt: "2026-08-31T00:00:00.000Z" },
+    monthly: { status: "ok", percent: 6, resetsAt: "2026-09-21T07:47:07.000Z" },
+  },
+}
+
 /** A fetch that never touches the network. Records what it was asked for. */
 const stubFetch = (
   response: { ok?: boolean; status?: number; json?: () => Promise<unknown> },
@@ -101,17 +126,19 @@ describe("parseChatgptUsage — a documented body becomes windows", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
     expect(result.plan).toBe("plus")
+    // Weekly FIRST — the pill renders only windows[0], and the weekly cap is
+    // the budget a user actually manages (same rule as the GO lanes).
     expect(result.windows).toEqual([
-      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000 },
       { label: "Weekly", usedPercent: 47.5, resetsAt: 1_787_174_400_000 },
+      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000 },
     ])
   })
 
   test("reset_at in SECONDS becomes epoch MILLIS — the units the webview renders", () => {
-    // The whole point of the seconds/millis guard: 1_786_883_400 is 2026, not 1970.
+    // The whole point of the seconds/millis guard: 1_787_174_400 is 2026, not 1970.
     const result = parseChatgptUsage(fullBody, NOW)
     if (!result.ok) throw new Error("unreachable")
-    expect(result.windows[0]!.resetsAt).toBe(1_786_883_400 * 1000)
+    expect(result.windows[0]!.resetsAt).toBe(1_787_174_400 * 1000)
     expect(new Date(result.windows[0]!.resetsAt!).getUTCFullYear()).toBe(2026)
   })
 
@@ -285,6 +312,212 @@ describe("parseGrokUsage — an unreadable body degrades to unavailable, never t
   }
 })
 
+describe("parseGoUsage — the three subscription lanes", () => {
+  test("all three lanes are read, IN ORDER, with the labels the pill renders", () => {
+    // The order is the requirement, not an incidental: the model-bar pill shows
+    // only the FIRST line, and the WEEKLY cap is the budget a user manages.
+    const result = parseGoUsage(goUsageBody)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.plan).toBe("go")
+    expect(result.windows).toEqual([
+      { label: "Weekly", usedPercent: 12, resetsAt: GO_WEEKLY_RESET },
+      { label: "5-hour", usedPercent: 30, resetsAt: GO_ROLLING_RESET },
+      { label: "Monthly", usedPercent: 6, resetsAt: GO_MONTHLY_RESET },
+    ])
+  })
+
+  test("resetsAt is ABSOLUTE — `now` is never added to it", () => {
+    // The ChatGPT lane adds `reset_after_seconds` to now. Doing that here would
+    // push a reset 56 years out and the line would read "resets in 20000d".
+    const result = parseGoUsage(goUsageBody)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.resetsAt).toBe(Date.parse("2026-08-31T00:00:00.000Z"))
+    expect(new Date(result.windows[0]!.resetsAt!).getUTCFullYear()).toBe(2026)
+  })
+
+  test("a rate-limited lane is a 100% lane, not an error", () => {
+    // `status` is not rendered: at the point it flips to "rate-limited" the
+    // percentage already says the same thing, in the vocabulary the row uses.
+    const result = parseGoUsage({
+      usage: { rolling: { status: "rate-limited", percent: 100, resetsAt: "2026-08-31T00:00:00.000Z" } },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 100, resetsAt: GO_WEEKLY_RESET }])
+  })
+
+  test("a lane the body omits is skipped, and the ones present keep their order", () => {
+    const result = parseGoUsage({
+      usage: { monthly: { status: "ok", percent: 6 }, rolling: { status: "ok", percent: 30 } },
+    })
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["5-hour", "Monthly"])
+  })
+
+  test("a lane with no percent is DROPPED, not rendered as 0%", () => {
+    const result = parseGoUsage({
+      usage: { rolling: { status: "ok", resetsAt: "2026-08-31T00:00:00.000Z" }, weekly: { status: "ok", percent: 12 } },
+    })
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toHaveLength(1)
+    expect(result.windows[0]!.label).toBe("Weekly")
+  })
+
+  test("an unparseable resetsAt leaves the lane WITHOUT a reset rather than dropping it", () => {
+    const result = parseGoUsage({ usage: { rolling: { status: "ok", percent: 30, resetsAt: "not-a-date" } } })
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 30 }])
+  })
+
+  test("an over-100 percentage is clamped so a progress bar cannot overflow its track", () => {
+    const result = parseGoUsage({ usage: { rolling: { percent: 140 } } })
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.usedPercent).toBe(100)
+  })
+
+  test("a FRESH subscription reports 0 on every lane, and every lane is kept", () => {
+    // The reason `percent === undefined` and `percent === 0` must not collapse
+    // into one check: a plan nobody has spent against yet reports three zeroes,
+    // and dropping them would tell a working subscription it has no quota
+    // window at all — on the first day it is used.
+    const result = parseGoUsage({
+      usage: {
+        rolling: { status: "ok", percent: 0, resetsAt: "2026-08-31T00:00:00.000Z" },
+        weekly: { status: "ok", percent: 0 },
+        monthly: { status: "ok", percent: 0 },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toHaveLength(3)
+    expect(result.windows.map((w) => w.usedPercent)).toEqual([0, 0, 0])
+  })
+
+  test("a negative percentage is clamped up to 0", () => {
+    const result = parseGoUsage({ usage: { rolling: { percent: -3 } } })
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.usedPercent).toBe(0)
+  })
+})
+
+describe("parseGoUsage — an unreadable body degrades to unavailable, never to a number", () => {
+  const unreadable: Array<[string, unknown]> = [
+    ["null", null],
+    ["an array", [{ percent: 50 }]],
+    // A 404 on opencode.ai answers an HTML page, which is why a non-object body
+    // has to be a refusal and not a throw.
+    ["an HTML error page", "<!DOCTYPE html><html><body>Not found</body></html>"],
+    ["an empty object", {}],
+    ["usage present but empty", { usage: {} }],
+    ["lanes renamed (a shape change we did not follow)", { usage: { five_hour: { percent: 30 } } }],
+    ["the lanes hoisted to the top level", { rolling: { percent: 30 } }],
+    ["percent as a string", { usage: { rolling: { percent: "30" } } }],
+    ["percent NaN", { usage: { rolling: { percent: Number.NaN } } }],
+    ["an auth error envelope instead of usage", { type: "AuthError", message: "Invalid API key" }],
+  ]
+  for (const [name, body] of unreadable) {
+    test(name, () => {
+      const result = parseGoUsage(body)
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error("unreachable")
+      expect(result.unavailable.length).toBeGreaterThan(0)
+      // The reason is shown verbatim in the pill's tooltip — no stack.
+      expect(result.unavailable).not.toContain("at ")
+    })
+  }
+})
+
+describe("fetchGoUsage — the one call", () => {
+  test("sends the key as a BEARER, which is the only header this endpoint accepts", async () => {
+    // Measured against the live endpoint on 2026-08-28: `x-api-key` — the
+    // header the GO chat path uses — answers 401 here, `Bearer` answers 200.
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    await fetchGoUsage("sk-not-a-real-go-key", stubFetch({ json: async () => goUsageBody }, seen))
+    expect(seen.url).toBe("https://opencode.ai/zen/go/v1/usage")
+    expect(seen.headers?.["Authorization"]).toBe("Bearer sk-not-a-real-go-key")
+    expect(seen.headers?.["Accept"]).toBe("application/json")
+    expect(seen.headers && "x-api-key" in seen.headers).toBe(false)
+  })
+
+  test("a 200 happy path returns all three windows", async () => {
+    const result = await fetchGoUsage("sk-not-a-real-go-key", stubFetch({ json: async () => goUsageBody }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly", "5-hour", "Monthly"])
+  })
+
+  test("403 names the missing SUBSCRIPTION; 401 names the KEY — they are different problems", async () => {
+    // Upstream answers 403 EntitlementError for a valid key on an account with
+    // no Go plan. Telling that user to check their key sends them to fix
+    // something that is already correct.
+    const noPlan = await fetchGoUsage("k", stubFetch({ ok: false, status: 403 }))
+    if (noPlan.ok) throw new Error("unreachable")
+    expect(noPlan.unavailable).toContain("subscription")
+    const badKey = await fetchGoUsage("k", stubFetch({ ok: false, status: 401 }))
+    if (badKey.ok) throw new Error("unreachable")
+    expect(badKey.unavailable).toContain("key")
+    expect(badKey.unavailable).not.toContain("subscription")
+  })
+
+  test("another status names itself rather than guessing a cause", async () => {
+    const result = await fetchGoUsage("k", stubFetch({ ok: false, status: 502 }))
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).toContain("502")
+  })
+
+  test("a non-200 is NOT parsed as JSON — the status decides first", async () => {
+    // A 404 on this host serves HTML. Reading the body before the status would
+    // throw inside json() on the very path that has to degrade quietly.
+    let parsed = false
+    const result = await fetchGoUsage("k", async () => ({
+      ok: false,
+      status: 404,
+      json: async () => {
+        parsed = true
+        throw new SyntaxError("Unexpected token < in JSON at position 0")
+      },
+    }))
+    expect(parsed).toBe(false)
+    expect(result.ok).toBe(false)
+  })
+
+  test("a 200 with a non-JSON body is unavailable, not a throw", async () => {
+    const result = await fetchGoUsage(
+      "k",
+      stubFetch({
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON at position 0")
+        },
+      }),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test("a thrown fetch (offline) is an unavailable line, not a crash", async () => {
+    const result = await fetchGoUsage("k", async () => {
+      throw new Error("getaddrinfo ENOTFOUND opencode.ai")
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).not.toContain("ENOTFOUND")
+  })
+
+  test("THE KEY never crosses back in the result, on any path", async () => {
+    const results = [
+      await fetchGoUsage("sk-not-a-real-go-key", stubFetch({ json: async () => goUsageBody })),
+      await fetchGoUsage("sk-not-a-real-go-key", stubFetch({ ok: false, status: 401 })),
+      await fetchGoUsage("sk-not-a-real-go-key", stubFetch({ ok: false, status: 403 })),
+      await fetchGoUsage("sk-not-a-real-go-key", async () => {
+        throw new Error("offline")
+      }),
+    ]
+    for (const result of results) {
+      expect(JSON.stringify(result)).not.toContain("sk-not-a-real-go-key")
+    }
+  })
+})
+
 /** Narrow a gate answer to its refusal, failing loudly if it let the call through. */
 const refusalOf = (result: ReturnType<typeof usageGate>) => {
   if (!result || result.ok) throw new Error("expected usageGate to refuse, but it allowed the call")
@@ -333,6 +566,41 @@ describe("usageGate — which connections have a usage source at all", () => {
 
   test("an openai OAuth credential is the ONLY combination that proceeds", () => {
     expect(usageGate("openai", oauth())).toBeUndefined()
+  })
+
+  // OpenCode GO is the one subscription sold behind an API KEY, so it is the one
+  // provider whose gate must NOT apply the two rules above.
+  test("opencode-go proceeds on a CONFIG key alone, with nothing in the credential store", () => {
+    expect(usageGate("opencode-go", undefined, "sk-not-a-real-go-key")).toBeUndefined()
+  })
+
+  test("opencode-go is NEVER told its key is metered per token — that refusal is false for a flat-rate plan", () => {
+    // The regression this pins: GO's key IS the subscription, so the openai/xai
+    // wording ("An API key is metered per token and has no plan window") would
+    // be a confident lie about the account the user is actually looking at.
+    const refusal = refusalOf(usageGate("opencode-go", { type: "api", key: "sk-go" } as Auth.Info, undefined))
+    expect(refusal.unavailable).not.toContain("metered")
+    expect(refusal.unavailable).toContain("OpenCode Go")
+  })
+
+  test("opencode-go with no key anywhere is refused WITHOUT a call being possible", () => {
+    expect(refusalOf(usageGate("opencode-go", undefined, undefined)).unavailable).toBeTruthy()
+    expect(refusalOf(usageGate("opencode-go", undefined, "")).unavailable).toBeTruthy()
+  })
+
+  test("OpenCode ZEN (`opencode`) is still refused — it is metered and has no usage endpoint", () => {
+    // `/zen/v1` serves no usage route; only `/zen/go/v1` does. A fall-through
+    // here would put a Zen key on a request for a subscription it has not got.
+    expect(refusalOf(usageGate("opencode", undefined, "sk-zen")).unavailable).toContain("opencode")
+    expect(refusalOf(usageGate("opencode", { type: "api", key: "sk-zen" } as Auth.Info, "sk-zen")).unavailable).toBeTruthy()
+  })
+
+  test("a GO key does not unlock any OTHER api-key provider", () => {
+    // The third argument is GO's key and must be inert everywhere else: an
+    // anthropic or openrouter key must not become a usage source by passing it.
+    for (const id of ["anthropic", "openrouter", "lmstudio"]) {
+      expect(refusalOf(usageGate(id, { type: "api", key: "k" } as Auth.Info, "sk-go")).unavailable).toBeTruthy()
+    }
   })
 })
 
@@ -500,11 +768,15 @@ describe("fetchGrokUsage — the one call", () => {
 })
 
 /**
- * The Effect itself, over a mocked credential store.
+ * The Effect itself, over a mocked credential store and a mocked global config.
  *
- * `usage` needs only `Auth.Service` — no instance, no directory — so the whole
- * end-to-end path (read the credential, gate on it, make the one call) runs
- * under a single mock layer with the fetch seam injected.
+ * `usage` needs `Auth.Service` and `Config.Service` — no instance, no directory
+ * — so the whole end-to-end path (read the credential, resolve GO's key, gate,
+ * make the one call) runs under two mock layers with the fetch seam injected.
+ *
+ * Only `getGlobal` is mocked, and that is the point: `Config.get()` reads
+ * through `InstanceState`, which would DIE on the bare fiber this ext method
+ * runs on. A mock that answered `get` would hide that.
  */
 describe("ACPProviderUsage.usage — reading the stored credential", () => {
   const store = (data: Record<string, Auth.Info>) =>
@@ -515,8 +787,18 @@ describe("ACPProviderUsage.usage — reading the stored credential", () => {
       remove: () => Effect.void,
     })
 
-  const run = <A>(data: Record<string, Auth.Info>, effect: Effect.Effect<A, never, Auth.Service>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(store(data))))
+  /** The GLOBAL origami.json, as `Config.getGlobal()` answers it. */
+  const config = (cfg: Record<string, unknown> = {}) =>
+    Layer.mock(Config.Service)({ getGlobal: () => Effect.succeed(cfg as never) })
+
+  const run = <A>(
+    data: Record<string, Auth.Info>,
+    effect: Effect.Effect<A, never, Auth.Service | Config.Service>,
+    cfg: Record<string, unknown> = {},
+  ) => Effect.runPromise(effect.pipe(Effect.provide(Layer.mergeAll(store(data), config(cfg)))))
+
+  /** A global config with a GO key in it, the way the shell writes one. */
+  const goConfig = (apiKey: string) => ({ provider: { "opencode-go": { options: { apiKey } } } })
 
   test("an openai OAuth credential reaches the call, and the windows come back", async () => {
     const result = await run(
@@ -525,7 +807,7 @@ describe("ACPProviderUsage.usage — reading the stored credential", () => {
     )
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
-    expect(result.windows.map((w) => w.label)).toEqual(["5-hour", "Weekly"])
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly", "5-hour"])
   })
 
   test("a Grok OAuth credential reaches the call, and the windows come back", async () => {
@@ -570,5 +852,83 @@ describe("ACPProviderUsage.usage — reading the stored credential", () => {
     const wire = JSON.stringify(result)
     expect(wire).not.toContain("at-not-a-real-access-token")
     expect(wire).not.toContain("SECRET-KEY")
+  })
+
+  test("opencode-go reads its key from the GLOBAL CONFIG, not the credential store", async () => {
+    // The whole reason this provider needed its own lane: the shell writes the
+    // GO key to provider["opencode-go"].options.apiKey and never to auth.json,
+    // so an Auth-only read would refuse a subscription that is fully connected.
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    const result = await run(
+      {},
+      ACPProviderUsage.usage("opencode-go", stubFetch({ json: async () => goUsageBody }, seen), NOW),
+      goConfig("sk-not-a-real-go-key"),
+    )
+    expect(seen.url).toBe("https://opencode.ai/zen/go/v1/usage")
+    expect(seen.headers?.["Authorization"]).toBe("Bearer sk-not-a-real-go-key")
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.plan).toBe("go")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly", "5-hour", "Monthly"])
+  })
+
+  test("an `api` credential is the FALLBACK when the config carries no GO key", async () => {
+    // `origami providers login` stores a key in auth.json and never touches the
+    // config file. Both ways of connecting GO must read the same subscription.
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    const result = await run(
+      { "opencode-go": { type: "api", key: "sk-from-auth-json" } as Auth.Info },
+      ACPProviderUsage.usage("opencode-go", stubFetch({ json: async () => goUsageBody }, seen), NOW),
+    )
+    expect(seen.headers?.["Authorization"]).toBe("Bearer sk-from-auth-json")
+    expect(result.ok).toBe(true)
+  })
+
+  test("the CONFIG key wins over a stale `api` credential on the same id", async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    await run(
+      { "opencode-go": { type: "api", key: "sk-stale" } as Auth.Info },
+      ACPProviderUsage.usage("opencode-go", stubFetch({ json: async () => goUsageBody }, seen), NOW),
+      goConfig("sk-current"),
+    )
+    expect(seen.headers?.["Authorization"]).toBe("Bearer sk-current")
+  })
+
+  test("opencode-go with no key anywhere is refused WITHOUT any call being made", async () => {
+    let called = false
+    const result = await run({}, ACPProviderUsage.usage("opencode-go", async () => {
+      called = true
+      throw new Error("must not be called")
+    }, NOW))
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).toContain("OpenCode Go")
+  })
+
+  test("OpenCode ZEN is refused even when a GO key sits in the same config", async () => {
+    // `opencode` and `opencode-go` are different providers on the same host.
+    // Zen is metered per token and `/zen/v1` serves no usage route at all.
+    let called = false
+    const result = await run(
+      { opencode: { type: "api", key: "sk-zen" } as Auth.Info },
+      ACPProviderUsage.usage("opencode", async () => {
+        called = true
+        throw new Error("must not be called")
+      }, NOW),
+      goConfig("sk-not-a-real-go-key"),
+    )
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+  })
+
+  test("THE GO KEY NEVER REACHES THE RESULT, on the happy path or a refusal", async () => {
+    const results = [
+      await run({}, ACPProviderUsage.usage("opencode-go", stubFetch({ json: async () => goUsageBody }), NOW), goConfig("sk-not-a-real-go-key")),
+      await run({}, ACPProviderUsage.usage("opencode-go", stubFetch({ ok: false, status: 403 }), NOW), goConfig("sk-not-a-real-go-key")),
+    ]
+    for (const result of results) {
+      expect(JSON.stringify(result)).not.toContain("sk-not-a-real-go-key")
+    }
   })
 })

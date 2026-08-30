@@ -97,3 +97,34 @@ export function refreshingWriter<C, R>(
     return result;
   };
 }
+
+/**
+ * The same wrapper for a writer that REPORTS whether it changed the file: the
+ * engines are told only when it did.
+ *
+ * `writeModelContextLimit` is the caller. A probed window that only lands in
+ * origami.json is invisible to a session already running — the engine bakes
+ * `limit.context` into its provider list at instance start, so the overflow
+ * check keeps compacting against the OLD window (owner: five auto-compactions
+ * in four minutes at 27k, on a model loaded at 86k).
+ *
+ * Not `refreshingWriter`, which fires after any write that did not throw. This
+ * writer answers `false` for its legitimate no-ops — the limit is already
+ * right, `onlyWhenUnset` declined to overrule a hand-set window, the provider
+ * is not configured — and its call sites are automatic probes that run on every
+ * model switch and every status tick. An unconditional refresh would drop every
+ * engine's provider and SDK caches, repeatedly, for nothing.
+ *
+ * Variadic because that writer takes four arguments rather than one `choice`.
+ * A write that THROWS fires nothing, for `refreshingWriter`'s reason.
+ */
+export function refreshingChangeWriter<A extends unknown[]>(
+  write: (...args: A) => boolean,
+  targets: () => readonly RefreshTarget[],
+): (...args: A) => boolean {
+  return (...args: A) => {
+    const wrote = write(...args);
+    if (wrote) void refreshEngineProviders(targets());
+    return wrote;
+  };
+}

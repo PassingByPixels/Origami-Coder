@@ -91,6 +91,25 @@ describe('writeModelContextLimit — handing the probed window to the engine', (
     expect(Number.isFinite(limit.output)).toBe(true);
   });
 
+  // Do not "fix" this by omitting `output` when the probe has no output figure.
+  // It looks like the tidy thing to do — LM Studio's `loaded_context_length`
+  // reports no output limit, so writing 0 reads like inventing data — but the
+  // key is REQUIRED, and globalConfig.ts's pre-write validator refuses the write:
+  //   "refusing to write …: the engine would reject the whole file and fall back
+  //    to no config (provider.lmstudio.models.qwen3-8b.limit.output must be a
+  //    finite number (got undefined))"
+  // Verified by making exactly that edit and running this file: 6 tests red, and
+  // writeModelContextLimit returned false — the probed window was not persisted
+  // at all, which is strictly worse than writing 0.
+  //
+  // Writing 0 is not a lie either, since session/overflow.ts's `outputReserve`
+  // reads a non-positive output as UNKNOWN and reserves a quarter of the window,
+  // rather than subtracting the flat 32k request default.
+  it('writes output: 0 when the probe has no output figure — omitting the key is refused', () => {
+    expect(writeModelContextLimit('lmstudio', 'qwen3-8b', 65536)).toBe(true);
+    expect(read().provider.lmstudio.models['qwen3-8b'].limit).toEqual({ context: 65536, output: 0 });
+  });
+
   it('a REMOTE provider gets the same treatment (a vLLM max_model_len is just as real)', () => {
     expect(writeModelContextLimit('vllm', 'spec-test', 262144)).toBe(true);
     expect(read().provider.vllm.models['spec-test'].limit.context).toBe(262144);

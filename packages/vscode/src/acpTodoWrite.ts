@@ -21,6 +21,11 @@ export interface TodoRow {
   content: string;
   activeForm: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Nesting level as the model sent it — 0 for a top-level task. Carried RAW:
+   *  a jump or an over-deep value is clamped once, by the strip, against the
+   *  whole list (todoTree.ts). Clamping here as well would put the same rule in
+   *  two places and let them disagree. */
+  depth: number;
 }
 
 /** The frame fields this rule reads, declared structurally. */
@@ -51,15 +56,20 @@ export function todosFromUpdate(upd: TodoWriteUpdate): TodoRow[] | null {
   }
   if (!raw) return null;
   return raw.map((item, i) => {
-    const t = item as { content?: unknown; activeForm?: unknown; status?: unknown };
+    const t = item as { content?: unknown; activeForm?: unknown; status?: unknown; depth?: unknown };
     const rawStatus = String(t?.status ?? 'pending');
     const status: TodoRow['status'] =
       rawStatus === 'in_progress' || rawStatus === 'completed' ? rawStatus : 'pending';
+    // Anything that is not a real number (absent, a string, NaN, Infinity) is a
+    // flat row — never a dropped row. A model that gets `depth` wrong should
+    // lose the indent, not the task.
+    const rawDepth = t?.depth;
     return {
       id: i,
       content: String(t?.content ?? ''),
       activeForm: String(t?.activeForm ?? t?.content ?? ''),
       status,
+      depth: typeof rawDepth === 'number' && Number.isFinite(rawDepth) ? rawDepth : 0,
     };
   });
 }

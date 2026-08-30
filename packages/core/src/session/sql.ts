@@ -108,6 +108,9 @@ export const TodoTable = sqliteTable(
     status: text().notNull(),
     priority: text().notNull(),
     position: integer().notNull(),
+    // Nesting level, 0 for a top-level task. NOT NULL DEFAULT 0 so every row
+    // written before this column existed reads back as flat.
+    depth: integer().notNull().default(0),
     ...Timestamps,
   },
   (table) => [

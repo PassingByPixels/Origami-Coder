@@ -123,5 +123,8 @@ export type TodoInfo = {
   content: string
   status: "pending" | "in_progress" | "completed" | "cancelled"
   priority: "high" | "medium" | "low"
+  /** Nesting level; 0 is top level. The route always answers with it, so a seed
+   *  compared byte-for-byte against the response has to carry it too. */
+  depth: number
 }
 export type MessageSeed = { info: SessionV1.User; part: SessionV1.TextPart }

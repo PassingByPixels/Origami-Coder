@@ -377,7 +377,7 @@ describe('ControlStrip — provider setup accordion (Local/Self Hosted, Provider
     // the entry classifies into, and leaves every other section's state alone.
     // (The merged section stays open because it is open by DEFAULT; revealing
     // Providers adds a key, it does not collapse anything.)
-    expect(screen.queryByRole('button', { name: 'Anthropic (API)' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Claude (Anthropic API)' })).toBeNull();
   });
 
   it('expanding Providers reveals OpenRouter + OpenCode Zen/Go; expanding Labs reveals the cloud labs only', async () => {
@@ -392,7 +392,7 @@ describe('ControlStrip — provider setup accordion (Local/Self Hosted, Provider
     await fireEvent.click(screen.getByRole('button', { name: 'Labs' }));
     expect(screen.getByRole('button', { name: 'Grok (API)' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'OpenAI (API)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Anthropic (API)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Claude (Anthropic API)' })).toBeInTheDocument();
   });
 
   it('selecting Other (under its own section) reveals the generic base URL + API key + model fields', async () => {

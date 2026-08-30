@@ -78,6 +78,10 @@
   // Provider id -> pre-formatted usage lines. Host-formatted on purpose (see
   // providerUsage.ts) — never recomputed here, only shown as given.
   let usageLines = $state<Record<string, string[]>>({});
+  // Provider ids whose subscription is bought with an API KEY rather than an
+  // OAuth sign-in (opencode-go). Host-read from the config; empty on an older
+  // host, which is what makes the OAuth path below survive a version skew.
+  let usageCapable = $state<string[]>([]);
 
   // Eject + context-length-on-load are LM Studio operations (they drive the `lms`
   // CLI). Show them ONLY for a provider the host PROBED as LM Studio (`flavor` =
@@ -126,12 +130,12 @@
   let currentProviderId = $derived(current.split('/')[0] ?? '');
 
   // Compact usage readout for the ACTIVE model's own provider — hidden unless
-  // that provider is OAuth-connected AND a usage line has actually arrived.
-  // xai's "unavailable" answer carries no `lines`, so it naturally stays hidden
-  // here too (same quiet-by-default the fold already applies).
-  let usageText = $derived(
-    currentProviderId && oauthConnected[currentProviderId] ? (usageLines[currentProviderId]?.[0] ?? '') : '',
-  );
+  // that provider CAN report usage and a line has actually arrived. Two ways to
+  // be capable: an OAuth sign-in (openai/xai), or a flat-rate plan bought with
+  // an API key (opencode-go). xai's "unavailable" answer carries no `lines`, so
+  // it naturally stays hidden here too (the fold's own quiet-by-default).
+  let canReadUsage = $derived(!!currentProviderId && (!!oauthConnected[currentProviderId] || usageCapable.includes(currentProviderId)));
+  let usageText = $derived(canReadUsage ? (usageLines[currentProviderId]?.[0] ?? '') : '');
 
   // topPick = the explicit top-level tab ('' | a provider id | a group pill id);
   // groupPick = the explicit sub-provider within whichever pill is active. Both
@@ -173,15 +177,17 @@
       else if (msg.type === 'openRouterModels') openRouterModels = Array.isArray(msg.models) ? msg.models : [];
       else if (msg.type === 'sessionModels') modelBySession = (msg.models && typeof msg.models === 'object') ? msg.models : {};
       else if (msg.type === 'modelStatus') {
-        // Statuses are per-session now (one per chat per tick) — only THIS
-        // chat's window may seed loadedCtx, else a background remote chat's
-        // 131k+ window becomes the pre-filled `lms load -c` context (VRAM
-        // blowout one click away). Untagged = legacy/boot broadcast, accept.
+        // Statuses are per-session now (one per chat per tick) — only THIS chat's
+        // may seed the picker. Untagged = legacy/boot broadcast, accept.
         if (msg.sessionId != null && msg.sessionId !== sessionId) return;
-        if (typeof msg.contextWindow === 'number' && msg.contextWindow > 0) loadedCtx = msg.contextWindow;
+        // The LOCAL server's OWN loaded window, NOT this session's contextWindow —
+        // on a remote/cloud chat that one is the REMOTE model's 131k+, which both
+        // misreports "currently loaded" and blows VRAM as an `lms load -c` size.
+        if (typeof msg.loadedContextLength === 'number' && msg.loadedContextLength > 0) loadedCtx = msg.loadedContextLength;
         if (typeof msg.loadedModelId === 'string') loadedModelId = msg.loadedModelId;
       }
       else if (msg.type === 'providerAuthData') oauthConnected = (msg.connected && typeof msg.connected === 'object') ? msg.connected : {};
+      else if (msg.type === 'providerUsageCapable') usageCapable = Array.isArray(msg.ids) ? (msg.ids as unknown[]).map(String) : [];
       else if (msg.type === 'providerUsageData' && typeof msg.providerId === 'string' && Array.isArray(msg.lines)) {
         usageLines = { ...usageLines, [msg.providerId]: (msg.lines as unknown[]).map(String) };
       }
@@ -192,14 +198,15 @@
     // Seed on mount (covers a picker that mounted after the first broadcast).
     vscode.postMessage({ type: 'requestSessionModels' });
     vscode.postMessage({ type: 'providerAuthRequest' });
+    vscode.postMessage({ type: 'providerUsageCapableRequest' });
     return () => window.removeEventListener('message', onMsg);
   });
 
-  // Lazy usage pull for the active model's own provider — only when it is
-  // OAuth-connected, so a key-based provider never fires a request the engine
-  // would have to refuse. Called on model-bar open + turn end, never a timer.
+  // Lazy usage pull for the active model's own provider — only when that
+  // provider has a usage source at all, so a metered provider never fires a
+  // request the engine would have to refuse. Model-bar open + turn end, no timer.
   function requestUsage() {
-    if (currentProviderId && oauthConnected[currentProviderId]) {
+    if (canReadUsage) {
       vscode.postMessage({ type: 'providerUsageRequest', providerId: currentProviderId });
     }
   }
@@ -244,14 +251,13 @@
 
   function selectModel(value: string) {
     // The sub-agent target always asks for an (optional) context override —
-    // see the top-of-file note: it never loads/ejects, so the "already loaded"
-    // shortcut below does not apply to it.
+    // see the top-of-file note: it never loads/ejects, so the LM Studio load
+    // prompt below is not the one it opens.
     if (forSubagents) { subagentCtxFor = value; return; }
-    // "Use what's loaded": no ctx prompt (the loaded window IS the answer), and
-    // host-side no eject+reload.
-    if (value && value === loadedValue) { vscode.postMessage({ type: pickType, modelId: value, sessionId }); open = false; return; }
     if (isLmsManaged(selectedProvider)) {
-      // LM Studio (loopback): ask for a context length before loading the model.
+      // LM Studio (loopback): ask for a context length before loading — INCLUDING
+      // the model already held, which used to short-circuit to a bare re-pick that
+      // hid its window. Keeping that window still costs no reload (host-side skip).
       ctxPromptFor = value;
       return;
     }
@@ -360,7 +366,7 @@
               <ContextLengthPrompt
                 modelName={mo.name}
                 initial={loadedCtx > 0 ? loadedCtx : ''}
-                hint="Blank = a safe default. Higher windows use more VRAM."
+                hint={mo.value === loadedValue && loadedCtx > 0 ? `Currently loaded at ${Math.round(loadedCtx / 1024)}k — confirm to keep it (no reload), or set a new window to eject and reload at that size.` : 'Blank = a safe default. Higher windows use more VRAM.'}
                 confirmLabel="Load"
                 onConfirm={confirmCtx}
                 onCancel={() => (ctxPromptFor = '')}
@@ -389,7 +395,7 @@
                   {#if lbl.provider}<span class="mp-model-provider">{lbl.provider}</span>{/if}
                   <span class="mp-model-name">{lbl.name}</span>
                 </span>
-                {#if mo.value === loadedValue}<span class="mp-model-loaded" title="Already loaded on the server — picking it switches this chat with no reload">current</span>{/if}
+                {#if mo.value === loadedValue}<span class="mp-model-loaded" title="Already loaded on the server — picking it shows the window it is loaded at; keeping that window costs no reload">current</span>{/if}
                 {#if lbl.quant}<span class="mp-model-quant">{lbl.quant}</span>{/if}
               </button>
             {/if}

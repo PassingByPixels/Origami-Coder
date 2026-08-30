@@ -643,10 +643,17 @@ export function writeModelConfig(choice: ModelChoice, opts: { automatic?: boolea
  *
  * SHAPE: the config schema (`@origami/core/v1/config/provider` Model.limit) makes
  * `output` REQUIRED alongside `context` — a bare `{ context }` fails the strict
- * `decodeUnknownExit` in config/parse.ts and invalidates the WHOLE config. So we
- * preserve any existing `output` and otherwise write 0, which is exactly what the
- * engine already defaults to for these models and which `maxOutputTokens` treats
- * as "unset" (`Math.min(0, max) || max`). Only `limit` changes.
+ * `decodeUnknownExit` in config/parse.ts and invalidates the WHOLE config, and
+ * globalConfig.ts's pre-write validator refuses such a write outright rather than
+ * let it land. So we preserve any existing `output` and otherwise write 0, which
+ * is exactly what the engine already defaults to for these models.
+ *
+ * A written `output: 0` means UNKNOWN — not "zero tokens of output" — and the
+ * engine reads it that way in `session/overflow.ts`'s `outputReserve`: an unknown
+ * output reservation is capped at a quarter of the window rather than having the
+ * flat 32k REQUEST default subtracted whole. That is the difference between a
+ * 36096-token model compacting at 27072 tokens and compacting at 4096 — which is
+ * to say, on every turn. Only `limit` changes.
  *
  * Deliberately NARROW vs writeModelConfig: it never touches `cfg.model` (a probe
  * must not re-point the default model), never creates a provider block, and only

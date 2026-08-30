@@ -21,6 +21,33 @@ Skip when:
 - `completed` - finished successfully
 - `cancelled` - no longer needed
 
+## Nesting
+Use the optional `depth` field to show that one task is a step of another.
+- `depth` 0 (or omitted) is a top-level task
+- a sub-task has its parent's `depth` + 1, and comes DIRECTLY AFTER that parent in the list
+- maximum depth is 3
+- the list is replaced WHOLE on every call, so re-send each item's `depth` every time you rewrite it -
+  including after a summary or a context reset, where the list you are shown carries the nesting as
+  indentation only
+
+```json
+[
+  { "content": "Add the export button", "status": "in_progress", "priority": "high", "depth": 0 },
+  { "content": "Wire the click handler", "status": "completed", "priority": "high", "depth": 1 },
+  { "content": "Write the file", "status": "in_progress", "priority": "high", "depth": 1 },
+  { "content": "Update the docs", "status": "pending", "priority": "low", "depth": 0 }
+]
+```
+
+Use `depth` for structure. Do NOT encode structure in the `content` text with numbering
+prefixes ("1a", "1.2", "Step 1 -") or leading dashes and spaces: those are read as part of the
+task name, so the list renders flat with the numbering showing through as noise.
+
+A parent's own status is yours to set and is not derived from its children, with ONE limit: a parent
+sent as `completed` while any task under it is still `pending` or `in_progress` is recorded as
+`in_progress` instead. Finish those sub-tasks, or mark the ones you dropped `cancelled`, then close
+the parent.
+
 ## Rules
 - Update status in real time; don't batch completions
 - Mark `completed` only after the required work is actually done, including any required verification. Never based on intent.

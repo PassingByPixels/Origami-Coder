@@ -133,7 +133,7 @@
     <span class="brand-mark" style="color: var(--og-crane)"><CraneMark size={18} /></span>
     <span class="brand-name">Origami</span>
     {#if version}
-      <span class="brand-version" title="Origami Coder extension version (verify you're not on a stale build)">v{version}</span>
+      <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
     {/if}
     <button
       class="theme-btn"

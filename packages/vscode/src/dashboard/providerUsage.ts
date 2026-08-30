@@ -15,7 +15,9 @@
  * a webview may see.
  */
 
-export const PROVIDER_USAGE_MESSAGE_TYPES = new Set(['providerUsageRequest']);
+import { configuredUsageCapableIds } from './usageCapable';
+
+export const PROVIDER_USAGE_MESSAGE_TYPES = new Set(['providerUsageRequest', 'providerUsageCapableRequest']);
 
 export interface ProviderUsageClient {
   extMethod(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -74,6 +76,14 @@ export async function handleProviderUsageMessage(
   host: ProviderUsageHost,
   m: Record<string, unknown>,
 ): Promise<void> {
+  // "Which providers could answer at all" — asked once on mount, before any
+  // model is picked, so the model bar knows whether to ask for a usage read.
+  // Config-only: it answers correctly with no engine running, which is exactly
+  // the state a freshly opened window is in.
+  if (m.type === 'providerUsageCapableRequest') {
+    host.post({ type: 'providerUsageCapable', ids: configuredUsageCapableIds() });
+    return;
+  }
   if (m.type !== 'providerUsageRequest') return;
   const providerId = typeof m.providerId === 'string' ? m.providerId : '';
   if (!providerId) return;

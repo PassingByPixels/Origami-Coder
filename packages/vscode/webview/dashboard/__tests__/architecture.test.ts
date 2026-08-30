@@ -394,6 +394,19 @@ const CAPS: Record<string, number> = {
   // The file SHRANK 2700 -> 2397. Restamped down deliberately: a ratchet left at
   // 2700 over a 2397-line file hands back every line the extraction bought, which
   // is the same as not having extracted. Same move as the S8 restamp above.
+  // changes pill (0.4.60): the cap did NOT move. This pane's whole share of the
+  // feature is SIX lines — an import, a four-line note and one prop expression,
+  // `changes={aggregateSessionChanges(cellSession.messages)}` — a template
+  // expression IS a $derived, so each cell recomputes from its OWN transcript
+  // when that transcript changes. Deliberately not a live tally: a counter fed
+  // by events restarts at zero on a webview reload while the transcript above it
+  // still shows every edit it counted. The rollup lives in sessionChanges.ts.
+  // focus view (0.4.61): the cap did NOT move. This pane's share is SEVEN lines —
+  // a documented `focusMode?` session field, one prop onto ChatTranscript, and
+  // the lit-state + flip onto InputBar. The flag lives on the SESSION rather than
+  // in the pane because a grid shows twelve chats and each answers "focused?" for
+  // itself, exactly as subagentsOpen/openThoughtIds already do. 2411 -> 2418 of
+  // 2420: two lines left, so the next thing to land here extracts first.
   'webview/dashboard/panes/ChatPane.svelte': 2420,
   // ChatTranscript.svelte: given a message list, the ROWS — the {#each} and its
   // whole kind dispatch (tool / verdict / todo / thought / compacted / peer /
@@ -403,7 +416,67 @@ const CAPS: Record<string, number> = {
   // rewind-undo banner) did NOT, because a transcript renderer's contract is
   // "given messages, render rows" and that furniture reads pane-level layout
   // state a read-only caller has no concept of. Intro 285 + slack.
+  // focus view (0.4.61): the cap did NOT move. EXTRACTION CAME FIRST — the RULE
+  // (which kinds survive) is the new chatFocus.ts leaf, so what landed here is a
+  // documented optional prop, one `$derived` filtered list and its import: 306 ->
+  // 317 of 320. The prop defaults FALSE, which is what keeps the read-only
+  // sub-agent caller bit-identical. Three lines left; extract before the next.
+  // focus-gap counters (0.4.62): the cap did NOT move, and the file used the
+  // last three lines it had — 317 -> 320 of 320. EXTRACTION CAME FIRST for the
+  // second time: the FOLD and the wording are the new focusGaps.ts leaf and the
+  // divider is the new FocusGap.svelte, so what landed here is one component
+  // import, a two-line `{#if}` branch, and two edits in place (the `$derived`
+  // now calls foldForFocus; the {#each} key handles a gap). The chatFocus.ts
+  // import was REPLACED rather than added to — the fold owns the predicate now.
+  // THERE IS NO SLACK LEFT. The next change of any size must extract a branch
+  // first, and the two that are still inline markup+CSS here are the candidates:
+  // `verdict` (~8 lines + ~35 of scoped rules) and `compacted` (~18 + ~45). Both
+  // would follow the shape the rest of the chain already has — one component per
+  // kind — and both must take their scoped <style> rules with them, or the rules
+  // silently stop matching and no test in this repo can see it.
   'webview/dashboard/components/ChatTranscript.svelte': 320,
+  // chatFocus.ts: WHICH transcript rows survive focus view — one predicate and a
+  // per-kind disposition table. A pure leaf (no DOM, no Svelte, no `vscode`) for
+  // the reason sessionChanges.ts is one beside ChangesPill.svelte: the rule is
+  // where the bugs are, so it is asserted with nothing rendered. It fails OPEN by
+  // construction — the set names what to HIDE — because a message kind added
+  // later and silently swallowed by an old view is a defect with no symptom.
+  // Deliberately NOT folded into panes/chatMessage.ts (which had the room): that
+  // file is the row SHAPE, and a behavioural rule in it is a second job. Intro 56.
+  'webview/dashboard/components/chatFocus.ts': 80,
+  // focusGaps.ts (0.4.62): WHAT focus view hid, counted, between the rows it
+  // kept — the run fold, the tool-name/ACP-kind family mapping and the wording.
+  // A SECOND leaf beside chatFocus.ts rather than more of it: that file answers
+  // "does this row survive?" per row and is asserted one row at a time, while
+  // this one answers "what stood between these two answers?" over a whole list.
+  // Pure (no DOM, no Svelte, no `vscode`) for the usual reason — the counts and
+  // the plurals are the only things that can be wrong, so focusGaps.test.ts
+  // asserts them with nothing rendered, including the invariant that the
+  // families are disjoint and sum to the run length. Intro 165 (two thirds of it
+  // the family table and its provenance) + slack.
+  'webview/dashboard/components/focusGaps.ts': 180,
+  // FocusGap.svelte (0.4.62): the divider itself, and nothing else — a hairline
+  // with focusGaps.ts's wording on it. Its own file on the pattern FocusEye.svelte
+  // set in the composer: the transcript is a row loop, and what one row draws is
+  // a leaf. It owns no state and does no counting, so what is capped here is
+  // markup and scoped CSS. Intro 64 + slack.
+  'webview/dashboard/components/FocusGap.svelte': 90,
+  // ChatFind.svelte + chatFind.ts (0.4.60 find-in-chat): Ctrl+F over one chat
+  // cell. The cap on ChatPane.svelte did NOT move, and did not need to: the
+  // widget arbitrates the key FOR ITSELF (which cell owns a Ctrl+F when a grid
+  // shows twelve chats) instead of the pane doing it and passing an `open` prop
+  // down, so what landed there is one import, one mount with its comment, and
+  // two same-line edits — 2401 -> 2405 of 2420. The split between the two files
+  // is the usual one: everything that can be WRONG is in the .ts leaf and is
+  // tested with no widget around it — the block-aware text walk (a match may
+  // cross an inline `<code>`, never a message boundary), the offsets, the
+  // wrapping step, the arbitration — while the .svelte holds the bar, the
+  // window listener and the one guarded write to CSS.highlights. Both capped at
+  // introduction (233 / 230) + slack. NOT in THEMED_FILES only because the
+  // no-literal-colour guard for this file lives in ChatFind.test.ts beside its
+  // other source assertions; it is held to the same rule.
+  'webview/dashboard/components/chatFind.ts': 250,
+  'webview/dashboard/components/ChatFind.svelte': 250,
   // chatMessage.ts: the `Message` and `TodoInfo` row shapes. NOT a mirror — the
   // one declaration. A type declared inside a .svelte <script> cannot be named
   // by another component, so sharing the renderer forced the shape into a leaf.
@@ -536,7 +609,79 @@ const CAPS: Record<string, number> = {
   // 1174. Three props (`queued`, `onQueue`, `onUnqueue`) and the queue branch of
   // `doSend` left; what replaced them is the same branch posting to `onInterject`
   // instead, which now carries the text. The chip mount stayed one line.
+  // changes pill (0.4.60): the cap did NOT move, and the standing warning above
+  // ("the next feature here should extract rather than trust there is still
+  // room") was honoured the only way it can be for a feature that IS new footer
+  // UI — the whole thing is a new leaf, ChangesPill.svelte, and the numbers it
+  // draws come from another, panes/sessionChanges.ts. What landed HERE is two
+  // imports, a documented prop and a one-line mount. The two lines that paid for
+  // them came out of the same block: the ImageStrip and InterjectingChip mounts
+  // were each a three-line `{#if}` around a single tag and are now the one-line
+  // form every other conditional mount in this file already uses. 1195 -> 1197.
+  // focus view (0.4.61): the cap did NOT move, on THREE lines of slack. The whole
+  // control is elsewhere (FocusEye.svelte, ChangesPill.svelte, chatFocus.ts); the
+  // composer's entire share is a pass-through, and it was economised to fit — one
+  // doc line and BOTH props on one declaration (the `toolImages?/toolBrowser?`
+  // form chatMessage.ts already uses), with the two new attributes riding the
+  // existing ChangesPill tag. 1197 -> 1199. ONE line left: the next feature here
+  // extracts, and this time there is no room to pretend otherwise.
+  // utility row into the box's column (0.4.61 UAT round 2): the cap did NOT move
+  // and the file SHRANK, 1199 -> 1188. The warning one line above was honoured:
+  // the change itself is a wrapper `<div class="input-col">` around the row and
+  // the textarea (so the row can only be as wide as the box), which is two
+  // markup lines and three CSS ones this file had nowhere to put — so
+  // EXTRACTION CAME FIRST. The connectivity strip left for ModelWarning.svelte,
+  // markup and styles together, which is 30 lines out for 4 back. It was the
+  // coherent chunk rather than the budget banner: its RULE was already a leaf
+  // (modelBanner.ts), so the .ts-decides / .svelte-draws pair every other
+  // composer control here is built as was half-finished, and the strip owns no
+  // state and posts nothing — the budget banner's numbers arrive on this file's
+  // own message listener and would have had to stay behind anyway.
   'webview/dashboard/components/InputBar.svelte': 1200,
+  // ModelWarning.svelte (0.4.61): the composer's connectivity strip — the amber
+  // line that stands until this chat's provider confirms a model. Markup and CSS
+  // moved VERBATIM out of InputBar.svelte; the copy rule stayed in modelBanner.ts,
+  // which it now sits beside as the drawing half of that pair. The GATE moved with
+  // it (InputBar held `{#if !bare && !modelOnline}` and now holds `{#if !bare}`),
+  // which is what ModelWarning.test.ts's first case exists to hold — a wrong gate
+  // there would stand an alarm over every healthy chat. DELIBERATELY not in
+  // THEMED_FILES: its amber wash is an rgba literal, carried across unchanged,
+  // and there is no --og-* token for a translucent warning ground.
+  'webview/dashboard/components/ModelWarning.svelte': 80,
+  // ChangesPill.svelte + sessionChanges.ts (0.4.60): the composer's running
+  // "5 files +312 −40" row and the rollup behind it. Same split ModeControl and
+  // CompactionThresholdMenu draw, and for the same reason — the .svelte one is a
+  // popover in the composer's idiom (pill trigger, backdrop catcher, Escape), the
+  // .ts one is a pure leaf with no DOM and no `vscode`, so the RULES can be
+  // checked without rendering anything. The rules are where the bugs are: what
+  // counts as a change (a read carries a path and no diff and must not appear), a
+  // path touched twice being ONE row, and adds/dels being a real line diff rather
+  // than `newLines - oldLines`, which reports a two-for-two replacement as
+  // "+0 −0". The pill posts its own openAbsoluteFile on VisionPinRow's precedent:
+  // the host owns opening a file, so routing the click back through InputBar —
+  // at 1197/1200 — would have bought a prop and nothing else. Intro 181/121 + slack.
+  // focus view (0.4.61): the cap did NOT move. The file became the composer's
+  // UTILITY ROW — pill at the left END ONLY when something has been edited (that
+  // rule is unchanged), focus eye at the right — so the `{#if}` that used to gate
+  // the whole component now gates the pill INSIDE it. EXTRACTION CAME FIRST: the
+  // button, its inline glyph and its lit state are FocusEye.svelte, so what
+  // landed here is two props, one mount and the moved guard. 184 -> 197.
+  // into the box's column (0.4.61 UAT round 2): the cap did NOT move. The row was
+  // a sibling of `.input-row`, so it spanned the whole footer and the eye landed
+  // over the Send button; it is now a child of the textarea's own column. The
+  // code change is SUBTRACTION — `padding: 0 12px` -> `0`, and the popover's
+  // `left`/`max-width`, which were both measured off that padding. 197 -> 199,
+  // all of it the comments saying why, twice-burnt. ONE line left: the next
+  // thing here extracts (the popover is the obvious seam).
+  'webview/dashboard/components/ChangesPill.svelte': 200,
+  // FocusEye.svelte: the eye at the right-hand end of that row, and nothing else.
+  // Its own file on the ModeControl/CompactionThresholdMenu precedent — the row
+  // is a row, what sits at either end of it is a leaf — and because a toggle that
+  // owns no state is exactly the shape a test can drive in three lines. The glyph
+  // is inline SVG: the webview ships no icon library, and one 13px eye does not
+  // justify pulling one in. Intro 74 + slack.
+  'webview/dashboard/components/FocusEye.svelte': 100,
+  'webview/dashboard/panes/sessionChanges.ts': 140,
   // ModeControl.svelte + modeControl.ts (deep-plan): the composer's session-mode
   // control, widened from a two-state Plan toggle to Build / Plan / Deep Plan.
   // EXTRACTION CAME FIRST and was forced: InputBar.svelte sat at 1183 of its 1200
@@ -1036,7 +1181,27 @@ const CAPS: Record<string, number> = {
   // TodoStrip gained the run-time collapse tab + hidden-list gating (0.2.174 tweak 3).
   // 325->360 (0.2.176 tweak 1): the in-place collapse became a SIDE DRAWER — a .todo-panel
   // wrapper that slides off + a pull-tab handle + the always-mounted list + the drawer CSS.
+  // nested todos (0.4.64): the cap did NOT move and the file SHRANK 359 -> 310. It was at
+  // 359/360 — one line of slack — so both halves of the change were paid for by extraction
+  // before a line was written: the list arithmetic went to todoTree.ts and one row's markup
+  // and CSS to TodoRow.svelte, leaving the strip with the panel, header, drawer and collapse.
   'webview/dashboard/components/TodoStrip.svelte': 360,
+  // todoTree.ts: what a flat todo list MEANS as a tree — depth normalisation and each row's
+  // subtree tallies — plus the header's status count, which is the same list arithmetic and
+  // came out with it. A LEAF (no DOM, no imports), which is the point: the two rules worth
+  // getting right are assertions rather than a rendered component, and jsdom's missing layout
+  // engine cannot make an indent test pass by accident. Intro 111 + slack.
+  'webview/dashboard/components/todoTree.ts': 140,
+  // TodoRow.svelte: ONE row — glyph, text, indent, sub-task tally. Extracted from TodoStrip
+  // above at 359/360; the same split SubagentDrawer.svelte / SubagentRow.svelte took, and for
+  // the same reason. Intro 115 + slack.
+  'webview/dashboard/components/TodoRow.svelte': 140,
+  // todoCollapse.ts: which rows a shut container hides, and which containers open shut.
+  // Extracted at birth (collapsible majors) because todoTree.ts sat at 125/140 and the two
+  // are different questions: todoTree answers what the depths MEAN, this answers what is on
+  // screen. A LEAF like its sibling — no DOM, so "the subtree is hidden" is an assertion
+  // about which rows exist. Intro 67 + slack.
+  'webview/dashboard/components/todoCollapse.ts': 80,
   // ModelPicker gained the structured provider/quant/name label rendering (tweak 4).
   // 515->590 (0.2.177 provider-picker simplify, owner-approved restamp — flag for
   // sign-off): tier-1 now renders one tab per LOCAL provider + a single "Lab" tab
@@ -1118,7 +1283,13 @@ const CAPS: Record<string, number> = {
   // helper + an injected host toast) is +10 lines IN the flow's own failure
   // exits; there is no cohesive unit to extract from a file that IS the
   // extraction, so this is the honest raise the cap rule allows.
-  'src/dashboard/setupProvider.ts': 215,
+  // RAISED 215→216 (Claude family on connect, 0.4.60): the file sat at 214/215.
+  // EXTRACTION CAME FIRST — the whole six-model table and its provider-id
+  // selector are a new leaf, src/dashboard/anthropicCatalog.ts; what landed HERE
+  // is the two-line minimum to reach it (one import, one `catalog:` field on the
+  // choice). Raised by exactly the two lines added, no slack, so the next line in
+  // this file is still a deliberate decision.
+  'src/dashboard/setupProvider.ts': 216,
   // providerAuthPane.ts: the OAuth connections flow (ChatGPT / SuperGrok) — the
   // three provider_auth_* ACP calls, the browser hand-off and the config write.
   // Its own file for the pluginsPane.ts reason: DashboardPanel.ts was AT its cap
@@ -1134,6 +1305,17 @@ const CAPS: Record<string, number> = {
   // the credential and answers in percentages, so nothing here can see a token.
   // Intro 106 + slack.
   'src/dashboard/providerUsage.ts': 130,
+  // usageCapable.ts: WHICH providers can report subscription usage at all — the
+  // gate the model bar asks before it fires a read. Its own leaf, not a line in
+  // providerUsage.ts, because it answers a different question at a different
+  // time from a different source: once on mount, from the config FILE, with no
+  // engine involved (providerUsage.ts owns the engine round-trip). Keeping it
+  // out also keeps the decision PURE — only the last function touches a disk —
+  // and left providerUsage.ts at 123/130 instead of 137. Added for opencode-go,
+  // whose flat-rate plan is bought with an API key rather than an OAuth
+  // sign-in, so `providerAuthData.connected` could never light its pill.
+  // Intro 62 + slack.
+  'src/dashboard/usageCapable.ts': 90,
   // providerRefresh.ts: "the key you just pasted counts NOW" — one
   // `provider_refresh` ext call fired after every provider-auth config write, so
   // the connect form, the Re-key form and the OAuth completion stop needing a
@@ -1144,7 +1326,21 @@ const CAPS: Record<string, number> = {
   // either leaf. No wrapper in acpClient.ts either: it is at 1370/1370, and the
   // generic extMethod needs none (same call the collab_* and shell_stop paths
   // make). Intro 86 + slack.
-  'src/dashboard/providerRefresh.ts': 110,
+  // 110->131 (context-window refresh): the SAME reload wall, for a model's
+  // context window instead of its API key — a probed window written to
+  // origami.json never reached a running engine, which had frozen
+  // `limit.context` in its provider list, so session/overflow.ts auto-compacted
+  // against the stale one (owner: five compactions in four minutes at 27k on an
+  // 86k model). What landed is one sibling wrapper, `refreshingChangeWriter`,
+  // that fires only when the write REPORTS a change — `refreshingWriter` fires
+  // after any write that did not throw, and `writeModelContextLimit` answers
+  // false for three legitimate no-ops on call sites that re-probe on every model
+  // switch and status tick. NOTHING WAS EXTRACTED: it is the same subject as the
+  // wrapper above it, sharing `refreshEngineProviders` and the whole file
+  // header, and splitting two ten-line wrappers across two files to dodge a
+  // number is the gaming this ratchet exists to prevent. Raised to the exact
+  // actual, no slack — the next line here is a deliberate decision again.
+  'src/dashboard/providerRefresh.ts': 131,
   // visionDetect.ts: "which of your models can see", asked of whichever local
   // server will answer — LM Studio's `/api/v0/models` type tag and Ollama's
   // `/api/show` capabilities array. Extracted from DashboardPanel.ts, which SHRANK
@@ -1972,7 +2168,23 @@ const CAPS: Record<string, number> = {
   // ~140-line draw routine (edges, halos, nodes, labels, vignette) that only
   // needs the ctx and a palette, and the pane's leftover graph-BUILD half
   // (link resolution, hue tables) is pure and testable today.
-  'webview/dashboard/panes/WikiSearchPane.svelte': 1330,
+  // 1330->1325 (0.4.60 preview-collapse, DOWNWARD restamp): the second of those
+  // two named extractions was taken — the link-resolution ladder and the hue/
+  // jitter tables went out WHOLE into wikiGraphBuild.ts (below), which paid for
+  // the collapsible read box with 45 lines to spare. The cap was NOT raised;
+  // it comes down to actual (1319) + slack, keeping the near-nil intent above.
+  // render() is still in here and is still the next thing to come out.
+  'webview/dashboard/panes/WikiSearchPane.svelte': 1325,
+  // wikiGraphBuild.ts: the pure half of the pane's buildGraph() — hash01 /
+  // evenHues / folderOf and the page<->page link resolution ladder (exact id,
+  // source-relative path, UNAMBIGUOUS basename, UNAMBIGUOUS title). Extracted
+  // for the reason wikiGraphPhysics.ts and wikiGraphForces.ts were: the pane's
+  // build path sits next to render(), which needs a 2d context jsdom does not
+  // have, so none of these rules could be tested where they were — and the
+  // ambiguity branches are exactly where the defects live (a repeated
+  // basename used to resolve to whichever page was parsed last). A LEAF (no
+  // canvas, no DOM, no imports). Intro 111 + slack.
+  'webview/dashboard/panes/wikiGraphBuild.ts': 130,
   // --- Collabs M1: the sidebar's Collabs half goes live, a collab opens as its
   // own editor tab, and two seed collab agents ship as engine agent defs. ---
   // collabData.ts: the six `collab_*` host leaves over the GENERIC extMethod
@@ -3539,7 +3751,30 @@ const THEMED_FILES = [
   // clashes with. It carries no drop shadow, so unlike the composer popovers
   // it has no reason to be exempt.
   'webview/dashboard/components/MCPAddForm.svelte',
+  // FocusEye.svelte joins on the PersistSwitch version of the rule, and unlike
+  // its neighbour ChangesPill it has nothing to exempt it: it carries no
+  // popover and so no drop shadow, and every value in it is an --og-* var. Its
+  // ON state is what a literal would break — focus view HIDES rows, so an eye
+  // that reads as off in whichever of the five themes the literal clashes with
+  // is a transcript that looks like it lost its tool cards.
+  'webview/dashboard/components/FocusEye.svelte',
+  // FocusGap.svelte joins beside it, on the same view. The divider is DRAWN
+  // almost entirely in colour — a hairline and muted 10px text, with no border,
+  // surface or icon to carry it — so a literal here is the one row of the
+  // focused transcript that goes invisible, or stops being quiet, in whichever
+  // of the five themes the literal clashes with. Like FocusEye it has nothing
+  // to exempt it: no popover, so no drop shadow.
+  'webview/dashboard/components/FocusGap.svelte',
 ];
+// NOT added: webview/dashboard/components/ChangesPill.svelte, for exactly the
+// reason ModeControl.svelte is not, one note down. Its list carries the same
+// `rgba(0, 0, 0, 0.28)` drop shadow the five other composer popovers use — a
+// shadow is opacity over whatever is behind it rather than a themed surface,
+// and there is no --og-* shadow var — so opting it in would fail on that one
+// deliberate literal. The colours that DO carry meaning here (adds --og-success,
+// dels --og-error, the "new" chip --og-success-soft) are all vars, and
+// ChangesPill.test.ts carries the regex proof plus a check that every token it
+// names is actually defined in theme.css — the --og-green trap.
 // NOT added: webview/dashboard/components/ModeControl.svelte, on the ChatsList
 // precedent below. Its trigger genuinely carries state in colour alone (Plan
 // green, Deep Plan gold, Build neutral) and every one of those values IS an

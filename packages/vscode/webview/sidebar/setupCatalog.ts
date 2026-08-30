@@ -88,7 +88,15 @@ export const SETUP_PROVIDERS: SetupProvider[] = [
   { id: 'openai-oauth', label: 'OpenAI (OAuth)',   name: 'OpenAI (ChatGPT)', kind: 'oauth', model: '', authProvider: 'openai' },
   { id: 'xai',        label: 'Grok (API)',         name: 'xAI',       kind: 'cloud',  model: 'grok-4' },
   { id: 'xai-oauth',    label: 'Grok (OAuth)',     name: 'xAI (SuperGrok)',  kind: 'oauth', model: '', authProvider: 'xai' },
-  { id: 'anthropic',  label: 'Anthropic (API)',    name: 'Anthropic', kind: 'cloud',  model: 'claude-sonnet-4-5' },
+  // The USER's word for this connection is "Claude" — "Anthropic" is the company
+  // and, more to the point, the ENGINE's provider id. So the label leads with the
+  // product and keeps the company as the disambiguator, and `name` (the pill /
+  // chip face, and what lands in the block as its display name) is just "Claude".
+  // `id` stays `anthropic`: it is the engine catalog id, the auth.json key and the
+  // `provider.<id>` block, and renaming it would orphan every existing connection.
+  // The multi-model family this writes on connect lives host-side in
+  // src/dashboard/anthropicCatalog.ts, which also owns the default id below.
+  { id: 'anthropic',  label: 'Claude (Anthropic API)', name: 'Claude', kind: 'cloud',  model: 'claude-sonnet-5' },
   // Other — a generic OpenAI-compatible provider you fill in yourself (base
   // URL + key + model), so a new lab/endpoint never needs a code change. kind
   // 'compat' with no flags => the setup form shows all three fields.

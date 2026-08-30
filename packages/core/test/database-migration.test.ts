@@ -15,6 +15,7 @@ import eventSourcedSessionInputMigration from "@origami/core/database/migration/
 import contextEpochAgentMigration from "@origami/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@origami/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@origami/core/database/migration/20260622202450_simplify_session_input"
+import todoDepthMigration from "@origami/core/database/migration/20260829173056_add_todo_depth"
 import { AppNodeBuilder } from "@origami/core/effect/app-node-builder"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { EventV2 } from "@origami/core/event"
@@ -95,6 +96,35 @@ describe("DatabaseMigration", () => {
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
         ])
+      }),
+    )
+  })
+
+  // Nesting on a database that already holds todo lists. The column has to
+  // arrive with a DEFAULT: every existing row predates it, and a NOT NULL column
+  // with no default would refuse to be added at all.
+  test("adds todo depth to an existing list and reads the old rows back as flat", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE todo (session_id text NOT NULL, content text NOT NULL, status text NOT NULL, priority text NOT NULL, position integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO todo (session_id, content, status, priority, position, time_created, time_updated) VALUES ('ses_old', 'written before nesting', 'pending', 'high', 0, 1, 1)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [todoDepthMigration])
+
+        expect(yield* db.get(sql`SELECT content, depth FROM todo WHERE session_id = 'ses_old'`)).toEqual({
+          content: "written before nesting",
+          depth: 0,
+        })
+        // And a nested row can be written straight afterwards.
+        yield* db.run(
+          sql`INSERT INTO todo (session_id, content, status, priority, position, depth, time_created, time_updated) VALUES ('ses_old', 'a sub-task', 'pending', 'low', 1, 1, 1, 1)`,
+        )
+        expect(yield* db.all(sql`SELECT depth FROM todo ORDER BY position`)).toEqual([{ depth: 0 }, { depth: 1 }])
       }),
     )
   })

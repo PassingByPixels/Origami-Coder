@@ -27,6 +27,7 @@ import {
   parseModelIds,
   pickDefaultModel,
 } from '../../../src/dashboard/keyOnlyPresets';
+import { CLAUDE_DEFAULT_MODEL, CLAUDE_MODELS, type ClaudeModelConfig } from '../../../src/dashboard/anthropicCatalog';
 import { setupProvider, type SetupProviderDeps } from '../../../src/dashboard/setupProvider';
 import type { ModelChoice } from '../../../src/dashboard/firstFold';
 
@@ -455,6 +456,85 @@ describe('the preset table itself', () => {
     const v = await checkProviderKey({ presetId: 'not-a-preset', apiKey: 'k', fetchImpl: spy as unknown as typeof fetch });
     expect(v.ok).toBe(true);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// A CLOUD connection submits ONE model id (ControlStrip's cloud form is key +
+// model id), and the picker is built from the config blocks — so before 0.4.60 a
+// connected Claude declared exactly one model and offered exactly one row, for
+// good. The family is attached here, host-side, and writeModelConfig merges it in
+// (firstFold's `choice.catalog` loop) alongside whatever the form chose.
+//
+// The assertions are on what reaches the WRITER, because that is the observable
+// the picker later reads back out of origami.json. `written[0].catalog` is the
+// literal record writeModelConfig iterates.
+describe('setupProvider — a Claude connect declares the whole family, not one model', () => {
+  it('attaches the baked Claude catalog to the written choice', async () => {
+    const { d, posts, written } = deps({
+      msg: {
+        providerId: 'anthropic',
+        providerName: 'Claude',
+        apiKey: 'sk-ant-real',
+        modelId: CLAUDE_DEFAULT_MODEL,
+        modelName: CLAUDE_DEFAULT_MODEL,
+      },
+    });
+    await setupProvider(d);
+    expect(errors(posts)).toEqual([]);
+    expect(written).toHaveLength(1);
+    // More than the submitted one, and the submitted one is among them — the two
+    // halves of "the picker now offers the family".
+    const ids = Object.keys(written[0].catalog ?? {});
+    expect(ids.length).toBeGreaterThan(1);
+    expect(ids).toContain(CLAUDE_DEFAULT_MODEL);
+    expect(ids).toEqual(Object.keys(CLAUDE_MODELS));
+  });
+
+  it('every attached entry carries a real window and price — a 0 here breaks compaction and spend', async () => {
+    // An engine spawned from source has no baked models.dev snapshot, so any
+    // field the block omits resolves to 0: limit.context 0 disables auto-
+    // compaction outright, and cost 0 makes the spend readout silently wrong.
+    const { d, written } = deps({
+      msg: { providerId: 'anthropic', providerName: 'Claude', apiKey: 'sk-ant', modelId: CLAUDE_DEFAULT_MODEL },
+    });
+    await setupProvider(d);
+    for (const [id, m] of Object.entries(written[0].catalog!)) {
+      const model = m as unknown as ClaudeModelConfig;
+      expect(model.limit.context, `${id} context`).toBeGreaterThan(0);
+      expect(model.limit.output, `${id} output`).toBeGreaterThan(0);
+      expect(model.cost.input, `${id} input cost`).toBeGreaterThan(0);
+      expect(model.name, `${id} display name`).toBeTruthy();
+    }
+  });
+
+  it('a model id the form typed itself is still what gets SELECTED — the catalog only adds', async () => {
+    const { d, written } = deps({
+      msg: { providerId: 'anthropic', providerName: 'Claude', apiKey: 'sk-ant', modelId: 'claude-opus-4-7' },
+    });
+    await setupProvider(d);
+    // cfg.model is built from modelId, so an id outside the baked six must not be
+    // displaced by the default. (writeModelConfig writes it as its own entry.)
+    expect(written[0].modelId).toBe('claude-opus-4-7');
+    expect(Object.keys(written[0].catalog ?? {})).toContain(CLAUDE_DEFAULT_MODEL);
+  });
+
+  it('NO other provider gets a catalog — this is a Claude-only table, keyed on the engine id', async () => {
+    // The guard that stops the family leaking onto OpenAI/xAI/local blocks, whose
+    // model lists are their own business. Keyed on providerId, never on the label.
+    for (const msg of [
+      { providerId: 'openai', providerName: 'OpenAI', apiKey: 'sk-o', modelId: 'gpt-5' },
+      { providerId: 'xai', providerName: 'xAI', apiKey: 'sk-x', modelId: 'grok-4' },
+    ]) {
+      const { d, written } = deps({ msg });
+      await setupProvider(d);
+      expect(written[0].catalog, msg.providerId).toBeUndefined();
+    }
+    const local = deps({
+      fetchLocalModels: async () => ['m1'],
+      msg: { providerId: 'lmstudio', providerName: 'LM Studio', baseURL: 'http://127.0.0.1:1234/v1', modelId: '' },
+    });
+    await setupProvider(local.d);
+    expect(local.written[0].catalog).toBeUndefined();
   });
 });
 

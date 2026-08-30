@@ -1771,6 +1771,208 @@ it.instance(
   },
 )
 
+// origami_change: config models may DECLARE their reasoning controls in the
+// models.dev shape. The fixtures below are the self-hosted case the feature
+// exists for - a vLLM server whose model id the name-regex heuristic has never
+// seen.
+it.instance(
+  "config model reasoning_options declaration builds the declared effort variants",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("spark")].models["glm-5.3-flash-ablit"]
+    expect(model.variants).toEqual({
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        spark: {
+          name: "Spark",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "glm-5.3-flash-ablit": {
+              reasoning: true,
+              reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+              limit: { context: 131072, output: 32000 },
+            },
+          },
+          options: { apiKey: "test-key", baseURL: "https://spark.test/v1" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config reasoning_options wins over the name heuristic, including for an excluded family",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const models = providers[ProviderV2.ID.make("spark")].models
+    // qwen is on the exclusion list, so the heuristic alone yields {}.
+    expect(models["qwen3-max"].variants).toEqual({
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+    })
+    // glm-5.3 now reaches low/medium/high by heuristic; the declaration still
+    // replaces it rather than merging with it.
+    expect(models["glm-5.3"].variants).toEqual({ max: { reasoningEffort: "max" } })
+    // An empty declaration means "no variants", not "fall back".
+    expect(models["glm-5.3-silent"].variants).toEqual({})
+    // No declaration at all leaves the heuristic exactly as it was.
+    expect(models["glm-5.3-plain"].variants).toEqual({
+      low: { reasoningEffort: "low" },
+      medium: { reasoningEffort: "medium" },
+      high: { reasoningEffort: "high" },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        spark: {
+          name: "Spark",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "qwen3-max": {
+              reasoning: true,
+              reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+              limit: { context: 131072, output: 32000 },
+            },
+            "glm-5.3": {
+              reasoning: true,
+              reasoning_options: [{ type: "effort", values: ["max"] }],
+              limit: { context: 131072, output: 32000 },
+            },
+            "glm-5.3-silent": {
+              reasoning: true,
+              reasoning_options: [],
+              limit: { context: 131072, output: 32000 },
+            },
+            "glm-5.3-plain": {
+              reasoning: true,
+              limit: { context: 131072, output: 32000 },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "explicit variants still merge over a reasoning_options declaration",
+  Effect.gen(function* () {
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("spark")].models["glm-5.3-flash-ablit"]
+    expect(model.variants).toEqual({
+      // Declared, then extended by config.
+      high: { reasoningEffort: "high", extraOption: "custom-value" },
+      // Not declared at all, added purely by config.
+      turbo: { reasoningEffort: "turbo" },
+      // `low` was declared and then disabled by config, so it is gone; and
+      // `medium` never appears, because the declaration - not the heuristic -
+      // decided the base set.
+    })
+  }),
+  {
+    config: {
+      provider: {
+        spark: {
+          name: "Spark",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "glm-5.3-flash-ablit": {
+              reasoning: true,
+              reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+              limit: { context: 131072, output: 32000 },
+              variants: {
+                high: { extraOption: "custom-value" },
+                low: { disabled: true },
+                turbo: { reasoningEffort: "turbo" },
+              },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "config reasoning_options supports toggle and budget_tokens declarations",
+  Effect.gen(function* () {
+    const providers = yield* list
+    expect(providers[ProviderV2.ID.make("qwen-host")].models["qwen3-thinking"].variants).toEqual({
+      none: { enableThinking: false },
+      high: { enableThinking: true },
+    })
+    // maximum = min(8000, output - 1, 31999) = 8000; high = max(min, ceil(max/2)).
+    expect(providers[ProviderV2.ID.make("claude-host")].models["kimi-k3"].variants).toEqual({
+      high: { thinking: { type: "enabled", budgetTokens: 4000 } },
+      max: { thinking: { type: "enabled", budgetTokens: 8000 } },
+    })
+    // A toggle the package has no wire form for falls back to the heuristic,
+    // matching how the catalog path treats the same declaration.
+    expect(providers[ProviderV2.ID.make("spark")].models["glm-5.3-toggle"].variants).toEqual({
+      low: { reasoningEffort: "low" },
+      medium: { reasoningEffort: "medium" },
+      high: { reasoningEffort: "high" },
+    })
+  }),
+  {
+    config: {
+      provider: {
+        "qwen-host": {
+          name: "Qwen Host",
+          npm: "@ai-sdk/alibaba",
+          env: [],
+          models: {
+            "qwen3-thinking": {
+              reasoning: true,
+              reasoning_options: [{ type: "toggle" }],
+              limit: { context: 131072, output: 32000 },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+        "claude-host": {
+          name: "Claude Host",
+          npm: "@ai-sdk/anthropic",
+          env: [],
+          models: {
+            "kimi-k3": {
+              reasoning: true,
+              reasoning_options: [{ type: "budget_tokens", min: 1024, max: 8000 }],
+              limit: { context: 131072, output: 32000 },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+        spark: {
+          name: "Spark",
+          npm: "@ai-sdk/openai-compatible",
+          env: [],
+          models: {
+            "glm-5.3-toggle": {
+              reasoning: true,
+              reasoning_options: [{ type: "toggle" }],
+              limit: { context: 131072, output: 32000 },
+            },
+          },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
 it.instance(
   "Google Vertex: retains baseURL for custom proxy",
   Effect.gen(function* () {

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "fs"
+import path from "path"
 import { Effect } from "effect"
 import { ProviderTransform } from "@/provider/transform"
 import { LLMRequestPrep } from "@/session/llm/request"
@@ -3742,6 +3744,92 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({})
   })
 
+  // origami_change: characterisation pins for the reasoning-effort exclusion
+  // list in `variants`. Written BEFORE the GLM boundary was narrowed to 5.3+,
+  // so any later edit that widens the fall-through past that boundary goes red
+  // here instead of silently sending `reasoning_effort` to an endpoint that
+  // rejects it.
+  test.each([
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "deepseek-r1",
+    "deepseek-v3",
+    "minimax-m2",
+    "kimi-k2-thinking",
+    "k2p-preview",
+    "qwen3-max",
+    "big-pickle",
+    "glm-4",
+    "glm-4.6",
+    "glm-5",
+    "glm-5.1",
+    "glm-130b",
+  ])("%s stays excluded from generated effort variants", (id) => {
+    const model = createMockModel({
+      id: `test/${id}`,
+      providerID: "test",
+      api: {
+        id,
+        url: "https://api.test.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({})
+  })
+
+  // origami_change: the other side of the boundary - GLM newer than 5.2 reaches
+  // the openai-compatible default branch instead of dying in the exclusion list.
+  test.each(["glm-5.3", "glm-5.3-flash-ablit", "glm-5-3", "glm-5p3", "glm-5.9", "glm-6", "glm-6.1-air"])(
+    "%s gets the widely supported efforts on openai-compatible",
+    (id) => {
+      const model = createMockModel({
+        id: `spark/${id}`,
+        providerID: "spark",
+        api: {
+          id,
+          url: "https://spark.test/v1",
+          npm: "@ai-sdk/openai-compatible",
+        },
+      })
+      expect(ProviderTransform.variants(model)).toEqual({
+        low: { reasoningEffort: "low" },
+        medium: { reasoningEffort: "medium" },
+        high: { reasoningEffort: "high" },
+      })
+    },
+  )
+
+  test("recognizes a post-5.2 GLM from the API ID when the configured model ID is an alias", () => {
+    const model = createMockModel({
+      id: "spark/my-glm",
+      providerID: "spark",
+      api: {
+        id: "glm-5.3-flash-ablit",
+        url: "https://spark.test/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      low: { reasoningEffort: "low" },
+      medium: { reasoningEffort: "medium" },
+      high: { reasoningEffort: "high" },
+    })
+  })
+
+  test("a post-5.2 GLM without the reasoning capability still gets nothing", () => {
+    const model = createMockModel({
+      id: "spark/glm-5.3",
+      providerID: "spark",
+      capabilities: { reasoning: false },
+      api: {
+        id: "glm-5.3",
+        url: "https://spark.test/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+    })
+    expect(ProviderTransform.variants(model)).toEqual({})
+  })
+
   test("glm-5.2 returns native effort variants for openai-compatible providers", () => {
     const model = createMockModel({
       id: "zhipuai/glm-5.2",
@@ -5715,5 +5803,30 @@ describe("ProviderTransform - reasoning effort is an explicit, overridable defau
     expect(ProviderTransform.smallOptions(gatewayModel("google/gemini-2.5-flash"))).toEqual({
       reasoning: { enabled: false },
     })
+  })
+})
+
+// origami_change: `ReasoningOption` is declared twice - once in
+// `packages/core/src/models-dev.ts` for the catalog, once in
+// `packages/core/src/v1/config/provider.ts` so an operator can declare the same
+// thing on a config model. `reasoningOptionVariants` reads both through the
+// models.dev type, so the two schemas have to stay identical. Without this
+// guard a field added on one side would be silently rejected on the other.
+describe("ReasoningOption mirror", () => {
+  const extract = (file: string) => {
+    const source = readFileSync(path.join(import.meta.dir, "../../../core/src", file), "utf8")
+    const marker = source.indexOf("ReasoningOption = Schema.Union([")
+    expect(marker, file).toBeGreaterThan(-1)
+    const end = source.indexOf("\n])", marker)
+    expect(end, file).toBeGreaterThan(marker)
+    return source
+      .slice(source.indexOf("[", marker), end + 3)
+      .split("\n")
+      .map((line) => line.trim())
+      .join(" ")
+  }
+
+  test("the config schema and the models.dev schema still agree", () => {
+    expect(extract("v1/config/provider.ts")).toBe(extract("models-dev.ts"))
   })
 })

@@ -121,4 +121,9 @@ export interface TodoInfo {
   content: string;
   activeForm: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Nesting level as it arrived on the wire; absent means top level. Optional
+   *  so a todoSummary recorded before nesting existed still type-checks. The
+   *  pane never reads it — it carries the field to TodoStrip, which normalises
+   *  the whole list and draws it. */
+  depth?: number;
 }

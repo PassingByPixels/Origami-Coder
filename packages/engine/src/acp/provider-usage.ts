@@ -1,8 +1,9 @@
 import { Effect } from "effect"
 import { Auth } from "@/auth"
+import { Config } from "@/config/config"
 
 /**
- * Subscription usage for an OAuth provider connection, over ACP.
+ * Subscription usage for a provider connection, over ACP.
  *
  * WHY THIS IS NOT IN A PLUGIN. `plugin/openai/codex.ts` and `plugin/xai.ts` own
  * the sign-in flow and inject the bearer into CHAT requests through an anonymous
@@ -34,6 +35,15 @@ import { Auth } from "@/auth"
  *             hold, and a guessed protobuf schema would produce confident
  *             wrong percentages. The CLI-proxy path needs only a bearer token,
  *             which is why it, and only it, is implemented here.
+ *   opencode-go
+ *          -> GET https://opencode.ai/zen/go/v1/usage. The ONE provider here
+ *             whose subscription is bought with an API KEY rather than an
+ *             OAuth sign-in, so it is the one whose credential is NOT read
+ *             from `Auth.Service`: the shell writes it to
+ *             `provider["opencode-go"].options.apiKey` in the global config.
+ *             OpenCode ZEN (`opencode`) is a DIFFERENT provider id, is metered
+ *             per token, and has no usage endpoint under `/zen/v1` — it stays
+ *             cost-tracked and is deliberately absent from the table below.
  *
  * LAZY BY CONTRACT. The caller asks when a fold opens. There is no timer here
  * and there must not be one: openai/codex#10869 is exactly the complaint that a
@@ -49,6 +59,13 @@ const CHATGPT_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage"
  * parseGrokUsage for the source.
  */
 const GROK_USAGE_ENDPOINT = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+
+/** Where an OpenCode GO subscription reports its own consumption. */
+const GO_USAGE_ENDPOINT = "https://opencode.ai/zen/go/v1/usage"
+
+/** The one provider whose usage credential is an API KEY in the config file
+ *  rather than an OAuth credential in the store. */
+const GO_PROVIDER_ID = "opencode-go"
 
 /** One quota lane — a rolling window with a percentage spent against it. */
 export type UsageWindow = {
@@ -166,9 +183,14 @@ export function parseChatgptUsage(body: unknown, now: number): UsageResult {
   const providerID = "openai"
   if (!isRecord(body)) return { ok: false, providerID, unavailable: "The usage endpoint answered something this build cannot read." }
   const rateLimit = isRecord(body["rate_limit"]) ? body["rate_limit"] : undefined
+  // WEEKLY LEADS, the same rule GO_LANES states below: the model-bar pill
+  // renders only the FIRST window, and the weekly cap is the budget a user
+  // actually manages. The 5-hour lane still ships as line 2, where the fold
+  // and the tooltip show every line. `secondary_window` is the weekly lane in
+  // every documented body; when it is absent the primary lane leads alone.
   const windows = [
-    parseWindow(rateLimit?.["primary_window"], "Session", now),
     parseWindow(rateLimit?.["secondary_window"], "Weekly", now),
+    parseWindow(rateLimit?.["primary_window"], "Session", now),
   ].filter((w): w is UsageWindow => w !== undefined)
   if (windows.length === 0) {
     return { ok: false, providerID, unavailable: "The usage endpoint reported no quota window for this account." }
@@ -348,10 +370,132 @@ export async function fetchGrokUsage(credential: Auth.Oauth, now: number, fetchI
   return parseGrokUsage(body, now)
 }
 
+/**
+ * One OpenCode GO lane.
+ *
+ * A lane whose `percent` is not a finite number is DROPPED rather than shown as
+ * 0% — the same rule parseWindow applies, for the same reason: "0% used" reads
+ * as "plenty left" to someone who is about to be cut off.
+ */
+const goWindow = (raw: unknown, label: string): UsageWindow | undefined => {
+  if (!isRecord(raw)) return undefined
+  const percent = finiteNumber(raw["percent"])
+  if (percent === undefined) return undefined
+  const resetsAt = parseIso8601Millis(raw["resetsAt"])
+  return {
+    label,
+    usedPercent: Math.max(0, Math.min(100, percent)),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+  }
+}
+
+/** The three GO lanes, in the order the pill wants them. */
+const GO_LANES: ReadonlyArray<readonly [string, string]> = [
+  ["weekly", "Weekly"],
+  ["rolling", "5-hour"],
+  ["monthly", "Monthly"],
+]
+
+/**
+ * PARSER CONTRACT — the OpenCode GO `zen/go/v1/usage` body, read from the
+ * upstream route that serves it (anomalyco/opencode,
+ * packages/console/app/src/routes/zen/go/v1/usage.ts, commit 2b8a5969) and
+ * confirmed against one live 200 on 2026-08-28:
+ *
+ *   { usage: {
+ *       rolling: { status: "ok" | "rate-limited",
+ *                  percent: number,
+ *                  resetsAt: string (ISO 8601) },
+ *       weekly:  { ...same... },
+ *       monthly: { ...same... } } }
+ *
+ * THREE FIXED LANES, AND THE ORDER IS LOAD-BEARING. Unlike the ChatGPT body
+ * there is no window LENGTH to derive a label from, so the labels are the ones
+ * the docs use (opencode.ai/docs/go): a 5-hour rolling window, a weekly one and
+ * a monthly one. The model-bar pill renders only the FIRST line, and the WEEKLY
+ * cap is the budget a user actually manages — the number that decides whether
+ * there is plan left this week — so it leads. The 5-hour lane still ships as
+ * line 2, where the fold and the tooltip show every line.
+ *
+ * `resetsAt` IS ABSOLUTE, not a duration. Upstream writes an ISO timestamp
+ * directly; adding `now` to it (the ChatGPT `reset_after_seconds` habit) would
+ * push every reset a further half-century out.
+ *
+ * `percent` arrives already floored and clamped upstream
+ * (`Math.floor(Math.min(100, used / limit * 100))`). It is clamped again here
+ * because a private endpoint's arithmetic is not this module's to trust.
+ *
+ * `status` is DELIBERATELY NOT rendered as its own field: "rate-limited" is
+ * what 100% already says, and a second vocabulary on the same line is noise.
+ *
+ * Exported for tests: this is the whole risk surface of the feature.
+ */
+export function parseGoUsage(body: unknown): UsageResult {
+  const providerID = GO_PROVIDER_ID
+  if (!isRecord(body)) return { ok: false, providerID, unavailable: "The usage endpoint answered something this build cannot read." }
+  const usage = isRecord(body["usage"]) ? body["usage"] : undefined
+  const windows = GO_LANES.map(([key, label]) => goWindow(usage?.[key], label)).filter(
+    (w): w is UsageWindow => w !== undefined,
+  )
+  if (windows.length === 0) {
+    return { ok: false, providerID, unavailable: "The usage endpoint reported no quota window for this subscription." }
+  }
+  // The plan name is fixed: this endpoint exists only for GO, and a key without
+  // the subscription never gets a 200 out of it (403 below).
+  return { ok: true, providerID, plan: "go", windows }
+}
+
+/**
+ * The one HTTP call for OpenCode GO.
+ *
+ * BEARER ONLY. The chat path sends this same key as `x-api-key`; the usage
+ * endpoint answers 401 to that header and 200 to `Authorization: Bearer`
+ * (measured against the live endpoint, 2026-08-28).
+ *
+ * NO EXPIRY CHECK, unlike the two OAuth fetchers above: an API key does not
+ * expire on a clock this module can read, so there is nothing to pre-empt.
+ *
+ * 401 AND 403 ARE DIFFERENT ANSWERS HERE and are worded apart. 401 is a key the
+ * gateway does not recognise; 403 is an `EntitlementError` — a valid key whose
+ * account has no GO subscription. Telling the second one to "check your key"
+ * would send the user to fix a key that is fine.
+ *
+ * The status is checked BEFORE the body is read: a 404 on this host answers
+ * HTML, and `json()` on that throws.
+ */
+export async function fetchGoUsage(apiKey: string, fetchImpl: FetchLike): Promise<UsageResult> {
+  const providerID = GO_PROVIDER_ID
+  const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" }
+  let response: Awaited<ReturnType<FetchLike>>
+  try {
+    response = await fetchImpl(GO_USAGE_ENDPOINT, { headers })
+  } catch (cause) {
+    // Offline, DNS, TLS. The pill hides the line; it does not show a stack.
+    return { ok: false, providerID, unavailable: "Could not reach the usage endpoint." }
+  }
+  if (!response.ok) {
+    if (response.status === 403) {
+      return { ok: false, providerID, unavailable: "This key has no OpenCode Go subscription." }
+    }
+    if (response.status === 401) {
+      return { ok: false, providerID, unavailable: "The OpenCode Go key was rejected. Check the key in your config." }
+    }
+    return { ok: false, providerID, unavailable: `The usage endpoint answered ${response.status}.` }
+  }
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch (cause) {
+    return { ok: false, providerID, unavailable: "The usage endpoint answered something this build cannot read." }
+  }
+  return parseGoUsage(body)
+}
+
 /** Human-facing account name for each provider this module can read usage from. */
-const OAUTH_PROVIDER_NAME: Record<string, string> = {
+const USAGE_PROVIDER_NAME: Record<string, string> = {
   openai: "ChatGPT",
   xai: "Grok",
+  [GO_PROVIDER_ID]: "OpenCode Go",
 }
 
 /**
@@ -360,11 +504,26 @@ const OAUTH_PROVIDER_NAME: Record<string, string> = {
  * Pure, and separate from the Effect below, so each refusal can be checked
  * without standing up an `Auth.Service` layer. Answers `undefined` to mean "this
  * connection has a usage source and a usable credential — go ahead".
+ *
+ * `goApiKey` is the resolved OpenCode GO key and is meaningless for any other
+ * provider id; it is a parameter rather than a second lookup so this stays pure.
  */
-export function usageGate(providerID: string, stored: Auth.Info | undefined): UsageResult | undefined {
-  const displayName = OAUTH_PROVIDER_NAME[providerID]
+export function usageGate(
+  providerID: string,
+  stored: Auth.Info | undefined,
+  goApiKey?: string,
+): UsageResult | undefined {
+  const displayName = USAGE_PROVIDER_NAME[providerID]
   if (!displayName) {
     return { ok: false, providerID, unavailable: `No usage source is known for ${providerID}.` }
+  }
+  // GO IS THE ONE SUBSCRIPTION SOLD BEHIND AN API KEY, so it takes its own
+  // branch BEFORE the two rules below. The "metered per token" refusal is
+  // factually wrong for it — the key IS the flat-rate plan — and the key is not
+  // in the credential store at all, which would make "not signed in" wrong too.
+  if (providerID === GO_PROVIDER_ID) {
+    if (!goApiKey) return { ok: false, providerID, unavailable: `No ${displayName} API key is configured.` }
+    return undefined
   }
   if (!stored) return { ok: false, providerID, unavailable: `Not signed in to ${displayName}.` }
   if (stored.type !== "oauth") {
@@ -379,6 +538,28 @@ export function usageGate(providerID: string, stored: Auth.Info | undefined): Us
   }
   return undefined
 }
+
+/**
+ * OpenCode GO's key, config FIRST.
+ *
+ * `getGlobal()` and not `get()`: this runs on the bare fiber `acp/agent.ts`
+ * starts every ext request on, `provider_auth_usage` deliberately carries no
+ * `cwd`, and `Config.get()` reads through `InstanceState` — which DIES without
+ * an instance reference. The global file is where the shell writes the key
+ * anyway (firstFold.ts's `writeModelConfig`).
+ *
+ * An `api` credential on the same id is honoured as a FALLBACK so a GO key
+ * added with `origami providers login` — which stores it in auth.json and never
+ * touches the config file — reads the same subscription.
+ */
+const goApiKeyOf = Effect.fn("ACPProviderUsage.goApiKey")(function* (stored: Auth.Info | undefined) {
+  const config = yield* Config.Service
+  const cfg = yield* config.getGlobal()
+  const fromConfig = cfg.provider?.[GO_PROVIDER_ID]?.options?.apiKey
+  if (typeof fromConfig === "string" && fromConfig.length > 0) return fromConfig
+  if (stored?.type === "api" && stored.key.length > 0) return stored.key
+  return undefined
+})
 
 /**
  * The ACP-facing entry point.
@@ -397,8 +578,12 @@ export const usage = Effect.fn("ACPProviderUsage.usage")(function* (
   // sign-in are answered by the same table rather than by two orders of checks.
   const auth = yield* Auth.Service
   const stored = yield* auth.get(providerID).pipe(Effect.orElseSucceed(() => undefined))
-  const refused = usageGate(providerID, stored)
+  // Only GO pays for a config read, so every other provider's refusal costs
+  // exactly what it did before this lane existed.
+  const goApiKey = providerID === GO_PROVIDER_ID ? yield* goApiKeyOf(stored) : undefined
+  const refused = usageGate(providerID, stored, goApiKey)
   if (refused) return refused
+  if (goApiKey !== undefined) return yield* Effect.promise(() => fetchGoUsage(goApiKey, fetchImpl))
   const credential = stored as Auth.Oauth
   const fetchUsage = providerID === "xai" ? fetchGrokUsage : fetchChatgptUsage
   return yield* Effect.promise(() => fetchUsage(credential, now, fetchImpl))

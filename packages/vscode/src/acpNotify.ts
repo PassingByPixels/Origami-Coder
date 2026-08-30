@@ -121,11 +121,15 @@ export function todoSnapshotFrom(p: NotifyParams): TodoSnapshot {
         rawStatus === 'in_progress' || rawStatus === 'completed'
           ? rawStatus
           : 'pending';
+      // Same rule as the todowrite feed (acpTodoWrite.ts): a depth that is not
+      // a real number reads as flat, never as a dropped row.
+      const rawDepth = t.depth;
       return {
         id: Number(t.id ?? 0),
         content: String(t.content ?? ''),
         activeForm: String(t.activeForm ?? ''),
         status,
+        depth: typeof rawDepth === 'number' && Number.isFinite(rawDepth) ? rawDepth : 0,
       };
     }),
   };

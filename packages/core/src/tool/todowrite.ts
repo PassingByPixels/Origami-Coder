@@ -31,8 +31,18 @@ const layer = Layer.effectDiscard(
     yield* tools
       .register({
         [name]: Tool.make({
+          // DRIFT RISK: this is the SHORT twin of the engine's full description
+          // in packages/engine/src/tool/todowrite.txt. They are two texts for
+          // one tool, so a rule taught in one and not the other is a model that
+          // behaves differently depending on which runtime answered. Keep the
+          // nesting sentence below in step with that file's "## Nesting"
+          // section.
           description:
-            "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
+            "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current. " +
+            "Use the optional `depth` field for sub-tasks: 0 (or omitted) is top level, a sub-task is its parent's depth + 1 and comes directly after that parent, maximum 3. " +
+            "Put the structure in `depth`, never in the `content` text as a numbering prefix such as \"1a\". " +
+            "The list is replaced whole on every call, so re-send each item's `depth` every time you rewrite it. " +
+            "A parent sent as `completed` while a task under it is still `pending` or `in_progress` is recorded as `in_progress` instead.",
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],

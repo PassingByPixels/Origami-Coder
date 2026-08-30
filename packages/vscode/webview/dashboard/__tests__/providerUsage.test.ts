@@ -7,6 +7,9 @@
 // it. Silence is the one outcome that would leave it spinning, and none of the
 // paths below is allowed to produce it.
 
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PROVIDER_USAGE_MESSAGE_TYPES,
@@ -14,6 +17,7 @@ import {
   usageLine,
   type ProviderUsageClient,
 } from '../../../src/dashboard/providerUsage';
+import { KEY_USAGE_PROVIDERS, usageCapableIds } from '../../../src/dashboard/usageCapable';
 
 const NOW = 1_786_874_400_000;
 
@@ -156,5 +160,118 @@ describe('handleProviderUsageMessage — exactly one answer, on every path', () 
     // And the dispatch set must not claim it either.
     expect(PROVIDER_USAGE_MESSAGE_TYPES.has('providerAuthStart')).toBe(false);
     expect(PROVIDER_USAGE_MESSAGE_TYPES.has('providerUsageRequest')).toBe(true);
+  });
+
+  // OpenCode GO reports three lanes at once. The model-bar pill renders only the
+  // FIRST line, so the order the engine sends is the order the user reads — and
+  // the WEEKLY cap is the budget a user actually manages.
+  it('a GO answer keeps the engine\'s lane order, Weekly first', async () => {
+    const { host, posted } = hostOf({
+      extMethod: async () => ({
+        ok: true,
+        providerID: 'opencode-go',
+        plan: 'go',
+        windows: [
+          { label: 'Weekly', usedPercent: 12, resetsAt: NOW + 300_000_000 },
+          { label: '5-hour', usedPercent: 30, resetsAt: NOW + 9_000_000 },
+          { label: 'Monthly', usedPercent: 6 },
+        ],
+      }),
+    });
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      await handleProviderUsageMessage(host, { type: 'providerUsageRequest', providerId: 'opencode-go' });
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+    expect(posted[0]!.plan).toBe('go');
+    expect(posted[0]!.lines).toEqual([
+      'Weekly: 12% used, resets in 3d 11h',
+      '5-hour: 30% used, resets in 2h 30m',
+      'Monthly: 6% used',
+    ]);
+  });
+});
+
+// WHICH providers can be asked at all. Read from the config FILE, not the
+// engine — the model bar asks this once on mount, when no chat may be running.
+describe('usageCapableIds — the model bar\'s gate', () => {
+  it('a configured OpenCode GO key makes it capable', () => {
+    expect(usageCapableIds({ 'opencode-go': { options: { apiKey: 'sk-not-a-real-go-key' } } })).toEqual(['opencode-go']);
+  });
+
+  it('OpenCode ZEN is NEVER capable, even with a key — it is metered and has no usage route', () => {
+    // `opencode` and `opencode-go` are two providers on one host. Treating Zen
+    // as capable would fire a read the engine has to refuse, every turn.
+    expect(usageCapableIds({ opencode: { options: { apiKey: 'sk-zen' } } })).toEqual([]);
+    expect(KEY_USAGE_PROVIDERS).not.toContain('opencode');
+  });
+
+  it('a GO block with no usable key is not capable', () => {
+    // A provider block written without a key (a half-finished connect, or an
+    // OAuth provider's keyless block) would earn a refusal, not a number.
+    for (const block of [{}, { options: {} }, { options: { apiKey: '' } }, { options: { apiKey: '   ' } }, { options: { apiKey: 123 } }]) {
+      expect(usageCapableIds({ 'opencode-go': block })).toEqual([]);
+    }
+  });
+
+  it('a missing or malformed config answers "none" rather than throwing', () => {
+    for (const providers of [undefined, null, 'nope', 42, [], {}]) {
+      expect(usageCapableIds(providers)).toEqual([]);
+    }
+  });
+});
+
+describe('providerUsageCapableRequest — answered from the config, with no engine', () => {
+  /** Point the global-config helpers at a scratch dir for one call. Never the
+   *  developer's own ~/.config/origami — realConfigGuard.ts explains why. */
+  function withConfig<T>(json: unknown | undefined, run: () => T): T {
+    const previous = process.env.XDG_CONFIG_HOME;
+    const dir = mkdtempSync(path.join(tmpdir(), 'origami-usage-capable-'));
+    mkdirSync(path.join(dir, 'origami'), { recursive: true });
+    if (json !== undefined) writeFileSync(path.join(dir, 'origami', 'origami.json'), JSON.stringify(json), 'utf8');
+    process.env.XDG_CONFIG_HOME = dir;
+    try {
+      return run();
+    } finally {
+      if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous;
+    }
+  }
+
+  it('reports opencode-go when the global config carries its key', async () => {
+    const { host, posted } = hostOf();
+    await withConfig({ provider: { 'opencode-go': { options: { apiKey: 'sk-not-a-real-go-key' } } } }, () =>
+      handleProviderUsageMessage(host, { type: 'providerUsageCapableRequest' }),
+    );
+    expect(posted).toEqual([{ type: 'providerUsageCapable', ids: ['opencode-go'] }]);
+  });
+
+  it('NEVER puts the key on the wire — only the fact that one exists', async () => {
+    const { host, posted } = hostOf();
+    await withConfig({ provider: { 'opencode-go': { options: { apiKey: 'sk-not-a-real-go-key' } } } }, () =>
+      handleProviderUsageMessage(host, { type: 'providerUsageCapableRequest' }),
+    );
+    expect(JSON.stringify(posted)).not.toContain('sk-not-a-real-go-key');
+  });
+
+  it('answers with NO engine client at all — a fresh window has no chat open yet', async () => {
+    // The whole reason this is a config read and not an ext method: the model
+    // bar mounts before any session exists.
+    const { host, posted } = hostOf();
+    await withConfig({ provider: {} }, () => handleProviderUsageMessage(host, { type: 'providerUsageCapableRequest' }));
+    expect(posted).toEqual([{ type: 'providerUsageCapable', ids: [] }]);
+  });
+
+  it('an absent or corrupt config still answers, so the gate never hangs', async () => {
+    for (const cfg of [undefined, { provider: 'not-an-object' }]) {
+      const { host, posted } = hostOf();
+      await withConfig(cfg, () => handleProviderUsageMessage(host, { type: 'providerUsageCapableRequest' }));
+      expect(posted).toEqual([{ type: 'providerUsageCapable', ids: [] }]);
+    }
+  });
+
+  it('is routed — DashboardPanel dispatches on this set, so an absent member is a dead message', () => {
+    expect(PROVIDER_USAGE_MESSAGE_TYPES.has('providerUsageCapableRequest')).toBe(true);
   });
 });

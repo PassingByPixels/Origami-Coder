@@ -1622,3 +1622,139 @@ describe('ChatPane — a click on a chat image opens it enlarged', () => {
     expect(lightbox(container)).toBeNull();
   });
 });
+
+// --- 0.4.60: the composer's running changes row, end to end -----------------
+// The unit suites prove the rollup (panes/sessionChanges.test.ts) and the pill
+// (components/ChangesPill.test.ts) separately. This proves the WIRE between
+// them: a real edit arriving on the host bridge has to reach the footer of the
+// cell it belongs to. Both fixtures below are shaped from the shipped forward
+// at src/dashboard/DashboardPanel.ts:1661 (`type:'toolResult'` carrying
+// `diff`/`path`/`status`), not invented.
+describe('ChatPane — the composer changes row', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const editArrives = (path: string, oldText: string, newText: string) => {
+    postFromHost({
+      type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-' + path,
+      title: 'edit', kind: 'edit', toolName: 'edit', status: 'in_progress', path,
+    });
+    postFromHost({
+      type: 'toolResult', sessionId: ACP_UUID, toolCallId: 'tc-' + path,
+      status: 'completed', content: 'ok', path, diff: { path, oldText, newText },
+    });
+  };
+
+  it('shows no row at all until something has actually been edited', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    postFromHost({ type: 'agentChunk', sessionId: ACP_UUID, text: 'just talking\n' });
+    await need(container, '.cell-messages');
+    expect(container.querySelector('.changes-pill')).toBeNull();
+  });
+
+  it('a READ (a path with no diff) still leaves the row hidden', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    postFromHost({
+      type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-read',
+      title: 'read', kind: 'read', toolName: 'read_file', status: 'in_progress', path: '/w/a.ts',
+    });
+    postFromHost({
+      type: 'toolResult', sessionId: ACP_UUID, toolCallId: 'tc-read',
+      status: 'completed', content: 'file body', path: '/w/a.ts',
+    });
+    await need(container, '.cell-messages');
+    await tick();
+    expect(container.querySelector('.changes-pill')).toBeNull();
+  });
+
+  it('an edit off the wire reaches the footer with real line counts', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    editArrives('/w/src/a.ts', 'a\nb\nc\nd\ne', 'a\nB2\nC2\nd\ne');   // +2 −2
+    editArrives('/w/src/new.ts', '', 'one\ntwo\nthree');              // created, +3 −0
+    const pill = await need<HTMLElement>(container, '.changes-pill');
+    expect(pill.querySelector('.cp-files')!.textContent).toBe('2 files');
+    expect(pill.querySelector('.cp-add')!.textContent).toBe('+5');
+    expect(pill.querySelector('.cp-del')!.textContent).toBe('−2');
+
+    await fireEvent.click(pill);
+    const rows = [...container.querySelectorAll('.cp-file')] as HTMLElement[];
+    expect(rows.map((r) => r.title)).toEqual(['/w/src/a.ts', '/w/src/new.ts']);
+    expect(rows[1].querySelector('.cp-new'), 'the written-from-nothing file is marked new').not.toBeNull();
+  });
+});
+
+// FOCUS VIEW, end to end (0.4.61). chatFocus.test.ts owns the rule and
+// ChatTranscript.test.ts owns the filtered render; what only THIS file can show
+// is that the two are joined — a real turn off the wire, a real click on the
+// composer's eye, and the transcript above it actually changing. Every piece
+// below passed its own unit test while the feature was still unwired.
+describe('ChatPane — the composer focus toggle', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  /** A turn with something of each sort in it: reasoning, tool activity, prose. */
+  const mixedTurn = () => {
+    postFromHost({ type: 'echoUser', sessionId: ACP_UUID, text: 'why is it slow?' });
+    postFromHost({ type: 'agentThought', sessionId: ACP_UUID, text: 'checking the loop' });
+    postFromHost({
+      type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-1',
+      title: 'read', kind: 'read', toolName: 'read_file', status: 'in_progress', path: '/w/a.ts',
+    });
+    // `agentText`, not `agentChunk` — the latter is not a message type this
+    // pane handles at all, so a fixture built on it renders no prose and any
+    // assertion about the model's answer would be vacuous.
+    postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: 'the loop is quadratic.', engineMsgId: 'eng-1' });
+  };
+
+  it('the eye is in the footer before anything has been edited', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await need(container, '.cell-messages');
+    expect(container.querySelector('.focus-eye'), 'reachable from the first message on').not.toBeNull();
+    expect(container.querySelector('.changes-pill'), 'and it does not drag the pill in with it').toBeNull();
+  });
+
+  it('a click hides the reasoning and the tool card, and keeps the conversation', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    mixedTurn();
+    await need(container, '.tool-card');
+    expect(container.querySelector('.thought-block'), 'full view shows reasoning').not.toBeNull();
+
+    await fireEvent.click(await need(container, '.focus-eye'));
+    await tick();
+    expect(container.querySelector('.tool-card'), 'tool activity is gone').toBeNull();
+    expect(container.querySelector('.thought-block'), 'reasoning is gone').toBeNull();
+    expect(container.textContent, 'the answer stayed').toContain('the loop is quadratic.');
+    expect(container.textContent, 'and so did the question').toContain('why is it slow?');
+  });
+
+  it('a SECOND click brings everything back — it is a toggle, not a one-way trim', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    mixedTurn();
+    await need(container, '.tool-card');
+
+    const eye = await need<HTMLElement>(container, '.focus-eye');
+    await fireEvent.click(eye);
+    await tick();
+    expect(container.querySelector('.tool-card')).toBeNull();
+
+    await fireEvent.click(eye);
+    await tick();
+    expect(container.querySelector('.tool-card'), 'the card is back where it was').not.toBeNull();
+    expect(container.querySelector('.thought-block')).not.toBeNull();
+  });
+
+  it('the eye reports the cell it belongs to, not a global mode', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    mixedTurn();
+    const eye = await need<HTMLElement>(container, '.focus-eye');
+    expect(eye.getAttribute('aria-pressed')).toBe('false');
+    await fireEvent.click(eye);
+    await tick();
+    expect((await need(container, '.focus-eye')).getAttribute('aria-pressed')).toBe('true');
+  });
+});

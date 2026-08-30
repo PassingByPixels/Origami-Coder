@@ -1255,7 +1255,12 @@ const scenarios: Scenario[] = [
     .seeded((ctx) =>
       Effect.gen(function* () {
         const session = yield* ctx.session({ title: "Todo session" })
-        const todos = [{ content: "cover session todo", status: "pending" as const, priority: "high" as const }]
+        // Nested on purpose: the route answers from the schema's encoder, so a
+        // flat-only seed would not notice `depth` being dropped on the way out.
+        const todos = [
+          { content: "cover session todo", status: "pending" as const, priority: "high" as const, depth: 0 },
+          { content: "cover a sub-task", status: "pending" as const, priority: "low" as const, depth: 1 },
+        ]
         yield* ctx.todos(session.id, todos)
         return { session, todos }
       }),

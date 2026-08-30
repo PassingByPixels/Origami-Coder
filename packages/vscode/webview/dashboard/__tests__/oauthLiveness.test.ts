@@ -49,12 +49,21 @@ describe('which providers the host counts as signed in', () => {
     expect([...ids]).toEqual([]);
   });
 
-  it('degrades to "nobody is signed in" rather than throwing', async () => {
-    // Liveness runs on a timer. A read that throws would take the whole status
-    // broadcast down with it, so both no-engine and a failing engine answer empty.
-    expect([...(await oauthConnectedIds(undefined))]).toEqual([]);
+  it('an empty answer from a LIVE engine means "nobody is signed in"', async () => {
+    expect([...(await oauthConnectedIds(clientAnswering({})) ?? new Set())]).toEqual([]);
+  });
+
+  it('COULD NOT ASK is undefined, never an empty set', async () => {
+    // OWNER UAT, 0.4.64: the boot-time probe runs before any chat has spawned
+    // an engine, so there is no client to ask. Answering an empty set there
+    // made broadcastProviderStatus cache "not configured" for a signed-in
+    // ChatGPT block — absence of an ANSWER cached as absence of a CREDENTIAL —
+    // and every fresh chat wore the unreachable banner while the model
+    // answered. undefined = the auth store was not asked; a liveness read
+    // still degrades rather than throws.
+    expect(await oauthConnectedIds(undefined)).toBeUndefined();
     const angry = { extMethod: async () => { throw new Error('engine gone'); } };
-    expect([...(await oauthConnectedIds(angry))]).toEqual([]);
+    expect(await oauthConnectedIds(angry)).toBeUndefined();
   });
 });
 
@@ -89,6 +98,19 @@ describe('the liveness verdict for a keyless, URL-less block', () => {
     // "no model reachable" forever while serving chat turns normally.
     expect(probe).toContain('fetchLmStudioModels(baseURL, apiKey)');
     expect(probe).toContain('detectLocalFlavor(baseURL, apiKey)');
+  });
+
+  it('an UNANSWERABLE auth store is "checking", never "not configured", and never cached', () => {
+    // The boot-time probe runs before any chat has an engine. With no client to
+    // ask, "not configured" is a guess — and caching it made every fresh
+    // ChatGPT chat wear the unreachable banner (the second life of the 0.3.82
+    // bug). The unknown branch must sit BEFORE the fallback, wear the neutral
+    // probing sentinel the banner rule already knows, and skip the cache so the
+    // very next status tick asks again instead of serving the guess for 20s.
+    expect(probe).toContain('oauthIds === undefined');
+    expect(probe.indexOf('oauthIds === undefined')).toBeLessThan(probe.indexOf(`reason = 'not configured'`));
+    expect(probe).toContain('cacheable = false');
+    expect(probe).toContain(`reason = 'Checking provider…'`);
   });
 });
 

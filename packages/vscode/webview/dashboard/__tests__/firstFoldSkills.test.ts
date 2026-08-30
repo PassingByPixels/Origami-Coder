@@ -2,7 +2,7 @@
 //
 // This drives the real `runFirstFold` against a real temp directory rather than
 // asserting over the exported string map: the map being right is not the claim —
-// the claim is that eleven SKILL.md files land where the engine's discovery glob
+// the claim is that twelve SKILL.md files land where the engine's discovery glob
 // (`{skill,skills}/**/SKILL.md` under `.origami/`, see packages/engine/src/skill)
 // will find them, each carrying the frontmatter that decides how it is grouped and
 // whether it appears in the / palette.
@@ -48,6 +48,7 @@ const EXPECTED: Record<string, { category: string; slash: boolean }> = {
   'code-review': { category: 'quality', slash: false },
   wayfinder: { category: 'planning', slash: false },
   handoff: { category: 'workflow', slash: true },
+  'optimize-code': { category: 'quality', slash: true },
 };
 
 /** The frontmatter block only — never the body, which legitimately talks ABOUT
@@ -115,7 +116,7 @@ beforeAll(async () => {
 }, 120_000);
 
 describe('/firstfold seeds the default skill library', () => {
-  it('writes exactly the eleven expected skills, and nothing else', () => {
+  it('writes exactly the twelve expected skills, and nothing else', () => {
     expect(Object.keys(afterFirst).sort()).toEqual(Object.keys(EXPECTED).sort());
   });
 
@@ -133,7 +134,7 @@ describe('/firstfold seeds the default skill library', () => {
     // Model-invoked skills (tdd, diagnosing-bugs, code-review, wayfinder) must NOT
     // be here — a / entry for them advertises a command that does nothing a user
     // needs to type.
-    expect(withSlash).toEqual(['grill-me', 'handoff', 'to-spec', 'to-tickets', 'triage', 'wrap']);
+    expect(withSlash).toEqual(['grill-me', 'handoff', 'optimize-code', 'to-spec', 'to-tickets', 'triage', 'wrap']);
   });
 
   it('names each skill after the folder it sits in, so the engine registry and the path agree', () => {
@@ -162,7 +163,7 @@ describe('/firstfold seeds the default skill library', () => {
   });
 
   it('reports how many skills it created rather than naming a single sample one', () => {
-    expect(firstNarration.some((l) => l.includes('11 skills'))).toBe(true);
+    expect(firstNarration.some((l) => l.includes('12 skills'))).toBe(true);
   });
 
   it('keeps the /wrap HANDOFF marker and its four block anchors intact', () => {
@@ -222,10 +223,10 @@ describe('/firstfold run again in a folded workspace', () => {
 });
 
 describe('the default skill library module', () => {
-  it('holds the nine skills firstFold does not own itself', () => {
+  it('holds the ten skills firstFold does not own itself', () => {
     // wrap + example-skill stay in firstFold.ts beside the HANDOFF stub; the
     // count guards against a body being added to the map but never seeded.
-    expect(Object.keys(DEFAULT_SKILLS)).toHaveLength(9);
+    expect(Object.keys(DEFAULT_SKILLS)).toHaveLength(10);
     expect(Object.keys(DEFAULT_SKILLS)).not.toContain('wrap');
     expect(Object.keys(DEFAULT_SKILLS)).not.toContain('example-skill');
   });
@@ -249,5 +250,72 @@ describe('the default skill library module', () => {
   it('cross-references the session-close skill as /wrap', () => {
     // The handoff skill is the guide; /wrap is the command that does the work.
     expect(DEFAULT_SKILLS['handoff']).toContain('/wrap');
+  });
+
+  // optimize-code's BODY is the deliverable — it is a staged pipeline, and the
+  // stages are what make it safe to point at a whole repository. A trimmed copy
+  // that lost Stage 0 would refactor from an unknown baseline; one that lost
+  // Stage 4 would report numbers it never re-ran the gates behind.
+  it('walks optimize-code through all six stages, in order', () => {
+    const body = DEFAULT_SKILLS['optimize-code']!;
+    let at = -1;
+    for (const n of [0, 1, 2, 3, 4, 5]) {
+      const i = body.indexOf(`## Stage ${n} `);
+      expect(i, `optimize-code is missing Stage ${n}, or it is out of order`).toBeGreaterThan(at);
+      at = i;
+    }
+  });
+
+  it('keeps optimize-code honest about the metric and about what it verified', () => {
+    const body = DEFAULT_SKILLS['optimize-code']!;
+    // Without the anti-gaming rule the skill degrades into "make the number go
+    // down", which is the exact failure the upstream skill exists to prevent —
+    // and the verification wording is this workspace's own standing rule.
+    expect(body).toContain('Never game the metric');
+    expect(body).toContain('verified by running');
+    expect(body).toContain('untested — would confirm by');
+  });
+
+  it('credits the Apache-2.0 skill optimize-code is adapted from', () => {
+    // A licence obligation, not decoration.
+    const body = DEFAULT_SKILLS['optimize-code']!;
+    expect(body).toContain('saurabhkumar8112/cyclomatic-complexity-skill');
+    expect(body).toContain('Apache-2.0');
+  });
+
+  it('lets the project\'s own complexity threshold win over the skill\'s defaults', () => {
+    // Seeding a skill that overrules a repo's configured eslint/radon/sonar limit
+    // would make it fight the project it was pointed at.
+    expect(DEFAULT_SKILLS['optimize-code']).toContain("project's own threshold wins");
+  });
+});
+
+// A workspace that ALREADY has a skill by one of our default names. The engine
+// keys its registry off the frontmatter `name` (packages/engine/src/skill), so
+// two files both claiming `optimize-code` would be a duplicate — and there the
+// last one loaded wins, under unbounded concurrency, which is to say nobody wins
+// predictably. writeIfAbsent settles it one layer earlier by never creating the
+// second file: the user's copy is the only one, on the FIRST fold as well as a
+// re-fold. The tdd case above proves the re-fold half; this proves the half a
+// brand-new default skill actually lands in.
+describe('/firstfold in a workspace that already has its own optimize-code', () => {
+  const MINE = '---\nname: optimize-code\ncategory: quality\ndescription: My own optimiser.\n---\n\n# mine\n';
+  let ownCwd = '';
+
+  beforeAll(async () => {
+    ownCwd = fs.mkdtempSync(path.join(realOs.tmpdir(), 'origami-firstfold-own-'));
+    fs.mkdirSync(path.dirname(skillPath(ownCwd, 'optimize-code')), { recursive: true });
+    fs.writeFileSync(skillPath(ownCwd, 'optimize-code'), MINE, 'utf8');
+    await runOnce(ownCwd);
+  }, 120_000);
+
+  it('leaves their optimize-code exactly as they wrote it', () => {
+    expect(fs.readFileSync(skillPath(ownCwd, 'optimize-code'), 'utf8')).toBe(MINE);
+  });
+
+  it('still seeds every other default skill around it', () => {
+    const seeded = seededOnDisk(ownCwd);
+    expect(Object.keys(seeded).sort()).toEqual(Object.keys(EXPECTED).sort());
+    expect(seeded['tdd']).toBe(DEFAULT_SKILLS['tdd']);
   });
 });

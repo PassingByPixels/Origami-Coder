@@ -11,9 +11,24 @@ export const TODOS_PLACEHOLDER = "${todos}"
  *  same stored list read differently in the two places the model sees it, and
  *  the reminder compares rendered strings to decide whether the model's view is
  *  already current. */
+/** Deepest nesting a rendered bullet is indented to. The same ceiling the tool
+ *  description states, applied per item: a list whose depths jump (0 then 3) is
+ *  still rendered whole, just with the jump visible. The full normalisation -
+ *  which also holds an item to one level below the item before it - belongs to
+ *  the reader that builds an actual tree, and is not needed to indent a line. */
+const MAX_DEPTH = 3
+
+function indent(depth: number | undefined): string {
+  if (typeof depth !== "number" || !Number.isFinite(depth)) return ""
+  return "  ".repeat(Math.min(MAX_DEPTH, Math.max(0, Math.floor(depth))))
+}
+
 export function renderTodoList(items: readonly Todo.Info[]): string {
   return items
-    .map((item) => `- [${item.status}] ${item.content}${item.priority ? ` (priority: ${item.priority})` : ""}`)
+    .map(
+      (item) =>
+        `${indent(item.depth)}- [${item.status}] ${item.content}${item.priority ? ` (priority: ${item.priority})` : ""}`,
+    )
     .join("\n")
 }
 

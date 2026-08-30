@@ -23,6 +23,7 @@
 // other key-only preset skipped validation entirely and then died on the
 // "needs a model id" guard with nothing written.
 
+import { claudeCatalogFor } from './anthropicCatalog';
 import { KEY_ONLY_PRESETS, checkProviderKey, keyRejectedMessage } from './keyOnlyPresets';
 import { isSelfHostedBaseUrl } from './selfHosted';
 import type { ModelChoice } from './firstFold';
@@ -199,6 +200,7 @@ export async function setupProvider(d: SetupProviderDeps): Promise<void> {
       // SELF-HOSTED ONLY: a gateway's window is refreshModelInfoFor's policy call
       // (unpersisted). A failed probe degrades to 0 — it must never fail the connect.
       servedContext: baseURL && isSelfHostedBaseUrl(baseURL) ? await d.fetchModelWindow?.(baseURL, modelId, apiKey).catch(() => 0) : 0,
+      catalog: claudeCatalogFor(providerId), // the rest of the family — see anthropicCatalog.ts
     };
     const written = d.write(choice);
     // Light the pill up immediately — bust the cache for the just-connected

@@ -1,8 +1,8 @@
 {
   "name": "origamicoder",
-  "displayName": "Origami Coder",
-  "description": "Origami Coder - Model Agnostic AI Coding Harness focused on VS Code",
-  "version": "0.4.59",
+  "displayName": "Origami Code",
+  "description": "Origami Code - Model Agnostic AI Coding Harness focused on VS Code",
+  "version": "0.4.65",
   "publisher": "OrigamiLabs",
   "icon": "media/icon.png",
   "license": "Origami-Proprietary",

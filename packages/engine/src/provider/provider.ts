@@ -1715,10 +1715,19 @@ const layer = Layer.effect(
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               variants: {},
             }
+            // origami_change: a config model may DECLARE its reasoning
+            // controls the models.dev way, and the declaration WINS over the
+            // name-regex heuristic - the heuristic guesses from a model name it
+            // may never have seen, while the operator knows what the endpoint
+            // takes. No declaration means `undefined` here, so the fallback is
+            // byte-for-byte what this line did before. Explicit `variants`
+            // still merge on top of whichever source produced the base.
+            const declared = ProviderTransform.reasoningOptionVariants(model.reasoning_options, parsedModel)
             const variants =
-              existingModel?.api.npm === parsedModel.api.npm
+              declared ??
+              (existingModel?.api.npm === parsedModel.api.npm
                 ? (existingModel.variants ?? ProviderTransform.variants(parsedModel))
-                : ProviderTransform.variants(parsedModel)
+                : ProviderTransform.variants(parsedModel))
             const merged = mergeDeep(variants, model.variants ?? {})
             parsedModel.variants = mapValues(
               pickBy(merged, (v) => !v.disabled),

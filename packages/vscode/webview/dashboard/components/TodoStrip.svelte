@@ -8,11 +8,21 @@
   // the chat history scrolls. Wire format defined by AcpCallbacks::
   // on_todo_snapshot in crates/acp/src/events.rs (iter-25.11).
 
+  // The list arithmetic (what a depth means, who owns which children, the
+  // status tally) is a pure leaf; one row's markup is another. This file keeps
+  // the panel, the header, the drawer and the collapse.
+  import { annotate, counts } from './todoTree';
+  import { autoCollapsed, visible } from './todoCollapse';
+  import TodoRow from './TodoRow.svelte';
+
   interface TodoView {
     id: number;
     content: string;
     activeForm: string;
     status: 'pending' | 'in_progress' | 'completed';
+    /** Nesting level as the engine/model sent it — absent means top level.
+     *  Normalised for the whole list at once by todoTree's `annotate`. */
+    depth?: number;
   }
 
   interface Props {
@@ -44,21 +54,14 @@
   // collapsed so a completed snapshot reads as a tidy one-liner.
   let expanded = $state(false);
 
-  const STATUS_ICON: Record<TodoView['status'], string> = {
-    pending: '☐',
-    in_progress: '▶',
-    completed: '✓',
-  };
-
-  function counts(items: TodoView[]) {
-    let p = 0, i = 0, c = 0;
-    for (const t of items) {
-      if (t.status === 'pending') p++;
-      else if (t.status === 'in_progress') i++;
-      else c++;
-    }
-    return { pending: p, in_progress: i, completed: c };
-  }
+  // PER-ROW collapse, keyed by the row's id: what the user has said about a
+  // container, and nothing else. A row with no entry falls back to the automatic
+  // rule (a settled branch opens shut), so the default follows the work while a
+  // click still wins. Deliberately NOT persisted and NOT lifted to the parent:
+  // the drawer's own collapse is a per-session preference, this is a glance at a
+  // list that is being rewritten every turn.
+  let openOverride = $state<Record<number, boolean>>({});
+  const toggle = (id: number, current: boolean) => (openOverride[id] = !current);
 
   // `source` surfaces only in the title-tooltip — the user mostly
   // cares whether items exist and what their status is. Provenance
@@ -75,8 +78,11 @@
     <span class="todo-empty">Todos: none yet</span>
   </div>
 {:else}
+  <!-- LEAVES only: a row with children is a container, so it is neither a task
+       to do nor a task done. Counting it as well would let the header sit at
+       "3/5" with nothing outstanding. -->
   {@const cnt = counts(todos)}
-  {@const allDone = cnt.completed === todos.length}
+  {@const allDone = cnt.completed === cnt.total}
   <!-- When every item is done, un-pin the strip (drop the sticky float so
        it scrolls away with the history) and collapse the item list to a
        one-line summary — a finished checklist shouldn't keep hogging the
@@ -129,21 +135,34 @@
         <span class="todo-icon">{allDone ? '✓' : '✦'}</span>
         <span class="todo-title">Todos</span>
         <span class="todo-counts">
-          {cnt.completed}/{todos.length} done
+          {cnt.completed}/{cnt.total} done
           {#if !allDone && cnt.in_progress > 0}· {cnt.in_progress} active{/if}
           {#if allDone}· complete{/if}
         </span>
       </div>
       {#if showList}
+      <!-- Depths are normalised for the WHOLE list at once (a row's legal depth
+           depends on the row before it), so the rows are annotated here rather
+           than each row working it out from its own field. -->
+      {@const rows = annotate(todos)}
+      <!-- A container's own flag: the user's click if there is one, otherwise the
+           automatic rule (a settled branch opens shut). Carried ON the row so the
+           filtered list still knows it — `visible` drops whole subtrees, so the
+           row's index in the rendered list is not its index in the plan. -->
+      {@const auto = autoCollapsed(rows)}
+      {@const marked = rows.map((t, i) => ({ ...t, shut: (openOverride[t.id] ?? auto[i]) === true }))}
       <ul class="todo-list">
-        {#each todos as t (t.id)}
-          <li class="todo-item {t.status}">
-            <span class="todo-status-icon">{STATUS_ICON[t.status]}</span>
-            <span class="todo-content">{t.content}</span>
-            {#if t.status === 'in_progress' && t.activeForm}
-              <span class="todo-active-form">— {t.activeForm}</span>
-            {/if}
-          </li>
+        {#each visible(marked, marked.map((m) => m.shut)) as t (t.id)}
+          <TodoRow
+            content={t.content}
+            activeForm={t.activeForm}
+            status={t.status}
+            depth={t.depth}
+            childDone={t.childDone}
+            childTotal={t.childTotal}
+            collapsed={t.shut}
+            onToggle={() => toggle(t.id, t.shut)}
+          />
         {/each}
       </ul>
       {/if}
@@ -304,55 +323,8 @@
     gap: 2px;
   }
 
-  .todo-item {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--og-text, #cdd6f4);
-    line-height: 1.4;
-  }
-
-  .todo-item.completed {
-    color: var(--og-muted, #6c7086);
-    text-decoration: line-through;
-    text-decoration-color: var(--og-muted, #6c7086);
-  }
-
-  .todo-item.in_progress {
-    color: var(--og-accent, #89b4fa);
-    font-weight: 500;
-  }
-
-  .todo-status-icon {
-    font-family: var(--vscode-editor-font-family, monospace);
-    flex: 0 0 auto;
-    width: 12px;
-    display: inline-block;
-  }
-
-  .todo-content {
-    flex: 1 1 auto;
-    /* min-width:0 lets the flex item shrink below its content size so the
-       ellipsis actually engages — without it a long todo overflows the strip
-       (runs off-screen) instead of truncating. */
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .todo-active-form {
-    color: var(--og-muted, #6c7086);
-    font-style: italic;
-    font-size: 11px;
-    /* Shrinkable + single-line. Previously `flex: 0 0 auto` with no truncation,
-       so a long active-form pushed the row off-screen and wrapped in muted
-       italic — reading as a big blank gap above the rest of the list. */
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  /* One row's own rules (.todo-item, .todo-status-icon, .todo-content,
+     .todo-child-count, .todo-active-form) moved to TodoRow.svelte with its
+     markup. TodoOverlay.svelte reaches two of them through :global(), which is
+     unscoped and so is unaffected by which component now declares them. */
 </style>
