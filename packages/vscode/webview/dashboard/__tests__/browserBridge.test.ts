@@ -12,9 +12,10 @@
 //   5. a text-only screenshot reply reported as success.
 //
 // THE FIXTURE IS THE POINT. Every tool name below is a real id, copied out of
-// the shipped VS Code bundle — 1.132.0, and re-read on 1.133.0 when hover, drag,
-// dialog and raw were mapped: same eleven ids, and the five `inputSchema`s those
-// verbs send are quoted verbatim in browserDrive.ts. So are the page-list and
+// the shipped VS Code bundle — 1.132.0, re-read on 1.133.0 when hover, drag,
+// dialog and raw were mapped, and again on 1.135.0 when back/forward/reload
+// were: the same eleven ids every time, and the `inputSchema`s those verbs
+// send are quoted verbatim in browserDrive.ts. So are the page-list and
 // open replies the fake returns. The first version of this suite invented names
 // (`browser_read_page`, `browser_click`) and passed 38/38 while every page verb
 // was dead on a real build — it only ever proved the bridge agreed with itself.
@@ -37,6 +38,13 @@ const { fake } = vi.hoisted(() => ({
     invokeResults: {} as Record<string, unknown>,
     /** VS Code's global auto-approve, which gates the forced click. */
     autoApprove: false as boolean,
+    /** What `vscode.window.activeTextEditor` answers, and what the focus
+     *  restore did about it. */
+    activeEditor: undefined as unknown,
+    shown: [] as unknown[][],
+    /** Lets a test model a command that MOVES the focus, which is the only
+     *  thing the restore below is allowed to react to. */
+    executeCallback: undefined as (() => void) | undefined,
   },
 }));
 
@@ -57,6 +65,20 @@ vi.mock('vscode', () => ({
     executeCommand: async (...args: unknown[]) => {
       fake.executed.push(args);
       if (fake.executeThrows) throw new Error(fake.executeThrows);
+      fake.executeCallback?.();
+    },
+  },
+  // The open command cannot be told to preserve focus on every build, so
+  // browserFocus.ts reads the active editor before the call and puts the cursor
+  // back if it MOVED. The fake starts with none — which is the ordinary case
+  // during an agent turn, the dashboard webview having focus — so nothing is
+  // restored unless a test says there was an editor to restore to.
+  window: {
+    get activeTextEditor() {
+      return fake.activeEditor;
+    },
+    showTextDocument: async (doc: unknown, column: unknown) => {
+      fake.shown.push([doc, column]);
     },
   },
   lm: {
@@ -78,6 +100,8 @@ import {
   toBrowserUrl,
   parseRequest,
 } from '../../../src/browserBridge';
+import { resetRevealedPages } from '../../../src/browserReveal';
+import { PAGE_TEXT_CAP } from '../../../src/browserSnapshot';
 import { AcpClient, type AcpEventHandlers } from '../../../src/acpClient';
 
 /** The ACP client member the engine's ext request actually lands on. */
@@ -138,8 +162,19 @@ function withPage(actionResult: unknown, id = 'page-1') {
 }
 
 /** What the driven tool was called with, ignoring the page lookup that precedes it. */
+/** The VERB's call. Two invocations are bookkeeping rather than the verb: the
+ *  page lookup, and — since t-ntmm93 — the `setViewportSize` snippet a viewport
+ *  screenshot runs first, so the picture is the configured page viewport rather
+ *  than whatever size the user left the tab. Both are skipped here. */
 function drivenCall() {
-  return fake.invokeCalls.find((c) => c.name !== 'list_browser_pages');
+  return fake.invokeCalls.find(
+    (c) => c.name !== 'list_browser_pages' && !viewportSnippetOf(c.input),
+  );
+}
+
+function viewportSnippetOf(input: unknown): string | undefined {
+  const code = (input as { code?: unknown })?.code;
+  return typeof code === 'string' && code.includes('setViewportSize') ? code : undefined;
 }
 
 beforeEach(() => {
@@ -152,6 +187,11 @@ beforeEach(() => {
   fake.invokeResults = {};
   fake.autoApprove = false;
   fake.invokeThrows = undefined;
+  fake.activeEditor = undefined;
+  fake.shown = [];
+  fake.executeCallback = undefined;
+  // Process-wide by design (browserReveal.ts), so it is cleared between cases.
+  resetRevealedPages();
 });
 
 describe('the ext-method seam', () => {
@@ -173,7 +213,7 @@ describe('the ext-method seam', () => {
     fake.commands = ['workbench.browser.open'];
     expect(await extMethod('origami/browser', { action: 'open', url: 'https://a.test' })).toMatchObject({ ok: true });
     expect(await extMethod('_origami/browser', { action: 'probe' })).toMatchObject({ ok: true });
-    expect(fake.executed).toEqual([['workbench.browser.open', 'https://a.test']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'https://a.test', { preserveFocus: true }]]);
   });
 
   it('still reports a method it does not implement as not found', async () => {
@@ -267,7 +307,7 @@ describe('open', () => {
     const res = await handleBrowserRequest({ action: 'open', url: 'C:\\tmp\\page.html' });
     expect(res.ok).toBe(true);
     expect(res.url).toBe('file:///C:/tmp/page.html');
-    expect(fake.executed).toEqual([['workbench.browser.open', 'file:///C:/tmp/page.html']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'file:///C:/tmp/page.html', { preserveFocus: true }]]);
   });
 
   it('leaves an http(s) address alone', () => {
@@ -327,7 +367,7 @@ describe('open', () => {
     fake.invokeThrows = 'tool invocation requires a chat request';
     const res = await handleBrowserRequest({ action: 'open', url: 'https://a.test' });
     expect(res.ok).toBe(true);
-    expect(fake.executed).toEqual([['workbench.browser.open', 'https://a.test']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'https://a.test', { preserveFocus: true }]]);
   });
 
   it('reports a throwing open command instead of claiming the page opened', async () => {
@@ -350,7 +390,7 @@ describe('navigate', () => {
     fake.commands = ['workbench.browser.open'];
     const res = await handleBrowserRequest({ action: 'navigate', url: 'https://b.test/page' });
     expect(res.ok).toBe(true);
-    expect(fake.executed).toEqual([['workbench.browser.open', 'https://b.test/page']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'https://b.test/page', { preserveFocus: true }]]);
   });
 
   it('opens instead of navigating when the tool exists but no page is open', async () => {
@@ -366,6 +406,45 @@ describe('navigate', () => {
     expect(res.ok).toBe(true);
     expect(fake.invokeCalls.some((c) => c.name === 'navigate_page')).toBe(false);
     expect(fake.invokeCalls.some((c) => c.name === 'open_browser_page')).toBe(true);
+  });
+});
+
+describe('back / forward / reload — navigate_page without a url', () => {
+  // `navigate_page`'s inputSchema (1.135.0 bundle) is
+  // `{ pageId, type: "url"|"back"|"forward"|"reload", url }`, required
+  // `["pageId"]`, and its `switch (t.type)` reaches goBack/goForward/reload
+  // WITHOUT reading `url` — only the "url" default throws when it is missing.
+  // So `toEqual` here is the assertion: a url smuggled onto a history call is
+  // a field VS Code drops in silence, which is this bridge's quietest failure.
+  for (const type of ['back', 'forward', 'reload'] as const) {
+    it(`sends navigate_page { pageId, type: "${type}" } and no url`, async () => {
+      withPage(toolResult([{ value: 'navigated' }]));
+      const res = await handleBrowserRequest({ action: type });
+      expect(res.ok).toBe(true);
+      expect(drivenCall()).toEqual({ name: 'navigate_page', input: { pageId: 'page-1', type } });
+    });
+  }
+
+  it('refuses when no page is shared, instead of opening one like navigate does', async () => {
+    // The behaviour that separates these three from `navigate`: navigate can
+    // answer an empty browser by OPENING the url it was given, and these name
+    // no url at all. Falling through to the open path would put a blank or a
+    // stale tab on screen and report it as a history move.
+    fake.commands = ['workbench.browser.open'];
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = { list_browser_pages: pageList([]) };
+    const res = await handleBrowserRequest({ action: 'back' });
+    expect(res.ok).toBe(false);
+    expect(String(res.error)).toContain('No page is open');
+    expect(fake.invokeCalls.some((c) => c.name === 'navigate_page')).toBe(false);
+    expect(fake.invokeCalls.some((c) => c.name === 'open_browser_page')).toBe(false);
+    expect(fake.executed).toEqual([]);
+  });
+
+  it('carries the three verbs across the wire, so engine and client cannot drift', () => {
+    for (const action of ['back', 'forward', 'reload']) {
+      expect(parseRequest({ action })).toEqual(expect.objectContaining({ action }));
+    }
   });
 });
 
@@ -997,7 +1076,7 @@ describe('a refused open is an answer, not an obstacle', () => {
     fake.invokeThrows = 'Navigation to https://slow.test/ timed out after 30000 ms';
     const res = await handleBrowserRequest({ action: 'open', url: 'https://slow.test/' });
     expect(res.ok).toBe(true);
-    expect(fake.executed).toEqual([['workbench.browser.open', 'https://slow.test/']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'https://slow.test/', { preserveFocus: true }]]);
   });
 
   it('still uses the open command on a build that publishes no open tool', async () => {
@@ -1005,7 +1084,7 @@ describe('a refused open is an answer, not an obstacle', () => {
     fake.commands = ['workbench.browser.open'];
     const res = await handleBrowserRequest({ action: 'open', url: 'https://ok.test/' });
     expect(res.ok).toBe(true);
-    expect(fake.executed).toEqual([['workbench.browser.open', 'https://ok.test/']]);
+    expect(fake.executed).toEqual([['workbench.browser.open', 'https://ok.test/', { preserveFocus: true }]]);
   });
 });
 
@@ -1221,5 +1300,302 @@ describe('raw is code execution, and is gated as code execution', () => {
     const res = await handleBrowserRequest({ action: 'raw', code: 'return page.title()' });
     expect(res.ok).toBe(true);
     expect(String(res.pageText)).toContain('Result: "Origami"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The browser page stops STEALING THE CURSOR, and starts sending pictures back.
+//
+// Both halves answer the same complaint: the agent's page has to be laid out to
+// be driven at all (browserPage.ts), the reveal that lays it out used to take
+// the user's focus with it, and a page that is laid out but never looked at is
+// a page the user cannot follow. So the reveal goes quiet and the frames come
+// to the chat instead.
+// ---------------------------------------------------------------------------
+
+describe('the reveal lays the page out without taking the cursor', () => {
+  /** A page VS Code lists as backgrounded, which is the only state that reveals. */
+  function hidden(extra: Record<string, unknown> = {}) {
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = {
+      list_browser_pages: pageList([{ id: 'bg-1', title: 'App', url: 'https://app.test/', state: 'not visible' }]),
+      read_page: toolResult([{ value: 'Page summary.' }]),
+      ...extra,
+    };
+  }
+
+  it('reveals through _workbench.open with preserveFocus when the build has it', async () => {
+    // `vscode.open`'s own handler on 1.136.1 is `(accessor, e) => execute(
+    // "_workbench.open", e)` — one argument in, one forwarded — so options
+    // handed to the PUBLIC command are dropped before an editor ever sees them.
+    // The internal one takes `[column, options]`; an undefined column is the
+    // active group, which is where the page already is.
+    fake.commands = ['_workbench.open'];
+    hidden();
+    await handleBrowserRequest({ action: 'read' });
+    expect(fake.executed).toHaveLength(1);
+    expect(fake.executed[0][0]).toBe('_workbench.open');
+    expect((fake.executed[0][1] as { toString(): string }).toString()).toBe('vscode-browser:/bg-1');
+    expect(fake.executed[0][2]).toEqual([undefined, { preserveFocus: true }]);
+  });
+
+  it('still reveals on a build without it — the page must be laid out either way', async () => {
+    // The documented gap: `vscode.open` reveals, and the focus moves. A page
+    // that is not revealed cannot be clicked at all, so the reveal wins.
+    fake.commands = ['git.clone'];
+    hidden();
+    await handleBrowserRequest({ action: 'read' });
+    expect(fake.executed[0][0]).toBe('vscode.open');
+    expect((fake.executed[0][1] as { toString(): string }).toString()).toBe('vscode-browser:/bg-1');
+  });
+
+  it('does not reveal a page that is already on screen', async () => {
+    fake.commands = ['_workbench.open'];
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = { list_browser_pages: oneSharedPage(), read_page: toolResult([{ value: 'Summary.' }]) };
+    await handleBrowserRequest({ action: 'read' });
+    expect(fake.executed).toEqual([]);
+  });
+});
+
+describe('the open command is asked to preserve focus, and the cursor is put back if it did not', () => {
+  it('passes preserveFocus to whichever open command the build registered', async () => {
+    fake.commands = ['simpleBrowser.show'];
+    await handleBrowserRequest({ action: 'open', url: 'https://a.test/' });
+    expect(fake.executed).toEqual([['simpleBrowser.show', 'https://a.test/', { preserveFocus: true }]]);
+  });
+
+  it('restores the editor the user was in when the command took focus anyway', async () => {
+    // 1.136.1's `simpleBrowser.show` is `registerCommand(id, async e => …)` —
+    // one parameter — so the option is dropped and its webview panel is built
+    // with a preserveFocus it was never given. This is the fallback for that.
+    const editor = { document: { uri: 'file:///a.ts' }, viewColumn: 1 };
+    fake.activeEditor = editor;
+    fake.commands = ['simpleBrowser.show'];
+    fake.executeCallback = () => {
+      fake.activeEditor = { document: { uri: 'browser' }, viewColumn: 2 };
+    };
+    await handleBrowserRequest({ action: 'open', url: 'https://a.test/' });
+    expect(fake.shown).toEqual([[editor.document, 1]]);
+  });
+
+  it('does NOT move the cursor when the command left it where it was', async () => {
+    // A command that honoured preserveFocus must not be answered with a focus
+    // move of our own — that would be the same theft, from the other side.
+    fake.activeEditor = { document: { uri: 'file:///a.ts' }, viewColumn: 1 };
+    fake.commands = ['simpleBrowser.show'];
+    await handleBrowserRequest({ action: 'open', url: 'https://a.test/' });
+    expect(fake.shown).toEqual([]);
+  });
+});
+
+describe('every answered browser request sends the pane a picture', () => {
+  /** The frames the host would post. */
+  function sink() {
+    const posted: Record<string, unknown>[] = [];
+    return { posted, take: (s: Record<string, unknown>) => posted.push(s) };
+  }
+
+  const IMAGE = toolResult([{ data: PNG_BYTES, mimeType: 'image/png' }]);
+  const B64 = Buffer.from(PNG_BYTES).toString('base64');
+
+  function shared(extra: Record<string, unknown>) {
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = { list_browser_pages: oneSharedPage(), ...extra };
+  }
+
+  it('posts the frame straight away when the verb ITSELF answered with an image', async () => {
+    shared({ screenshot_page: IMAGE });
+    const s = sink();
+    const res = await handleBrowserExtMethod({ action: 'screenshot', url: 'https://a.test/' }, s.take);
+    expect(res.ok).toBe(true);
+    expect(s.posted).toHaveLength(1);
+    expect(s.posted[0]).toMatchObject({
+      action: 'screenshot',
+      url: 'https://a.test/',
+      imageDataUrl: `data:image/png;base64,${B64}`,
+    });
+    expect(typeof s.posted[0].ts).toBe('number');
+    // No second tool call: there was already a picture to send.
+    expect(fake.invokeCalls.filter((c) => c.name === 'screenshot_page')).toHaveLength(1);
+  });
+
+  it('chases a screenshot when the verb answered with TEXT, and posts it when it lands', async () => {
+    // A click and a type answer in prose; only `screenshot` returns bytes. The
+    // strip would otherwise stay on whatever the last screenshot verb produced.
+    shared({ click_element: toolResult([{ value: 'Clicked the element matching #go.' }]), screenshot_page: IMAGE });
+    const s = sink();
+    const res = await handleBrowserExtMethod({ action: 'click', selector: '#go' }, s.take);
+    expect(res.ok).toBe(true);
+    // Fire and forget: the answer is back BEFORE the picture is.
+    expect(s.posted).toEqual([]);
+    await vi.waitFor(() => expect(s.posted).toHaveLength(1));
+    expect(s.posted[0]).toMatchObject({
+      // The ORIGINAL verb, not the screenshot that fetched the bytes — the
+      // caption reads as what the agent just did.
+      action: 'click',
+      imageDataUrl: `data:image/png;base64,${B64}`,
+    });
+    expect(String(s.posted[0].pageText)).toContain('Clicked the element matching #go.');
+  });
+
+  it('a screenshot that FAILS posts nothing and leaves the answer alone', async () => {
+    // Silence is the design: the pane keeps the frame it has, which is honest
+    // for a strip whose claim is "the last page I could see".
+    shared({
+      click_element: toolResult([{ value: 'Clicked the element matching #go.' }]),
+      screenshot_page: toolResult([{ value: 'No page is open.' }]),
+    });
+    const s = sink();
+    const res = await handleBrowserExtMethod({ action: 'click', selector: '#go' }, s.take);
+    expect(res.ok).toBe(true);
+    await vi.waitFor(() => expect(fake.invokeCalls.some((c) => c.name === 'screenshot_page')).toBe(true));
+    expect(s.posted).toEqual([]);
+  });
+
+  it('a screenshot that THROWS does not reject the request that triggered it', async () => {
+    shared({ click_element: toolResult([{ value: 'Clicked it.' }]) });
+    const s = sink();
+    // The list resolves from invokeResults; everything else throws.
+    fake.invokeThrows = undefined;
+    const res = await handleBrowserExtMethod({ action: 'click', selector: '#go' }, s.take);
+    expect(res.ok).toBe(true);
+    await vi.waitFor(() => expect(fake.invokeCalls.some((c) => c.name === 'screenshot_page')).toBe(true));
+    expect(s.posted).toEqual([]);
+  });
+
+  it('a FAILED verb sends no frame — there is no page state worth showing', async () => {
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = { list_browser_pages: pageList([]), screenshot_page: IMAGE };
+    const s = sink();
+    const res = await handleBrowserExtMethod({ action: 'click', selector: '#gone' }, s.take);
+    expect(res.ok).toBe(false);
+    await Promise.resolve();
+    expect(s.posted).toEqual([]);
+  });
+
+  it('`probe` sends no frame and chases no screenshot — it opens nothing', async () => {
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.commands = ['simpleBrowser.show'];
+    const s = sink();
+    const res = await handleBrowserExtMethod({ action: 'probe' }, s.take);
+    expect(res.ok).toBe(true);
+    await Promise.resolve();
+    expect(s.posted).toEqual([]);
+    expect(fake.invokeCalls).toEqual([]);
+  });
+
+  it('cuts the page text at 2 KB — the pane draws a caption, not a document', async () => {
+    // A `read` answers with the whole accessibility snapshot, which runs to
+    // tens of kilobytes. Every byte past the cap is postMessage traffic for
+    // text nobody reads under a 96px thumbnail. Cut, never summarised.
+    shared({ read_page: toolResult([{ value: 'x'.repeat(5000) }]), screenshot_page: IMAGE });
+    const s = sink();
+    await handleBrowserExtMethod({ action: 'read' }, s.take);
+    await vi.waitFor(() => expect(s.posted).toHaveLength(1));
+    const text = String(s.posted[0].pageText);
+    expect(text.length).toBe(PAGE_TEXT_CAP + 1);
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('answers exactly as before when the host wants no frames at all', async () => {
+    shared({ click_element: toolResult([{ value: 'Clicked it.' }]), screenshot_page: IMAGE });
+    const res = await handleBrowserExtMethod({ action: 'click', selector: '#go' });
+    expect(res.ok).toBe(true);
+    expect(fake.invokeCalls.some((c) => c.name === 'screenshot_page')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// t-ntmm93 — the page viewport a capture is taken at.
+//
+// The embedded tab is whatever size the user left it, and `screenshot_page`'s
+// inputSchema (VS Code 1.138.0: pageId, ref, selector, element,
+// scrollIntoViewIfNeeded) carries no size, so the ONLY way a capture is not at
+// tab size is to resize the page first. These pin that the resize happens, that
+// it happens BEFORE the capture, and that the answer says which size was used —
+// a picture that silently came back at 584x311 while the model believed it was
+// 1920x1080 is the defect this exists to prevent.
+describe('screenshot — the configured page viewport, not the tab size', () => {
+  function shotWithViewport(measured: string) {
+    fake.autoApprove = true;
+    fake.tools = SHIPPED_TOOLS.map((name) => ({ name }));
+    fake.invokeResults = {
+      list_browser_pages: oneSharedPage(),
+      run_playwright_code: toolResult([{ value: `Result: ${JSON.stringify(measured)}` }, { value: 'Ran.' }]),
+      screenshot_page: toolResult([{ data: PNG_BYTES, mimeType: 'image/png' }]),
+    };
+    fake.invokeResult = toolResult([{ value: 'unused' }]);
+  }
+
+  it('resizes the page BEFORE it captures, through the one seam VS Code leaves open', async () => {
+    shotWithViewport('1920x1080');
+    await handleBrowserRequest({ action: 'screenshot' });
+    const order = fake.invokeCalls.map((c) => c.name);
+    expect(order.indexOf('run_playwright_code')).toBeLessThan(order.indexOf('screenshot_page'));
+    expect(viewportSnippetOf(fake.invokeCalls.find((c) => c.name === 'run_playwright_code')?.input)).toContain(
+      'width: 1920, height: 1080',
+    );
+  });
+
+  it('returns the image AND a sentence naming the viewport it was taken at', async () => {
+    shotWithViewport('1920x1080');
+    const res = await handleBrowserRequest({ action: 'screenshot' });
+    expect(res.ok).toBe(true);
+    expect(res.imageBase64).toBeTruthy();
+    expect(res.pageText).toContain('1920x1080');
+  });
+
+  it('says the capture is at TAB size when the page disagrees, rather than claiming the setting', async () => {
+    shotWithViewport('584x311');
+    const res = await handleBrowserRequest({ action: 'screenshot' });
+    expect(res.ok).toBe(true);
+    expect(res.pageText).toContain('584x311');
+    expect(res.pageText).not.toContain('Captured at a 1920x1080');
+  });
+
+  it('never resizes for an ELEMENT capture — that crop is relative to the live viewport', async () => {
+    shotWithViewport('1920x1080');
+    await handleBrowserRequest({ action: 'screenshot', selector: '#chart' });
+    expect(fake.invokeCalls.some((c) => c.name === 'run_playwright_code')).toBe(false);
+  });
+
+  it('still captures when the resize is barred, and says why', async () => {
+    shotWithViewport('1920x1080');
+    fake.autoApprove = false;
+    const res = await handleBrowserRequest({ action: 'screenshot' });
+    expect(res.ok).toBe(true);
+    expect(res.imageBase64).toBeTruthy();
+    expect(fake.invokeCalls.some((c) => c.name === 'run_playwright_code')).toBe(false);
+    expect(res.pageText).toContain('chat.tools.global.autoApprove');
+  });
+});
+
+describe('the reveal policy, end to end through the bridge (t-qcwpyy)', () => {
+  it('an OPEN counts as the one reveal, so the next verb never moves the tab', async () => {
+    // The whole point of the ticket, on the real handler: VS Code's own
+    // `open_browser_page` puts the tab on screen and answers with the page id.
+    // Under the default policy that id has now had its reveal, so the screenshot
+    // that follows must issue no `vscode.open` even though the page has drifted
+    // to "not visible" behind whatever the user opened next.
+    fake.tools = [{ name: 'open_browser_page' }, { name: 'list_browser_pages' }, { name: 'screenshot_page' }];
+    fake.invokeResults = {
+      open_browser_page: toolResult([{ value: 'Page ID: page-7\n\nSummary:\n' }]),
+    };
+    const opened = await handleBrowserRequest({ action: 'open', url: 'https://a.test' });
+    expect(opened.ok).toBe(true);
+
+    fake.invokeResults = {
+      list_browser_pages: pageList([
+        { id: 'page-7', title: 'Origami', url: 'https://a.test/', state: 'not visible' },
+      ]),
+      screenshot_page: toolResult([{ value: 'shot' }, { mimeType: 'image/png', data: 'AAA' }]),
+    };
+    const shot = await handleBrowserRequest({ action: 'screenshot' });
+    expect(shot.ok).toBe(true);
+    // The strip is fed from this field (browserSnapshot.ts), so a background tab
+    // must not cost the picture: 'AAA' arrives base64-encoded, as it always has.
+    expect(shot.imageBase64, 'the screenshot still reaches the chat strip').toBe('QUFB');
+    expect(fake.executed, 'the screenshot revealed the browser tab').toEqual([]);
   });
 });

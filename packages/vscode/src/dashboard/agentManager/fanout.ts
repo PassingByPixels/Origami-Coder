@@ -1,14 +1,8 @@
-// Agent Manager - fanout.ts (S5): the multi-model race. One task is fired at up
-// to four (agentName, model) VARIANTS at once - each an ordinary sibling agent
-// in its own worktree, tied together by a shared groupId so the board clusters
-// them under a race header. The per-variant shape carries agentName+model (a
-// typed agent can vary per sibling). Each variant is a plain runCreate; a failure of one never
-// aborts the rest (runCreate catches internally). Started variants launch
-// WITHOUT awaiting their run to completion (a race must run concurrently) with a
-// small stagger between launches so several sessions/model-pins don't stampede
-// one provider; a QUEUED race (start:false) provisions all siblings with no
-// stagger (it opens no sessions). createWorktree serializes per repo, so the
-// concurrent provisioning is race-free.
+// The multi-model race: one task fires up to four (agentName, model) sibling agents at
+// once, tied by a shared groupId so the board clusters them. Each is a plain runCreate; one
+// failing never aborts the rest. Started variants launch without awaiting completion,
+// staggered so several sessions don't stampede one provider; a queued race provisions with no
+// stagger.
 
 import { newWorktreeRecordId } from './state';
 import { runCreate, effectiveModel, type RunContext } from './run';
@@ -27,10 +21,8 @@ export async function runFanout(
     amError('A race needs 2-4 variants.');
     return;
   }
-  // Dedupe identical (agentName, EFFECTIVE model) pairs - racing a model against
-  // itself is pointless. Resolve the repo default FIRST so a blank variant that
-  // lands on the same model as an explicit pick collapses too (run.ts pins the
-  // same resolved value). Below two survivors -> it is no longer a race.
+  // Dedupe identical (agentName, effective model) pairs — racing a model against itself is
+  // pointless. Below two survivors, it's no longer a race.
   const seen = new Set<string>();
   const unique: Variant[] = [];
   for (const v of variants) {
@@ -42,9 +34,7 @@ export async function runFanout(
   const groupId = newWorktreeRecordId();
   for (let i = 0; i < unique.length; i++) {
     const v = unique[i];
-    // Fire the run WITHOUT awaiting completion (runCreate awaits the whole prompt
-    // on start:true) - the variants must race, not serialize. runCreate owns its
-    // own record + broadcast and never throws, so the void is safe.
+    // Fired without awaiting completion — the variants must race, not serialize.
     void runCreate(ctx, root, `${rawName || 'agent'}-${i + 1}`, v.agentName, prompt, v.model, start, groupId);
     // Stagger only BETWEEN started launches (a queued race opens no sessions).
     if (start && i < unique.length - 1) await delay(STAGGER_MS);

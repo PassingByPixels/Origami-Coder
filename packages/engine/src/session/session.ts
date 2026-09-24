@@ -14,6 +14,9 @@ import { SessionV2 } from "@origami/core/session"
 import * as SessionExecutionLocal from "@origami/core/session/execution/local"
 import { locationServiceMapLayer } from "@origami/core/location-services"
 
+import * as TaskResult from "./task-result"
+import { Permission } from "@/permission"
+import * as SideQuestBudget from "./side-quest-budget"
 import { NotFoundError } from "@/storage/storage"
 import { eq } from "drizzle-orm"
 import { and } from "drizzle-orm"
@@ -32,6 +35,7 @@ import { ProjectTable } from "@origami/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
+import { PermissionPresets } from "@/permission/presets"
 import { Snapshot } from "@/snapshot"
 import { ProjectV2 } from "@origami/core/project"
 import { WorkspaceV2 } from "@origami/core/workspace"
@@ -84,6 +88,11 @@ export function fromRow(row: SessionRow): Info {
     directory: row.directory,
     path: row.path ?? undefined,
     parentID: row.parent_id ?? undefined,
+    // t-uhxos2: both halves or none; a half-written link is not a link.
+    fork:
+      row.fork_session_id && typeof row.fork_time === "number"
+        ? { sessionID: row.fork_session_id, time: row.fork_time }
+        : undefined,
     title: row.title,
     agent: row.agent ?? undefined,
     model: row.model
@@ -105,6 +114,7 @@ export function fromRow(row: SessionRow): Info {
         write: row.tokens_cache_write,
       },
     },
+    steps: row.steps ?? undefined,
     share,
     metadata: row.metadata ?? undefined,
     revert,
@@ -124,6 +134,8 @@ export function toRow(info: Info) {
     project_id: info.projectID,
     workspace_id: info.workspaceID,
     parent_id: info.parentID,
+    fork_session_id: info.fork?.sessionID,
+    fork_time: info.fork?.time,
     slug: info.slug,
     directory: info.directory,
     path: info.path,
@@ -143,6 +155,7 @@ export function toRow(info: Info) {
     tokens_reasoning: (info.tokens ?? EmptyTokens).reasoning,
     tokens_cache_read: (info.tokens ?? EmptyTokens).cache.read,
     tokens_cache_write: (info.tokens ?? EmptyTokens).cache.write,
+    steps: info.steps,
     revert: info.revert
       ? {
           messageID: SessionMessage.ID.make(info.revert.messageID),
@@ -230,9 +243,17 @@ export const Info = Schema.Struct({
   directory: Schema.String,
   path: optional(Schema.String),
   parentID: optional(SessionID),
+  /** t-uhxos2. The chat this one was forked from, and the fork point (epoch ms): the
+   *  source's sub-agents created before it are in this chat's copied history. Absent =
+   *  not a fork, or a fork made before the field existed. */
+  fork: optional(Schema.Struct({ sessionID: SessionID, time: Schema.Int })),
   summary: optional(Summary),
   cost: optional(Schema.Finite),
   tokens: optional(Tokens),
+  /** t-ucn8zm. Measured model steps, by the old `RunStats.stat(...).steps` rule
+   *  (core `session/steps.ts`). Absent = not counted yet: a session older than
+   *  the column that the background backfill has not reached. */
+  steps: optional(Schema.Int),
   share: optional(Share),
   title: Schema.String,
   agent: optional(Schema.String),
@@ -291,25 +312,18 @@ export const SetMetadataInput = Schema.Struct({
 /**
  * The per-chat SUB-AGENT model override: every sub-agent this session spawns
  * runs on this model, whatever the flock profile or the agent definition says
- * (tool/task.ts resolves the precedence). It rides the session row's existing
- * free-form `metadata` rather than a column of its own - a column would need a
- * schema migration and an SDK regeneration for a value only the task tool reads,
- * and metadata is already persisted, forked and projected like every other
- * session field.
+ * (tool/task.ts resolves the precedence).
  *
- * `subagentModel`/`withSubagentModel` are the ONLY places that know the key, so
- * a reader and a writer in different layers cannot drift apart on its spelling.
+ * This and the other per-chat overrides below ride the session row's free-form
+ * `metadata` rather than a column of their own, which would need a schema
+ * migration and an SDK regeneration. Each override's reader and writer are the
+ * ONLY places that know its key, so two layers cannot drift on its spelling.
  */
 export const SUBAGENT_MODEL_KEY = "subagentModel"
 
-/**
- * `context` (t-lmqe0g) is an optional per-chat CONTEXT-WINDOW override for
- * every sub-agent this session spawns, alongside the model pick itself. It is
- * applied by task.ts the same way the main path applies a model's configured
- * `limit.context` - see session/overflow.ts and session/prompt.ts's
- * `contextOverride` handling. Undefined means "use the model's own configured
- * limit", exactly as if this field had never been set.
- */
+/** `context` is an optional per-chat CONTEXT-WINDOW override for every sub-agent
+ *  this session spawns, applied by task.ts as the main path applies a model's
+ *  `limit.context`. Undefined means "use the model's own configured limit". */
 export type SubagentModel = { providerID: ProviderV2.ID; modelID: ModelV2.ID; context?: number }
 
 /** The override on a session row, or undefined when it has none / a broken one. */
@@ -327,11 +341,8 @@ export function subagentModel(info: Pick<Info, "metadata">): SubagentModel | und
   }
 }
 
-/**
- * `metadata` with the override set, or REMOVED when the model is undefined.
- * Every other key is carried through - metadata is a shared bag, and a writer
- * that rebuilt it would silently drop whatever else the session was carrying.
- */
+/** `metadata` with the override set, or REMOVED when the model is undefined.
+ *  Every other key is carried through — metadata is a shared bag. */
 export function withSubagentModel(
   metadata: typeof Metadata.Type | undefined,
   model: SubagentModel | undefined,
@@ -348,21 +359,12 @@ export function withSubagentModel(
 }
 
 /**
- * The per-chat auto-compaction TRIGGER override (t-kgsdsw — UAT: DeepSeek
- * overflowed well past what `compaction.reserved` catches; the fix is a
- * threshold the user sets ahead of time, not a bigger reserve after the
- * fact). Rides the session row's `metadata` bag for the same reason
- * `subagentModel` does — a real column would need a schema migration for a
- * value only the overflow check reads.
- *
- * `kind: "tokens"` is an absolute usable-context budget; `kind: "percent"` is
- * a fraction (0, 1] of the model's context window, re-resolved against
- * whichever model is active at check time so a mid-chat model switch changes
- * what the percentage MEANS rather than silently keeping a stale token count.
- *
- * `compactionThreshold`/`withCompactionThreshold` are the ONLY two places
- * that know the key, so a reader and a writer in different layers cannot
- * drift apart on its spelling.
+ * The per-chat auto-compaction TRIGGER override, for a model that overflows
+ * past what `compaction.reserved` catches. `kind: "tokens"` is an absolute
+ * usable-context budget; `kind: "percent"` is a fraction (0, 1] of the model's
+ * context window, re-resolved against whichever model is active at check time,
+ * so a mid-chat model switch changes what the percentage MEANS rather than
+ * silently keeping a stale token count.
  */
 export const COMPACTION_THRESHOLD_KEY = "compactionThreshold"
 
@@ -378,11 +380,7 @@ export function compactionThreshold(info: Pick<Info, "metadata">): CompactionThr
   return { kind, value }
 }
 
-/**
- * `metadata` with the override set, or REMOVED when `override` is undefined.
- * Every other key is carried through - metadata is a shared bag, and a writer
- * that rebuilt it would silently drop whatever else the session was carrying.
- */
+/** `metadata` with the override set, or REMOVED when `override` is undefined. */
 export function withCompactionThreshold(
   metadata: typeof Metadata.Type | undefined,
   override: CompactionThresholdOverride | undefined,
@@ -394,21 +392,11 @@ export function withCompactionThreshold(
 }
 
 /**
- * The per-chat VISION PROFILE (t-kgtr6c): the slug of a vision-capable agent
- * this chat may hand an image to when its OWN model cannot see one. Rides the
- * session row's `metadata` bag for the same reason `subagentModel` does — the
- * prompt loop is the only reader, and a column would need a schema migration
- * and an SDK regeneration for one string.
- *
- * OFF (undefined) by default, and deliberately so: turning it on adds a tool
- * and a block of system prompt to every turn that carries an image, which is
- * cost the user has to choose. `session/prompt.ts` narrows further — the tool
- * and the prompt block appear only when the model lacks image input AND an
- * image is actually in the turn.
- *
- * `visionProfile`/`withVisionProfile` are the ONLY two places that know the
- * key, so a reader and a writer in different layers cannot drift apart on its
- * spelling.
+ * The per-chat VISION PROFILE: the slug of a vision-capable agent this chat may
+ * hand an image to when its OWN model cannot see one. OFF by default and
+ * deliberately so, because turning it on adds a tool and a block of system
+ * prompt to every turn carrying an image. `session/prompt.ts` narrows further —
+ * both appear only when the model lacks image input AND an image is in the turn.
  */
 export const VISION_PROFILE_KEY = "visionProfile"
 
@@ -422,11 +410,7 @@ export function visionProfile(info: Pick<Info, "metadata">): string | undefined 
   return trimmed.length > 0 ? trimmed : undefined
 }
 
-/**
- * `metadata` with the profile set, or REMOVED when `slug` is undefined/blank.
- * Every other key is carried through - metadata is a shared bag, and a writer
- * that rebuilt it would silently drop whatever else the session was carrying.
- */
+/** `metadata` with the profile set, or REMOVED when `slug` is undefined/blank. */
 export function withVisionProfile(
   metadata: typeof Metadata.Type | undefined,
   slug: string | undefined,
@@ -441,22 +425,13 @@ export function withVisionProfile(
 /**
  * The per-chat GOAL: a completion condition the session keeps working toward
  * across turns, checked at every turn end by a blind critic sub-session
- * (session/goal.ts). Rides the session row's `metadata` bag for the same
- * reason `subagentModel` and `visionProfile` do — the goal loop is the only
- * reader, and a column would need a schema migration and an SDK regeneration
- * for one record.
- *
- * The bag is what makes `fork` free: `Session.fork` structuredClones the
- * metadata, so a forked chat carries the goal it was forked under.
- *
- * `goal`/`withGoal` are the ONLY two places that know the key, so a reader and
- * a writer in different layers cannot drift apart on its spelling.
+ * (session/goal.ts). The metadata bag is what makes `fork` free — `Session.fork`
+ * structuredClones it, so a forked chat carries the goal it was forked under.
  */
 export const GOAL_KEY = "goal"
 
-/** How many synthetic continuations one goal may spend before it gives up.
- *  A backstop against a condition the agent cannot reach and the critic will
- *  never pass, not a target — the honest end of that is `error_max_turns`. */
+/** How many synthetic continuations one goal may spend before it gives up. A
+ *  backstop against an unreachable condition, not a target. */
 export const GOAL_MAX_ROUNDS_DEFAULT = 10
 
 export type Goal = {
@@ -478,11 +453,9 @@ export type Goal = {
   lastVerdict?: string
 }
 
-/**
- * The goal on a session row, or undefined when it has none / a broken one.
- * Fail-closed on every field: a half-written record would otherwise start a
- * loop with a NaN round budget, and the failure mode of a goal loop is spend.
- */
+/** The goal on a session row, or undefined when it has none / a broken one.
+ *  Fail-closed on every field: a half-written record would otherwise start a
+ *  loop with a NaN round budget, and a goal loop fails by spending. */
 export function goal(info: Pick<Info, "metadata">): Goal | undefined {
   const raw = info.metadata?.[GOAL_KEY]
   if (!raw || typeof raw !== "object") return undefined
@@ -506,11 +479,7 @@ export function goal(info: Pick<Info, "metadata">): Goal | undefined {
   }
 }
 
-/**
- * `metadata` with the goal set, or REMOVED when `next` is undefined. Every
- * other key is carried through - metadata is a shared bag, and a writer that
- * rebuilt it would silently drop whatever else the session was carrying.
- */
+/** `metadata` with the goal set, or REMOVED when `next` is undefined. */
 export function withGoal(metadata: typeof Metadata.Type | undefined, next: Goal | undefined): typeof Metadata.Type {
   const bag: Record<string, unknown> = { ...(metadata ?? {}) }
   if (next)
@@ -572,15 +541,10 @@ export const Event = {
 
 /**
  * The `<created>-<slug>` stem, under whichever plans root this project uses.
- *
- * Global (non-vcs) plans live under ~/.origami - the product home that already
- * holds bin/sessions/skills - so plans and global memory share one discoverable
- * root instead of landing in the XDG data dir. Project-scoped (vcs) plans stay
- * in the worktree's own .origami/. Gated on project.vcs, matching remember/dream.
- *
- * Shared by both plan shapes below so the file and the folder can never drift
- * apart on root or on stem - which is what lets a session hold one plan under
- * either mode without two naming rules to keep in step.
+ * Global (non-vcs) plans live under ~/.origami beside bin/sessions/skills, not
+ * in the XDG data dir; project-scoped (vcs) plans stay in the worktree's own
+ * .origami/. Gated on project.vcs, matching remember/dream. Shared by both plan
+ * shapes below so file and folder can never drift apart on root or stem.
  */
 function planStem(input: { slug: string; time: { created: number } }, instance: InstanceContext) {
   const base = instance.project.vcs
@@ -594,13 +558,9 @@ export function plan(input: { slug: string; time: { created: number } }, instanc
   return planStem(input, instance) + ".md"
 }
 
-/**
- * DEEP PLAN mode's deliverable: a FOLDER at the same stem, holding PLAN.md,
- * map.json, DECISIONS.md and the research/ tree. A directory rather than a file
- * because the research and the adversarial critique rounds are the evidence the
- * plan rests on, and a plan whose evidence was thrown away is a plan nobody can
- * re-check.
- */
+/** DEEP PLAN mode's deliverable: a FOLDER at the same stem, holding PLAN.md,
+ *  map.json, DECISIONS.md and research/ — a directory rather than a file because
+ *  the research and critique rounds are the evidence the plan rests on. */
 export function planFolder(input: { slug: string; time: { created: number } }, instance: InstanceContext) {
   return planStem(input, instance)
 }
@@ -630,9 +590,8 @@ export const getUsage = (input: { model: Provider.Model; usage: Usage; metadata?
     ),
   )
 
-  // AI SDK v6 normalized inputTokens to include cached tokens across all providers
-  // (including Anthropic/Bedrock which previously excluded them). Always subtract cache
-  // tokens to get the non-cached input count for separate cost calculation.
+  // AI SDK v6 normalized inputTokens to INCLUDE cached tokens across all
+  // providers, so cache tokens are subtracted to get the non-cached input count.
   const adjustedInputTokens = safe(inputTokens - cacheReadInputTokens - cacheWriteInputTokens)
 
   const total = input.usage.totalTokens
@@ -707,7 +666,12 @@ export interface Interface {
     time: number
   }) => Effect.Effect<void>
   readonly setSubagentModel: (input: { sessionID: SessionID; model: SubagentModel | undefined }) => Effect.Effect<void>
-  readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
+  /** Writes the ruleset, cascades the auto-approve PRESET part of it onto every
+   *  live descendant, and answers every row it wrote (the parent first). */
+  readonly setPermission: (input: {
+    sessionID: SessionID
+    permission: PermissionV1.Ruleset
+  }) => Effect.Effect<Array<{ sessionID: SessionID; permission: PermissionV1.Ruleset }>>
   readonly setRevert: (input: {
     sessionID: SessionID
     revert: Info["revert"]
@@ -729,7 +693,13 @@ export interface Interface {
     messageID: MessageID
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
-  readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  /** `journal: false` writes the part table and tells the UI, without adding a
+   *  journal row — for the intermediate states of a part that is still streaming.
+   *  The closing state must be written without it. See `EventV2.PublishOptions`. */
+  readonly updatePart: <T extends SessionV1.Part>(
+    part: T,
+    options?: { readonly journal?: boolean },
+  ) => Effect.Effect<T>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -775,6 +745,7 @@ const layer: Layer.Layer<
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
       parentID?: SessionID
+      fork?: { sessionID: SessionID; time: number }
       workspaceID?: WorkspaceV2.ID
       directory: string
       path?: string
@@ -792,6 +763,7 @@ const layer: Layer.Layer<
         path: input.path,
         workspaceID: input.workspaceID,
         parentID: input.parentID,
+        fork: input.fork,
         title: input.title ?? (input.parentID ? childTitlePrefix : parentTitlePrefix) + new Date().toISOString(),
         agent: input.agent,
         model: input.model,
@@ -896,6 +868,19 @@ const layer: Layer.Layer<
           yield* remove(child.id)
         }
 
+        // t-dcl8fe. Background sub-agent results queued for a session that is
+        // going away can never be written; nothing cleared them before.
+        TaskResult.forget(sessionID)
+        // t-fijy8a F9. The side-quest per-turn budget is keyed by session and
+        // kept its entry for a chat that no longer exists.
+        SideQuestBudget.forget(sessionID)
+        // t-fijy8a F11. The permission service's blocked-time and parent-link
+        // maps were never pruned, and its watchdog reader walks all of both.
+        // `serviceOption`, not a dependency: Permission is built BELOW Session
+        // and `remove` also runs for a broken session with no instance state at
+        // all, so a missing service must skip the prune, not fail the removal.
+        const permission = yield* Effect.serviceOption(Permission.Service)
+        if (Option.isSome(permission)) yield* permission.value.forget(sessionID)
         yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
         yield* events.remove(sessionID)
       } catch (error) {
@@ -909,13 +894,20 @@ const layer: Layer.Layer<
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
-    const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
+    const updatePart = <T extends SessionV1.Part>(
+      part: T,
+      options?: { readonly journal?: boolean },
+    ): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* events.publish(SessionV1.Event.PartUpdated, {
-          sessionID: part.sessionID,
-          part: structuredClone(part),
-          time: Date.now(),
-        })
+        yield* events.publish(
+          SessionV1.Event.PartUpdated,
+          {
+            sessionID: part.sessionID,
+            part: structuredClone(part),
+            time: Date.now(),
+          },
+          options?.journal === false ? { journal: false } : undefined,
+        )
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
@@ -969,14 +961,20 @@ const layer: Layer.Layer<
       const ctx = yield* InstanceState.context
       const original = yield* get(input.sessionID)
       const title = getForkedTitle(original.title)
+      // t-uhxos2. The fork point, taken BEFORE the messages are read: a sub-agent of
+      // the source created before it is referenced by the history this fork copies.
+      // A fork at a message cuts at that message's own time instead.
+      const point = Date.now()
+      const msgs = yield* messages({ sessionID: input.sessionID })
+      const cut = input.messageID ? msgs.find((msg) => msg.info.id >= input.messageID!) : undefined
       const session = yield* createNext({
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
         metadata: structuredClone(original.metadata),
+        fork: { sessionID: input.sessionID, time: cut ? cut.info.time.created : point },
       })
-      const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
 
       for (const msg of msgs) {
@@ -1007,12 +1005,9 @@ const layer: Layer.Layer<
       }
 
       // Todos live on their own table keyed by session, so cloning messages and
-      // parts alone hands the fork a transcript full of todowrite calls and an
-      // EMPTY list. Both readers of the stored list - the `${todos}` command
-      // substitution and the post-compaction reminder - would then report "no
-      // plan" for a chat that plainly has one. The CURRENT list is what gets
-      // copied even for a fork truncated at an earlier message: the list keeps
-      // no history, so there is no earlier version to copy.
+      // parts alone would hand the fork a transcript full of todowrite calls and
+      // an EMPTY list. The CURRENT list is copied even for a fork truncated at an
+      // earlier message: the list keeps no history, so there is no older version.
       const todos = yield* db
         .select()
         .from(TodoTable)
@@ -1031,9 +1026,8 @@ const layer: Layer.Layer<
               priority: todo.priority,
               position: todo.position,
               // Explicit field map, so a column left out here is a column the
-              // fork silently loses. Nesting is part of the plan's shape, not
-              // decoration - a fork that flattened it would read as a different
-              // plan.
+              // fork silently loses. `depth` is part of the plan's shape - a
+              // fork that flattened it would read as a different plan.
               depth: todo.depth,
             })),
           )
@@ -1100,13 +1094,74 @@ const layer: Layer.Layer<
       }).pipe(Effect.orDie)
     })
 
+    /**
+     * Push the parent's auto-approve PRESET rules down a live subtree.
+     *
+     * A `task` child is handed a COPY of the parent's ruleset at SPAWN time
+     * (tool/task.ts -> deriveSubagentSessionPermission), and nothing else moves
+     * that copy. Without this walk a child keeps the preset it was spawned under
+     * - still asking after the user granted, or still granted after the user
+     * revoked - from a session the user cannot even see.
+     *
+     * Only the PRESET rules travel: `isOverride` is the user's live "stop asking
+     * me, in this chat" answer, never an ordinary configured allow, which still
+     * stops at the task boundary.
+     *
+     * Placement matters, because `Permission.evaluate` takes the LAST match. The
+     * new rules go back exactly where the child's old preset rules were, so the
+     * structural denies a subagent is spawned with (`task`, `send_message`, …
+     * appended AFTER the inherited slice) keep winning over a `*` allow. With no
+     * preset rules on the row to replace, they go first, which is where a fresh
+     * derive would have put them.
+     */
+    const cascadePreset = (
+      parentID: SessionID,
+      overrides: PermissionV1.Ruleset,
+      written: Array<{ sessionID: SessionID; permission: PermissionV1.Ruleset }>,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        for (const child of yield* children(parentID)) {
+          const rest: PermissionV1.Rule[] = []
+          let at = -1
+          for (const rule of child.permission ?? []) {
+            if (PermissionPresets.isOverride(rule)) {
+              if (at === -1) at = rest.length
+              continue
+            }
+            rest.push(rule)
+          }
+          if (at === -1) at = 0
+          const permission = [...rest.slice(0, at), ...overrides, ...rest.slice(at)]
+          yield* patch(child.id, { permission, time: { updated: Date.now() } }).pipe(Effect.orDie)
+          written.push({ sessionID: child.id, permission })
+          yield* cascadePreset(child.id, overrides, written)
+        }
+      })
+
     const setPermission = Effect.fn("Session.setPermission")(function* (input: {
       sessionID: SessionID
       permission: PermissionV1.Ruleset
     }) {
+      const before = yield* get(input.sessionID).pipe(Effect.orDie)
       yield* patch(input.sessionID, { permission: [...input.permission], time: { updated: Date.now() } }).pipe(
         Effect.orDie,
       )
+      const written = [{ sessionID: input.sessionID, permission: [...input.permission] }]
+
+      // The subtree is only rewritten when the PRESET actually changed: a writer
+      // that leaves the preset alone (collab/seal.ts) must not disturb any child
+      // or cost a walk.
+      const key = (ruleset: PermissionV1.Ruleset) =>
+        ruleset
+          .filter(PermissionPresets.isOverride)
+          .map((rule) => rule.permission)
+          .sort()
+          .join(",")
+      const overrides = input.permission.filter(PermissionPresets.isOverride)
+      if (key(before.permission ?? []) !== key(input.permission)) {
+        yield* cascadePreset(input.sessionID, overrides, written)
+      }
+      return written
     })
 
     const setRevert = Effect.fn("Session.setRevert")(function* (input: {
@@ -1161,6 +1216,9 @@ const layer: Layer.Layer<
       const result = [] as SessionV1.WithParts[]
       let before: string | undefined
       while (true) {
+        // t-u54x6w: one page per turn of the event loop, not the whole
+        // session as one block of the JS thread (see MessageV2 `walker`).
+        if (before) yield* Effect.yieldNow
         const page = yield* MessageV2.page({ sessionID: input.sessionID, limit: size, before }).pipe(
           Effect.provideService(Database.Service, database),
         )
@@ -1209,11 +1267,11 @@ const layer: Layer.Layer<
       yield* events.publish(MessageV2.Event.PartDelta, input)
     })
 
-    /** Finds the first message matching the predicate, searching newest-first. */
     const findMessage: Interface["findMessage"] = Effect.fn("Session.findMessage")(function* (sessionID, predicate) {
       const size = 50
       let before: string | undefined
       while (true) {
+        if (before) yield* Effect.yieldNow
         const page = yield* MessageV2.page({ sessionID, limit: size, before }).pipe(
           Effect.provideService(Database.Service, database),
         )
@@ -1273,7 +1331,7 @@ const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function*
       if (job.metadata?.sessionId === sessionID) return true
       return job.metadata?.parentSessionId === sessionID
     }),
-    (job) => background.cancel(job.id),
+    (job) => background.cancel(job.id, "session_removed"),
     { concurrency: "unbounded", discard: true },
   )
 })

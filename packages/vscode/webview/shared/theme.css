@@ -20,6 +20,7 @@
   --og-surface-alt: #131c18;
   --og-border: #2a3a31;
   --og-text: #e7efe9;
+  --og-chart-mix: #cfd9ea; /* chart series 2 mixes --og-chat toward this: the text ink on dark themes, a light parchment on ember, so the mix never collapses onto the text colour */
   --og-text-secondary: #9fb3a7;
   --og-text-muted: #6f8678;
   --og-accent: #3f7268;
@@ -59,6 +60,7 @@
   --og-surface-alt: #0f1c24;
   --og-border: #263a48;
   --og-text: #e6eef4;
+  --og-chart-mix: #cfd9ea; /* chart series 2 mixes --og-chat toward this: the text ink on dark themes, a light parchment on ember, so the mix never collapses onto the text colour */
   --og-text-secondary: #9fb4c4;
   --og-text-muted: #6d8598;
   --og-accent: #3f7e9a;
@@ -91,17 +93,41 @@
   /* Origami Ember — Origami Games' bronze on warm origami paper, matching
      games.html (cream sheet + Ember-Bronze accent #A85A32). The retint of
      the old 'quiet' theme: same high-contrast light base, garish red/yellow
-     accents swapped for the warm bronze family. (2026-07-01) */
-  --og-bg: #e8dcc4;
-  --og-surface: #ddcfb2;
+     accents swapped for the warm bronze family. (2026-07-01)
+     t-ru0p04 — bg/surface/pane-header darkened one step, 80% of the way from
+     their original values toward the owner's swatch #b8a07e (a flat tan),
+     the same interpolation fraction for all three so the original light-to-
+     dark ordering (bg > surface > pane-header) holds. --og-text on the new
+     bg/surface/pane-header is 5.65:1 / 5.46:1 / 5.33:1 (was 9.13 / 8.05 /
+     7.07) — comfortably over the 4.5:1 floor. --og-surface-alt is untouched:
+     it is not one of the named tokens and nothing here reads it relative to
+     the other three.
+
+     The darkening dropped --og-error-text/--og-success-text/--og-warning-text
+     and --og-chat below 4.5:1 on the new bg/surface (owner follow-up, same
+     ticket). Each was retuned to the nearest DARKER shade on its own hue that
+     clears 4.5:1 on BOTH surfaces — --og-surface is the tighter of the two
+     (it's the darker of the pair), so it is the binding constraint:
+       --og-error-text   #9f2d1d -> #782216  (surface 4.53:1, bg 4.70:1)
+       --og-success-text #2d6a1f -> #1f4815  (surface 4.63:1, bg 4.80:1)
+       --og-warning-text #7a5500 -> #563c00  (surface 4.53:1, bg 4.69:1)
+       --og-chat          #8c4a28 -> #62341c  (surface 4.56:1, bg 4.72:1)
+     Computed and asserted in themeEmberAudit.test.ts. --og-error/--og-success/
+     --og-warning (the raw, non-text tokens: dots, icon fills, soft-wash
+     backgrounds, never plain body text) and --og-accent/--og-accent-2/
+     --og-crane (borders, buttons, the crane mark — grepped, never `color:`
+     text) are untouched; nothing found either read them as text at <4.5:1. */
+  --og-bg: #c2ac8c;
+  --og-surface: #bfa988;
   --og-surface-alt: #d2c2a3;
   --og-border: rgba(160, 145, 120, 1);
   --og-text: #37342f;
+  --og-chart-mix: #1f6f8a; /* chart series 2 mixes --og-chat toward this: on ember (dark ink, dark chat) a teal partner keeps series 2 apart from the accent and the text; dark themes use the text ink */
   --og-text-secondary: #1d1c1b;
   --og-text-muted: #413e39;
   --og-accent: #a85a32;
   --og-accent-2: #c2410c;
-  --og-chat: #8c4a28;
+  --og-chat: #62341c;
   --og-crane: #a85a32;
   --og-success: #7dbe68;
   --og-error: #e85540;
@@ -110,9 +136,9 @@
      same "readable on warm paper" treatment as the *-text variants below. */
   --og-status-waiting: #5b4fae;
   /* Higher-contrast text variants for readability against the warm paper bg */
-  --og-success-text: #2d6a1f;
-  --og-warning-text: #7a5500;
-  --og-error-text: #9f2d1d;
+  --og-success-text: #1f4815;
+  --og-warning-text: #563c00;
+  --og-error-text: #782216;
   --og-success-soft: rgba(45, 106, 31, 0.22);
   --og-warning-soft: rgba(122, 85, 0, 0.22);
   --og-error-soft: rgba(159, 45, 29, 0.22);
@@ -121,7 +147,7 @@
   --og-btn-bg: #b88a5a;
   --og-btn-hover: #9a7548;
   --og-btn-text: #f0e8dc;
-  --og-pane-header: #d2c2a3;
+  --og-pane-header: #bda785;
   --og-scrollbar: rgba(89, 78, 60, 0.30);
   --og-scrollbar-hover: rgba(126, 110, 85, 0.45);
 }
@@ -133,6 +159,7 @@
   --og-surface-alt: #090b1c;
   --og-border: rgba(124, 58, 237, 0.15);
   --og-text: #c8c8e0;
+  --og-chart-mix: #cfd9ea; /* chart series 2 mixes --og-chat toward this: the text ink on dark themes, a light parchment on ember, so the mix never collapses onto the text colour */
   --og-text-secondary: #9090b8;
   --og-text-muted: #6a6a8a;
   --og-accent: #7c3aed;
@@ -170,6 +197,7 @@
   --og-surface-alt: #131c18;
   --og-border: #2a3a31;
   --og-text: #e7efe9;
+  --og-chart-mix: #cfd9ea; /* chart series 2 mixes --og-chat toward this: the text ink on dark themes, a light parchment on ember, so the mix never collapses onto the text colour */
   --og-text-secondary: #9fb3a7;
   --og-text-muted: #6f8678;
   --og-accent: #3f7268;
@@ -194,6 +222,79 @@
   --og-pane-header: #131c18;
   --og-scrollbar: rgba(159, 179, 167, 0.14);
   --og-scrollbar-hover: rgba(159, 179, 167, 0.26);
+}
+
+/* --- Ember token audit (t-qn0wj5, port of Mock-Redesign CHANGES.md #36) ---
+   On ember the composer (.input-area, InputBar.svelte) reads --og-pane-header, the
+   same step its dark siblings use, but on ember's light palette --og-surface is the
+   step lighter that reads as a raised surface instead of a heavier block; and the
+   gauge's error state (contextColor in InputBar.svelte, inline `color/stroke:
+   var(--og-error)`) is ember's saturated #e85540, which the theme never tuned for a
+   light background — --og-error-text is the ink ember already tunes for exactly
+   that. Both fixes are scoped, local redefinitions: no literal colour, and no edit
+   to InputBar.svelte (port-composer owns that file) — the second rule works by
+   locally shadowing the --og-error custom property inside .ctx-gauge-wrap, so the
+   inline var(--og-error) reference the gauge already writes resolves to the ember
+   ink without the component knowing anything changed. Neither rule touches the
+   shared --og-error / --og-surface values, and neither has a harbour counterpart. */
+:root[data-theme="ember"] .input-area {
+  background: var(--og-surface) !important;
+}
+:root[data-theme="ember"] .ctx-gauge-wrap {
+  --og-error: var(--og-error-text);
+}
+
+/* --- Dot-grid backdrop behind the chat pane (t-qn0wj5, proposal 24, port of
+   Mock-Redesign CHANGES.md #38) --------------------------------------------
+   A static lattice (dotSize 1.5, gap 22 — react-bits Backgrounds/DotGrid
+   scaled down and drawn as one repeating radial-gradient instead of a canvas,
+   since the proposal asked for a still backdrop, not a driven one) in the
+   pane's inset gutter, off under prefers-reduced-motion and, per
+   chatBackdropClass.ts, whenever origamicoder.chat.backdrop reads false. The
+   class is bound in ChatPane.svelte; both gates are already folded into that
+   one boolean before it reaches here, so this rule only needs to exist. */
+.chat-pane.chat-backdrop {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    color-mix(in srgb, var(--og-text) 16%, transparent) 1.5px,
+    transparent 1.6px
+  );
+  background-size: 22px 22px;
+  background-position: 0 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-pane.chat-backdrop { background-image: none; }
+}
+
+/* --- Send click spark canvas (t-qn0wj5, proposal 25; see shared/sendSpark.ts).
+   .input-area is already `position: relative` (InputBar.svelte, not edited here);
+   this only positions the canvas THIS module appends inside it. */
+.og-send-spark {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+/* --- Density: Compact (t-qn0wj5, proposal 26, port of Mock-Redesign
+   CHANGES.md #39) -----------------------------------------------------------
+   `.chat-density-compact` is bound on `.chat-pane`'s own root (ChatPane.svelte
+   — see chatDensityClass.ts), so every rule here is a descendant selector off
+   that class: the class lives on MY pane root, the hook lives in this shared
+   file, and no other lane's component file is edited to reach it, per the
+   ticket's own carve-out for a density class that needs to reach rows another
+   lane owns. Scoped deliberately to the two row kinds ChatPane.svelte itself
+   renders (.session-tab, .agent-row) rather than every transcript row type —
+   ChatTranscript.svelte's own message/tool/thought rows are lane port-chat's
+   file, and a compact pass across all of them is left for that lane's own
+   review rather than guessed at here. Comfortable (no class) keeps today's
+   sizes untouched, as the ticket requires. */
+.chat-pane.chat-density-compact .session-tab {
+  min-height: 24px;
+  padding: 2px 6px;
+}
+.chat-pane.chat-density-compact .agent-row {
+  margin: 1px 0;
 }
 
 /* Reset & base */
@@ -236,4 +337,47 @@ html, body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--og-scrollbar-hover);
+}
+
+/* .og-scrollbar-visible — a scrollbar that paints AT REST, not only mid-scroll
+   (t-ru0p04). The house rule above gives every element a thin bar via
+   scrollbar-color, but Chromium ignores the legacy `::-webkit-scrollbar`
+   pseudo-elements on any element that also carries `scrollbar-width` — which
+   the house rule sets on `*`, everywhere. `scrollbar-width: auto` un-sets the
+   inherited `thin` on whatever this class is applied to, which is what lets
+   Chromium fall back to the pseudo-elements below and paint them without a
+   scroll gesture; verified against a standalone Chromium build of TodoTabs.svelte
+   (screenshot before/after, reports/polish_theme_2026-09-22/). Reusable: any
+   element that needs an always-visible thin bar takes this class instead of
+   repeating the three rules. */
+.og-scrollbar-visible { scrollbar-width: auto; }
+.og-scrollbar-visible::-webkit-scrollbar { height: 4px; }
+.og-scrollbar-visible::-webkit-scrollbar-thumb { background: var(--og-scrollbar); }
+
+/* SPOTLIGHT — the one look behind `use:spotlight` (shared/spotlight.ts), worn
+   by the board columns and the chat transcript cards so the two read as the
+   same kind of surface. It lives here, in the sheet both webviews load, rather
+   than in each component: a Svelte <style> is scoped, so three copies would be
+   three things to keep in step. The action writes --sp-x/--sp-y/--sp-on. */
+.og-spotlight {
+  position: relative;
+  isolation: isolate;
+}
+.og-spotlight::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--sp-on, 0);
+  transition: opacity 180ms ease;
+  background: radial-gradient(
+    240px circle at var(--sp-x, 50%) var(--sp-y, 50%),
+    color-mix(in srgb, var(--og-accent) 16%, transparent),
+    transparent 62%
+  );
+}
+@media (prefers-reduced-motion: reduce) {
+  .og-spotlight::before { transition: none; }
 }

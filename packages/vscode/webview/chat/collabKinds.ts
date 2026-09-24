@@ -1,20 +1,17 @@
-// Flock M4 wave X2 — what a message's KIND means on screen, as a PURE leaf.
+// What a message's kind means on screen, as a pure leaf.
 //
-// The stream now carries a protocol, not just prose: an `ask` is a question
-// with an owner, an `answer` belongs to one, a `task_*` row is bookkeeping and
-// a `system` line is the room talking about itself. Rendering all ten as
-// identical bubbles would hide the protocol entirely; rendering each with its
-// own component would spread the vocabulary across five files. So the VOCABULARY
-// lives here, testable with no DOM, and the components below it only draw.
+// The stream carries a protocol, not just prose: an `ask` is a question with
+// an owner, an `answer` belongs to one, a `task_*` row is bookkeeping and a
+// `system` line is the room talking about itself. Rendering all ten as
+// identical bubbles would hide the protocol; rendering each with its own
+// component would spread the vocabulary across five files. So it lives
+// here, testable with no DOM, and the components below only draw.
 //
-// ABSENT KIND IS `say`. The engine backfills 'say' onto every pre-M4 row, and
-// an older engine sends no `kind` at all — both must read as an ordinary
-// message, never as an error or an unknown state (acpExtTypes: CollabMessage).
+// Absent kind is `say`: an older engine sends no `kind` at all, and both
+// must read as an ordinary message, never as an error.
 //
-// The shapes below MIRROR src/acpExtTypes.ts rather than importing it —
-// tsconfig.webview.json pins rootDir to `webview/`, so a webview .ts cannot
-// reach into src/. Same convention flockSlots.ts and labyrinthLayout.ts
-// already follow; keep the two in step.
+// The shapes below mirror src/acpExtTypes.ts rather than importing it, since
+// a webview .ts can't reach into src/.
 
 /** Mirrors `CollabMessageKind`. */
 export type MessageKind =
@@ -34,10 +31,9 @@ export interface StreamMessage {
   mentions?: string[];
 }
 
-/** The kinds that render as a compact ONE-LINE row instead of a bubble: they
- *  are bookkeeping, and a full bubble each would bury the conversation. */
+/** The kinds that render as a compact one-line row instead of a bubble:
+ *  bookkeeping, plus `round`, the room's own record authored by nobody's slug. */
 const SYSTEM_KINDS = new Set<string>([
-  // ...and `round`, the ROOM'S own record, authored by `collab` — nobody's slug.
   'task_open', 'task_claim', 'task_done', 'task_accept', 'task_reopen', 'system', 'round',
 ]);
 
@@ -66,22 +62,13 @@ const SYSTEM_VERBS: Record<string, string> = {
   task_reopen: 'reopened a task',
 };
 
-/**
- * The one-line label above (or instead of) the text.
- *
- * `nameOf` resolves a slug to whatever the surface calls that agent, so this
- * leaf never has to know about the roster or the short-name rule. A directed
- * kind with NO mention still gets its verb ("asked") rather than a dangling
- * "asked @" — the target is missing, and inventing one would be worse.
- *
- * W2 (report 2.3) — THE FLOW RAIL. Given the author's name as well, a directed
- * kind reads as `A → B` instead of a bare verb: the protocol already knew who
- * was now blocked on whom, and the stream was throwing that half away. A
- * `task_done` points at the BOARD, which is the real place it is now waiting
- * (a human accepts it or sends it back there). `authorName` is OPTIONAL because
- * collabExport.ts renders a shipped markdown transcript from this same leaf and
- * must keep getting the old label back.
- */
+/** The one-line label above (or instead of) the text. `nameOf` resolves a
+ *  slug to whatever the surface calls that agent. A directed kind with no
+ *  mention still gets its verb rather than a dangling "asked @". Given the
+ *  author's name too, a directed kind reads as `A -> B` instead of a bare
+ *  verb; `task_done` points at the board, the real place it's now waiting.
+ *  `authorName` is optional since collabExport.ts renders a shipped
+ *  transcript from this same leaf and must keep getting the old label back. */
 export function kindLabel(
   m: { kind?: MessageKind; mentions?: string[] },
   nameOf: (slug: string) => string,
@@ -108,19 +95,11 @@ export type StreamRow<M extends StreamMessage> =
   | { row: 'group'; key: number; authorId: string; authorKind: 'human' | 'agent'; msgs: M[] }
   | { row: 'system'; key: number; msg: M };
 
-/**
- * The stream's render list.
- *
- * Grouping is unchanged for ordinary messages — a run of consecutive messages
- * from one author collapses under one header (author AND kind, so a human and
- * an agent sharing an id cannot merge). What is new: a system row BREAKS the
- * run rather than joining it, because a task line is not part of anyone's
- * speaking turn and folding it into one would attribute bookkeeping to a
- * sentence the agent never said.
- *
- * Keyed on seq, which is monotonic per collab, so a key is stable across
- * re-renders and two rows can never swap identity.
- */
+/** The stream's render list. A run of consecutive messages from one author
+ *  collapses under one header (author and kind, so a human and agent
+ *  sharing an id can't merge); a system row breaks the run rather than
+ *  joining it, since bookkeeping isn't part of anyone's speaking turn.
+ *  Keyed on seq, monotonic per collab, so a key is stable across re-renders. */
 export function buildStreamRows<M extends StreamMessage>(messages: readonly M[]): StreamRow<M>[] {
   const out: StreamRow<M>[] = [];
   for (const m of messages) {

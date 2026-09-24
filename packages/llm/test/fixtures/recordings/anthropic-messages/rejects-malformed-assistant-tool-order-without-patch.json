@@ -15,7 +15,7 @@
           "anthropic-version": "2023-06-01",
           "content-type": "application/json"
         },
-        "body": "{\"model\":\"claude-haiku-4-5-20251001\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Paris\"}},{\"type\":\"text\",\"text\":\"I will check the weather.\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"{\\\"temperature\\\":\\\"72F\\\"}\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Use that result to answer briefly.\"}]}],\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get weather\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}}],\"stream\":true,\"max_tokens\":4096}"
+        "body": "{\"model\":\"claude-haiku-4-5-20251001\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Paris\"}},{\"type\":\"text\",\"text\":\"I will check the weather.\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call_1\",\"content\":\"{\\\"temperature\\\":\\\"72F\\\"}\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Use that result to answer briefly.\"}]}],\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get weather\",\"input_schema\":{\"type\":\"object\",\"properties\":{}},\"eager_input_streaming\":true}],\"stream\":true,\"max_tokens\":4096}"
       },
       "response": {
         "status": 400,

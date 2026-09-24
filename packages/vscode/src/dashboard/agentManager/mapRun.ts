@@ -1,16 +1,9 @@
-// Agent Manager - mapRun.ts (S15): the CARTOGRAPHER run lifecycle, extracted from
-// manager.ts (at its cap) so the fleet owner only routes. A map run is an ordinary
-// engine session whose cwd is the REPO ROOT (never a worktree - the map describes
-// the repo, and .origami/ is excluded so a root-cwd session leaves no deliverable
-// footprint). One run per repo at a time; a second request while running is refused.
-//
-// On session idle the EXTENSION (not the agent - bash is denied to it) stamps
-// builtAt {sha, branch, at} via git rev-parse, rewrites map.json, renders the
-// self-contained map.html, and caches a fresh RepoMapState. A missing / invalid /
-// unchanged map settles an HONEST failed state carrying the validation errors, never
-// a silent success. Staleness (`behind` = commits builtAt.sha..HEAD) is recomputed
-// on demand (refreshAllMapStatus, driven by the manager's request/poll paths). The
-// brief line (withMapBrief) prefixes a task-run prompt when a valid map exists.
+// The CARTOGRAPHER run lifecycle: a map run is an ordinary engine session whose cwd is the
+// repo ROOT (never a worktree, since .origami/ is excluded and the map describes the repo).
+// One run per repo at a time. On idle the extension (not the agent — bash is denied to it)
+// stamps builtAt via git rev-parse, rewrites map.json, renders map.html, and caches a fresh
+// status; a missing/invalid/unchanged map settles an honest failed state, never a silent
+// success.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -29,9 +22,9 @@ export const MAP_HTML = path.join(MAP_DIR, 'map.html');
 const MAP_TASK_PROMPT =
   'Map this repository now. If .origami/map/map.json already exists, read it first and update it against the current code. Survey as your instructions require, then write .origami/map/map.json to the required schema. Write no other file.';
 
-// A map run has no human at its surface, so a stalled prompt (a permission ask or a
-// question nobody can answer) hung it on "building..." forever. Generous for a big repo
-// on a local model, finite so the board always settles.
+// A map run has no human at its surface, so a stalled prompt hung it on 'building...'
+// forever; the timeout is generous for a big repo on a local model, finite so the board
+// always settles.
 const MAP_TIMEOUT_MINUTES = 15;
 
 /** The board-facing map status for a repo column (rides amState). */
@@ -78,12 +71,9 @@ async function revCount(root: string, range: string): Promise<number | undefined
   return parseInt(r.output, 10) || 0;
 }
 
-/**
- * Read the on-disk map status: absent -> none; unparseable/invalid -> failed with
- * the precise errors; valid + stamped -> ready with `behind` computed from the
- * stamped sha; valid but UNSTAMPED (agent-authored, never finalized) -> ready with
- * behind undefined (staleness unknown). Never re-stamps - a pure read.
- */
+/** Read the on-disk map status: absent -> none; unparseable/invalid -> failed with precise
+ *  errors; valid -> ready, with `behind` computed when stamped (undefined when an unstamped
+ *  agent-authored map). Never re-stamps — a pure read. */
 export async function readMapStatus(root: string): Promise<RepoMapState> {
   const raw = readRaw(root);
   if (raw === null) return { status: 'none' };
@@ -101,9 +91,9 @@ export async function readMapStatus(root: string): Promise<RepoMapState> {
 /** Stamp builtAt (git rev-parse - the agent cannot, bash is denied), rewrite
  *  map.json, and render the self-contained map.html. Returns the fresh ready state. */
 async function stampAndRender(root: string, map: RepoMap): Promise<RepoMapState> {
-  // Guard `.ok`: on a repo with no commits `rev-parse` FAILS and the unchecked read
-  // stamped git's ERROR TEXT into builtAt.sha. A failed stamp leaves the field absent,
-  // which readMapStatus already reads as "valid map, staleness unknown" - the truth.
+  // Guard `.ok`: on a repo with no commits, rev-parse fails and an unchecked read would stamp
+  // git's error text into builtAt.sha; a failed stamp leaves it absent, which reads as
+  // "staleness unknown" — the truth.
   const head = await runGitStdout(['rev-parse', 'HEAD'], root);
   const headBranch = await runGitStdout(['rev-parse', '--abbrev-ref', 'HEAD'], root);
   const sha = head.ok ? head.output.trim() : undefined;
@@ -116,9 +106,8 @@ async function stampAndRender(root: string, map: RepoMap): Promise<RepoMapState>
   return { status: 'ready', sha, branch, builtAt: at, behind: sha === undefined ? undefined : 0, name: map.name };
 }
 
-/** After the run settles: turn whatever the cartographer left on disk into a status.
- *  A TIMED-OUT run is an honest failure that names itself; a cancelled run reflects
- *  disk truth (prior map or none), never a false failure. */
+/** Turn whatever the cartographer left on disk into a status after the run settles; a
+ *  timed-out run names itself, a cancelled one reflects disk truth. */
 async function finishMap(root: string, priorRaw: string | null, run: MapRun): Promise<RepoMapState> {
   if (run.timedOut) return { status: 'failed', errors: [`the cartographer did not finish within ${MAP_TIMEOUT_MINUTES} minutes - the run was cancelled`] };
   if (run.cancelRequested) return readMapStatus(root);
@@ -144,12 +133,9 @@ async function applyCartographerMode(ctx: MapCtx, sessionId: string): Promise<vo
   catch { throw new Error('agent type unavailable: cartographer'); }
 }
 
-/**
- * Run the cartographer against the repo root. Refuses a second concurrent run for
- * the same repo. Provisions a session (cwd = root), pins the repo default model,
- * sets the cartographer mode, prompts, then finalizes on idle. Cancel (cancelMap)
- * flags the run and cancels the session; the finalize reverts to disk truth.
- */
+/** Run the cartographer against the repo root; refuses a second concurrent run for the same
+ *  repo. Provisions, pins the default model, sets cartographer mode, prompts, finalizes on
+ *  idle. */
 export async function runMap(ctx: MapCtx, root: string): Promise<void> {
   const key = repoKey(root);
   if (ctx.mapRuns.has(key)) { ctx.host.post({ type: 'amError', message: 'A map is already building for this repository.' }); return; }

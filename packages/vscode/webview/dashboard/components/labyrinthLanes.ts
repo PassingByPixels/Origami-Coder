@@ -1,23 +1,29 @@
 // What a step IS — its LANE, whether it is a boundary event, and the tone its
-// glyph carries. Split out of labyrinthLayout.ts (which sits at its
-// architecture cap) so that file stays "where does a point go" and this one
-// stays "what kind of thing is this step"; both are pure, so both are
-// answerable without a DOM.
+// glyph carries. Split out of labyrinthLayout.ts so that file stays "where
+// does a point go" and this one stays "what kind of thing is this step".
 //
-// The lane model is the mockup's (hermes-labyrinth src/parts/30-map.js:12-17):
-// every crossing belongs to a thread and the THREAD decides its offset from
-// the spine — `main` on the spine, `tools` jutting one way, `delegation` (a
-// sub-agent) the other — so a delegated stretch visibly branches and returns
-// instead of every step queueing in one identical column.
+// The lane model is the mockup's: every crossing belongs to a thread, and
+// the THREAD decides its offset from the spine — `main` on the spine,
+// `tools` jutting one way, `delegation` the other.
+
+/**
+ * What a `compaction` step carries beyond its kind, mirroring `RunStep`'s
+ * own field. `contextBefore`/`summaryTokens` are OPTIONAL; an absent one
+ * renders as NOTHING rather than a 0, which would read as a measurement.
+ */
+export interface CompactionFacts {
+  trigger: 'auto' | 'manual' | 'overflow' | 'unknown';
+  contextBefore?: number;
+  summaryTokens?: number;
+}
 
 /** The part of a step these rules read. `LayoutStep` extends this. */
 export interface LaneStep {
-  kind: 'prompt' | 'reply' | 'tool' | 'thinking' | 'subagent' | 'error';
+  kind: 'prompt' | 'reply' | 'tool' | 'thinking' | 'subagent' | 'compaction' | 'error';
   status?: 'completed' | 'error' | 'running' | 'pending';
   /**
-   * OPTIONAL sub-agent nesting level; 0 (or absent) is the main thread. The
-   * map must render identically whether or not `run_steps` sends it, so an
-   * absent, non-finite or negative value is read as 0 and NEVER invented.
+   * OPTIONAL sub-agent nesting level; absent, non-finite or negative all
+   * read as 0, so the map renders identically whether `run_steps` sends it.
    */
   depth?: number;
 }
@@ -34,13 +40,9 @@ export function normDepth(step: LaneStep): number {
 }
 
 /**
- * DEPTH FIRST, kind second.
- *
- * A sub-agent's own steps come back as ordinary `prompt`/`thinking`/`reply`
- * kinds carrying `depth: 1`. Deciding the lane by kind alone put all of them
- * back on the spine, so a delegated stretch read as work the MAIN agent did —
- * the defect this rule exists to kill. Anything below depth 0 belongs to its
- * parent's branch whatever its kind; only at depth 0 does kind get a say.
+ * Depth decides the lane before kind does. Sub-agent steps come back as
+ * ordinary kinds carrying `depth: 1`; deciding by kind alone put them back
+ * on the spine. Only at depth 0 does kind get a say.
  */
 export function laneFor(step: LaneStep): Lane {
   if (normDepth(step) > 0) return 'delegation';
@@ -50,11 +52,9 @@ export function laneFor(step: LaneStep): Lane {
 }
 
 /**
- * Signed offset from the spine for a step drawn on a LANE rather than on a
- * branch column: positive for tools, negative for delegation, zero on main.
- * How far out a delegated step actually sits is the branch model's business
- * (labyrinthBranches.ts) — this only fixes which SIDE each lane is on, which
- * is also what the flight strip's rows are ordered by.
+ * Signed offset from the spine: positive for tools, negative for
+ * delegation, zero on main. Fixes only which SIDE a lane is on — how far
+ * out a step sits is labyrinthBranches.ts's business.
  */
 export function laneOffset(step: LaneStep): number {
   const lane = laneFor(step);
@@ -63,25 +63,19 @@ export function laneOffset(step: LaneStep): number {
 }
 
 /**
- * A THRESHOLD is a boundary event — the mockup's `thresholds` thread, whose
- * samples are a redaction and a model fallback at 92% context.
- *
- * This engine projects NEITHER, and `run_steps` has no permission/approval
- * kind to project (it maps text / reasoning / tool / subtask / retry /
- * assistant-error). So the honest boundary set here is the failures: a step
- * whose kind or status is `error`. It is deliberately not widened by sniffing
- * titles for "permission" — that would invent boundaries the run never had.
+ * A THRESHOLD is a boundary event: a step whose kind or status is `error`.
+ * Not widened by sniffing titles for "permission" — that would invent
+ * boundaries the run never had.
  */
 export function isThreshold(step: LaneStep): boolean {
   return step.kind === 'error' || step.status === 'error';
 }
 
 /**
- * Glyph tone for a step — one per kind, with a failure always outranking its
- * kind (a subagent that died reads as a FAILURE, not as a routing point). The
- * glyph's SHAPE comes from the raw `kind`, so a failed tool still shows the
- * tool mark; only its colour changes. Extends the original three-value
- * stepGlyph, which could not tell a prompt from a reply from a tool.
+ * Glyph tone for a step, with a failure always outranking its kind (a
+ * subagent that died reads as a FAILURE, not a routing point). The glyph's
+ * SHAPE comes from the raw `kind`, so a failed tool still shows the tool
+ * mark; only its colour changes.
  */
 export function stepGlyph(step: LaneStep): LaneStep['kind'] {
   return isThreshold(step) ? 'error' : step.kind;

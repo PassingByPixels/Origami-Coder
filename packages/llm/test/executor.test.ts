@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { Effect, Fiber, Layer, Random, Ref } from "effect"
 import * as TestClock from "effect/testing/TestClock"
-import { Headers, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { Headers, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { LLM, LLMError } from "../src"
 import { LLMClient, RequestExecutor } from "../src/route"
 import * as OpenAIChat from "../src/protocols/openai-chat"
@@ -72,7 +72,141 @@ const expectLLMError = (error: unknown) => {
 
 const errorHttp = (error: LLMError) => ("http" in error.reason ? error.reason.http : undefined)
 
+const throwingFetchLayer = (thrown: unknown) =>
+  RequestExecutor.layer.pipe(
+    Layer.provide(
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({ request, cause: thrown }),
+            }),
+          ),
+        ),
+      ),
+    ),
+  )
+
+/** Fails the first `count` calls with a thrown cause, then answers 200. */
+const flakyFetchLayer = (thrown: unknown, count: number, calls: { n: number }) =>
+  RequestExecutor.layer.pipe(
+    Layer.provide(
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.suspend(() => {
+            calls.n += 1
+            if (calls.n <= count)
+              return Effect.fail(
+                new HttpClientError.HttpClientError({
+                  reason: new HttpClientError.TransportError({ request, cause: thrown }),
+                }),
+              )
+            return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok", { status: 200 })))
+          }),
+        ),
+      ),
+    ),
+  )
+
+const staleSocket = () =>
+  Object.assign(
+    new Error(
+      "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+    ),
+    { code: "ECONNRESET" },
+  )
+
 describe("RequestExecutor", () => {
+  // A keep-alive socket the provider closed during a long tool step fails on
+  // the first write, before any response byte. The executor resends at once,
+  // silently, on a fresh connection — with retries otherwise OFF (the engine
+  // runs the native runtime with Retries = 0 and owns the visible ladder).
+  it.effect("resends once, silently, when a pooled socket was closed under the request", () =>
+    Effect.gen(function* () {
+      const calls = { n: 0 }
+      const executor = yield* RequestExecutor.Service.pipe(Effect.provide(flakyFetchLayer(staleSocket(), 1, calls)))
+      const response = yield* executor.execute(request).pipe(Effect.provideService(RequestExecutor.Retries, 0))
+      expect(response.status).toBe(200)
+      expect(calls.n).toBe(2)
+    }),
+  )
+
+  it.effect("does not loop on a socket that keeps dying", () =>
+    Effect.gen(function* () {
+      const calls = { n: 0 }
+      const executor = yield* RequestExecutor.Service.pipe(Effect.provide(flakyFetchLayer(staleSocket(), 5, calls)))
+      const error = yield* executor
+        .execute(request)
+        .pipe(Effect.provideService(RequestExecutor.Retries, 0), Effect.flip)
+      expectLLMError(error)
+      expect(error.reason._tag).toBe("Transport")
+      expect(error.reason.message).toContain("ECONNRESET")
+      expect(calls.n).toBe(2)
+    }),
+  )
+
+  it.effect("does not resend a transport failure that is not a dead socket", () =>
+    Effect.gen(function* () {
+      const calls = { n: 0 }
+      const executor = yield* RequestExecutor.Service.pipe(
+        Effect.provide(flakyFetchLayer(new Error("xAI token refresh failed (429)"), 1, calls)),
+      )
+      const error = yield* executor
+        .execute(request)
+        .pipe(Effect.provideService(RequestExecutor.Retries, 0), Effect.flip)
+      expectLLMError(error)
+      expect(error.reason._tag).toBe("Transport")
+      expect(calls.n).toBe(1)
+    }),
+  )
+
+  // Effect's fetch client wraps anything `fetch` threw as a TransportError
+  // with no description. The user must still read WHAT failed: a plugin
+  // signer's refusal, or the socket fault underneath Node's "fetch failed".
+  it.effect("names the thrown cause in a transport failure", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.reason).toMatchObject({ _tag: "Transport", kind: "TransportError" })
+      expect(error.reason.message).toBe("HTTP transport failed: xAI token refresh failed (429): rate limited")
+    }).pipe(
+      Effect.provide(
+        throwingFetchLayer(new Error("xAI token refresh failed (429)", { cause: new Error("rate limited") })),
+      ),
+    ),
+  )
+
+  it.effect("keeps the error code of a socket-level cause", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.reason._tag).toBe("Transport")
+      expect(error.reason.message).toBe("HTTP transport failed: fetch failed: socket hang up (ECONNRESET)")
+    }).pipe(
+      Effect.provide(
+        throwingFetchLayer(
+          new Error("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) }),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("stays a plain transport failure when the cause says nothing", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.reason.message).toBe("HTTP transport failed")
+    }).pipe(Effect.provide(throwingFetchLayer(undefined))),
+  )
+
   it.effect("classifies context overflow responses", () =>
     Effect.gen(function* () {
       const executor = yield* RequestExecutor.Service
@@ -261,6 +395,58 @@ describe("RequestExecutor", () => {
           new Response("busy", { status: 503, headers: { "retry-after-ms": "0" } }),
           new Response("ok", { status: 200 }),
         ]),
+      ),
+    ),
+  )
+
+  // t-4aqhjb acceptance: a rate limit is a wait, not a dead turn. The identical
+  // request goes back out after the backoff and the caller sees only the answer.
+  it.effect("retries a 429 and succeeds on the next attempt", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const response = yield* executor.execute(request)
+
+      expect(response.status).toBe(200)
+      expect(yield* response.text).toBe("ok")
+    }).pipe(
+      Effect.provide(
+        responsesLayer([
+          new Response('{"error":{"message":"Rate limit reached"}}', {
+            status: 429,
+            headers: { "retry-after-ms": "0" },
+          }),
+          new Response("ok", { status: 200 }),
+        ]),
+      ),
+    ),
+  )
+
+  // t-4aqhjb. A long refusal body used to be dropped from the sentence
+  // entirely, leaving "Provider request failed with HTTP 429" and no reason —
+  // and a refusal that explains itself is precisely the one that runs long.
+  const longRefusalBody = `You have hit your usage limit. ${"detail ".repeat(90)}`
+  it.effect("keeps the head of a long refusal body in the message", () =>
+    Effect.gen(function* () {
+      const executor = yield* RequestExecutor.Service
+      const error = yield* executor.execute(request).pipe(Effect.flip)
+
+      expectLLMError(error)
+      expect(error.reason.message).toStartWith(
+        "Provider request failed with HTTP 429: You have hit your usage limit. ",
+      )
+      expect(error.reason.message).toEndWith("…")
+      // The head, not the whole body: the sentence is bounded even though the
+      // full body stays available on the error's HTTP context.
+      expect(error.reason.message.length).toBe("Provider request failed with HTTP 429: ".length + 201)
+      expect(errorHttp(error)?.body).toHaveLength(longRefusalBody.length)
+    }).pipe(
+      Effect.provide(
+        responsesLayer(
+          Array.from(
+            { length: 3 },
+            () => new Response(longRefusalBody, { status: 429, headers: { "retry-after-ms": "0" } }),
+          ),
+        ),
       ),
     ),
   )

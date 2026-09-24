@@ -42,6 +42,7 @@ export const LspTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (args: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context

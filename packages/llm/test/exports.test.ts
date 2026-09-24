@@ -3,11 +3,20 @@ import { LLM, LLMClient, Provider } from "@origami/llm"
 import { Route, Protocol } from "@origami/llm/route"
 import { Provider as ProviderSubpath } from "@origami/llm/provider"
 import {
+  Alibaba,
+  Cerebras,
   CloudflareAIGateway,
   CloudflareWorkersAI,
+  DeepInfra,
+  Groq,
+  Mistral,
   OpenAI,
   OpenAICompatible,
   OpenRouter,
+  Perplexity,
+  TogetherAI,
+  V0,
+  Venice,
   XAI,
 } from "@origami/llm/providers"
 import * as GitHubCopilot from "@origami/llm/providers/github-copilot"
@@ -41,6 +50,15 @@ describe("public exports", () => {
     expect(CloudflareWorkersAI.configure({ accountId: "fixture", apiKey: "fixture" }).model).toBeFunction()
     expect(OpenRouter.model).toBeFunction()
     expect(OpenRouter.provider.model).toBe(OpenRouter.model)
+    expect(Mistral.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(Groq.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(Cerebras.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(DeepInfra.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(TogetherAI.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(Perplexity.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(Alibaba.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(Venice.configure({ apiKey: "fixture" }).model).toBeFunction()
+    expect(V0.configure({ apiKey: "fixture" }).model).toBeFunction()
     expect(XAI.model).toBeFunction()
     expect(XAI.provider.model).toBe(XAI.model)
     expect(XAI.provider.responses).toBe(XAI.responses)
@@ -56,14 +74,14 @@ describe("public exports", () => {
         apiKey: "fixture",
         endpoint: "responses",
       }).model("mai-code-1-flash-picker").route.id,
-    ).toBe("openai-responses")
+    ).toBe("copilot-responses")
     expect(
       GitHubCopilot.configure({
         baseURL: "https://api.githubcopilot.test",
         apiKey: "fixture",
         endpoint: "chat",
       }).model("gpt-5").route.id,
-    ).toBe("openai-chat")
+    ).toBe("copilot-chat")
   })
 
   test("protocol barrels expose supported low-level routes", () => {

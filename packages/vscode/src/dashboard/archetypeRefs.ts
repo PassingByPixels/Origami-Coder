@@ -1,27 +1,18 @@
-// archetypeRefs.ts — Folds Board (lane D): reference cards for the
-// archetypes (architect/ask/debug/orchestrator/scout/cartographer) that
-// share the collab agent directory. Extracted straight out of
-// collabAgentCrud.ts, which was AT its 200-line cap when this landed — the
-// ratchet's remedy is a module, never a raised number (the same move
-// collabAgentDef.ts made when the preset work hit that file's cap).
+// archetypeRefs.ts — Folds Board: reference cards for archetypes
+// (architect/ask/debug/orchestrator/scout/cartographer), which share the
+// collab agent directory.
 //
-// The SAME directory holds two different things: collab-capable defs
-// (`collab: true`, owned by collabAgentCrud.ts) and archetypes (`mode:` set,
-// no `collab: true`, engine-shipped by agentManager/archetypes.ts). Nothing
-// here creates, edits or deletes an archetype file wholesale —
-// parseAgentDef/serializeAgentDef stay collab-only and are never called on
-// one of these; the one write this module makes is a byte-surgical
-// `model:` edit.
+// The directory holds two different things: collab-capable defs (owned by
+// collabAgentCrud.ts) and archetypes (engine-shipped). This module never
+// creates, edits or deletes an archetype file wholesale — its one write is a
+// byte-surgical `model:` edit.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { globalAgentDir } from './agentManager/archetypes';
 
-// Mirrors collabAgentCrud.ts's SLUG_RE exactly (a filename has the same
-// survives-a-path-segment rule either side of the collab/archetype split) —
-// a local copy rather than an import, so this module has no edge back into
-// the one that already re-exports it (collabAgentCrud.ts -> archetypeRefs.ts
-// only, never the reverse).
+// Mirrors collabAgentCrud.ts's SLUG_RE (a filename has the same path-segment
+// rule) as a local copy, not an import — the dependency runs one way.
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export interface ArchetypeDefRef {
@@ -30,10 +21,8 @@ export interface ArchetypeDefRef {
   /** `provider/model`, absent when the file pins none. */
   model?: string;
   mode: string;
-  /** scout only: archetypes.ts SHIPS this file and reconciles a foreign one,
-   *  but only once per marker generation (`if (opts.marker.get()) return`), so
-   *  a pin here survives until the next upgrade — the card says exactly that
-   *  and offers Set model like any other archetype. */
+  /** scout only: archetypes.ts reconciles a foreign file once per marker
+   *  generation, so a pin here survives until the next upgrade. */
   managed: boolean;
   /** Absolute path to the .md — all "Open file" needs. */
   path: string;
@@ -42,12 +31,8 @@ export interface ArchetypeDefRef {
 const fileFor = (dir: string, slug: string): string => path.join(dir, `${slug}.md`);
 const FRONT_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
-/**
- * The same column-0-anchored scalar read collabAgentDef.ts's frontValue
- * takes, duplicated rather than imported (frontValue is private to that
- * module) — an archetype ref is deliberately never routed through
- * parseAgentDef, which refuses every file here for lacking `collab: true`.
- */
+/** The same column-0-anchored scalar read as frontValue, duplicated rather
+ *  than imported since an archetype ref is never routed through parseAgentDef. */
 function scanFront(front: string, key: string): string {
   const m = front.match(new RegExp(`^${key}:[ \\t]*(.*)$`, 'm'));
   if (!m) return '';
@@ -60,11 +45,8 @@ function scanFront(front: string, key: string): string {
  *  with neither marker is junk and returns null, same as listCollabAgentDefs. */
 export function parseArchetypeRef(slug: string, text: string): Omit<ArchetypeDefRef, 'path'> | null {
   const front = text.match(FRONT_RE)?.[1];
-  // `vision-profile` joins `collab` on the same rule (t-kgtr6c): both are defs
-  // this board OWNS an editor for, under their own tab. Without this line a
-  // vision profile would list a second time as a read-only "reference agent"
-  // and again in the sub-agent roster — one file, three places, two of them
-  // wrong about what it is for.
+  // `vision-profile` joins `collab` on the same rule: both are defs this board
+  // owns an editor for, or a def would list twice under the wrong tab.
   if (!front || scanFront(front, 'collab') === 'true' || scanFront(front, 'vision-profile') === 'true') return null;
   const mode = scanFront(front, 'mode');
   if (!mode) return null;
@@ -97,15 +79,9 @@ export function listArchetypeRefs(dir = globalAgentDir()): ArchetypeDefRef[] {
 
 /**
  * Set (or clear) an archetype's `model:` — a byte-surgical edit confined to
- * the frontmatter span: replace an existing top-level `model:` line, or
- * insert one right after `description:` when absent. Everything before and
- * after that span (the `---` fences, the whole persona body) is untouched.
- *
- * UAT round 2 item 3: scout is NOT refused here any more. What makes scout
- * security-load-bearing is its PERMISSION block (ask/architect delegate to it
- * by name for the S12 laundering fix), and that block is not what this edit
- * touches — a `model:` line cannot re-grant a tool. The card carries the one
- * honest caveat instead: an upgrade may reset the file.
+ * the frontmatter span. Scout is not refused: its security-load-bearing
+ * permission block is untouched by a `model:` edit; an upgrade may still
+ * reset the file.
  */
 export function setArchetypeModel(slug: string, model: string, dir = globalAgentDir()): string | null {
   if (!SLUG_RE.test(slug)) return `"${slug}" is not a valid agent name.`;

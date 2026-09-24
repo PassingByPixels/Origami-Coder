@@ -1,0 +1,80 @@
+{
+  "_comment": "Shape of GET https://chatgpt.com/backend-api/codex/models, trimmed to the keys codexCatalog.ts reads. Hand-written from the live payload's SHAPE - no credential, no account id and no token appear anywhere in this file, and the ids below are the ones the owner's Plus account was observed to list on 2026-09-07. The live payload carries ~49 keys per entry; the extras are omitted on purpose so the mapper is proved to ignore what it does not read.",
+  "models": [
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "GPT-6 Astra",
+      "visibility": "list",
+      "priority": 1,
+      "minimal_client_version": "0.153.0",
+      "context_window": 500000,
+      "max_context_window": 1000000,
+      "max_output_tokens": 128000,
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "fastest" },
+        { "effort": "medium", "description": "balanced" },
+        { "effort": "high", "description": "thorough" },
+        { "effort": "xhigh", "description": "more thorough" },
+        { "effort": "max", "description": "most thorough" },
+        { "effort": "ultra", "description": "everything it has" }
+      ],
+      "default_reasoning_level": "medium",
+      "additional_speed_tiers": [{ "id": "fast", "display_name": "Fast" }],
+      "available_in_plans": ["plus", "pro"],
+      "input_modalities": ["text", "image", "pdf"]
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol",
+      "visibility": "list",
+      "priority": 3,
+      "minimal_client_version": "0.150.0",
+      "context_window": 400000,
+      "max_context_window": 400000,
+      "max_output_tokens": 128000,
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "fastest" },
+        { "effort": "medium", "description": "balanced" },
+        { "effort": "high", "description": "thorough" }
+      ],
+      "default_reasoning_level": "medium",
+      "input_modalities": ["text", "image"]
+    },
+    {
+      "slug": "gpt-5.5",
+      "display_name": "GPT-5.5",
+      "visibility": "list",
+      "priority": 2,
+      "minimal_client_version": "0.104.0",
+      "max_context_window": 1050000,
+      "max_output_tokens": 128000,
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "fastest" },
+        { "effort": "high", "description": "thorough" }
+      ],
+      "input_modalities": ["text", "image", "pdf"]
+    },
+    {
+      "slug": "gpt-reserve",
+      "display_name": "Reserved",
+      "visibility": "hide",
+      "priority": 99,
+      "minimal_client_version": "0.150.0",
+      "context_window": 400000,
+      "max_output_tokens": 128000,
+      "supported_reasoning_levels": [{ "effort": "medium", "description": "balanced" }],
+      "input_modalities": ["text"]
+    },
+    {
+      "slug": "codex-auto-review",
+      "display_name": "Automatic review",
+      "visibility": "hide",
+      "priority": 98,
+      "minimal_client_version": "0.150.0",
+      "context_window": 200000,
+      "max_output_tokens": 64000,
+      "supported_reasoning_levels": [],
+      "input_modalities": ["text"]
+    }
+  ]
+}

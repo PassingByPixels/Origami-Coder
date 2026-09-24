@@ -30,6 +30,12 @@ import {
   writeModelConfig,
   writeModelContextLimit,
   writeModelVision,
+  writeDefaultModel,
+  persistModelPick,
+  resolveModelPickProviderName,
+  cleanupStaleClaudeSubscriptionBlock,
+  ensureClaudeSubscriptionBlockCleanup,
+  type CleanupOnceMarker,
 } from '../../../src/dashboard/firstFold';
 import { writeToolState } from '../../../src/dashboard/toolDeferConfig';
 import { resetContextLimitWarnings } from '../../../src/dashboard/contextLimitWarning';
@@ -458,5 +464,359 @@ describe('a context window that cannot be persisted is no longer silent', () => 
     writeModelContextLimit('vllm', 'spec-test', 65536);
     expect(writeModelContextLimit('vllm', 'spec-test', 65536)).toBe(false);  // already right
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The picker's vision chip is a read of the CONFIG, not of the engine.
+//
+// `visionStatesFor` (visionPin.ts) fills every picker row by calling
+// `readModelVision(providerId, modelId)`, because acp/directory.ts flattens
+// capabilities away before the model list reaches the panel. So the chip says
+// what origami.json says — and for the Labs OAuth connections origami.json is
+// not the authority. Two ways a row gets there with nothing to read:
+//
+//   · a ChatGPT id typed in by hand (`"gpt-5.6-luna": { "name": ... }`), months
+//     before any catalog names it — the owner's own block, 2026-09-03;
+//   · a row the engine resolved that origami.json has never held at all, which
+//     is every model GitHub adds to a Copilot plan after the three-id seed was
+//     written.
+//
+// Both read `false` and both drew "no vision" on models that all take images.
+// The rule the owner states, and the one the backends implement: every model
+// reached through a Labs OAuth subscription — ChatGPT, xAI, Copilot — sees.
+//
+// A DECLARATION STILL WINS, and must: `writeModelVision(off)` stores "off" as
+// the ABSENCE of modalities plus a pin, and `visionStateFor` reads the pin
+// first, so this default can never overrule a pinned-off model.
+// ---------------------------------------------------------------------------
+describe('a Labs OAuth model with nothing declared still reads as sighted', () => {
+  const labs = () => JSON.stringify({
+    provider: {
+      openai: {
+        name: 'ChatGpt',
+        npm: '@ai-sdk/openai',
+        models: {
+          'gpt-5.6-luna': { name: 'gpt-5.6-luna' },
+          'gpt-5.6-sol': { name: 'gpt-5.6-sol', attachment: true, modalities: { input: ['text', 'image'] } },
+          'gpt-5.4-blind': { name: 'declared text-only', modalities: { input: ['text'] } },
+        },
+      },
+      xai: { name: 'xAI (SuperGrok)', models: { 'grok-4.5': { name: 'Grok 4.5' } } },
+      'github-copilot': { name: 'GitHub Copilot', models: { 'gpt-4.1': { name: 'GPT-4.1' } } },
+      vllm: { name: 'S1', options: { baseURL: 'http://x:8000/v1' }, models: { 'qwen3.6-35b': { name: 'qwen3.6-35b' } } },
+    },
+  }, null, 2) + '\n';
+
+  it('a hand-added ChatGPT entry with only a name', () => {
+    write(labs());
+    expect(readModelVision('openai', 'gpt-5.6-luna')).toBe(true);
+  });
+
+  it('and one the config has never held at all — a live Copilot row', () => {
+    write(labs());
+    expect(readModelVision('github-copilot', 'claude-opus-5')).toBe(true);
+    expect(readModelVision('xai', 'grok-4.6')).toBe(true);
+  });
+
+  it('every Labs provider, not just the one that was noticed', () => {
+    write(labs());
+    expect(readModelVision('xai', 'grok-4.5')).toBe(true);
+    expect(readModelVision('github-copilot', 'gpt-4.1')).toBe(true);
+  });
+
+  it('a declaration still wins — text-only stays text-only', () => {
+    write(labs());
+    expect(readModelVision('openai', 'gpt-5.4-blind')).toBe(false);
+  });
+
+  it('and a self-hosted provider is untouched: silence there really is no vision', () => {
+    // The local reconcile pass writes this same flag from an LM Studio probe
+    // (visionDetect.ts), so a default there would make every text model claim
+    // eyes and then fight detection for them.
+    write(labs());
+    expect(readModelVision('vllm', 'qwen3.6-35b')).toBe(false);
+    expect(readModelVision('vllm', 'never-configured')).toBe(false);
+  });
+
+  it('an unreadable config still answers false, never a Labs default', () => {
+    write('{ not json');
+    expect(readModelVision('openai', 'gpt-5.6-luna')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// t-u0rcmb — a model pick persists only what the engine cannot know by itself.
+// For a model the engine already serves, that is `cfg.model`. Before this, EVERY
+// successful switch also called writeModelConfig, which pinned a provider block +
+// a models row even for a provider with none — freezing a copy of a catalog the
+// engine already keeps current, and (via the name fallback below) sometimes
+// naming that block after a completely different provider.
+// ---------------------------------------------------------------------------
+describe('writeDefaultModel — persists ONLY cfg.model, no provider block', () => {
+  it('sets cfg.model and touches nothing else, for a provider with no block at all', () => {
+    write(populated());
+    const res = writeDefaultModel('claude-subscription/haiku');
+    expect(res.model).toBe('claude-subscription/haiku');
+    const cfg = read();
+    expect(cfg.model).toBe('claude-subscription/haiku');
+    expect(cfg.provider).toEqual(populatedProvider());
+    expect('claude-subscription' in cfg.provider).toBe(false);
+  });
+
+  it('honours XDG_CONFIG_HOME like every other writer', () => {
+    const res = writeDefaultModel('vllm/qwen');
+    expect(res.path).toBe(cfgPath);
+    expect(read().model).toBe('vllm/qwen');
+  });
+
+  it('refuses a commented config rather than deleting the comments', () => {
+    write('{\n  // kept\n  "model": "vllm/spec-test",\n  "provider": { "vllm": { "models": { "spec-test": {} } } }\n}\n');
+    expect(() => writeDefaultModel('vllm/spec-test')).toThrow(/comments/);
+  });
+});
+
+function populatedProvider() {
+  return JSON.parse(populated()).provider;
+}
+
+describe('persistModelPick — the shared tail of every switch-model flow', () => {
+  it('an engine-served model (isConfigured) writes NO provider block and no models row — only cfg.model changes', () => {
+    write(populated()); // has an lmstudio block, no claude-subscription block
+    const result = persistModelPick(
+      { providerId: 'claude-subscription', providerName: 'claude-subscription', modelId: 'haiku', modelName: 'haiku' },
+      /* isConfigured */ true,
+    );
+    expect(result.wroteBlock).toBe(false);
+    const cfg = read();
+    expect(cfg.model).toBe('claude-subscription/haiku');
+    expect('claude-subscription' in cfg.provider).toBe(false);
+    // the provider that DID have a block is untouched
+    expect(cfg.provider.lmstudio).toEqual(populatedProvider().lmstudio);
+  });
+
+  it('a fresh LM Studio / self-hosted model (not isConfigured) still gets its block', () => {
+    write(populated());
+    const result = persistModelPick(
+      { providerId: 'vllm', providerName: 'S1 - DGX Spark 1', modelId: 'new-model', modelName: 'new-model' },
+      /* isConfigured */ false,
+    );
+    expect(result.wroteBlock).toBe(true);
+    expect(read().provider.vllm.models['new-model']).toEqual({ name: 'new-model' });
+  });
+
+  it('an OpenRouter pick (not isConfigured) still writes cost', () => {
+    write(populated());
+    const result = persistModelPick(
+      { providerId: 'openrouter', providerName: 'OpenRouter', modelId: 'kimi-k3', modelName: 'Kimi K3', cost: { input: 0.5, output: 2 } },
+      /* isConfigured */ false,
+    );
+    expect(result.wroteBlock).toBe(true);
+    expect(read().provider.openrouter.models['kimi-k3'].cost).toEqual({ input: 0.5, output: 2 });
+  });
+
+  it('a provider that already has a block (isConfigured) keeps its name and hand-set fields', () => {
+    write(populated());
+    // vllm already has a hand-set name — an isConfigured pick must not touch the block at all.
+    persistModelPick(
+      { providerId: 'vllm', providerName: 'a name this call must never write', modelId: 'spec-test', modelName: 'spec-test' },
+      /* isConfigured */ true,
+    );
+    expect(read().provider.vllm).toEqual(populatedProvider().vllm);
+    expect(read().model).toBe('vllm/spec-test');
+  });
+});
+
+describe('resolveModelPickProviderName — never borrows another provider\'s identity', () => {
+  const local = { id: 'lmstudio', name: 'LM Studio' };
+
+  it('a configured block\'s own name always wins', () => {
+    expect(resolveModelPickProviderName('openrouter', 'OpenRouter', local)).toBe('OpenRouter');
+  });
+
+  it('the local provider\'s name is used ONLY when providerId IS the local provider', () => {
+    expect(resolveModelPickProviderName('lmstudio', undefined, local)).toBe('LM Studio');
+  });
+
+  it('a different, unconfigured provider NEVER borrows the local provider\'s name — the t-u0rcmb bug', () => {
+    // Before the fix this returned "LM Studio", which is how the owner's live config
+    // got a claude-subscription block literally named after LM Studio.
+    expect(resolveModelPickProviderName('claude-subscription', undefined, local)).toBe('claude-subscription');
+  });
+
+  it('with no local provider at all, an unconfigured provider falls back to its own id', () => {
+    expect(resolveModelPickProviderName('openrouter', undefined, null)).toBe('openrouter');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeModelVision for a provider with NO block (e.g. `openai` with only an
+// auth key): the ENGINE reads this config flag, not the extension's vision pin
+// (visionPin.ts is display-only) — so a capability override still has to land
+// here. The fix writes the SMALLEST possible block: never name/npm/options,
+// only `models[id]`'s two capability fields, pruned back to nothing once empty.
+// ---------------------------------------------------------------------------
+describe('writeModelVision — a no-block provider gets a MINIMAL capability-only block', () => {
+  it('vision ON with no prior block: the block is exactly { models: { id: { attachment, modalities } } }', () => {
+    write(populated());
+    writeModelVision({ providerId: 'claude-subscription', modelId: 'haiku', enabled: true });
+    expect(read().provider['claude-subscription']).toEqual({
+      models: { haiku: { attachment: true, modalities: { input: ['text', 'image'] } } },
+    });
+  });
+
+  it('vision OFF afterwards prunes the model row and then the block itself — gone entirely', () => {
+    write(populated());
+    writeModelVision({ providerId: 'claude-subscription', modelId: 'haiku', enabled: true });
+    writeModelVision({ providerId: 'claude-subscription', modelId: 'haiku', enabled: false });
+    expect('claude-subscription' in read().provider).toBe(false);
+  });
+
+  it('never writes name, npm or options for the minimal block', () => {
+    write(populated());
+    writeModelVision({ providerId: 'openai', modelId: 'gpt-5.6-luna', enabled: true });
+    const block = read().provider.openai;
+    expect(Object.keys(block)).toEqual(['models']);
+  });
+
+  it('a provider that already has a real block keeps its name and fields — untouched by pruning', () => {
+    write(populated());
+    writeModelVision({ providerId: 'lmstudio', modelId: 'qwen3-8b', enabled: true });
+    const lmstudio = read().provider.lmstudio;
+    expect(lmstudio.name).toBe('LM Studio');
+    expect(lmstudio.options).toEqual({ baseURL: 'http://127.0.0.1:1234/v1' });
+    expect(lmstudio.models['qwen3-8b']).toEqual({ name: 'qwen3-8b', attachment: true, modalities: { input: ['text', 'image'] } });
+
+    // turning it back off never prunes a block that carries real identity fields
+    writeModelVision({ providerId: 'lmstudio', modelId: 'qwen3-8b', enabled: false });
+    expect(read().provider.lmstudio.name).toBe('LM Studio');
+    expect(read().provider.lmstudio.models['qwen3-8b']).toEqual({ name: 'qwen3-8b' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One-time clean-up of an old `claude-subscription` block (t-u0rcmb). Removes it
+// only when every field is one the old pick path could have written; a person's
+// hand-edit (an apiKey, a baseURL, a model with `cost`/`limit`) is left alone.
+// ---------------------------------------------------------------------------
+describe('cleanupStaleClaudeSubscriptionBlock', () => {
+  const withStaleBlock = () => JSON.stringify({
+    model: 'claude-subscription/haiku',
+    provider: {
+      lmstudio: { name: 'LM Studio', npm: '@ai-sdk/openai-compatible', options: { baseURL: 'http://127.0.0.1:1234/v1' }, models: { 'qwen3-8b': { name: 'qwen3-8b' } } },
+      'claude-subscription': { name: 'LM Studio', options: {}, models: { haiku: { name: 'haiku' } } },
+    },
+  }, null, 2) + '\n';
+
+  it('removes an old-pick-path-shaped block, backs up, leaves cfg.model and every other block alone', () => {
+    write(withStaleBlock());
+    const res = cleanupStaleClaudeSubscriptionBlock();
+    expect(res.removed).toBe(true);
+    const cfg = read();
+    expect('claude-subscription' in cfg.provider).toBe(false);
+    expect(cfg.model).toBe('claude-subscription/haiku'); // left alone — the engine's own fallback handles it
+    expect(cfg.provider.lmstudio).toEqual(JSON.parse(withStaleBlock()).provider.lmstudio);
+    expect(fs.existsSync(`${cfgPath}.bak`)).toBe(true);
+  });
+
+  it('is idempotent — a second call finds nothing to remove', () => {
+    write(withStaleBlock());
+    cleanupStaleClaudeSubscriptionBlock();
+    const afterFirst = fs.readFileSync(cfgPath, 'utf8');
+    const res = cleanupStaleClaudeSubscriptionBlock();
+    expect(res.removed).toBe(false);
+    expect(fs.readFileSync(cfgPath, 'utf8')).toBe(afterFirst);
+  });
+
+  it('leaves a hand-edited block alone (an apiKey the old pick path never wrote)', () => {
+    const handEdited = JSON.stringify({
+      provider: { 'claude-subscription': { name: 'My Claude', options: { apiKey: 'sk-hand-typed' }, models: { haiku: { name: 'haiku' } } } },
+    }, null, 2) + '\n';
+    write(handEdited);
+    const res = cleanupStaleClaudeSubscriptionBlock();
+    expect(res.removed).toBe(false);
+    expect(read().provider['claude-subscription'].options.apiKey).toBe('sk-hand-typed');
+  });
+
+  it('leaves a hand-edited block alone (a model with a cost the old pick path never wrote)', () => {
+    const handEdited = JSON.stringify({
+      provider: { 'claude-subscription': { name: 'X', options: {}, models: { haiku: { name: 'haiku', cost: { input: 1, output: 2 } } } } },
+    }, null, 2) + '\n';
+    write(handEdited);
+    const res = cleanupStaleClaudeSubscriptionBlock();
+    expect(res.removed).toBe(false);
+    expect(read().provider['claude-subscription'].models.haiku.cost).toEqual({ input: 1, output: 2 });
+  });
+
+  it('a config with no claude-subscription block at all is a clean no-op', () => {
+    write(populated());
+    const before = fs.readFileSync(cfgPath, 'utf8');
+    const res = cleanupStaleClaudeSubscriptionBlock();
+    expect(res.removed).toBe(false);
+    expect(fs.readFileSync(cfgPath, 'utf8')).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The clean-up must run AT MOST ONCE per install. After the writeModelVision fix,
+// a genuine vision override on claude-subscription is a `models`-only block — the
+// SAME shape the clean-up removes — so running the pass on every activation would
+// delete a real, current override. A globalState-backed marker (the same pattern
+// as ensureGlobalSeeds/ensureSubagentToolDefaults) gates it to one pass.
+// ---------------------------------------------------------------------------
+describe('ensureClaudeSubscriptionBlockCleanup — runs at most once', () => {
+  const withStaleBlock = () => JSON.stringify({
+    provider: { 'claude-subscription': { name: 'LM Studio', options: {}, models: { haiku: { name: 'haiku' } } } },
+  }, null, 2) + '\n';
+
+  function fakeMarker(initial?: boolean): CleanupOnceMarker & { value: boolean | undefined } {
+    return {
+      value: initial,
+      get() { return this.value; },
+      set(v: boolean) { this.value = v; },
+    };
+  }
+
+  it('marker unset: runs the clean-up and sets the marker true', () => {
+    write(withStaleBlock());
+    const marker = fakeMarker(undefined);
+    const res = ensureClaudeSubscriptionBlockCleanup(marker);
+    expect(res?.removed).toBe(true);
+    expect('claude-subscription' in read().provider).toBe(false);
+    expect(marker.value).toBe(true);
+  });
+
+  it('marker already true: skipped entirely — config never even read, block survives untouched', () => {
+    write(withStaleBlock());
+    const before = fs.readFileSync(cfgPath, 'utf8');
+    const marker = fakeMarker(true);
+    const res = ensureClaudeSubscriptionBlockCleanup(marker);
+    expect(res).toBeNull();
+    expect(fs.readFileSync(cfgPath, 'utf8')).toBe(before);
+  });
+
+  it('a throw (corrupt config) does NOT set the marker — retries next start', () => {
+    write('{ "model": ');
+    const marker = fakeMarker(undefined);
+    expect(() => ensureClaudeSubscriptionBlockCleanup(marker)).toThrow();
+    expect(marker.value).toBeUndefined();
+  });
+
+  it('protects a genuine vision-only override from being deleted on a LATER activation', () => {
+    // First activation: marker unset, an old-shaped stale block is cleaned up.
+    write(withStaleBlock());
+    const marker = fakeMarker(undefined);
+    ensureClaudeSubscriptionBlockCleanup(marker);
+    // The owner then sets a real vision override the same shape the clean-up removes.
+    writeModelVision({ providerId: 'claude-subscription', modelId: 'sonnet', enabled: true });
+    expect(read().provider['claude-subscription']).toEqual({
+      models: { sonnet: { attachment: true, modalities: { input: ['text', 'image'] } } },
+    });
+    // A LATER activation (marker now true) must not touch it.
+    const res = ensureClaudeSubscriptionBlockCleanup(marker);
+    expect(res).toBeNull();
+    expect(read().provider['claude-subscription']).toEqual({
+      models: { sonnet: { attachment: true, modalities: { input: ['text', 'image'] } } },
+    });
   });
 });

@@ -1,29 +1,9 @@
 <script lang="ts">
-  // Collabs M2 — the stream, extracted from CollabPane.svelte (at its cap) and
-  // rebuilt as a Slack-style transcript rather than a list of titled cards.
-  //
-  // GROUPING IS THE POINT. An agent that answers in four paragraphs used to
-  // print four identical author/time headers, which reads as four people. Runs
-  // of consecutive messages from the SAME author collapse under one header, so
-  // vertical space goes to what was said rather than to who said it, and a real
-  // change of speaker is the only thing that draws a new header.
-  //
-  // Grouping is on the AUTHOR ONLY, deliberately not on a time window: a collab
-  // turn can take minutes, and splitting a single agent's reply because it
-  // straddled a five-minute boundary would invent a speaker change that never
-  // happened. Every message keeps its own timestamp in the gutter, so the
-  // elapsed time inside a group is still readable.
-  //
-  // Flock M4: the stream carries a PROTOCOL now, not only prose. The grouping
-  // and the kind vocabulary both moved to collabKinds.ts (a pure leaf, tested
-  // with no DOM) so this file stays markup: a system row breaks a run rather
-  // than joining it, and ask/handoff/answer reach the bubble already
-  // interpreted as a tone and a label.
-  //
-  // W5-L2: with COUNCIL rounds the file became a ROUTER over row kinds, and the
-  // speaker's run moved out to CollabGroupRow.svelte to pay for the round's
-  // branch. Each kind's markup now lives with the CSS that draws it, and the
-  // decisions above them all stay in the two pure leaves.
+  // Messages group by author only, not by a time window, so one agent's long
+  // reply never splits into a false speaker change. Each message keeps its
+  // own timestamp so elapsed time within a group stays visible.
+  // Grouping rules and the kind vocabulary live in collabKinds.ts; this file
+  // renders markup only, routed by row kind.
   import CollabAvatar from './CollabAvatar.svelte';
   import CollabFailureRow from './CollabFailureRow.svelte';
   import CollabGroupRow from './CollabGroupRow.svelte';
@@ -65,37 +45,25 @@
   }
   let { messages, loaded, names, glyphs, agents = [], tasks, archived = false, onReview }: Props = $props();
 
-  // The LIVE PILLS. Which agents get one, and what a pill may say, are
-  // collabActivity.ts's rules — pure, so the defensive read of a brand-new
-  // optional wire field is testable with no DOM. The row itself is
-  // CollabLivePill.svelte; this file only places it.
+  // Which agents get a live pill, and what it says, is collabActivity.ts's
+  // rule — pure logic, testable with no DOM.
   const pills = $derived(livePills(agents));
 
-  // Keyed on the FIRST message's seq: seqs are monotonic per collab, so a key
-  // is stable across re-renders and two rows cannot swap identity.
-  //
-  // A COUNCIL round is folded on top of that model rather than instead of it —
-  // collabExport.ts renders a shipped transcript from the same builder, and a
-  // discuss room comes back out of the fold untouched.
+  // Rows key on the first message's seq (monotonic per collab), so keys stay
+  // stable across re-renders. A council round folds on top of the same
+  // builder, so collabExport.ts can render from it too.
   const rows = $derived(buildCouncilRows(buildStreamRows(messages)));
 
   /** The SHORT name for a header or a system row — a full description would
    *  read as a screed next to a run of messages, not an author line. */
   const shortOf = (slug: string): string => collabShortName(slug, names[slug]);
   const nameOf = (id: string, kind: 'human' | 'agent'): string => (kind === 'human' ? 'You' : shortOf(id));
-  /** The full text the short name was mined from — surfaced as the header's
-   *  tooltip, never dropped, just moved off the row itself. */
+  /** The full text the short name was mined from; used as the header tooltip. */
   const fullNameOf = (id: string): string => names[id] || id;
 
-  // The clock is collabStreamMarks.ts; the speaker's MARK (brand animal or
-  // letter disc, and the per-slug tone under it) is CollabAvatar.svelte. Both
-  // were extracted so the follow rule and the flow rail could land inside the
-  // cap — see each file's header.
 
-  // THE FOLLOW (report 1.11 / F10). The rule is the chat's, lifted verbatim —
-  // see collabStreamFollow.ts, and chatScroll.ts under it. The effect reads
-  // `rows` AND `pills`, because an agent can start working with no new message
-  // behind it and the pill is the row that would then be under the fold.
+  // The follow effect reads `rows` AND `pills`: an agent can start working
+  // with no new message, and the pill is what would then sit below the fold.
   let streamEl = $state<HTMLDivElement | null>(null);
   const follow = makeStreamFollow();
   $effect(() => {
@@ -124,7 +92,7 @@
   aria-label="Collab messages"
   bind:this={streamEl}
   onscroll={follow.onScroll}
-  onwheel={(e) => follow.onWheel(e.deltaY)}
+  onwheel={(e) => follow.onWheel(e.deltaY, e.target)}
 >
   {#if messages.length === 0}
     <div class="stream-empty">{loaded ? 'Nothing said yet. Post the first message below.' : 'Loading…'}</div>
@@ -162,11 +130,8 @@
     {/each}
   {/if}
 
-  <!-- One pill per RUNNING agent, at the foot of the transcript and on the
-       agent SIDE, so a room with work in flight never reads as a dead room.
-       Rendered outside the empty-stream branch on purpose: an agent can be
-       working before it has said anything at all, and that is exactly the
-       stretch the pill exists for. -->
+  <!-- A live pill per running agent, at the foot on the agent side, so a
+       room with work in flight never reads as a dead room. -->
   {#each pills as p (p.slug)}
     <CollabLivePill pill={p} name={shortOf(p.slug)} {avatar} />
   {/each}
@@ -180,9 +145,8 @@
   <CollabFailureRow {failures} nameOf={shortOf} />
 </div>
 
-<!-- The avatar column, shared by a message group and a pill: one agent must
-     not be a brand animal in the transcript and a letter disc in its own
-     pill. -->
+<!-- The avatar column, shared by a message group and a pill: one agent's
+     mark must look the same in the transcript and in its own pill. -->
 {#snippet avatar(id: string, kind: 'human' | 'agent')}
   <CollabAvatar {id} {kind} name={nameOf(id, kind)} glyphKey={glyphs[id] || id} />
 {/snippet}

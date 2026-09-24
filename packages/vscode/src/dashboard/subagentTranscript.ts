@@ -1,22 +1,10 @@
-// subagentTranscript.ts — a sub-agent's stored session, shaped into the chat's
-// own REPLAY-LOG entries so the webview can draw it with the renderer the live
-// chat uses (ChatTranscript.svelte) instead of a lookalike that drifts.
-//
-// WHY THIS SHAPE AND NOT A NEW ONE. `SessionMessage` (sessionLog.ts) is already
-// the wire form a chat is rebuilt from after a reload: the webview's
-// chatRestore.ts feeds it straight through applyToolCall/applyToolResult, the
-// same merge rules the live stream runs. Emitting anything else would mean a
-// second mapper into `Message`, free to disagree with the first — and the
-// disagreement would show up as a sub-agent card that renders differently from
-// the identical card three lines up in the parent's transcript.
-//
-// The per-field readers are the LIVE PATH's own (acpToolContent /
-// acpToolMeta / acpTaskMeta), not re-derived here. A settled `ToolCall`
-// carries what a `tool_call` and its `tool_call_update` carried between them,
-// so both payloads are built from the one object.
-//
-// No `vscode` import, so every decision here is testable without an extension
-// host — the same rule boardData.ts follows.
+// subagentTranscript.ts — a sub-agent's stored session, shaped into the chat's own replay-log
+// entries so the webview draws it with the live renderer (ChatTranscript.svelte) instead of a
+// lookalike that drifts.
+// Uses `SessionMessage` because it's already the wire form a reloaded chat is rebuilt from
+// (chatRestore.ts -> applyToolCall/applyToolResult) — emitting anything else would be a second
+// mapper free to disagree with the first. Field readers are the live path's own
+// (acpToolContent/acpToolMeta/acpTaskMeta), not re-derived.
 import type { SubagentEntry, SubagentTranscriptResult } from '../acpExtTypes';
 import type { SessionMessage } from './sessionLog';
 import { decodeToolContent } from '../acpToolContent';
@@ -24,7 +12,18 @@ import { toolNameRider } from '../acpToolMeta';
 import { taskRiders } from '../acpTaskMeta';
 
 interface TranscriptSource {
-  getSubagentTranscript(sessionId: string, cwd?: string): Promise<SubagentTranscriptResult>;
+  getSubagentTranscript(
+    sessionId: string,
+    cwd?: string,
+    page?: { limit?: number; before?: string },
+  ): Promise<SubagentTranscriptResult>;
+}
+
+/** t-krxap7. One page of a child's transcript: how many messages, and where to
+ *  start. `before` is an opaque cursor from a previous payload's `cursor`. */
+export interface TranscriptPage {
+  limit?: number;
+  before?: string;
 }
 
 export interface SubagentTranscriptPayload {
@@ -34,6 +33,15 @@ export interface SubagentTranscriptPayload {
   truncated: boolean;
   entries: SessionMessage[];
   error?: string;
+  /** t-krxap7. Echoed back so the panel can tell which block this answers: a
+   *  reply with no `before` is the newest page (open, refresh, poll), one with a
+   *  `before` is an earlier block to PREPEND. Without the echo a reply that
+   *  crossed with another would be applied to the wrong end of the window. */
+  before?: string;
+  /** Older messages exist before this page. Always false on an unpaged read. */
+  hasMore: boolean;
+  /** The cursor for the block before this one; absent at the head. */
+  cursor?: string;
 }
 
 const NO_SESSION = 'Open a chat first — this needs a live engine connection.';
@@ -48,15 +56,8 @@ function firstPath(call: Record<string, unknown>): string | undefined {
   return typeof p === 'string' ? p : undefined;
 }
 
-/**
- * One settled `ToolCall` as the CALL/RESULT pair the card rules expect.
- *
- * The split mirrors what the live wire delivers rather than dumping the whole
- * object into both halves: the pending frame carries kind/title/rawInput, the
- * terminal frame carries the resolved title, the path, the content and the
- * output metadata. Running it through the same two functions is what makes the
- * restored card byte-identical to the live one.
- */
+/** One settled `ToolCall` as the CALL/RESULT pair the card rules expect — split to mirror what the
+ *  live wire delivers, so the restored card is byte-identical to the live one. */
 function toolEntry(entry: Extract<SubagentEntry, { type: 'tool' }>): SessionMessage {
   const call = entry.toolCall ?? {};
   const status = typeof call.status === 'string' ? call.status : 'completed';
@@ -67,22 +68,11 @@ function toolEntry(entry: Extract<SubagentEntry, { type: 'tool' }>): SessionMess
   return {
     kind: 'tool',
     text: title,
-    // 0 = UNKNOWN. The engine's TranscriptEntry carries no time, so there is
-    // nothing honest to put here.
-    //
-    // Be clear about what 0 does and does NOT buy: chatRestore.ts only
-    // overrides when truthy (`if (card && entry.timestamp)`), so the card keeps
-    // the `Date.now()` that applyToolCall stamped when it was REBUILT. The
-    // stamp is therefore still wrong — it says "just now" for a command that
-    // ran an hour ago. What stops that surfacing is the READ-ONLY gate in
-    // ToolCard, which drops the "Ns elapsed" and "running for a while" strips
-    // entirely, because both are claims about the present tense and a finished
-    // sub-agent's card has no present tense.
-    //
-    // The real fix, if a per-command duration is ever wanted here, is for the
-    // engine to carry start AND end (run-steps.ts already has a `timing()`
-    // helper reading them off the same stored messages) and for the card to
-    // show end-minus-start rather than now-minus-start.
+    // 0 = unknown; the engine's TranscriptEntry carries no timestamp. chatRestore.ts only overrides
+    // when truthy, so the card keeps its rebuild-time Date.now() stamp — still wrong, but
+    // ToolCard's read-only gate drops the "elapsed"/"running" strips entirely since a finished
+    // sub-agent's card has no present tense. A real fix would need the engine to carry start+end
+    // and the card to show end-minus-start.
     timestamp: 0,
     tool: {
       call: {
@@ -112,27 +102,26 @@ function toolEntry(entry: Extract<SubagentEntry, { type: 'tool' }>): SessionMess
   };
 }
 
-/** One projected entry as one replay-log row. A `text` entry's role picks the
- *  side of the chat it lands on; an `error` entry is the turn whose MODEL CALL
- *  failed, and it must stay visible — dropping it turns a child that died to a
- *  rate limit into one that finished and said nothing. */
+/** One projected entry as one replay-log row. An `error` entry is the turn whose model call failed
+ *  and must stay visible — dropping it turns a rate-limited child into one that finished silently.
+ */
 export function transcriptEntry(entry: SubagentEntry): SessionMessage {
   if (entry.type === 'tool') return toolEntry(entry);
   if (entry.type === 'error') {
     return { kind: 'error', text: `${entry.name}: ${entry.message}`, timestamp: 0 };
   }
+  // t-gvz8t0. `thought` is the live chat's OWN reasoning row, so ChatTranscript
+  // draws it through the same ThoughtPill the main chat uses — never as prose,
+  // and never as the child's reply.
+  if (entry.type === 'reasoning') return { kind: 'thought', text: entry.text, timestamp: 0 };
   return { kind: entry.role === 'user' ? 'user' : 'agent', text: entry.text, timestamp: 0 };
 }
 
 /**
- * A child's transcript, ready to post to the webview.
- *
- * A read FAILURE and a child that is GONE are different results on purpose.
- * `found: false` is the engine's own answer for a session it cannot read, and
- * the panel draws "no transcript" for it. `error` is set only when the call
- * itself failed — no engine, no connection — which is a condition the user can
- * act on. Collapsing the two would tell someone to reconnect when the real
- * answer is that the child was cleaned up an hour ago.
+ * A child's transcript, ready to post to the webview. A read FAILURE and a
+ * child that is GONE are different on purpose: `found:false` means the
+ * engine cannot read it (draws "no transcript"); `error` means the call
+ * itself failed (no engine/connection), which the user can act on.
  */
 export async function subagentTranscriptPayload(
   client: TranscriptSource | null | undefined,
@@ -140,12 +129,23 @@ export async function subagentTranscriptPayload(
   /** The child's own directory. Blank = let the engine resolve it, the same
    *  contract runStepsPayload documents for a run. */
   cwd = '',
+  /** Absent, or a zero/negative limit, means the whole transcript — the read the
+   *  sub-agent todo scan still makes. */
+  page?: TranscriptPage,
 ): Promise<SubagentTranscriptPayload> {
-  const empty = { sessionId, found: false, running: false, truncated: false, entries: [] };
+  const empty = {
+    sessionId,
+    found: false,
+    running: false,
+    truncated: false,
+    entries: [],
+    hasMore: false,
+    ...(page?.before ? { before: page.before } : {}),
+  };
   if (!sessionId) return { ...empty, error: 'No sub-agent was selected.' };
   if (!client) return { ...empty, error: NO_SESSION };
   try {
-    const res = await client.getSubagentTranscript(sessionId, cwd || undefined);
+    const res = await client.getSubagentTranscript(sessionId, cwd || undefined, page);
     const entries = Array.isArray(res?.entries) ? res.entries : [];
     return {
       sessionId,
@@ -153,6 +153,12 @@ export async function subagentTranscriptPayload(
       running: res?.running === true,
       truncated: res?.truncated === true,
       entries: entries.map(transcriptEntry),
+      // A cursor is what makes another page REACHABLE, so "more exists" without
+      // one is reported as the head: offering a button that cannot fetch is worse
+      // than stopping one block early.
+      hasMore: res?.hasMore === true && typeof res.cursor === 'string' && res.cursor.length > 0,
+      ...(typeof res?.cursor === 'string' && res.cursor ? { cursor: res.cursor } : {}),
+      ...(page?.before ? { before: page.before } : {}),
     };
   } catch (e) {
     return { ...empty, error: message(e) };

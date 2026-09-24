@@ -1,17 +1,8 @@
-// launchdBackend.ts — the macOS SchedulerBackend: user LaunchAgents driven
-// through `launchctl`, the counterpart of schedulerBackend.ts's windowsBackend.
-//
-// A job is a plist in ~/Library/LaunchAgents/<label>.plist bootstrapped into
-// the user's gui domain. launchctl is invoked through execFile with an ARGUMENT
-// ARRAY and no shell — the same no-second-quoting rule the schtasks side lives
-// by. `run` and the plist directory are injectable so tests drive the full
-// register/unregister/query logic against a fake launchctl and a temp dir;
-// only the extension host ever constructs the real thing.
-//
-// The half-registration covenant holds here too: register writes the plist
-// FIRST and deletes it again if bootstrap fails, so a cron either exists in
-// both places (file + launchd) or in neither — never a plist launchd has never
-// heard of, which reconcile would report as drift forever.
+// launchdBackend.ts — the macOS SchedulerBackend: user LaunchAgents driven through `launchctl`, the
+// counterpart of schedulerBackend.ts's windowsBackend.
+// Register writes the plist first and deletes it again if bootstrap fails, so a cron either exists
+// in both places or in neither — never a plist launchd has never heard of, which reconcile would
+// report as drift forever.
 
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';

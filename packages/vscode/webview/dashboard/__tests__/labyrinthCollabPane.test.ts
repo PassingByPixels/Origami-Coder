@@ -128,7 +128,13 @@ describe('LabyrinthPane — a collab map says WHO ran on each lane', () => {
     expect(tags).toEqual(['TOOLS', 'MAIN', 'heron', 'ibis', 'crane']);
   });
 
-  it('an ORDINARY run still says DELEGATION / SUB-AGENT — nothing about it changed', async () => {
+  // A COLLAB map keeps the swimlane strip because its members are parallel ROOT
+  // sessions nobody delegated to — it has no main agent and no sub-agent band,
+  // which are the two things the analytics layout is built around. An ordinary
+  // run takes the analytics view instead. This pins that ROUTING rule: the
+  // member lanes must stay a collab shape and never leak into an ordinary run,
+  // which is what this test has always been for.
+  it('an ORDINARY run gets the ANALYTICS view — member lanes are a COLLAB shape only', async () => {
     const { container } = await pick(1);
     send({
       type: 'runStepsData', sessionId: 'ses_plain', truncated: false, total: 2,
@@ -140,8 +146,11 @@ describe('LabyrinthPane — a collab map says WHO ran on each lane', () => {
     await tick();
     await fireEvent.click([...container.querySelectorAll('.lab-mode')].find((b) => b.textContent === 'Flight')!);
     await tick();
-    const tags = [...container.querySelectorAll('.lane-tag')].map((t) => flat(t.textContent));
-    expect(tags).toContain('DELEGATION');
+    // No roster, so no member lane tags at all...
+    expect(container.querySelectorAll('.lane-tag')).toHaveLength(0);
+    // ...and the delegate is a row in the sub-agent band, under its own name.
+    expect([...container.querySelectorAll('.fl-agent-label')].map((t) => flat(t.textContent))).toEqual(['task']);
+    expect(flat(container.querySelector('.fl-gap-label')!.textContent)).toContain('1 delegated');
   });
 });
 

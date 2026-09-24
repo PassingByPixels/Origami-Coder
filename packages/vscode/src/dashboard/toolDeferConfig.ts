@@ -1,30 +1,17 @@
-// The tool state control's write target in the GLOBAL origami.json. Extracted
-// out of toolsPane.ts (t-kgtaac round 3) to keep that file under its cap — a
-// self-contained read/merge/write unit, the same shape as firstFold.ts's
-// writeModelConfig / writeAgentFrequencyPenalty / writeModelVision.
-//
-// THE STATE IS THREE-WAY AND SPANS TWO KEYS, deliberately: loaded/deferred ->
-// `experimental.tool_search.{always,defer}`, off -> `tools: { <id>: false }`.
-// They are not one key because they are not one question — tool_search decides
-// how a tool is PRESENTED (full schema, or a catalog line), `tools` decides
-// whether it exists for the model at all. An off tool is dropped before the
-// presentation question is asked (engine/src/session/tools.ts), so folding off
-// in as a third tool_search value would hide a capability switch in a cost setting.
-//
-// Pure Node I/O: no `vscode` import, so it needs no VS Code host to unit test.
-// `toolsPane.ts` is the only caller.
+// The tool state control's write target in the global origami.json. Extracted out of toolsPane.ts
+// to keep it under its cap — a self-contained read/merge/write unit like firstFold.ts's other
+// config writers.
+// State is three-way and spans two keys deliberately: loaded/deferred ->
+// `experimental.tool_search.{always,defer}`, off -> `tools: { <id>: false }`. They're not one key
+// because tool_search decides how a tool is PRESENTED while `tools` decides whether it exists at
+// all — folding off into tool_search would hide a capability switch in a cost setting.
+// Pure Node I/O, no vscode import.
 
 import { globalConfigPath, readConfigForWrite, saveConfig } from './globalConfig';
 
-/** The GLOBAL origami.json — same file and same target as the other config
- *  writers in this extension. `experimental.tool_search` is a
- *  workspace-agnostic "how I want the agent to work" setting, same category
- *  as those.
- *
- *  Re-exported rather than re-derived: this file used to hold its own
- *  `path.join(os.homedir(), '.config', ...)` copy, which ignored
- *  XDG_CONFIG_HOME and so wrote a file the engine never read (connections
- *  review finding 5). globalConfig.ts is now the single resolution. */
+/** The global origami.json — same file and target as the other config writers. Re-exported from
+ *  globalConfig.ts, the single resolution (this file used to hold its own path.join copy that
+ *  ignored XDG_CONFIG_HOME and wrote a file the engine never read). */
 export { globalConfigPath };
 
 function asObj(v: unknown): Record<string, unknown> {
@@ -38,19 +25,12 @@ function asStrArr(v: unknown): string[] {
 export type ToolState = 'loaded' | 'deferred' | 'off';
 
 /**
- * Set one tool's state in the global origami.json.
- *
- * EVERY WRITE CLEARS ALL THREE PLACES FIRST, then sets exactly the one the new
- * state needs, so the file can never say two things about one tool — which
- * would show up as a control that will not move. `off` leaves the tool out of
- * BOTH tool_search lists on purpose: a stale `always` would silently pick the
- * next state for the user when they switch it back on. Backs up before writing
- * and throws on corrupt JSON rather than clobbering it — the same safety shape
- * as writeAgentFrequencyPenalty in firstFold.ts.
- *
- * The engine caches config per-instance (config/config.ts's `InstanceState`
- * has no file watcher), so this takes effect on the NEXT engine spawn, not
- * this one — the caller is responsible for saying "reload the window".
+ * Set one tool's state in the global origami.json. Every write clears all
+ * three places first, then sets exactly the one the new state needs, so the
+ * file can never say two things about one tool. `off` clears both tool_search
+ * lists too — a stale `always` would silently pick the next state when the
+ * tool is re-enabled. Takes effect on the NEXT engine spawn; the caller says
+ * "reload the window".
  */
 export function writeToolState(id: string, state: ToolState): string {
   const cfgPath = globalConfigPath();
@@ -66,9 +46,8 @@ export function writeToolState(id: string, state: ToolState): string {
   experimental['tool_search'] = toolSearch;
   cfg['experimental'] = experimental;
 
-  // ON is the ABSENCE of a key, not `true`: an explicit `true` is indistinguishable
-  // from the default to a reader, and leaves a record of every tool anyone ever
-  // toggled cluttering a file people hand-edit.
+  // ON is the absence of a key, not `true` — an explicit true is indistinguishable from default and
+  // clutters a file people hand-edit.
   const tools = asObj(cfg['tools']);
   delete tools[id];
   if (state === 'off') tools[id] = false;
@@ -79,13 +58,9 @@ export function writeToolState(id: string, state: ToolState): string {
   return cfgPath;
 }
 
-/** After writeToolState succeeds, the re-read catalog still carries the
- *  RUNNING engine's CACHED verdict for `id` (see the note above — it needs a
- *  reload) — patch the one entry we just confirmed on disk so the control
- *  shows the pending truth instead of silently springing back. Both fields are
- *  written, never one: leaving the old `deferred` in place beside a new
- *  `disabled` is exactly the two-things-at-once state the writer above works
- *  to keep out of the file. */
+/** After writeToolState succeeds, patch the just-confirmed entry into the re-read catalog — the
+ *  running engine's CACHED verdict still needs a reload. Both fields are written together, never
+ *  one, to avoid the same two-things-at-once state the writer above guards against. */
 export function patchToolStatePayload(payload: Record<string, unknown>, id: string, state: ToolState): Record<string, unknown> {
   const tools = payload['tools'];
   if (!Array.isArray(tools)) return payload;

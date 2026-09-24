@@ -1,35 +1,17 @@
-// Chat slash-command helpers + the shared shell-gate runner. These pieces are
-// independent of the (removed) contract-verify agent type that used to live
-// beside them, and stay in use -
-//   - runGate: run a shell command in a cwd, resolve pass/fail + output (the
-//     worktree setup-script path uses it),
-//   - the /loop scheduler helpers (parse/format an interval, the scheduled-run
-//     prompt, the permanent-done token),
-//   - the /compose coach prompt,
-//   - agentBoundary / collectAgentTextSince: capture one turn's model text off a
-//     session's message log (the /loop scheduler reads a run's reply this way).
-// All PURE + testable; the only side-effecting piece is runGate's subprocess.
+// Chat slash-command helpers + the shared shell-gate runner: runGate (shell
+// command in a cwd), /loop scheduler helpers, the /compose coach prompt, and
+// agentBoundary/collectAgentTextSince (capture one turn's model text off a
+// session's log). All pure and testable except runGate's subprocess.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 
 const GATE_TIMEOUT_MS = 60_000;
 const GATE_OUTPUT_CAP = 4000;
 
-// A gate is BROKEN when its COMMAND could not run on this platform (a bash
-// builtin like `test`/`grep` under cmd.exe) - distinct from a command that RAN
-// and exited non-zero. Classify from the run's ACTUAL failure shape, NEVER a
-// blanket scan of stdout+stderr: a command that ran and failed routinely prints
-// its own "ENOENT"/"command not found" text (a missing config file, a failed
-// child spawn like `spawn geckodriver ENOENT`, a hand-rolled diagnostic), and
-// keying on that text mislabels a FIXABLE failure as a platform-broken gate and
-// aborts the fix loop. What is authoritative per platform:
-//   - spawnFailed: the shell (cmd.exe / sh) itself could not be launched.
-//   - win32: cmd.exe prints the effectively-unforgeable "is not recognized as an
-//     internal or external command" for a missing command but exits 1 - the SAME
-//     exit code as an ordinary failure (verified) - so this exact text is the
-//     only signal, and a bare ENOENT/`command not found` from app output is not.
-//   - POSIX: /bin/sh exits EXACTLY 127 for command-not-found (an ordinary failure
-//     exits 1/2/...), so the exit code is authoritative and app text is ignored.
+// A gate is BROKEN when its command couldn't run on this platform, distinct
+// from a command that ran and failed. Classified from the run's real shape,
+// never a text scan: on win32, cmd.exe's unforgeable "is not recognized..."
+// text; on POSIX, exit code exactly 127.
 const WIN_NOT_FOUND_RE = /is not recognized as an internal or external command/i;
 const SH_COMMAND_NOT_FOUND = 127;
 
@@ -46,10 +28,8 @@ export function classifyBrokenGate(
   return r.code === SH_COMMAND_NOT_FOUND;
 }
 
-/** Kill the whole process tree of a shell:true gate. `child.kill()` alone only
- *  reaps the shell (cmd.exe / sh); the grandchild that does the real work is
- *  orphaned. On Windows use taskkill /T; on POSIX the child is a group leader
- *  (spawned detached) so a negative-pid signal takes down the group. */
+/** Kill the whole process tree of a shell:true gate — `child.kill()` alone
+ *  only reaps the shell, orphaning the real work. */
 function killGateTree(child: ChildProcess): void {
   if (!child.pid) return;
   if (process.platform === 'win32') {
@@ -72,9 +52,8 @@ export interface GateRun {
 }
 
 /**
- * Run a shell command in `cwd` and resolve (never reject) with pass/fail +
- * captured output + the REAL failure shape (exit code / spawn failure). Used by
- * the worktree setup-script path. `shell:true` runs the command string as given.
+ * Run a shell command in `cwd` and resolve (never reject) with pass/fail,
+ * output, and the real failure shape. Used by the worktree setup-script path.
  */
 export function runGate(command: string, cwd: string, timeoutMs = GATE_TIMEOUT_MS): Promise<GateRun> {
   return new Promise((resolve) => {
@@ -88,9 +67,8 @@ export function runGate(command: string, cwd: string, timeoutMs = GATE_TIMEOUT_M
       return { passed, output: p.output, timedOut: p.timedOut, code: p.code, spawnFailed: p.spawnFailed,
         brokenGate: classifyBrokenGate({ passed, code: p.code, output: p.output, spawnFailed: p.spawnFailed }) };
     };
-    // Resolve exactly once. On timeout we resolve HERE rather than waiting for
-    // `close` - with shell:true the killed shell's grandchild can hold the stdio
-    // pipes open, so `close` may lag well past the deadline (or never fire).
+        // Resolve exactly once, on timeout, rather than waiting for `close` —
+        // a killed shell's grandchild can hold stdio pipes open past the deadline.
     const finish = (p: { output: string; timedOut: boolean; code: number | null; spawnFailed: boolean }) => {
       if (settled) return;
       settled = true;
@@ -120,14 +98,8 @@ export function runGate(command: string, cwd: string, timeoutMs = GATE_TIMEOUT_M
 
 // --- Loop mode (/loop) — a time-interval SCHEDULER --------------------------
 //
-// Claude-faithful: `/loop <interval> <prompt>` re-runs a prompt ON A TIMER (NOT
-// until a condition). For recurring maintenance that never "completes": watch
-// CI, triage a backlog, shepherd PRs. It runs until the user stops it, or a run
-// reports the task is PERMANENTLY done (LOOP-DONE). The schedule is persisted
-// (agentManager/loopPersistence.ts, keyed by the engine session id) so it
-// survives a window reload: DashboardPanel re-arms it once its session is
-// restored, scheduling the next run a full interval out rather than firing
-// immediately.
+// Re-runs a prompt on a timer until the user stops it or a run reports
+// LOOP-DONE. Persisted so it survives a window reload.
 
 export const LOOP_DONE_TOKEN = 'LOOP-DONE';
 
@@ -205,10 +177,7 @@ export function parseLoopDone(text: string): boolean {
 }
 
 // --- Compose coach (/compose) -----------------------------------------------
-//
-// Helps the user shape a /loop (recurring maintenance, no clean done) - or tells
-// them it is neither (a one-shot prompt, or too vague to act on) - and drafts a
-// ready-to-paste command. Prompt-only; runs as one guided turn.
+// Helps shape a /loop, or says it's a one-shot prompt instead, and drafts a ready-to-paste command.
 
 export function buildComposePrompt(description: string): string {
   const task = (description || '').trim();
@@ -247,14 +216,9 @@ export function buildComposePrompt(description: string): string {
 }
 
 // --- Capturing one turn's agent text off the message log --------------------
-//
-// The shell reads a turn's model text from session.messageLog, where the ACP
-// handler APPENDS an agent chunk onto the previous entry when it is already
-// kind:'agent'. So a turn that follows a work turn (which usually ends on agent
-// text) does NOT create a new entry - its text merges into the trailing one. A
-// plain "entries added since length N" read therefore misses the whole turn.
-// Snapshot the boundary BEFORE the turn (length + trailing agent entry's text
-// length), then collect the appended tail PLUS any genuinely new agent entries.
+// A turn that follows a work turn merges into the trailing log entry rather
+// than creating a new one, so a length-since-N read alone would miss it;
+// this snapshots the boundary first, then collects the appended tail.
 
 export interface LogEntry { kind: string; text: string }
 export interface TextBoundary { len: number; tailIdx: number; tailLen: number }

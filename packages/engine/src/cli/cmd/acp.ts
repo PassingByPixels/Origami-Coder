@@ -41,6 +41,15 @@ export const AcpCommand = effectCmd({
     const broker = AgentBroker.start({ httpBase: `http://${server.hostname}:${server.port}`, cwd: args.cwd })
     // origami_change-end
 
+    // The flock's relay sockets, held for the life of this engine. It is idle
+    // unless this box has a `flock.json` with friends in it AND a Front Desk
+    // model set, and `ORIGAMI_DISABLE_FLOCK=1` turns it off outright.
+    // The same loopback base the broker publishes: the engine that wins the
+    // flock lease records it there, so a second window's engine can forward its
+    // questions to this one over `POST /flock/ask`.
+    const { FlockBoot } = yield* Effect.promise(() => import("@/flock/boot"))
+    const flock = FlockBoot.start({ cwd: args.cwd, httpBase: `http://${server.hostname}:${server.port}` })
+
     const input = new WritableStream<Uint8Array>({
       write(chunk) {
         return new Promise<void>((resolve, reject) => {
@@ -83,6 +92,7 @@ export const AcpCommand = effectCmd({
     )
     // origami_change (t-kgu05m): drop the heartbeat on a clean exit. An unclean
     // one leaves the file behind, which is why readers age entries out.
+    flock.stop()
     yield* Effect.promise(() => broker.stop())
   }),
 })

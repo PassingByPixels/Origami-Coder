@@ -1,3 +1,4 @@
+import { cachedInvalidateForever } from "@origami/core/effect/cached"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { Config } from "@/config/config"
 import { SessionV1 } from "@origami/core/v1/session"
@@ -7,7 +8,26 @@ import { Context, Effect, Layer, Schema } from "effect"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-const MAX_BASE64_BYTES = 5 * 1024 * 1024
+/**
+ * How large a picture may be, as base64, once the resizer has finished with it.
+ *
+ * t-4aqhjb, measured. This was 5 MB, and on 2026-09-09 a `read` of a 9.2 MB
+ * screenshot came out at 3.75 MB — legal here, and refused by the ChatGPT
+ * backend. Every later step of that sub-agent replayed the same bytes and died
+ * the same way, nine turns running, because the recent-image window bounds how
+ * MANY pictures a request carries and never how big they are.
+ *
+ * 2 MB matches `MAX_IMAGE_BASE64_BYTES` in
+ * `packages/llm/src/protocols/openai-responses.ts`, so the resizer's ceiling
+ * and the wire's ceiling are the same number: a picture that gets this far is
+ * one the provider will accept. It is a floor, not a vendor limit — override
+ * it with `attachment.image.max_base64_bytes` in the config.
+ *
+ * Note this is a RESIZE target, not a refusal: a bigger picture is scaled and
+ * re-encoded until it fits, and only a picture that cannot be brought under it
+ * at any size is refused.
+ */
+const MAX_BASE64_BYTES = 2 * 1024 * 1024
 const MAX_WIDTH = 2000
 const MAX_HEIGHT = 2000
 const AUTO_RESIZE = true
@@ -44,14 +64,24 @@ export class SizeError extends Schema.TaggedErrorClass<SizeError>()("ImageSizeEr
   max_height: Schema.Number,
 }) {
   override get message() {
-    return `Image ${this.width}x${this.height} with base64 size ${this.bytes} exceeds configured limits and could not be resized below ${this.max_width}x${this.max_height}/${this.max} bytes`
+    return `Image ${this.width}x${this.height} is ${megabytes(this.bytes)} as base64 and could not be resized below ${this.max_width}x${this.max_height} / ${megabytes(this.max)}`
   }
 }
+
+/** Sizes in the text a MODEL reads have to be numbers it can act on. */
+export const megabytes = (bytes: number) =>
+  bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 
 export type Error = ResizerUnavailableError | InvalidDataUrlError | DecodeError | SizeError
 
 export interface Interface {
   readonly normalize: (input: SessionV1.FilePart) => Effect.Effect<SessionV1.FilePart, Error>
+  /**
+   * The resize target in force, after any config override. Exposed so the note
+   * a caller writes when a picture was refused can name the real limit rather
+   * than say "the image size limit" and leave the model guessing.
+   */
+  readonly maxBase64Bytes: Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@origami/Image") {}
@@ -60,7 +90,9 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const loadPhoton = yield* Effect.cached(
+    // Not a bare `Effect.cached`: a turn cancelled during the first load must
+    // not leave its interrupt as the loader for the process (t-tc1tnk).
+    const [loadPhoton] = yield* cachedInvalidateForever(
       Effect.sync(() => {
         // Patched photon-node reads this during module init so Bun compiled binaries use the embedded wasm path.
         ;(globalThis as typeof globalThis & { __ORIGAMI_PHOTON_WASM_PATH?: string }).__ORIGAMI_PHOTON_WASM_PATH =
@@ -163,7 +195,11 @@ const layer = Layer.effect(
       }
     })
 
-    return Service.of({ normalize })
+    const maxBase64Bytes = Effect.gen(function* () {
+      return (yield* config.get()).attachment?.image?.max_base64_bytes ?? MAX_BASE64_BYTES
+    })
+
+    return Service.of({ normalize, maxBase64Bytes })
   }),
 )
 

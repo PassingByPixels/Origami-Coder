@@ -1,16 +1,7 @@
-// The `collab_*` host leaf — the six Collabs ext-methods, wrapped in the shape
-// boardData.ts/promptCapture.ts already established (no-session guard, a throw
-// turned into an `error` FIELD rather than a rejected promise, and a defensive
-// read of a reply that crossed a JSON-RPC wire).
-//
-// Its own module, not a method on AcpClient: that file is at 1348/1350 lines
-// and the ratchet's remedy is a new module, never a raised cap. So every call
-// here goes through the GENERIC `extMethod` seam instead of a typed wrapper —
-// which is also why `CollabSource` is one method wide and a test can fake it
-// with an object literal.
-//
-// No `vscode` import, so every decision below is exercised without an
-// extension host.
+// The `collab_*` host leaf — the six Collabs ext-methods, wrapped in the
+// shape boardData.ts/promptCapture.ts already established (no-session guard,
+// an `error` field rather than a rejected promise, a defensive wire read).
+// Every call goes through the generic `extMethod` seam, not a typed wrapper.
 import { collabNeedsUser } from './collabAttention';
 import type {
   CollabAgentInfo,
@@ -45,12 +36,9 @@ export type {
 };
 
 const NO_SESSION = 'Open a chat first — this needs a live engine connection.';
-// `@agentclientprotocol/sdk` wraps EVERY thrown-not-`RequestError` exception
-// in this label (`RequestError.internalError` / `.invalidParams` / …), which
-// is why a collab REFUSAL used to reach the user as "Internal error: parallel
-// turns need every member to be read-only for files…" — a refusal painted as
-// a bug. STRIPPED below; a BARE label (nothing else known) is left as-is —
-// that IS a genuinely unexpected failure, and must keep saying so.
+// The SDK wraps every thrown-not-RequestError exception in an "Internal
+// error: " (etc.) label, which painted a collab refusal as a bug. Stripped
+// below; a bare label with nothing else known is left as-is.
 const RPC_LABEL = /^(?:Internal error|Invalid params|Invalid request|Parse error|Authentication required): /;
 /** Every ext-method failure that crossed the wire, read honestly: a typed
  *  `data.reason` (a refusal MAY arrive that way instead) wins when present;
@@ -62,13 +50,11 @@ export const message = (e: unknown): string => {
   return typeof reason === 'string' && reason ? reason : e.message.replace(RPC_LABEL, '');
 };
 const array = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
-/** `cwd` is omitted rather than sent blank when there is none — the engine
- *  resolves its own directory in that case, and an empty string would be a
- *  path, not a "you decide". Mirrors boardData's runStepsPayload. */
+/** `cwd` is omitted rather than sent blank — the engine resolves its own
+ *  directory in that case. */
 const at = (cwd?: string): Record<string, unknown> => (cwd ? { cwd } : {});
 
-/** The collab-capable agent defs the engine can see. An EMPTY list is a valid
- *  answer (no def carries `collab: true` yet) and must not read as an error. */
+/** The collab-capable agent defs the engine can see. An empty list is valid. */
 export async function collabAgents(
   client: CollabSource | null | undefined,
   cwd?: string,
@@ -122,7 +108,7 @@ export async function collabCreate(
   }
 }
 
-/** Post a HUMAN message; the engine fans it out per C17 (the `mentions` when there are any, the lead when there are none — an unknown slug is ITS to refuse). The field is OMITTED when empty, so an unaddressed post keeps today's exact wire shape. `images` (bare `data:` URLs) rides the same rule; the engine owns the count/size limits and names the one it refuses on. */
+/** Post a HUMAN message; the engine fans out to mentions, or the lead when there are none. */
 export async function collabPost(
   client: CollabSource | null | undefined,
   collabId: string,
@@ -146,12 +132,9 @@ export async function collabPost(
 }
 
 /**
- * The collab's live state. `sinceSeq` asks for only what is NEW; absent (or 0)
- * asks for everything.
- *
- * `suspended` is read as a strict `=== true`: a build that does not send the
- * field must render as RUNNING, not as paused — telling a user their collab is
- * waiting on them when it is not would freeze a working stream behind a banner.
+ * The collab's live state. `sinceSeq` asks for only what is new. `suspended`
+ * is read as strict `=== true` — a build that omits the field must render as
+ * running, not paused, or a working stream would look frozen.
  */
 export async function collabState(
   client: CollabSource | null | undefined,
@@ -187,22 +170,17 @@ export async function collabState(
       ...(Array.isArray(res?.costTotals) ? { costTotals: res.costTotals } : {}),
       ...(res?.hopState && typeof res.hopState === 'object' ? { hopState: res.hopState } : {}),
     };
-    // Answered ONCE, off the payload as it now stands, because this function is
-    // the single builder of every `collabStateData` (the room's own poll and
-    // collabWatch's background poll both land here). The rule itself stays in
-    // collabAttention.ts — this only carries its verdict to the surfaces that
-    // cannot import it. See CollabStatePayload.needsUser.
+        // Answered once, off the payload as it stands — the single builder of
+        // every `collabStateData`. The rule itself lives in collabAttention.ts.
     return { ...payload, needsUser: collabNeedsUser(payload) };
   } catch (e) {
     return { ...empty, error: message(e) };
   }
 }
 
-/** ONE body for every ack-only mutation. Guards in a fixed order (no collab
- *  beats no engine), and the reply is DISCARDED on purpose: `{ok:true}` is the
- *  only success the wire defines, so reading it back could only restate the
- *  absence of a throw. Nothing local is spliced either — the caller re-polls,
- *  and the engine stays the single source of what a collab now looks like. */
+/** ONE body for every ack-only mutation. The reply is discarded — `{ok:true}`
+ *  is the only success the wire defines. Nothing local is spliced; the
+ *  caller re-polls the engine's own view. */
 async function collabOk(
   client: CollabSource | null | undefined,
   method: string,
@@ -220,28 +198,19 @@ async function collabOk(
   }
 }
 
-/** Set the loop breaker. `null` restores the engine default, `0` turns it OFF
- *  (overnight mode). Passed through UNCOALESCED — see CollabSummary. */
+/** Set the loop breaker. `null` restores the default, `0` turns it off (overnight mode). */
 export const collabSetCap = (client: CollabSource | null | undefined, collabId: string, cap: number | null, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_set_cap', collabId, { cap }, cwd);
-/** Set the room's dispatch width. 1 is serial. Raising it is REFUSED by the
- *  engine unless every member is read-only for files, and that refusal arrives
- *  as `ok: false` with the reason — never swallowed, because the setting the
- *  user just chose did not take. */
+/** Set the room's dispatch width. 1 is serial. Raising it is refused by the
+ *  engine unless every member is read-only for files. */
 export const collabSetConcurrency = (client: CollabSource | null | undefined, collabId: string, concurrency: number, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_set_concurrency', collabId, { concurrency }, cwd);
-/** Turn a room into a COUNCIL, or back into a discuss room. Never refused on
- *  permissions: the engine seals a council's round turns read-only per turn
- *  (COUNCIL_SEAL) instead of gating the flip. The only refusal left is an
- *  unknown flavor, and it still arrives as `ok: false` with the reason. */
+/** Turn a room into a COUNCIL, or back. The engine seals a council's round
+ *  turns read-only per turn instead of gating the flip. */
 export const collabSetFlavor = (client: CollabSource | null | undefined, collabId: string, flavor: string, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_set_flavor', collabId, { flavor }, cwd);
-/** Archive a collab. It stays LISTABLE (with `archivedAt` set) — this is a
- *  close, not a delete, and a list that quietly lost a row would be a lie. */
+/** Archive a collab. It stays listable (`archivedAt` set) — a close, not a delete. */
 export const collabArchive = (client: CollabSource | null | undefined, collabId: string, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_archive', collabId, {}, cwd);
-/** Retitle a collab. An empty title is the ENGINE's to refuse, not this leaf's:
- *  inventing a client-side rule here would let the two disagree. */
+/** Retitle a collab. An empty title is the engine's to refuse. */
 export const collabRename = (client: CollabSource | null | undefined, collabId: string, title: string, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_rename', collabId, { title }, cwd);
-/** Add an agent to the roster. Re-adding a soft-removed slug REVIVES it (the
- *  engine clears `removedAt`) rather than creating a second entry. */
+/** Add an agent to the roster. Re-adding a soft-removed slug revives it. */
 export const collabAddParticipant = (client: CollabSource | null | undefined, collabId: string, agentSlug: string, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_add_participant', collabId, { agentSlug }, cwd);
-/** Remove an agent — a SOFT delete. The participant keeps its place in the
- *  roster with `removedAt` set, so its past messages stay attributable. */
+/** Remove an agent — a soft delete; past messages stay attributable. */
 export const collabRemoveParticipant = (client: CollabSource | null | undefined, collabId: string, agentSlug: string, cwd?: string): Promise<CollabOkPayload> => collabOk(client, 'collab_remove_participant', collabId, { agentSlug }, cwd);

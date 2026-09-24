@@ -1,21 +1,10 @@
-// The `requestHistory` → `historyList` projection: engine session rows in, the
-// rows the chat-history dropdown and the Labyrinth run index draw out. Lifted
-// out of DashboardPanel.ts (which sits on its architecture cap) so the drop
-// rules are testable without an extension host — same reason runStats.ts and
-// boardData.ts are their own leaves. No `vscode` import.
+// The requestHistory -> historyList projection: engine session rows in, rows the chat-history
+// dropdown and Labyrinth run index draw out. Lifted out of DashboardPanel.ts so the drop rules are
+// testable without an extension host.
 //
-// WHAT IS DROPPED, and what is deliberately NOT. A session the engine lists is
-// history; the ONLY rows this removes are turnless placeholders — the
-// "New session - <ISO>" row the engine persists for every new chat, which a
-// real turn renames. An unrenamed one never had input, so it is accidental-New-
-// chat noise rather than a chat anyone could want back.
-//
-// The session the caller currently has OPEN is NOT dropped. It used to be, and
-// that was the whole defect: `listSessions` returned it, the engine's own
-// `session list` returned it, and the run index still had no row for it — a
-// live chat looked deleted. It is marked `current` instead, so a surface that
-// wants to style it (or skip offering a recall that would be a no-op) can
-// decide for itself, and a surface that just lists runs shows all of them.
+// Only turnless placeholder rows are dropped ("New session - <ISO>", unrenamed by a real turn). The
+// session the caller currently has OPEN is never dropped — it used to be, which made a live chat
+// look deleted — it is marked `current` instead so a surface can style or skip it.
 import * as path from 'path';
 import type { CollabMark } from './collabSteps';
 
@@ -33,25 +22,22 @@ export interface HistoryRow extends Partial<CollabMark> {
   title: string;
   /** Basename of `cwd` — the short label a row shows. */
   folder: string;
-  /** FULL cwd as well as the basename: `listSessions` falls back to listing
-   *  EVERY workspace's sessions when the cwd-scoped query comes back empty, so
-   *  a listed run may not belong to this folder. Labyrinth passes this back on
-   *  `run_steps`; without it the engine resolves the run against its own
-   *  process cwd and finds nothing. */
+  /** FULL cwd as well as the basename: `listSessions` falls back to listing every workspace's
+   *  sessions when the cwd-scoped query is empty, so a listed run may not belong to this folder.
+   *  Labyrinth needs this on `run_steps` or the engine resolves against its own process cwd and
+   *  finds nothing. */
   cwd: string;
   updatedAt: string;
   /** True for the chat the answering client has open right now. */
   current: boolean;
+  /** WHICH history. 'claude' rows come from claudeHistory.ts; both arrive on one `historyList`. */
+  kind: 'origami';
 }
 
 /**
- * The tab already showing this engine session, if one is.
- *
- * The open chat is in the history list now — it IS history, and hiding it was
- * the defect. That makes it recallable, and recalling a chat that is already
- * open has to focus its tab rather than build a second one bound to the same
- * engine session. Keyed on the engine's session id, which is what a history
- * row carries; the returned key is the LOCAL tab id.
+ * The tab already showing this engine session, if one is. The open chat is now IN the history list,
+ *  so recalling it must focus its existing tab rather than build a second one bound to the same
+ *  engine session. Keyed on the engine's session id; returns the local tab id.
  */
 export function openTabFor(
   tabs: Iterable<[string, { client?: { currentSessionId: string | null } | null }]>,
@@ -65,9 +51,8 @@ export function openTabFor(
 }
 
 /**
- * A row that never carried a turn. Blank counts: the engine's live-session
- * entries cross the wire without a title, and an untitled row has no chat to
- * show. `New session - <ISO>` is the engine's own placeholder title.
+ * A row that never carried a turn — the engine's live-session entries cross the wire with no title,
+ *  and `New session - <ISO>` is its own placeholder title.
  */
 export function isTurnless(title: string): boolean {
   const s = (title ?? '').trim();
@@ -75,11 +60,9 @@ export function isTurnless(title: string): boolean {
 }
 
 /**
- * Project engine session rows into history rows: turnless ones removed,
- * duplicates collapsed by id, collab labels applied where they exist.
- *
- * `currentSessionId` only MARKS a row. Passing it never removes anything —
- * the run index has to be able to show the run you are sitting in.
+ * Project engine session rows into history rows: turnless ones removed, duplicates collapsed by id,
+ *  collab labels applied. `currentSessionId` only MARKS a row — passing it never removes anything,
+ *  since the run index must still show the run you are sitting in.
  */
 export function historyRows(
   sessions: readonly HistorySession[],
@@ -99,7 +82,7 @@ export function historyRows(
       folder: s.cwd ? path.basename(s.cwd) : '',
       cwd: s.cwd || '',
       updatedAt: s.updatedAt || '',
-      current: sessionId === currentSessionId,
+      current: sessionId === currentSessionId, kind: 'origami',
       ...(marks.get(sessionId) ?? {}),
     });
   }

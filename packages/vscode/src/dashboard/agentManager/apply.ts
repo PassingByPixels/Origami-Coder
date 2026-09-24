@@ -1,14 +1,7 @@
-// Agent Manager - apply.ts (S4): the "Apply to main" promotion flow behind a
-// Done card's diff view. A git worktree shares the main repo's object database,
-// so a patch built from the worktree (baseSha..WORKING-TREE, uncommitted edits
-// AND new untracked files - marked intent-to-add first, matching the board badge)
-// can be `git apply --3way`'d straight into
-// the main repo's WORKING TREE. This NEVER commits and NEVER stages: it patches
-// the tree only (Kilo semantics - the user reviews + commits in their own tree).
-// Preflight (`--check`) leaves the tree untouched on refusal; a forced apply on
-// a real 3-way conflict leaves conflict markers for the user to resolve. Pure
-// git ops (arg-array runGit, no shell) + a thin ApplyController the manager routes
-// am* messages to. Deliberately vscode-free so it unit-tests on a real fixture.
+// Apply-to-main: patch the worktree's uncommitted + untracked changes into the main repo's
+// WORKING TREE via `git apply --3way`. Never commits or stages — the user reviews and commits
+// in their own tree. Preflight (--check) leaves the tree untouched on refusal; a forced apply
+// on a real conflict leaves markers for the user.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -17,22 +10,16 @@ import { runGit, runGitStdout, runGitStdoutToFile, withRepoLock } from './worktr
 import { markUntracked } from './pollers';
 import { loadState, saveState, type WorktreeRecord } from './state';
 import { stampFold } from './tickets';
+import { mergeable, runMerge } from './applyMerge';
 import type { ManagerHost } from './manager';
 
-// `oldPath` is set ONLY for a rename (numstat's `\0old\0new` shape): the compare
-// screen's per-file diff needs BOTH sides (`-M -- old new`) or a lone new-side
-// pathspec renders the whole file as freshly added, contradicting the rename-aware
-// +/- count. Absent for every non-rename record.
+// `oldPath` is set only for a rename: the compare view needs both sides (`-M -- old new`),
+// else a lone new-side pathspec renders the file as freshly added.
 export interface DiffFile { path: string; adds: number; dels: number; binary: boolean; oldPath?: string }
 export interface ApplyOutcome { ok: boolean; conflicts: string[]; detail: string }
 
-/**
- * Parse `git diff --numstat -z <base>` output. The -z form is NUL-terminated
- * and renames come as `adds\tdels\t\0<old>\0<new>\0` (the new path is shown);
- * a binary file is `-\t-\t<path>`. Untracked (new) files ARE in this output:
- * diffFiles marks them intent-to-add first (markUntracked), exactly as the
- * board's --shortstat badge does - the two stay consistent by construction.
- */
+/** Parse `git diff --numstat -z <base>` output. Untracked files are marked intent-to-add
+ *  first so they appear here, matching the board's badge. */
 export function parseNumstatZ(raw: string): DiffFile[] {
   const tokens = (raw || '').split('\0');
   const out: DiffFile[] = [];
@@ -43,11 +30,9 @@ export function parseNumstatZ(raw: string): DiffFile[] {
     if (parts.length < 3) continue;
     const [a, d, p] = parts;
     const binary = a === '-' || d === '-';
-    // A non-numeric adds/dels on a NON-binary record means the stdout stream was
-    // contaminated (e.g. a stderr "LF will be replaced by CRLF" warning glued to
-    // the first field). SKIP the record so contamination surfaces as a MISSING row,
-    // never a silent wrong count (the old `|| 0` reported +0). A rename is always
-    // `0\t0\t\0old\0new` - numeric fields - so this never eats a rename's advance.
+    // A non-numeric adds/dels on a non-binary record means stdout was contaminated (e.g. a
+    // stderr warning glued to the first field). Skip the record so it surfaces as missing, never
+    // a silently wrong +0 count.
     const numeric = /^\d+$/.test(a) && /^\d+$/.test(d);
     if (!binary && !numeric) continue;
     const adds = binary ? 0 : parseInt(a, 10);
@@ -66,15 +51,9 @@ export function parseNumstatZ(raw: string): DiffFile[] {
   return out;
 }
 
-/** The change set the board badge counts: baseSha..WORKING-TREE of the worktree,
- *  minus the engine's own artifacts. The `:(exclude).origami` pathspec drops the
- *  worktree-local `.origami/` tree - `.origami/plans/<ms>-<slug>.md` is written
- *  deterministically by the engine's permission-locked plan mode, so it is not a
- *  DELIVERABLE change and must never be listed (or, downstream, applied to main).
- *  Only that engine-owned prefix is excluded: MODEL-authored files (e.g. an
- *  agent's own generated scripts) have no reliable discriminator and stay in the
- *  set. Captured via runGitStdout so a core.autocrlf stderr warning can't corrupt
- *  the first record's count. */
+/** The board badge's change set: baseSha..working-tree, excluding the engine's own
+ *  `.origami/` artifacts (e.g. plan files) so they're never listed or applied. Captured via
+ *  stdout-only capture so a stderr warning can't corrupt the count. */
 export async function diffFiles(worktreePath: string, baseSha: string): Promise<DiffFile[]> {
   await markUntracked(worktreePath); // new files appear as add entries, like the badge
   const r = await runGitStdout(['diff', '--numstat', '-z', baseSha, '--', '.', ':(exclude).origami'], worktreePath);
@@ -85,16 +64,9 @@ function tmpPatchPath(): string {
   return path.join(os.tmpdir(), `origami-apply-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.patch`);
 }
 
-/**
- * Build a binary-safe patch for the selected files (baseSha..working-tree) and
- * write it to a unique temp file; returns the path. `--binary` so images etc.
- * round-trip. The caller MUST delete the returned file (finally). Captured via
- * runGitStdoutToFile because runGit truncates/utf8-mangles a real patch.
- */
+/** Build a binary-safe patch for selected files, written to a temp file the caller must
+ *  delete. */
 export async function buildPatch(worktreePath: string, baseSha: string, files: string[]): Promise<string> {
-  // `files` only ever comes from the .origami-excluded diffFiles listing, so a
-  // worktree-local .origami/ path can never reach this scoped patch - no exclude
-  // pathspec is needed here (adding one would fight the explicit `-- <files>`).
   await markUntracked(worktreePath); // new files carry a proper creation patch
   const file = tmpPatchPath();
   const r = await runGitStdoutToFile(['diff', '--binary', baseSha, '--', ...files], worktreePath, file);
@@ -118,45 +90,24 @@ export function parseConflicts(output: string): string[] {
   return [...set];
 }
 
-/**
- * Dry run in the MAIN repo: `git apply --3way --check`. ok:true means the patch
- * applies (cleanly, or with a 3-way that `--check` deems appliable) and the tree
- * is UNTOUCHED. A dirty main tree is fine - `--check` accounts for it. On refusal
- * (e.g. the target no longer matches the index) it names the offending paths.
- */
+/** Dry run in the MAIN repo (`git apply --3way --check`); ok:true means the patch applies
+ *  and the tree is untouched. Names the offending paths on refusal. */
 export async function preflight(mainRoot: string, patchFile: string): Promise<ApplyOutcome> {
   const r = await runGit(['apply', '--3way', '--check', patchFile], mainRoot);
   return { ok: r.ok, conflicts: r.ok ? [] : parseConflicts(r.output), detail: r.output };
 }
 
-/**
- * True when the patch's changes are ALREADY present in the MAIN tree - a prior
- * apply left the same edit uncommitted (the "apply LICENSE twice" case). `git
- * apply --reverse --check` succeeds only if the patch can be UN-applied, i.e.
- * main already contains it, so it cleanly separates "already applied" (a calm
- * no-op) from a genuine divergence (different content on the same paths), which
- * the forward --check refuses identically. Read-only: --check never touches the
- * tree. Only meaningful on a forward-preflight REFUSAL - a clean forward check
- * means there was nothing already there.
- */
+/** True when the patch's changes are already present in the main tree (a prior apply left
+ *  them uncommitted). `git apply --reverse --check` tells "already applied" apart from a
+ *  genuine divergence, both of which refuse the forward check identically. Read-only. */
 export async function alreadyApplied(mainRoot: string, patchFile: string): Promise<boolean> {
   const r = await runGit(['apply', '--reverse', '--check', patchFile], mainRoot);
   return r.ok;
 }
 
-/**
- * Apply the patch into the MAIN repo's working tree: `git apply --3way`. On a
- * real 3-way conflict git exits nonzero and leaves conflict markers in place -
- * we report the conflicting paths and DO NOT roll back (the user resolves them
- * in-editor). A clean apply is ok:true. Never commits.
- *
- * `--3way` writes through the index (it stages the applied paths). To honour the
- * Kilo semantic - the change lands in the working tree for the user to review +
- * commit themselves - we unstage ONLY the applied paths afterwards (`git reset
- * HEAD -- <files>`), never touching the user's unrelated staged work. The reset
- * is skipped on a pure refusal (nothing was applied), so a pre-staged file in
- * main is never silently unstaged.
- */
+/** Apply the patch via `git apply --3way`; a real conflict leaves markers in place for the
+ *  user, never rolled back. `--3way` stages the applied paths, so afterwards only those paths
+ *  are unstaged (never the user's other staged work), to keep the working-tree-only contract. */
 export async function applyPatch(mainRoot: string, patchFile: string, files: string[]): Promise<ApplyOutcome> {
   const r = await runGit(['apply', '--3way', patchFile], mainRoot);
   const conflicts = parseConflicts(r.output);
@@ -174,9 +125,8 @@ export interface ApplyContext {
   busy(id: string): boolean;
   /** Rebroadcast the board (a clean apply stamps `merged` on the record). */
   broadcast(): void;
-  /** True only for a done-family record (idle/error/detached, or a working row
-   *  whose engine session has died) - a live agent must NEVER be promoted to
-   *  main mid-run: its worktree is still being written. */
+  /** True only for a done-family record; a live agent must never be promoted mid-run since its
+   *  worktree is still being written. */
   promotable(id: string): boolean;
 }
 
@@ -217,23 +167,24 @@ export class ApplyController {
     if (!this.ctx.promotable(id)) { refuse('This agent is still running — apply is available once it finishes.'); return; }
     if (this.ctx.busy(id)) { refuse('This agent is busy — try again in a moment.'); return; }
     if (files.length === 0) { host.post({ type: 'amApplyResult', id, ok: false, conflicts: [] }); return; }
+    // A committed, clean fold is a branch, not a diff: land it with a real merge commit so the
+    // log shows provenance. `force` skips this because it exists to write conflict markers,
+    // which a merge cannot offer.
+    if (!force && await mergeable(rec.path, rec.baseSha)) { await runMerge(this.ctx, root, rec, id); return; }
     // buildPatch is INSIDE the try so a throw (e.g. the worktree vanished) posts
     // a result instead of rejecting uncaught and hanging the pane.
     let patchFile: string | undefined;
     try {
       patchFile = await buildPatch(rec.path, rec.baseSha, files);
       const pf = patchFile;
-      // Serialize every mutating apply on THIS main repo through the same
-      // per-repo mutex the worktree lifecycle uses, so two concurrent Applies
-      // cannot race .git/index.lock (which git reports as a `fatal:` none of
-      // parseConflicts matches - silently misread as "nothing to apply").
+      // Serialize mutating applies on this repo through the same per-repo mutex the worktree
+      // lifecycle uses, so two concurrent Applies cannot race .git/index.lock.
       const res = await withRepoLock(root, async () => {
         if (!force) {
           const pre = await preflight(root, pf);
-          // --check refused: the tree is untouched (exactly what --check is for).
-          // A reverse --check tells apart "already applied" (main already holds
-          // these exact changes, e.g. an earlier apply left them uncommitted)
-          // from a real divergence - both refuse the forward check identically.
+          // --check refused: tree untouched. A reverse --check distinguishes "already applied" from
+          // a
+          // real divergence, both of which refuse the forward check identically.
           if (!pre.ok) return { refused: true, already: await alreadyApplied(root, pf), outcome: pre };
         }
         return { refused: false, already: false, outcome: await applyPatch(root, pf, files) };
@@ -247,10 +198,8 @@ export class ApplyController {
       const out = res.outcome;
       if (out.ok) {
         host.info(`Applied ${files.length} file(s) to ${path.basename(root)} — review & commit in your own tree.`);
-        // Retire the card to the Merged section: stamp `merged` via a FRESH
-        // load-mutate-save (never the stale `rec` param) so a concurrent write is
-        // not clobbered. Only a clean apply reaches here, so a forced/conflicted
-        // apply never stamps merged.
+        // Retire to Merged via a fresh load-mutate-save (never the stale `rec`) so a concurrent
+        // write isn't clobbered.
         const state = loadState(root);
         const fresh = state.worktrees.find((r) => r.id === id);
         if (fresh) { fresh.merged = { at: Date.now() }; saveState(root, state); }
@@ -258,7 +207,7 @@ export class ApplyController {
         // Merged - a forced or conflicted apply left work behind, so it does not.
         stampFold(root, id, 'merged', `applied ${files.length} file(s) to ${path.basename(root)}`);
         this.ctx.broadcast();
-        host.post({ type: 'amApplyResult', id, ok: true });
+        host.post({ type: 'amApplyResult', id, ok: true, mode: 'patch' });
       } else {
         // Conflict markers were written (a forced apply, or a committed divergence
         // that --check let through) - open them for the user to resolve.

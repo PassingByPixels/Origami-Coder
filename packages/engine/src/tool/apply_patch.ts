@@ -35,7 +35,6 @@ export const ApplyPatchTool = Tool.define(
         return yield* Effect.fail(new Error("patchText is required"))
       }
 
-      // Parse the patch to get hunks
       let hunks: Patch.Hunk[]
       try {
         const parseResult = Patch.parsePatch(params.patchText)
@@ -104,7 +103,6 @@ export const ApplyPatchTool = Tool.define(
           }
 
           case "update": {
-            // Check if file exists for update
             const stats = yield* afs.stat(filePath).pipe(Effect.catch(() => Effect.succeed(undefined)))
             if (!stats || stats.type === "Directory") {
               return yield* Effect.fail(
@@ -117,7 +115,6 @@ export const ApplyPatchTool = Tool.define(
             let newContent = oldContent
             let bom = source.bom
 
-            // Apply the update chunks to get new content
             try {
               const fileUpdate = Patch.deriveNewContentsFromChunks(
                 filePath,
@@ -216,7 +213,6 @@ export const ApplyPatchTool = Tool.define(
         },
       })
 
-      // Apply the changes
       const updates: Array<{ file: string; event: "add" | "change" | "unlink" }> = []
 
       for (const change of fileChanges) {
@@ -259,7 +255,6 @@ export const ApplyPatchTool = Tool.define(
         }
       }
 
-      // Publish file change events
       for (const update of updates) {
         yield* events.publish(Watcher.Event.Updated, update)
       }
@@ -272,7 +267,6 @@ export const ApplyPatchTool = Tool.define(
       }
       const diagnostics = yield* lsp.diagnostics()
 
-      // Generate output summary
       const summaryLines = fileChanges.map((change) => {
         if (change.type === "add") {
           return `A ${path.relative(instance.worktree, change.filePath).replaceAll("\\", "/")}`

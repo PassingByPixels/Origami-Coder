@@ -1,29 +1,11 @@
-// loopReopen.ts — bring a persistent loop's CHAT back after it was closed.
-//
-// A loop marked persistent keeps running with no chat: closeSession pulls its
-// engine session back up on a headless (`kind: 'agent'`) local session and
-// re-arms the timer there (DashboardPanel.recallLoopHeadless). Turns keep
-// accumulating on the engine's transcript with nowhere to read them, which is
-// only worth anything if you can get the conversation back. This is that move,
-// and it is closeSession's exact mirror.
-//
-// THE INVARIANT, taken unchanged from closeSession: ONE live client per engine
-// session — two would race each other's prompts. So a reopen never attaches a
-// second client. It DETACHES the headless one first, then opens a chat on the
-// SAME engine id through the ordinary recall path (loadSession replays the whole
-// transcript, so nothing the headless loop wrote is lost).
-//
-// TIMER OWNERSHIP falls out of that order rather than being tracked separately:
-// the headless session's timer dies with the headless session, and the reopened
-// chat arms exactly one. Reversed, the loop is double-armed — two timers
-// prompting one engine session — which is the bug this file's ordering exists to
-// make impossible.
-//
-// A reopen that CANNOT recall the engine session (deleted, engine wiped) never
-// eats the schedule: nothing here calls the stop path, so the persisted record
-// is left exactly as it was and the loop degrades to the existing "needs
-// attention" row with its prompt intact. A detach that then fails to reopen is
-// put back the way it was found — headless.
+// Bring a persistent loop's chat back after it was closed — closeSession's exact mirror.
+// The invariant: one live client per engine session, since two would race each other's
+// prompts, so reopen detaches the headless client first, then opens a chat on the SAME
+// engine id via the ordinary recall path (which replays the whole transcript). Timer
+// ownership falls out of that order: the headless timer dies with the headless session, and
+// the reopened chat arms exactly one — reversed, the loop would be double-armed. A reopen
+// that cannot recall the engine session never eats the schedule; it stays persisted as a
+// "needs attention" row.
 
 import { isPersistent, type PersistedLoop } from './loopPersistence';
 
@@ -52,13 +34,9 @@ function liveLoop(engineId: string, session: ReopenSessionSource): PersistedLoop
     : null;
 }
 
-/**
- * Resolve a Loops-pane row id to a reopen plan.
- *
- * `rowId` arrives in one of two id spaces, exactly as it does for cancel: a live
- * row sends its LOCAL session id, a needs-attention row the persisted ENGINE id.
- * The spaces never collide, so a plain lookup tells them apart.
- */
+/** Resolve a Loops-pane row id to a reopen plan. `rowId` arrives in one of two id spaces
+ *  (live row = local session id, needs-attention row = persisted engine id); the spaces
+ *  never collide, so a plain lookup tells them apart. */
 export function planLoopReopen(
   rowId: string,
   sessions: ReadonlyMap<string, ReopenSessionSource>,
@@ -69,34 +47,27 @@ export function planLoopReopen(
     const loop = persisted.find((l) => l.sessionId === rowId);
     return loop ? { kind: 'recall', engineId: rowId, loop } : { kind: 'unknown' };
   }
-  // A CHAT session already HAS the surface this action exists to bring back.
-  // Revealing its tab is the whole job — tearing a live chat down and rebuilding
-  // it would be strictly worse, and doing nothing at all is the worst button
-  // there is.
+  // A chat session already has this surface — revealing its tab is the whole job; tearing it
+  // down and rebuilding would be strictly worse.
   if (session.kind !== 'agent') return { kind: 'already-open', localId: rowId };
   const engineId = session.client.currentSessionId;
   if (!engineId) return { kind: 'unknown' };
-  // A headless session whose loop was stopped between the broadcast and the
-  // click has no live schedule left; the persisted record is then the only
-  // description of the loop, and if that is gone too there is nothing to re-arm.
+  // A headless session whose loop was stopped between broadcast and click has no live
+  // schedule; if the persisted record is gone too there is nothing to re-arm.
   const loop = liveLoop(engineId, session) ?? persisted.find((l) => l.sessionId === engineId);
   return loop ? { kind: 'detach', localId: rowId, engineId, loop } : { kind: 'unknown' };
 }
 
 /** Callbacks DashboardPanel supplies to enact a plan. */
 export interface ReopenHost {
-  /** Close the headless session — client disposed, session unregistered — WITHOUT
-   *  entering the stop path, so the persisted record survives for the reopened
-   *  chat to re-arm from. */
+  /** Close the headless session (client disposed, unregistered) without entering the stop
+   *  path, so the persisted record survives for the reopened chat to re-arm from. */
   detach: (localId: string) => void;
-  /** Open a CHAT on this ENGINE session (the loadSession recall path). Resolves
-   *  to the new LOCAL id, or null when the engine session could not be recalled
-   *  — a local id returned for a session that never loaded would arm a timer on
-   *  a dead client. */
+  /** Open a chat on this engine session; resolves to the new local id, or null when it can't
+   *  be recalled — never a local id for a dead client. */
   openChat: (engineId: string) => Promise<string | null>;
-  /** Install the schedule and arm its NEXT tick on the given local session.
-   *  Implementations must only schedule (never prompt immediately), for the same
-   *  reason loopRearm.ts's RearmHost must not. */
+  /** Install the schedule and arm its next tick; implementations must only schedule, never
+   *  prompt immediately. */
   arm: (localId: string, loop: PersistedLoop) => void;
   /** Put a persistent loop back on a headless session — the state `detach`
    *  undoes, restored when the reopen that followed it failed. */
@@ -129,11 +100,9 @@ export async function reopenLoopChat(plan: ReopenPlan, host: ReopenHost): Promis
       `Loop: could not reopen the chat — engine session ${plan.engineId} would not load. `
       + 'The schedule is kept; cancel it from the Loops pane if that session is gone for good.',
     );
-    // Undo the detach, so a failed reopen never costs a loop that WAS running.
-    // Only for a persistent one: recallHeadless is the persistent path (it
-    // re-arms with the flag set), and re-running a non-persistent loop through it
-    // would silently promote it. That one degrades to needs-attention instead —
-    // record intact, nothing invented.
+    // Undo the detach so a failed reopen never costs a loop that was running (only for a
+    // persistent one, since recallHeadless is the persistent path); a non-persistent loop
+    // degrades to needs-attention instead, record intact.
     if (plan.kind === 'detach' && isPersistent(plan.loop)) await host.recallHeadless(plan.loop);
     return 'unavailable';
   }

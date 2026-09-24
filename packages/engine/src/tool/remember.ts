@@ -32,12 +32,12 @@ export function projectOrigamiDir(worktree: string): string {
   return path.join(worktree, ".origami")
 }
 
-/** LEGACY flat project store. Still READ (instruction.ts falls back to it on an
+/** Legacy flat project store. Still read (instruction.ts falls back to it on an
  *  un-migrated machine) but never written again - see memory-layout.ts. */
 export function projectMemoryPath(worktree: string): string {
   return path.join(projectOrigamiDir(worktree), "memory.md")
 }
-/** LEGACY flat global store (~/.origami/memory.md). Read-only, as above. */
+/** Legacy flat global store (~/.origami/memory.md). Read-only, as above. */
 export function globalMemoryPath(globalDir: string): string {
   return path.join(globalDir, "memory.md")
 }
@@ -52,12 +52,10 @@ export function globalMemoryDir(globalDir: string): string {
 }
 
 /** Append a fact to a memory file's content, normalising to header + capped
- *  bullets. Pure so the real logic (bullet extraction, dedup of blank facts,
- *  cap-to-most-recent, formatting) is testable without the filesystem. */
-/** Normalise store text to header + capped-to-most-recent bullets. Pure, so the
- *  format is defined once and reused by appendFact (remember tool) and the dream
- *  tool's adopt path — a hand-authored candidate is coerced to the exact same
- *  shape so future `remember` appends never fight the reorganisation. */
+ *  bullets. Pure, so the logic is testable without the filesystem. */
+/** Normalise store text to header + capped-to-most-recent bullets. The format is
+ *  defined once and reused by appendFact and the dream tool's adopt path, so a
+ *  hand-authored candidate never fights later `remember` appends. */
 export function normalizeStore(existing: string, cap = CAP): string {
   const bullets: string[] = existing.match(/^- .*/gm) ?? []
   const capped = bullets.length > cap ? bullets.slice(-cap) : bullets
@@ -80,8 +78,8 @@ const DESCRIPTION = [
   "the same subject belongs in the same file. Keep each fact to one concise line.",
   "This is NOT for transient task state - only things genuinely worth recalling in a later session.",
   // The model must not be told a location that is not where its own fact goes.
-  // A bot's store is chosen by WHICH AGENT is running, so `global` genuinely
-  // has no effect there and saying otherwise would invite it to keep trying.
+  // A bot's store is chosen by which agent is running, so `global` has no
+  // effect there and saying otherwise would invite it to keep trying.
   "If you are a configured agent with your own definition file, this writes to YOUR OWN memory instead,",
   "and the global flag does not apply - your memory is yours and no other session reads it.",
 ].join(" ")
@@ -117,24 +115,20 @@ export const RememberTool = Tool.define(
           const instance = yield* InstanceState.context
           const date = new Date().toISOString().slice(0, 10)
 
-          // A BOT WRITES TO ITS OWN STORE, and nowhere else.
-          //
-          // The turn's agent decides this, not a parameter: a bot session and a
-          // collab participation of the same definition both run under that
-          // definition, so both land in the same directory - the bot's. `global`
-          // is IGNORED here rather than honoured, and that is the fence: a bot
-          // that could set it would be writing into the user's cross-project
-          // memory, which every MAIN session reads. A bot's recollection is its
-          // own, and a main session never sees it.
+          // A bot writes to its own store and nowhere else. The turn's agent
+          // decides this, not a parameter, so a bot session and a collab
+          // participation of the same definition land in the same directory.
+          // `global` is ignored rather than honoured, and that is the fence: a
+          // bot setting it would write into the user's cross-project memory,
+          // which every main session reads.
           const botDir = yield* AgentBotMemory.dirFor({
             name: ctx.agent,
             info: yield* agents.get(ctx.agent),
             definitionFile: (name) => agents.definitionFile(name),
           })
           if (botDir) {
-            // FSUtil is provided EXPLICITLY: the service resolved when the tool
-            // was built is not in the context this execute runs under, and
-            // without it the write dies and the room sees the call as an error.
+            // FSUtil is provided explicitly: the service resolved when the tool
+            // was built is not in the context this execute runs under.
             const written = yield* AgentBotMemory.write({ memdir: botDir, topic: params.topic, fact, date }).pipe(
               Effect.provideService(FSUtil.Service, fs),
               Effect.orDie,
@@ -145,12 +139,11 @@ export const RememberTool = Tool.define(
               output: `Remembered (your own memory, topic "${written.topic}" -> ${written.path}): ${fact}`,
             }
           }
-          // A non-git workspace resolves worktree to "/" (drive root — C:\ on
-          // Windows), so a "project" store there writes to C:\.origami\memory\:
-          // shared across EVERY user account and every non-git folder, not the
-          // per-user home. Treat such a workspace as project-less and use the
-          // per-user global store, mirroring the exact predicate plans use
-          // (session.ts plan(): instance.project.vcs ? worktree : Global).
+          // A non-git workspace resolves worktree to "/" (drive root on Windows),
+          // so a "project" store there writes to C:\.origami\memory\, shared
+          // across every user account and every non-git folder. Treat such a
+          // workspace as project-less and use the per-user global store, the
+          // same predicate plans use.
           const scopeGlobal = params.global === true || !instance.project.vcs
           const memdir = scopeGlobal ? globalMemoryDir(Global.Path.origami) : projectMemoryDir(instance.worktree)
 
@@ -158,10 +151,9 @@ export const RememberTool = Tool.define(
           const target = topicPath(memdir, topic)
           const index = indexPath(memdir)
 
-          // Topic file first, index second: an index line pointing at a file
-          // that failed to write is a dangling hook, and the reverse (a file
-          // with no index line) is merely unlisted — the fact still survives
-          // and the next remember for that topic re-adds the entry.
+          // Topic file first, index second: an index line pointing at a file that
+          // failed to write is a dangling hook, while a file with no index line
+          // is merely unlisted and the next remember re-adds the entry.
           const existing = yield* fs.readFileStringSafe(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
           // writeWithDirs creates .origami/memory/ if missing (mirrors
           // WriteTool). No permission ask: this is a purpose-built append to
@@ -170,10 +162,9 @@ export const RememberTool = Tool.define(
 
           const indexText = yield* fs.readFileStringSafe(index).pipe(Effect.catch(() => Effect.succeed(undefined)))
           const nextIndex = upsertIndexEntry(indexText?.trim() ? indexText : INDEX_HEADER, topic, oneLineHook(fact))
-          // Remembering into an EXISTING topic leaves the index byte-identical
+          // Remembering into an existing topic leaves the index byte-identical
           // (upsertIndexEntry returns it untouched — the hooks are curated), so
-          // the common case wrote the same bytes back and bumped mtime for
-          // nothing.
+          // rewriting it would bump mtime for nothing.
           if (nextIndex !== indexText) yield* fs.writeWithDirs(index, nextIndex).pipe(Effect.orDie)
 
           const where = scopeGlobal ? "global memory" : "project memory"

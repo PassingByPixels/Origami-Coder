@@ -3,24 +3,17 @@ import { Effect } from "effect"
 import { FSUtil } from "@origami/core/fs-util"
 
 /**
- * FOLDERED MEMORY LAYOUT.
- *
- * The agent's memory used to be ONE flat file (`.origami/memory.md`) loaded in
- * full on every turn - so every fact the agent ever kept was paid for in tokens
- * on every request, and a 100-bullet cap was the only brake.
- *
- * The layout this module defines instead is:
+ * Foldered memory layout:
  *
  *   <memdir>/MEMORY.md    the INDEX - one line per topic file, ALWAYS loaded
  *   <memdir>/<topic>.md   one topic per file, loaded ON DEMAND by the model
  *
  * `<memdir>` is `~/.origami/memory/` (global) or `<worktree>/.origami/memory/`
- * (project). Recall works with the model's EXISTING `read` tool: the index is
- * served with an instruction footer naming the directory, so a hook the model
- * cares about becomes a normal file read. No search index, no new tool.
- *
- * Every path convention lives HERE so the reader (session/instruction.ts) and
- * the writers (tool/remember.ts, tool/dream.ts) cannot drift apart.
+ * (project). Recall works with the model's existing `read` tool: the index is
+ * served with an instruction footer naming the directory. No search index, no
+ * new tool. Every path convention lives HERE so the reader
+ * (session/instruction.ts) and the writers (tool/remember.ts, tool/dream.ts)
+ * cannot drift apart.
  */
 
 /** Index filename. Upper-case so it sorts first and reads as "the catalog". */
@@ -47,11 +40,9 @@ export const INBOX_TOPIC = "inbox"
 /** Index hook for the inbox — it is a bucket, so it describes itself. */
 export const INBOX_HOOK = "Unfiled bullets rescued from the old flat memory file — refile these into topics."
 
-/**
- * Directory a dream curation pass is staged in, a SIBLING of `memory/` inside
- * the same `.origami` dir. A sibling (not a child) so a half-staged candidate
- * can never be read as part of the live store by the index reader.
- */
+/** Directory a dream curation pass is staged in, a SIBLING of `memory/` (not a
+ *  child) so a half-staged candidate can never be read as part of the live
+ *  store by the index reader. */
 export const CANDIDATE_DIR = "memory.candidate"
 
 /** Prefix of a pre-approve backup directory: `memory.bak-<stamp>`. */
@@ -60,55 +51,41 @@ export const BACKUP_PREFIX = "memory.bak-"
 /** Hook text is a one-liner; longer facts are elided in the index only. */
 const HOOK_MAX = 160
 
-/** Legacy single-file store: `<origamiDir>/memory.md`. */
 export function flatMemoryPath(origamiDir: string): string {
   return path.join(origamiDir, "memory.md")
 }
 
-/** Foldered store directory: `<origamiDir>/memory/`. */
 export function memoryDir(origamiDir: string): string {
   return path.join(origamiDir, MEMORY_DIR)
 }
 
-/** The always-loaded index inside a memory directory. */
 export function indexPath(memdir: string): string {
   return path.join(memdir, INDEX_FILE)
 }
 
-/** A topic file inside a memory directory. */
 export function topicPath(memdir: string, topic: string): string {
   return path.join(memdir, `${topicSlug(topic)}.md`)
 }
 
-/** Staged curation directory: `<origamiDir>/memory.candidate/`. */
 export function candidateDir(origamiDir: string): string {
   return path.join(origamiDir, CANDIDATE_DIR)
 }
 
-/** A pre-approve backup directory: `<origamiDir>/memory.bak-<stamp>/`. */
 export function backupDir(origamiDir: string, stamp: string): string {
   return path.join(origamiDir, `${BACKUP_PREFIX}${stamp}`)
 }
 
-/**
- * Filesystem-safe stamp for a backup directory name: `20260805-143012`.
- * Colons are illegal in Windows filenames, so the ISO time is stripped rather
- * than used raw. Second resolution only — two approves inside one second
- * collide, which is why the caller must still probe for a free name.
- */
+/** Filesystem-safe stamp for a backup directory name: `20260805-143012`. Colons
+ *  are illegal in Windows filenames. Second resolution only, so two approves
+ *  inside one second collide and the caller must still probe for a free name. */
 export function backupStamp(when: Date): string {
   const iso = when.toISOString()
   return `${iso.slice(0, 10).replaceAll("-", "")}-${iso.slice(11, 19).replaceAll(":", "")}`
 }
 
-/**
- * Normalise a free-text topic to a filesystem-safe kebab slug. Everything that
- * is not a letter, digit or underscore collapses to a single "-"; the result is
- * lower-cased and trimmed of leading/trailing separators. Underscores SURVIVE
- * because the existing hand-authored topic files use them
- * (`reference_gitea`, `feedback_edit_chunking`) and re-slugging them would
- * orphan every one. An empty result falls back to `general`.
- */
+/** Normalise a free-text topic to a filesystem-safe kebab slug. Underscores
+ *  SURVIVE, because hand-authored topic files use them (`reference_gitea`) and
+ *  re-slugging would orphan every one. Empty falls back to `general`. */
 export function topicSlug(raw: string | undefined): string {
   const slug = (raw ?? "")
     .trim()
@@ -118,12 +95,9 @@ export function topicSlug(raw: string | undefined): string {
   return slug || DEFAULT_TOPIC
 }
 
-/**
- * True when this path is a memory INDEX - i.e. `<something>/memory/MEMORY.md`.
- * The reader uses it to decide which loaded file gets the instruction footer.
- * Both segments are checked so an unrelated `MEMORY.md` elsewhere in a repo is
- * never mistaken for the agent's index.
- */
+/** True when this path is a memory INDEX - `<something>/memory/MEMORY.md`. Both
+ *  segments are checked so an unrelated `MEMORY.md` elsewhere in a repo is
+ *  never mistaken for the agent's index. */
 export function isIndexPath(filepath: string): boolean {
   const parsed = path.parse(path.resolve(filepath))
   return parsed.base === INDEX_FILE && path.basename(parsed.dir) === MEMORY_DIR
@@ -132,12 +106,19 @@ export function isIndexPath(filepath: string): boolean {
 /**
  * The instruction footer appended to the index AS SERVED into the prompt -
  * never written to the file. Without it the model treats the index as the whole
- * memory; with it, a hook is an invitation to read the topic file first.
+ * memory; with it, a hook is a pointer at a topic file.
+ *
+ * Every line must stay a STATEMENT, not an order: this rides the trailing user
+ * message (session/prompt.ts), so an instruction addressed to the model reads
+ * as something to answer and the turn ends on an acknowledgement, not on work.
+ * INDEX_FILE is interpolated so a rename cannot leave the prose naming a file
+ * no served index can have.
  */
 export function indexFooter(memdir: string): string {
   return [
     "",
-    "Read the topic file with the read tool for detail before acting on a hook.",
+    `This index is already in context on every turn; reading ${INDEX_FILE} with the read tool returns only what is already here.`,
+    "The detail behind each hook is in that topic's own file, which the read tool loads on demand.",
     `Memory directory: ${memdir}`,
   ].join("\n")
 }
@@ -148,7 +129,6 @@ export function oneLineHook(fact: string, max = HOOK_MAX): string {
   return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`
 }
 
-/** The exact index line for a topic file. */
 export function indexEntry(name: string, hook: string): string {
   return `- [${name}](${name}.md) - ${oneLineHook(hook)}`
 }
@@ -163,11 +143,8 @@ export function indexedTopics(index: string): string[] {
   return names
 }
 
-/**
- * Hook TEXT per topic, keyed by topic name. The counterpart of `indexedTopics`
- * for a curation pass, which has to tell "this topic gained an entry" from
- * "this topic's hook was rewritten because the file drifted from it".
- */
+/** Hook TEXT per topic. A curation pass needs it to tell "this topic gained an
+ *  entry" from "this topic's hook was rewritten". */
 export function indexHooks(index: string): Map<string, string> {
   const hooks = new Map<string, string>()
   for (const match of index.matchAll(/^- \[([^\]]+)\]\(([^)]+)\.md\)\s*-?\s*(.*)$/gm)) {
@@ -177,17 +154,12 @@ export function indexHooks(index: string): Map<string, string> {
   return hooks
 }
 
-/**
- * Insert an index line for `name` when the index has none.
- *
- * NOT a blind overwrite: an entry that already exists is left BYTE-IDENTICAL,
- * hook and section placement included. The hooks are curated (by hand, or by
- * dream) and describe the topic as a whole - replacing one with whatever fact
- * happened to be remembered last would make the index describe only the newest
- * bullet, which is strictly worse than leaving it be. New entries land under
- * `## Topics` (created at the end if missing) so they are visibly uncategorised
- * until someone files them.
- */
+/** Insert an index line for `name` when the index has none. NOT a blind
+ *  overwrite: an existing entry is left BYTE-IDENTICAL, hook and section
+ *  placement included, because hooks describe the topic as a whole and
+ *  rewriting one with the newest remembered fact is worse. New entries land
+ *  under `## Topics` so they are visibly uncategorised until someone files
+ *  them. */
 export function upsertIndexEntry(index: string, name: string, hook: string): string {
   if (indexedTopics(index).includes(name)) return index
 
@@ -198,8 +170,8 @@ export function upsertIndexEntry(index: string, name: string, hook: string): str
 
   if (section === -1) return `${base}\n\n${INDEX_SECTION}\n${entry}\n`
 
-  // Append at the END of the Topics section - i.e. just before the next "## "
-  // header, or at the end of the file when Topics is last.
+  // Append at the END of the Topics section: just before the next "## " header,
+  // or at the end of the file when Topics is last.
   let end = lines.length
   for (let i = section + 1; i < lines.length; i++) {
     if (lines[i].startsWith("## ")) {
@@ -212,7 +184,6 @@ export function upsertIndexEntry(index: string, name: string, hook: string): str
   return `${lines.join("\n").replace(/\s+$/, "")}\n`
 }
 
-/** Drop index lines whose topic file is not in `existing`. */
 export function pruneIndexEntries(index: string, existing: readonly string[]): string {
   const keep = new Set(existing)
   const lines = index.split("\n").filter((line) => {
@@ -223,16 +194,10 @@ export function pruneIndexEntries(index: string, existing: readonly string[]): s
   return `${lines.join("\n").replace(/\s+$/, "")}\n`
 }
 
-/**
- * Append one dated bullet to a topic file's text.
- *
- * Deliberately NOT `normalizeStore` (the flat-file rule): topic files are
- * hand-authored prose with YAML frontmatter, and normalising to "header + the
- * bullets we could regex out" would delete all of it. Deliberately UNCAPPED
- * too - the cap existed because the flat file was loaded whole on every turn,
- * and a topic file is only read on demand, so length costs nothing until it is
- * asked for.
- */
+/** Append one dated bullet to a topic file's text. It does not normalise the
+ *  file: topic files are hand-authored prose with YAML frontmatter, and
+ *  reducing one to "header + the bullets we could regex out" would delete all
+ *  of it. Uncapped, because a topic file is only read on demand. */
 export function appendTopicFact(existing: string, topic: string, fact: string, date: string): string {
   const clean = fact.replace(/\s+/g, " ").trim()
   const bullet = `- [${date}] ${clean}`
@@ -241,16 +206,13 @@ export function appendTopicFact(existing: string, topic: string, fact: string, d
   return `${body}\n${bullet}\n`
 }
 
-/** Bullet lines (`- ...`) of a store, verbatim. */
 export function bulletsOf(text: string): string[] {
   return text.match(/^- .*/gm) ?? []
 }
 
-/**
- * Comparable form of a bullet: date prefix dropped, whitespace collapsed,
- * lower-cased. Migration uses it to tell "this flat bullet is already covered
- * by a topic file" from "this one would be lost".
- */
+/** Comparable form of a bullet: date prefix dropped, whitespace collapsed,
+ *  lower-cased. Migration uses it to tell a flat bullet a topic file already
+ *  covers from one that would be lost. */
 export function bulletKey(line: string): string {
   return line
     .replace(/^-\s*/, "")
@@ -275,20 +237,16 @@ export type MigrationResult = {
 
 /**
  * Turn a `.origami` directory that holds a flat `memory.md` - and possibly a
- * half-finished `memory/` split - into the foldered layout.
- *
- * Rules, in order:
- *  1. Existing topic files are KEPT untouched. A prior split is an asset.
+ * half-finished `memory/` split - into the foldered layout. Idempotent. Rules,
+ * in order:
+ *  1. Existing topic files are KEPT untouched.
  *  2. Every flat bullet NOT already present in some topic file is appended,
  *     dated, to `<memdir>/inbox.md`. Nothing is silently dropped.
  *  3. The index is rebuilt to list every topic file - curated entries and
  *     their sections survive, entries for vanished files are pruned, missing
  *     files gain an entry hooked off their first meaningful line.
- *  4. The flat file is RENAMED to `memory.flat-migrated.md`. Never deleted:
- *     if step 2's duplicate detection was wrong, the original is right there.
- *
- * Idempotent - a second run finds no flat file, rescues nothing, and rebuilds
- * the same index.
+ *  4. The flat file is RENAMED to `memory.flat-migrated.md`, never deleted, so
+ *     a wrong duplicate detection in step 2 stays recoverable.
  */
 export const migrateMemory = Effect.fn("Memory.migrate")(function* (origamiDir: string) {
   const fs = yield* FSUtil.Service
@@ -304,9 +262,8 @@ export const migrateMemory = Effect.fn("Memory.migrate")(function* (origamiDir: 
     for (const bullet of bulletsOf(text)) covered.add(bulletKey(bullet))
   }
 
-  // `undefined` = absent OR unreadable. Either way there is nothing to rescue
-  // and nothing to archive, and the flat file must NOT be removed - a
-  // permission error must not turn into data loss.
+  // `undefined` = absent OR unreadable. Either way the flat file must NOT be
+  // removed - a permission error must not turn into data loss.
   const flatText = yield* fs.readFileStringSafe(flat)
   let rescued = 0
   let skipped = 0
@@ -383,21 +340,16 @@ export type StoreSnapshot = {
   readonly topics: ReadonlyMap<string, string>
 }
 
-/**
- * Read a foldered store in full — index plus every topic file.
- *
- * A missing directory reads as an EMPTY snapshot rather than an error: the
- * candidate directory legitimately does not exist before the first gather, and
- * the caller distinguishes "empty" from "absent" by checking `topics.size`.
- */
+/** Read a foldered store in full — index plus every topic file. A missing
+ *  directory reads as an EMPTY snapshot rather than an error, because the
+ *  candidate directory legitimately does not exist before the first gather. */
 export const readStore = Effect.fn("Memory.readStore")(function* (memdir: string) {
   const fs = yield* FSUtil.Service
   const names = yield* listTopicFiles(fs, memdir)
   const topics = new Map<string, string>()
   for (const name of names) {
     // Join the on-disk basename VERBATIM — `topicPath` re-slugs, which would
-    // point at a different file for any name a slug does not round-trip
-    // (upper case, spaces). These names came from the directory listing.
+    // point at a different file for any name a slug does not round-trip.
     topics.set(name, (yield* fs.readFileStringSafe(path.join(memdir, `${name}.md`))) ?? "")
   }
   return {
@@ -406,11 +358,9 @@ export const readStore = Effect.fn("Memory.readStore")(function* (memdir: string
   } satisfies StoreSnapshot
 })
 
-/**
- * First line of a topic file worth using as an index hook: the frontmatter
- * `description:` when there is one, else the first non-empty line that is not
- * frontmatter, a heading, or a fence.
- */
+/** First line of a topic file worth using as an index hook: the frontmatter
+ *  `description:` when there is one, else the first non-empty line that is not
+ *  frontmatter, a heading, or a fence. */
 export function firstHook(text: string): string {
   const lines = text.split("\n")
   let inFrontmatter = false

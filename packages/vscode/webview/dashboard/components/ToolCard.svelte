@@ -1,17 +1,10 @@
 <script lang="ts">
-  // Pillar 2 dashboard upgrade (2026-05-22) — refactored from a
-  // monolithic renderer to a thin dispatcher. The frame (header,
-  // status spinner, expand-arrow, expanded body container) stays
-  // here; the expanded body is rendered by a per-tool specialised
-  // card from `./toolcards/`. Unknown tool names fall back to
-  // GenericCard which keeps the old `<pre>` behaviour.
-  //
-  // Pre-Pillar-2 behaviour preserved for every kind: the EditCard
-  // is byte-for-byte identical to the old diff branch; everything
-  // else hits GenericCard which renders identically to the old
-  // fallback. The visible improvement is that subsequent slices
-  // can drop in GrepCard / BashCard / etc. without touching this
-  // file.
+  import { spotlight } from '../../shared/spotlight';
+  import { tip } from '../../shared/warmTip';
+  // A thin dispatcher: the frame (header, status spinner, expand-arrow,
+  // expanded body container) stays here; the expanded body is rendered by a
+  // per-tool specialised card from `./toolcards/`. Unknown tool names fall
+  // back to GenericCard, which keeps the plain `<pre>` behaviour.
 
   import { untrack } from 'svelte';
   import EditCard from './toolcards/EditCard.svelte';
@@ -29,58 +22,56 @@
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import { parseSpec } from '../../shared/chartBlock';
   import { stuckState } from './toolcards/stuckCall';
-  import type { ToolShell, ToolLines, ToolBrowser } from '../panes/chatToolMsg';
+  import StatusMark from './StatusMark.svelte';
+  import ArtifactCard from './ArtifactCard.svelte';
+  import { findArtifactLinks } from './artifactLink';
+  import type { ToolShell, ToolLines, ToolBrowser, ToolReadImage } from '../panes/chatToolMsg';
 
   const vscode = getVsCodeApi();
   // Open the tool's file in the editor. The header path is the actionable
-  // "where" for every tool kind (read/write/edit/glob), so opening from here
-  // fixes them all at once — the per-card body buttons only cover some cards
-  // and only when the card is expanded. No `preview` field → the host opens the
-  // real editor (see openAbsoluteFile), which is what "pull up the file" means.
-  // `line` (1-based) jumps to a read card's actual clamped range start —
-  // mirrors GrepCard's per-hit line-jump; absent for every other card, which
-  // opens as before.
-  function openPath(p: string, line?: number) {
+  // "where" for every tool kind, so opening from here fixes them all at once.
+  // `line` (1-based) jumps to a read card's clamped range start; absent for
+  // every other card, which opens as before.
+  // CHANGES.md change 46 — the header path REVEALS the file in the OS explorer.
+  // A path is the answer to "where is this?", and the owner's answer is the
+  // folder, not another editor tab. Deliberately every card kind, not just the
+  // image one: one path, one meaning. The host resolves a workspace-relative
+  // path the same way `openAbsoluteFile` does (DashboardPanel.ts), and the
+  // phone is refused the verb outright (remoteRefusalsTable.ts).
+  function revealPath(p: string) {
     if (!p) return;
-    vscode.postMessage(
-      line ? { type: 'openAbsoluteFile', path: p, line } : { type: 'openAbsoluteFile', path: p },
-    );
+    vscode.postMessage({ type: 'revealInExplorer', path: p });
+  }
+  // ...and the RANGE still opens the file in the editor at its start line.
+  // The owner's ruling on the port above: a path answers "where is this?" and
+  // the answer is the folder, but "(lines 26-61)" answers "what did it read?",
+  // and the answer to THAT is the file, open, at that line. Two controls side
+  // by side, two jobs, neither standing in for the other.
+  function openAtLine(p: string, line?: number) {
+    if (!p) return;
+    vscode.postMessage(line ? { type: 'openAbsoluteFile', path: p, line } : { type: 'openAbsoluteFile', path: p });
   }
 
   interface Props {
     title: string;
     kind: string;
-    /**
-     * Actual tool name from `_meta.origami_tool_name` — the engine stamps it
-     * on every tool_call/update (acp/tool.ts) and acpClient extracts it.
-     * Empty only for non-Origami ACP servers, where dispatch falls through
-     * to the ACP `kind` below.
-     */
+    /** Actual tool name from `_meta.origami_tool_name` (acp/tool.ts). Empty
+     *  only for non-Origami ACP servers, where dispatch falls through to the
+     *  ACP `kind` below. */
     toolName?: string;
     status: string;
     result?: string;
-    /**
-     * Structured before/after diff for edit tools, from the ACP
-     * `{type:'diff'}` content block. EditCard renders a real line diff
-     * from it; ignored by the other cards.
-     */
+    /** Structured before/after diff for edit tools, from the ACP `{type:'diff'}`
+     *  content block. EditCard renders a real line diff; ignored elsewhere. */
     diff?: { path: string; oldText: string; newText: string };
     /** File path the tool acted on (read/write/edit), from ACP locations.
      *  Shown in the header so "write" tells you WHERE it wrote. */
     path?: string;
-    /**
-     * `task` only: the sub-agent's live output, streamed from the engine while it
-     * works. Makes the card have a body (and so an expand arrow) BEFORE the
-     * sub-agent returns anything — the whole point being that a running sub-agent
-     * stops being a spinner with nothing behind it.
-     */
+    /** `task` only: the sub-agent's live output, streamed while it works —
+     *  gives the card a body before the sub-agent returns anything. */
     stream?: string;
-    /**
-     * `task` only: this card CONTINUES a sub-agent this chat already showed
-     * (same task session id) rather than spawning a new one. Presentation only —
-     * without it a resumed agent and a fresh one are indistinguishable, which is
-     * how a "multi-turn" delegation quietly becomes two separate agents.
-     */
+    /** `task` only: this card continues a sub-agent this chat already showed
+     *  rather than spawning a new one. Presentation only. */
     resumed?: boolean;
     /** Bash only: command/cwd/timeout in, exit/truncation out — shaped off the
      *  wire by chatToolMsg.ts. Drives BashCard's IN/OUT blocks and the honest
@@ -93,41 +84,51 @@
     /** `browser` only: screenshots the tool returned, as data: URIs. BrowserCard
      *  renders them inline; every other card ignores them. */
     images?: string[];
-    /** `browser` only: the tool's own ok/action/url verdict off its metadata,
-     *  shaped by chatToolMeta.ts. Drives the honest icon below — the engine
-     *  COMPLETES a failed browser call, exactly as it completes a failing bash
-     *  command, so status alone would paint it green. */
+    /** `read` of an image only: the file the model read, plus this surface's
+     *  own `<img src>` for it (absent on the phone — see toolImageCard.ts).
+     *  ReadFileCard draws the picture; every other card ignores it. */
+    readImage?: ToolReadImage;
+    /** `browser` only: the tool's own ok/action/url verdict off its metadata.
+     *  Drives the honest icon below — the engine completes a failed browser
+     *  call, so status alone would paint it green. */
     browser?: ToolBrowser;
     /** Bash only: the chat session, so a stuck command can be stopped from its
-     *  own card instead of from the chat bar at the bottom of the transcript. */
+     *  own card instead of the chat bar. */
     sessionId?: string;
     /** Bash only: when the call started, so the card can show its age. */
     startedAt?: number;
-    /**
-     * This card is HISTORY, not a live turn — a sub-agent transcript replayed
-     * from the store. Kill and Stop are dead: both act on whatever is running
-     * NOW, so on a card from an hour ago they would cancel an unrelated turn
-     * or kill an unrelated job. An EXPLICIT flag rather than leaning on an
-     * empty `sessionId`: the guards below are a defence against a missing id,
-     * not a contract about liveness, and someone tidying them away would
-     * silently bring both controls back to life on a historical card.
-     */
+    /** This card is history, not a live turn — a sub-agent transcript replayed
+     *  from the store. Kill and Stop are dead: both act on whatever is running
+     *  now, so on a card from an hour ago they'd cancel an unrelated turn. An
+     *  explicit flag rather than leaning on an empty `sessionId`. */
     readOnly?: boolean;
+    /** t-l1sovi — a read-image card's picture click, forwarded to
+     *  ReadFileCard; every other card ignores it. */
+    onImageClick?: (src: string, alt: string) => void;
   }
 
-  // The age + Kill controls live in the HEADER, not in the card body, because
-  // the body is only mounted once the user expands the card — and a card starts
-  // collapsed. Shipped in the body first, they were unreachable on exactly the
-  // card that needed them: a live bash call nobody had clicked on.
+  // The age + Kill controls live in the header, not the card body, since the
+  // body only mounts once the card is expanded — and a card starts collapsed.
 
-  let { title, kind, toolName = '', status, result, diff, path, stream, resumed = false, shell, toolLines, images, browser, sessionId, startedAt, readOnly = false }: Props = $props();
-  // Every other card opens on click: its body is detail behind a one-line
-  // summary. A chart's body IS the answer — the tool exists to put a picture in
-  // the chat — so a chart the user must find and expand is the silent failure
-  // again, wearing a green check. Set once at construction; a card's tool name
-  // never changes under it, so the one-shot read is untracked deliberately —
-  // re-deriving it would re-open a card the user had closed.
-  let expanded = $state(untrack(() => toolName === 'chart'));
+  let { title, kind, toolName = '', status, result, diff, path, stream, resumed = false, shell, toolLines, images, readImage, browser, sessionId, startedAt, readOnly = false, onImageClick }: Props = $props();
+  // A chart's body is the answer, so it opens by default rather than behind a
+  // click; a `read` that produced a picture (t-ffk0qi) is the same case — the
+  // owner asked for "no point hiding the image in the collapse". Set once at
+  // construction (untracked) so re-deriving it doesn't re-open a card the
+  // user had closed.
+  let expanded = $state(untrack(() => toolName === 'chart' || !!readImage));
+  // t-fh57s9: in the live stream the card is constructed when the call STARTS,
+  // and the host stamps `readImage` on a LATER update (chatToolMsg.ts merges
+  // into the same row, which ChatTranscript keys by id, so this instance
+  // survives and the seed above was already false). Open the card the first
+  // time a picture appears, once per card: a card the user then collapses
+  // stays collapsed through every later update.
+  let openedForImage = false;
+  $effect(() => {
+    if (!readImage || openedForImage) return;
+    openedForImage = true;
+    expanded = true;
+  });
 
   const kindIcons: Record<string, string> = {
     filesystem: '\u{1F4C1}',
@@ -143,53 +144,62 @@
     think: '\u{1F9E0}',
   };
 
-  // A `task` / `task_parallel` call is the model delegating to a sub-agent.
-  // It otherwise renders like a generic "think" tool — make the delegation
-  // unmistakable with a distinct icon + a "sub-agent" badge in the header.
+  // A `task`/`task_parallel` call delegates to a sub-agent; give it a distinct
+  // icon + "sub-agent" badge in the header.
   let isTask = $derived(toolName === 'task' || toolName === 'task_parallel');
   let icon = $derived(isTask ? '\u{1F91D}' : (kindIcons[kind] || kindIcons.other));
-  // Honest status mapping: `completed` is the ONLY green; `failed` is
-  // red; pending/in_progress is the in-flight spinner. The donor folded
-  // "has any result text" into done (`status === 'completed' || !!result`),
-  // so a FAILED tool — whose error text lands in `result` — rendered as a
-  // green ✓. That is the v1 "UI claims progress the engine didn't make"
-  // sin. Status alone decides now.
+  // Honest status mapping: `completed` is the only green, `failed` is red,
+  // pending/in_progress is the spinner. Status alone decides, never "has any
+  // result text" — a failed tool's error text also lands in `result`.
   let done = $derived(status === 'completed');
   let failed = $derived(status === 'failed');
-  // A bash call is "execute" kind (or named bash/shell over the wire). It
-  // always has a body — the IN block (the command) exists before any output.
+  // A bash call always has a body: the IN block (the command) exists before any output.
   let isShell = $derived(toolName === 'bash' || toolName === 'shell' || kind === 'execute');
-  // Honest exit: the engine COMPLETES a bash call whatever its exit code (the
-  // output goes back to the model either way), so status alone painted a
-  // failing command green. A known non-zero exit gets the red ✗.
+  // Honest exit: the engine completes a bash call whatever its exit code, so
+  // status alone would paint a failing command green.
   let exitFail = $derived(isShell && typeof shell?.exit === 'number' && shell.exit !== 0);
-  // The browser card, like the bash one, always has a body: the IN rail (the
-  // action and its target) exists before the page answers.
+  // t-s49986: a finished artifact_publish / artifact_get carries the version's
+  // `origami://artifact` link; it shows as a card under the header, on a
+  // collapsed card too. Only these two tools: a `read` of a file that happens
+  // to contain such a link is not an artifact the agent made.
+  let artifactLinks = $derived(
+    (toolName === 'artifact_publish' || toolName === 'artifact_get') && done && result ? findArtifactLinks(result) : [],
+  );
+  // The browser card, like bash, always has a body: the IN rail exists before the page answers.
   let isBrowser = $derived(toolName === 'browser');
-  // `chart` dispatches by NAME for the same reason `browser` does: its ACP kind
-  // is the catch-all `other` (acp/tool.ts names no case for it), which is the
-  // GenericCard bucket — and a <pre> of JSON is not a chart.
+  // `chart` dispatches by name for the same reason `browser` does: its ACP
+  // kind is the catch-all `other`, which is the GenericCard bucket.
   let isChart = $derived(toolName === 'chart');
-  // The browser's exitFail. A refusal, an unreachable client and a capture that
-  // returned no image all come back COMPLETED, so the metadata flag is the only
-  // thing that separates them from a page that loaded. Read the flag, never the
-  // title prose — the title is wording, not a status.
+  // The browser's exitFail: a refusal, an unreachable client, and an empty
+  // capture all come back completed, so only the metadata flag distinguishes
+  // them from a page that loaded.
   let browserFail = $derived(isBrowser && browser?.ok === false);
-  // A chart that ACTUALLY DREW, which is not the same fact as "this tool is
-  // called chart". The tool name is known before the result is, so keying
-  // anything on it treats a refusal and a half-streamed frame as pictures. Only
-  // the renderer's own parse of the returned spec says a picture exists — never
-  // the title prose, which reads "chart bar: refused" and is only wording.
+  // A chart that actually drew — not the same fact as "this tool is called
+  // chart". Only the renderer's own parse of the returned spec says a picture exists.
   let chartDrawn = $derived(isChart && done && !!parseSpec(result ?? ''));
-  // The chart's exitFail. The engine COMPLETES a chart call it refused, so
-  // status paints it green; and a spec the shared renderer cannot draw is a
-  // chart the user never sees, whatever the engine thought.
+  // The engine completes a chart call it refused, so status paints it green.
   let chartFail = $derived(isChart && done && !chartDrawn);
-  let hasBody = $derived(!!result || !!diff || !!stream || isShell || isBrowser);
+  // A read-image card's body IS the picture: its result text is the one line
+  // "Image read successfully", which alone would leave nothing worth expanding.
+  let hasBody = $derived(!!result || !!diff || !!stream || isShell || isBrowser || !!readImage);
 
-  // A wedged command is invisible from here: the card says "running…" at second
-  // 2 and at second 900 in exactly the same words, and the user's only recourse
-  // — the chat's Stop control — is nowhere near the thing that is stuck.
+  // The mark's verdict, and the words behind it. `failed` covers all four
+  // dishonest-green cases the header already distinguished — the engine
+  // COMPLETES a failed browser call, a refused chart and a non-zero exit, so
+  // status alone would paint every one of them with a tick.
+  let markStatus: 'done' | 'failed' | 'running' = $derived(
+    failed || exitFail || browserFail || chartFail ? 'failed' : done ? 'done' : 'running',
+  );
+  let markTip = $derived(
+    failed ? 'failed'
+    : exitFail ? `exit ${shell?.exit}`
+    : browserFail ? `browser ${browser?.action ?? 'call'} failed`
+    : chartFail ? 'no chart was drawn'
+    : done ? 'completed' : 'running',
+  );
+
+  // A wedged command is invisible from here: the card says "running…" at
+  // second 2 and second 900 in the same words.
   let shellRunning = $derived(isShell && status !== 'completed' && status !== 'failed');
   let shellState = $derived(shell?.state ?? (shell?.background ? 'background' : 'foreground'));
   let shellStartedAt = $derived(shell?.startedAt ?? startedAt);
@@ -200,15 +210,19 @@
     return () => clearInterval(timer);
   });
   // Read off `now`, seeded at construction, so a card mounted onto an
-  // already-old call is correct on its first frame rather than a tick later.
+  // already-old call is correct on its first frame.
   let elapsed = $derived(shellStartedAt ? Math.max(0, Math.floor((now - shellStartedAt) / 1000)) : undefined);
   let outputAge = $derived(shell?.lastOutputAt ? Math.max(0, Math.floor((now - shell.lastOutputAt) / 1000)) : undefined);
   let age = $derived(stuckState({ running: shellRunning && shellState === 'foreground', startedAt: shellStartedAt, now }));
+  // CHANGES.md change 18b — a card showing ONLY its header is not a card, it is
+  // a line. It loses its box and draws as a compact one-line strip; clicking
+  // the header (the product's own expand control) opens the full card and the
+  // strip class comes off with it. The condition is the card's OWN state — what
+  // it is currently drawing — rather than the mock's measurement of child
+  // heights, which is what an override outside the component is reduced to.
+  let strip = $derived(!(expanded && hasBody) && !(isShell && shellStartedAt) && !(age.stuck && !readOnly));
   // The extension's existing turn-stop, the same message the chat's own Stop
-  // sends — no new endpoint. The chain that makes it reach THIS command:
-  // DashboardPanel case 'cancel' -> AcpClient.cancel -> ACP.cancel ->
-  // sdk.session.abort -> the http api's session abort -> SessionPrompt.cancel,
-  // which interrupts the turn, fires the shell tool's ctx.abort arm and
+  // sends: it interrupts the turn, fires the shell tool's ctx.abort arm, and
   // tree-kills the process.
   function kill() {
     if (readOnly || !sessionId) return;
@@ -219,15 +233,9 @@
     vscode.postMessage({ type: 'stopBackgroundShell', sessionId, jobId: shell.jobId });
   }
 
-  // Dispatch: an explicit tool name wins (forward-compat / tests);
-  // otherwise the ACP `kind` selects the renderer. We only specialise
-  // where the card renders the engine's REAL output without a false signal:
-  //   edit   → EditCard   (structured diff)
-  //   read   → ReadFileCard (graceful — header optional, adds highlight)
-  //   search → GrepCard   (graceful — non-`path:line:` lines → preamble)
-  //   execute → BashCard  (IN/OUT blocks off the TS engine's real contract:
-  //             title = the command, exit/truncation via `shell`)
-  // fetch/think/other → GenericCard.
+  // Dispatch: an explicit tool name wins (forward-compat / tests); otherwise
+  // the ACP `kind` selects the renderer. Specialised only where the card
+  // renders the engine's real output without a false signal.
   type CardComponent =
     | typeof EditCard
     | typeof GenericCard
@@ -262,12 +270,8 @@
     search: GrepCard,
     execute: BashCard,
   };
-  // `task`/`task_parallel` dispatch by tool NAME; bash/shell (isShell folds in
-  // kind 'execute') land on BashCard, rewritten against the TS engine's real
-  // output contract; `browser` also dispatches by NAME, because its ACP kind is
-  // `fetch` — the same bucket the plain webfetch tool lands in, which has no
-  // page to screenshot; `chart` by NAME too, its kind being the `other`
-  // catch-all; the rest dispatch by ACP kind.
+  // `task`/`task_parallel`, `browser` and `chart` dispatch by tool name (their
+  // ACP kind buckets them with tools that don't fit); the rest by ACP kind.
   let CardComponent = $derived(
     isTask ? (TOOLCARD_REGISTRY[toolName] ?? GenericCard)
     : isShell ? BashCard
@@ -277,87 +281,94 @@
   );
 </script>
 
-<div class="tool-card" class:done class:failed class:task={isTask}>
+<div class="tool-card og-spotlight" class:done class:failed class:task={isTask} class:strip use:spotlight>
   <button class="tool-header" onclick={() => expanded = !expanded}>
     <span class="tool-icon">{icon}</span>
     <span class="tool-title">{title}</span>
-    {#if isTask}<span class="tool-badge" title="Delegated to a sub-agent">sub-agent</span>{/if}
-    {#if isTask && resumed}<span class="tool-resumed" title="Continues a sub-agent session already used in this chat — not a fresh agent">resumed</span>{/if}
-    <!-- Keyed on `result`, not `hasBody`: a live stream now counts as a body, but
-         a sub-agent that streamed work and RETURNED nothing must still say so. -->
-    {#if isTask && done && !result}<span class="tool-empty" title="The sub-agent finished without returning any text">no output</span>{/if}
+    {#if isTask}<span class="tool-badge" use:tip={'Delegated to a sub-agent'}>sub-agent</span>{/if}
+    {#if isTask && resumed}<span class="tool-resumed" use:tip={'Continues a sub-agent session already used in this chat — not a fresh agent'}>resumed</span>{/if}
+    <!-- Keyed on `result`, not `hasBody`: a live stream counts as a body, but a
+         sub-agent that returned nothing must still say so. -->
+    {#if isTask && done && !result}<span class="tool-empty" use:tip={'The sub-agent finished without returning any text'}>no output</span>{/if}
     {#if path}
-      <!-- The path OPENS the file (stopPropagation so it doesn't also toggle the
-           card's expand). Click the icon/title/status to expand instead. -->
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- The path reveals the file in the OS explorer. stopPropagation, or the
+           click reaches the header and folds the card instead. Keyboard-
+           reachable: a control that only answers a mouse is not a control. -->
       <span
         class="tool-path"
-        role="link"
-        title={`Open ${path}`}
-        onclick={(e) => { e.stopPropagation(); openPath(path, toolLines?.start); }}
+        role="button"
+        tabindex="0"
+        use:tip={`Reveal ${path} in the file explorer`}
+        onclick={(e) => { e.stopPropagation(); revealPath(path); }}
+        onkeydown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault(); e.stopPropagation(); revealPath(path);
+        }}
       >{path}</span>
       {#if toolLines}
-        <!-- The actual clamped range a read tool returned — not clickable
-             itself; the path span above already jumps to toolLines.start.
-             No leading space: svelte trims it at compile time, so it never
-             reached the DOM. The header's flex `gap` does the separating. -->
-        <span class="tool-lines">(lines {toolLines.start}-{toolLines.end})</span>
+        <!-- The clamped range a read tool returned, and the control that opens
+             the file AT it. stopPropagation on both handlers for the same
+             reason the path has it, and for one more: these two sit in the same
+             header, so a bubbling click would fire the other control too and
+             one click would open a tab AND pop an explorer window. -->
+        <span
+          class="tool-lines"
+          role="button"
+          tabindex="0"
+          use:tip={`Open ${path} at line ${toolLines.start}`}
+          onclick={(e) => { e.stopPropagation(); openAtLine(path, toolLines?.start); }}
+          onkeydown={(e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault(); e.stopPropagation(); openAtLine(path, toolLines?.start);
+          }}
+        >(lines {toolLines.start}-{toolLines.end})</span>
       {/if}
     {/if}
-    <span class="tool-status">
-      {#if failed}
-        <span class="cross" title="failed">{'✗'}</span>
-      {:else if exitFail}
-        <span class="cross" title={`exit ${shell?.exit}`}>{'✗'}</span>
-      {:else if browserFail}
-        <span class="cross" title={`browser ${browser?.action ?? 'call'} failed`}>{'✗'}</span>
-      {:else if chartFail}
-        <span class="cross" title="no chart was drawn">{'✗'}</span>
-      {:else if done}
-        <span class="check">{'✓'}</span>
-      {:else}
-        <span class="spinner"></span>
-      {/if}
+    <!-- ONE mark, not one element per state (CHANGES.md change 21): the svg node
+         survives the verdict landing, so the tick DRAWS instead of appearing
+         already finished. The tooltip stays out here, where each kind of failure
+         still says which failure it was. -->
+    <span class="tool-status" use:tip={markTip}>
+      <StatusMark status={markStatus} />
     </span>
     {#if hasBody}
       <span class="expand-arrow" class:open={expanded}>{'▶'}</span>
     {/if}
   </button>
+  {#each artifactLinks as link (`${link.artifactId}?v=${link.version}`)}
+    <div class="tool-artifact">
+      <ArtifactCard artifactId={link.artifactId} version={link.version} title={link.title ?? ''} />
+    </div>
+  {/each}
   {#if isShell && shellStartedAt}
     <div class="tool-shell-live">
       <span>{shellState}</span>
-      <!-- `elapsed` is now MINUS the start stamp: a LIVENESS reading, not a
-           duration. In a read-only historical transcript there is no live
-           progress to report and no honest start stamp to measure from (the
-           replayed card is stamped when it is rebuilt), so this would print
-           "0s elapsed" under every settled command in a sub-agent's log. A
-           real per-command duration would need the engine to carry start AND
-           end; until it does, saying nothing beats saying zero. -->
+      <!-- `elapsed` is a liveness reading, not a duration: a read-only
+           historical transcript has no honest start stamp to measure from, so
+           this would print "0s elapsed" under every settled command. -->
       {#if !age.stuck && elapsed !== undefined && !readOnly}<span>{elapsed}s elapsed</span>{/if}
       {#if outputAge !== undefined}<span>output {outputAge}s ago</span>{/if}
       {#if shellRunning && shellState !== 'foreground' && shell?.jobId && !readOnly}
-        <button class="tool-stuck-kill" title="Stop this background command" onclick={stopBackground}>Stop</button>
+        <button class="tool-stuck-kill" use:tip={'Stop this background command'} onclick={stopBackground}>Stop</button>
       {/if}
     </div>
   {/if}
-  <!-- Its own strip UNDER the header, not inside it: the header is the expand
-       button, and a button inside a button is neither valid nor operable. Being
-       a sibling of the body rather than part of it is the whole fix — it shows
-       on a collapsed card, which is every card the user has not clicked. -->
-  <!-- Not in read-only: "has been running for a while" is a claim about NOW,
-       and a card in a finished sub-agent's transcript is not running at all. -->
+  <!-- Its own strip under the header, not inside it: the header is the expand
+       button, and a button inside a button isn't valid. As a sibling of the
+       body it shows on a collapsed card too. -->
+  <!-- Not in read-only: "has been running for a while" is a claim about now,
+       and a finished sub-agent's transcript is not running at all. -->
   {#if age.stuck && !readOnly}
     <div class="tool-stuck">
-      <span class="tool-stuck-age" title="This command has been running for a while">{age.elapsed}s elapsed</span>
+      <span class="tool-stuck-age" use:tip={'This command has been running for a while'}>{age.elapsed}s elapsed</span>
       {#if sessionId && !readOnly}
-        <button class="tool-stuck-kill" title="Stop the turn and kill this command" onclick={kill}>Kill</button>
+        <button class="tool-stuck-kill" use:tip={'Stop the turn and kill this command'} onclick={kill}>Kill</button>
       {/if}
     </div>
   {/if}
   {#if expanded && hasBody}
-    <div class="tool-result" class:chart={chartDrawn}>
-      <CardComponent result={result ?? ''} {diff} {path} {title} {stream} {status} {shell} {images} {browser} />
+    <div class="tool-result" class:chart={chartDrawn} class:image={!!readImage}>
+      <CardComponent result={result ?? ''} {diff} {path} {title} {stream} {status} {shell} {images} {readImage} {browser} {onImageClick} />
     </div>
   {/if}
 </div>
@@ -387,6 +398,34 @@
   }
   .tool-header:hover {
     background: var(--og-btn-bg);
+  }
+
+  /* CHANGES.md change 18b — a card drawing only its header sheds the box and
+     reads as one line. The HEADER keeps the surface, so the row is still a
+     target you can see and click; the card around it stops being a frame.
+     No size changes: the header's own 4px/8px padding and 11px type are the
+     0.4.151 ones, and the strip only takes the border and the fill off the box
+     around them. The `.task` spine below deliberately survives — a delegation
+     must stay unmistakable whether or not its card happens to be open. */
+  .tool-card.strip {
+    border: 0;
+    background: none;
+    margin: 1px 0;
+    overflow: visible;
+  }
+  .tool-card.strip > .tool-header {
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--og-surface) 60%, transparent);
+    transition: background-color 140ms ease;
+  }
+  .tool-card.strip > .tool-header:hover {
+    background: var(--og-surface);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tool-card.strip > .tool-header { transition: none; }
+  }
+  .tool-artifact {
+    padding: 0 8px 2px 26px;
   }
   .tool-shell-live {
     display: flex;
@@ -432,11 +471,20 @@
   }
 
   /* The clamped range a read tool returned — same muted scale as .tool-path,
-     but never clickable and never shrinks (the range itself must stay legible). */
+     and never shrinks (the range itself must stay legible). It is a CONTROL:
+     it opens the file at that line, so it reads as one on hover, the same way
+     its neighbour does. */
   .tool-lines {
     flex-shrink: 0;
     color: var(--og-text-muted);
     font-family: var(--vscode-editor-font-family, monospace);
+    cursor: pointer;
+  }
+  .tool-lines:hover,
+  .tool-lines:focus-visible {
+    color: var(--og-accent-2);
+    text-decoration: underline;
+    outline: none;
   }
 
   /* Honest "no output" marker — a sub-agent that finished without returning
@@ -483,35 +531,20 @@
     border: 1px solid color-mix(in srgb, var(--og-chat) 55%, transparent);
   }
 
+  /* The ✓ / ✗ / spinner glyphs that lived here are StatusMark.svelte's now, and
+     their rules left with them — a rule kept here would simply stop matching,
+     silently, since no <style> ever reaches the test DOM to say otherwise.
+     Honest failure is still the point and still tested: the mark carries the
+     same `check` / `cross` / `spinner` class names, which is what browserCard
+     and chartCard assert on to prove a failed call never reads as a green tick. */
   .tool-status {
+    display: inline-flex;
+    align-items: center;
     flex-shrink: 0;
-  }
-
-  .check {
-    color: var(--og-success);
-    font-weight: 700;
-  }
-
-  /* Honest failure — a red ✗, distinct from the green ✓. A failed tool
-     must never read as completed. */
-  .cross {
-    color: var(--og-error);
-    font-weight: 700;
   }
   .tool-card.failed {
     border-color: color-mix(in srgb, var(--og-error) 45%, var(--og-border));
   }
-
-  .spinner {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border: 2px solid var(--og-border);
-    border-top-color: var(--og-warning);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
 
   .expand-arrow {
     font-size: 8px;
@@ -570,7 +603,14 @@
      5-slice pie more. Clamped, every real chart arrived cropped inside a scroll
      box: the same silent failure that opening the card by default exists to
      end. */
-  .tool-result.chart {
+  /* A READ-IMAGE card joins the chart on exactly the same reasoning, and it is
+     the sharper case of the two (CHANGES.md change 45): a chart clamped to
+     200px arrives cropped, but a picture clamped to 200px inside a scroll box
+     arrives as a letterbox with its own scrollbar, nested in an already-
+     scrolling transcript. The card's body IS the answer. What bounds it now is
+     the pane — see readImageFit.ts — not a number in this rule. */
+  .tool-result.chart,
+  .tool-result.image {
     max-height: none;
     overflow: visible;
   }

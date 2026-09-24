@@ -386,6 +386,16 @@ const layer = Layer.effect(
   }),
 )
 
+/** Per-skill cap on the compact (non-verbose) listing line (token_burn_plan §2.3). */
+export const SKILL_DESCRIPTION_MAX_CHARS = 120
+
+/** The skill's description, reduced to its first line and capped at SKILL_DESCRIPTION_MAX_CHARS. */
+function summarize(description: string): string {
+  const firstLine = description.split("\n")[0].trim()
+  if (firstLine.length <= SKILL_DESCRIPTION_MAX_CHARS) return firstLine
+  return `${firstLine.slice(0, SKILL_DESCRIPTION_MAX_CHARS - 1)}…`
+}
+
 export function fmt(list: Info[], opts: { verbose: boolean }) {
   const described = list.filter((skill) => skill.description !== undefined)
   if (described.length === 0) return "No skills are currently available."
@@ -409,7 +419,7 @@ export function fmt(list: Info[], opts: { verbose: boolean }) {
     "## Available Skills",
     ...described
       .toSorted((a, b) => a.name.localeCompare(b.name))
-      .map((skill) => `- **${skill.name}**: ${skill.description}`),
+      .map((skill) => `- **${skill.name}**: ${summarize(skill.description!)}`),
   ].join("\n")
 }
 

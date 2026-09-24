@@ -2,7 +2,7 @@
 // so direct EventV2 consumers can isolate directory/workspace streams.
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
-import { GlobalBus } from "@/bus/global"
+import { GlobalBus, GlobalSSE } from "@/bus/global"
 import { EventV2 } from "@origami/core/event"
 import { Location } from "@origami/core/location"
 import { Project } from "@origami/core/project"
@@ -43,6 +43,12 @@ const layer = Layer.effect(
           payload: { id: event.id, type: event.type, properties: event.data },
         })
         if (event.durable === undefined) return
+        // t-tc2rlo #8: the sync twin exists ONLY for a remote peer replaying this
+        // engine's durable stream (control-plane/workspace.ts, over the real
+        // `/global/event` SSE endpoint). With no such peer attached, building it
+        // is a second full stringify of every durable event for nobody — doubled
+        // again for a multi-MB row (session summary diffs, image parts).
+        if (!GlobalSSE.hasSubscribers()) return
         GlobalBus.emit("event", {
           directory: event.location?.directory ?? ctx?.directory,
           project: ctx?.project.id,

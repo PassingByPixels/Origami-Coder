@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { get, type IncomingHttpHeaders } from "node:http"
 import { gunzipSync, inflateSync } from "node:zlib"
 import { Server } from "../../src/server/server"
 import { resetDatabase } from "../fixture/db"
@@ -113,6 +114,39 @@ describe("HttpApi compression", () => {
         headers: { "x-origami-directory": tmp.path, "accept-encoding": "gzip" },
       })
       expect(response.headers.get("content-encoding")).toBeNull()
+    })
+  })
+
+  // t-u1j4jm. The ACP layer reads sessions through an SDK client pointed at the
+  // engine's OWN loopback server, and Bun's fetch always sends
+  // `accept-encoding: gzip`. Every transcript read was gzipped on the JS thread.
+  describe("loopback peer", () => {
+    function rawGet(url: string, headers: Record<string, string>) {
+      return new Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }>((resolve, reject) => {
+        get(url, { headers }, (res) => {
+          const chunks: Buffer[] = []
+          res.on("data", (chunk: Buffer) => chunks.push(chunk))
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }))
+          res.on("error", reject)
+        }).on("error", reject)
+      })
+    }
+
+    test("a request over a loopback socket is not compressed, even when it asks for gzip", async () => {
+      await using tmp = await tmpdir({ config: fatConfig() })
+      const listener = await Server.listen({ hostname: "127.0.0.1", port: 0 })
+      try {
+        const response = await rawGet(`http://127.0.0.1:${listener.port}/config`, {
+          "x-origami-directory": tmp.path,
+          "accept-encoding": "gzip, deflate",
+        })
+        expect(response.status).toBe(200)
+        expect(response.headers["content-encoding"]).toBeUndefined()
+        expect(response.body.byteLength).toBeGreaterThan(1024)
+        expect(JSON.parse(response.body.toString("utf8"))).toMatchObject({ username: "compression-test-user" })
+      } finally {
+        await listener.stop(true)
+      }
     })
   })
 

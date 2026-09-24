@@ -1,0 +1,40 @@
+# Caddy in front of the Origami Remote relay.
+#
+# Caddy gets and renews the certificate on its own, so nothing here has an
+# expiry date to remember. Put this at /etc/caddy/Caddyfile, change the host
+# name, then `sudo systemctl reload caddy`.
+#
+# WEBSOCKETS: reverse_proxy upgrades them with no extra directive. Caddy passes
+# the Upgrade and Connection headers through and does not buffer the stream, so
+# `wss://relay.example.com/r/<rid>` reaches the relay's `/r/<rid>` unchanged.
+# Two settings still matter, and both are below.
+
+relay.example.com {
+	# The relay listens on loopback; only Caddy talks to it.
+	reverse_proxy 127.0.0.1:8787 {
+		# A paired phone holds ONE socket open for as long as the person is
+		# using it. The default read timeout is fine for HTTP and wrong for a
+		# session that sits idle between prompts, so both directions are left
+		# unbounded and the relay's own caps do the limiting.
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	# The phone shell and the sockets MUST come from one origin: the shell reads
+	# its relay URL out of location.origin. Do not split /app onto another host.
+	encode zstd gzip
+
+	header {
+		# The shell is served to a phone browser and loads only its own files.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+
+	# Nothing about a rendezvous belongs in a log file. Access logging is off.
+	log {
+		output discard
+	}
+}

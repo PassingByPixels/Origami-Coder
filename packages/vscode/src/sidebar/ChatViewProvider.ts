@@ -1,16 +1,12 @@
-// Chat view provider — the CHAT half of the split (the secondary side
-// bar, top-right; the crane is the brand hero here).
+// Chat view provider — the CHAT half of the split (secondary side bar).
 //
-// Renders the CHAT bundle (ChatView.svelte → compact crane header + honest
-// status badge + the real ChatPane / InputBar / new-chat tabs) inside a VS
-// Code WebviewView, and drives it with the DashboardPanel session
-// machinery via the SHARED-HOST path (resolveSharedView): whichever of the
-// chat/config views resolves first creates the DashboardPanel + bootstraps
-// the ACP session; the second attaches to the same host so both surfaces
-// share one session loop and agree on model/connection/theme status.
+// Renders the CHAT bundle in a VS Code WebviewView, driven by the DashboardPanel
+// session machinery over the SHARED-HOST path: whichever of the chat/config views
+// resolves first creates the host, and the second attaches to it.
 
 import * as vscode from 'vscode';
 import { DashboardPanel, type WebviewHost } from '../dashboard/DashboardPanel';
+import { chatResourceRoots } from '../dashboard/toolImageUri';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Matches the view id contributed in package.json (`contributes.views`). */
@@ -25,9 +21,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ): Promise<void> {
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(this.context.extensionUri, 'out', 'webview'),
-      ],
+      // The bundle, plus the roots a read-image card draws its picture from
+      // (toolImageUri.ts) — a webview may load a local file from nowhere else.
+      localResourceRoots: chatResourceRoots(this.context.extensionUri),
     };
 
     const host: WebviewHost = {
@@ -43,9 +39,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     try {
-      // Shared-host resolve: render the CHAT bundle. If the config view
-      // already created the host, this attaches to it; otherwise it
-      // becomes the primary host and bootstraps the session.
+      // Shared-host resolve: render the CHAT bundle. If the config view already
+      // created the host this attaches to it, else it becomes the primary host.
       await DashboardPanel.resolveSharedView(host, this.context, 'chat');
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

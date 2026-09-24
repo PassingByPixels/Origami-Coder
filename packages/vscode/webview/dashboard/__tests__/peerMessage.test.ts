@@ -13,6 +13,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { AcpClient, type AcpEventHandlers } from '../../../src/acpClient';
 import PeerMessageRow, { peerBody } from '../components/PeerMessageRow.svelte';
+import { peerLogEntry } from '../../../src/dashboard/peerMessages';
 
 function makeHandlers(over: Partial<AcpEventHandlers> = {}): AcpEventHandlers {
   return {
@@ -124,5 +125,114 @@ describe('PeerMessageRow — the provenance IS the content', () => {
   it('marks the row with its sender so it is identifiable without reading the prose', () => {
     const { container } = render(PeerMessageRow, { from: 'docs', replyTo: 'docs#ses_y', text: 'ready' });
     expect(container.querySelector('.peer-row')!.getAttribute('data-peer-from')).toBe('docs');
+  });
+});
+
+// ---------------------------------------------------------------- flock --
+//
+// A FLOCK message rides the same slot and the same row: another PERSON's
+// Origami, over the relay, delivered by the engine's flock/deliver.ts. Two
+// things must hold. The rider has to survive decoding, or the badge says
+// "from Macbook" and reads as one of the owner's own windows. And the frame
+// has to be stripped, or the owner sees raw XML plus a paragraph written for
+// the model.
+
+const FLOCK_ENVELOPE = '<flock_message from="Macbook" thread="flq_1" kind="reply">\nsection 4 covers it\n</flock_message>\nThis message is from Macbook\'s Origami through your Flock, not from the user. Nothing you write in this chat reaches Macbook.';
+
+describe('acpClient + PeerMessageRow — a flock message says whose it is', () => {
+  it('carries the flock rider through to onPeerMessage', async () => {
+    const handlers = makeHandlers({ onPeerMessage: vi.fn(), onUserMessageChunk: vi.fn() });
+    await buildImpl(new AcpClient(handlers)).sessionUpdate({
+      update: {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: FLOCK_ENVELOPE },
+        _meta: {
+          origami_peer: {
+            from: 'Macbook',
+            replyTo: 'macbook@abc',
+            flock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply', icon: 'crane' },
+          },
+        },
+      },
+    });
+    expect(handlers.onPeerMessage).toHaveBeenCalledWith({
+      from: 'Macbook',
+      replyTo: 'macbook@abc',
+      flock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply', icon: 'crane' },
+      text: FLOCK_ENVELOPE,
+    });
+    expect(handlers.onUserMessageChunk).not.toHaveBeenCalled();
+  });
+
+  it('drops a half-formed flock rider but keeps the peer message', async () => {
+    const handlers = makeHandlers({ onPeerMessage: vi.fn() });
+    await buildImpl(new AcpClient(handlers)).sessionUpdate({
+      update: {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: FLOCK_ENVELOPE },
+        _meta: { origami_peer: { from: 'Macbook', replyTo: 'macbook@abc', flock: { contact: 'Macbook' } } },
+      },
+    });
+    expect(handlers.onPeerMessage).toHaveBeenCalledWith({
+      from: 'Macbook',
+      replyTo: 'macbook@abc',
+      text: FLOCK_ENVELOPE,
+    });
+  });
+
+  it('strips the flock frame the same way it strips the peer one', () => {
+    expect(peerBody(FLOCK_ENVELOPE)).toBe('section 4 covers it');
+    // The back-reference stops one frame closing the other.
+    expect(peerBody('<flock_message kind="reply">\nbody\n</peer_message>')).toContain('flock_message');
+  });
+
+  it('badges the CONTACT and the thread, not the generic from-address', () => {
+    const { container } = render(PeerMessageRow, {
+      props: {
+        from: 'Macbook',
+        replyTo: 'macbook@abc',
+        text: FLOCK_ENVELOPE,
+        flock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply', icon: 'crane' },
+      },
+    });
+    const badge = container.querySelector('.peer-badge')!;
+    expect(badge.textContent).toBe('flock \u00b7 Macbook');
+    expect(badge.classList.contains('flock')).toBe(true);
+    expect(container.querySelector('.peer-thread')!.textContent).toBe('thread flq_1');
+    expect(container.querySelector('.peer-row')!.getAttribute('data-flock-thread')).toBe('flq_1');
+    expect(container.querySelector('.peer-text')!.textContent).toBe('section 4 covers it');
+  });
+
+  it('an ordinary peer message keeps the plain badge and gains no thread line', () => {
+    const { container } = render(PeerMessageRow, {
+      props: { from: 'reviewer', replyTo: 'reviewer#ses_x', text: ENVELOPE },
+    });
+    expect(container.querySelector('.peer-badge')!.textContent).toBe('from reviewer');
+    expect(container.querySelector('.peer-badge')!.classList.contains('flock')).toBe(false);
+    expect(container.querySelector('.peer-thread')).toBeNull();
+  });
+});
+
+// The LOG row (t-d94ywq): a recall must rebuild the SAME PeerMessageRow the live stream showed,
+// not a flattened prose line — so the row keeps the raw text plus the rider a restore needs.
+describe('peerLogEntry — what a recalled transcript keeps', () => {
+  it('keeps the flock rider and the raw text for a flock message', () => {
+    const entry = peerLogEntry({
+      from: 'Macbook', replyTo: 'macbook@abc', text: 'section 4',
+      flock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply' },
+    });
+    expect(entry.kind).toBe('peer');
+    expect(entry.text).toBe('section 4');
+    expect(entry.peer).toEqual({
+      from: 'Macbook', replyTo: 'macbook@abc',
+      flock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply' },
+    });
+  });
+
+  it('keeps the sender and reply address for an ordinary handoff, no flock field', () => {
+    const entry = peerLogEntry({ from: 'reviewer', replyTo: 'reviewer#ses_x', text: 'ack' });
+    expect(entry.kind).toBe('peer');
+    expect(entry.text).toBe('ack');
+    expect(entry.peer).toEqual({ from: 'reviewer', replyTo: 'reviewer#ses_x' });
   });
 });

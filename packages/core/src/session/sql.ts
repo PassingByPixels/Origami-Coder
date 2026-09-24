@@ -46,6 +46,16 @@ export const SessionTable = sqliteTable(
     tokens_reasoning: integer().notNull().default(0),
     tokens_cache_read: integer().notNull().default(0),
     tokens_cache_write: integer().notNull().default(0),
+    // Measured model steps, the RunStats.stat(...).steps rule. NULL = not
+    // counted yet (a row older than this column, before its backfill). The
+    // projector adds to it in SQL, and NULL + 1 stays NULL, so a running
+    // increment never races the backfill.
+    steps: integer(),
+    // t-uhxos2. A fork's source chat and the fork point (epoch ms): the source's
+    // sub-agents created before it are in the fork's copied history, so they are in
+    // its roster. NULL = not a fork, or a fork older than these columns.
+    fork_session_id: text().$type<SessionSchema.ID>(),
+    fork_time: integer(),
     revert: text({ mode: "json" }).$type<Revert.State>(),
     permission: text({ mode: "json" }).$type<PermissionV1.Ruleset>(),
     agent: text(),

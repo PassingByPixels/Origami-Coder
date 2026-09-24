@@ -1,22 +1,11 @@
-// persistentPermissions.ts — recall a user's "always allow" decisions across
-// engine restarts. The engine keeps allow-always rules in an IN-MEMORY approved
-// ruleset (packages/engine/src/permission/index.ts:36/156) that is WIPED on
-// every engine child (new window / respawn). This is the SHELL-side replay:
-// capture the user's allow_always at the reply seam and pre-approve a matching
-// later CHAT ask before the UI ever sees it.
-//
-// Faithfulness bound: the engine forwards to the client ONLY the ask's title
-// (= the permission), rawInput (= metadata) and the fixed option triple — NOT
-// its `patterns`/`always` (acp/permission.ts:65-81). The engine broadens a
-// shell `always` to `<prefix> *` (shell.ts:409); the client can't see that. So
-// a recorded rule is keyed on the CONCRETE approved target (the bar's own text)
-// and matched by LITERAL equality — any glob the user typed (`dist/*`) is
-// literal text, never a match-time wildcard. STRICTLY NARROWER than the engine
-// (a later DIFFERENT command always re-prompts) — never-broader-than-consented.
-//
-// Scope: per-WORKSPACE (a workspaceState Memento) so always-allow-X in one repo
-// never silently applies in another. Pure matcher + memento glue; the thin
-// DashboardPanel wiring only threads asks/replies through these.
+// Recall a user's "always allow" decisions across engine restarts: the engine's
+// allow-always ruleset lives in memory and is wiped on every engine child, so this is the
+// shell-side replay — capture the allow_always at the reply seam and pre-approve a matching
+// later CHAT ask before the UI sees it. The engine forwards only the ask's
+// title/rawInput/fixed option triple, never its patterns, so a recorded rule is keyed on the
+// CONCRETE approved target and matched by LITERAL equality (never a match-time wildcard) —
+// strictly narrower than the engine's own broadening, never broader than what was consented.
+// Scoped per-workspace.
 
 import type { Memento } from 'vscode';
 import type { PermDecision } from './permScope';
@@ -29,10 +18,8 @@ export interface PersistedRule { permission: string; pattern: string }
 
 const RULES_KEY = 'origami.persistentPermissions';
 
-/** The ground-truth target of a permission ask (path / dir / url / command) — an
- *  ACP file location first, else the first path-ish rawInput key. This is what
- *  the permission bar shows AND what a recalled rule is keyed on, so both stay in
- *  lockstep. (Extracted verbatim from onPermissionRequest's inline derivation.) */
+/** The ground-truth target of a permission ask (path/dir/url/command) — what the bar shows
+ *  and what a recalled rule is keyed on, kept in lockstep. */
 export function permissionTarget(
   locations: ReadonlyArray<{ path?: string }> | undefined,
   rawInput: unknown,
@@ -56,19 +43,15 @@ function foldToken(s: string, win: boolean): string {
   return win ? n.toLowerCase() : n;
 }
 
-/** A recorded rule is keyed on a CONCRETE approved value (the exact command /
- *  path the permission bar showed), so it pre-approves a later ask ONLY when the
- *  ask's value is IDENTICAL. Any '*'/'?' the user typed is LITERAL text here —
- *  never a match-time wildcard, which would silently pre-approve a materially
- *  different command (`dist/*` -> `dist/ && curl … | bash`). Separator- and
- *  (win32) case-insensitive only, mirroring the engine's own token folding. */
+/** A recorded rule is keyed on the exact approved value; any '*'/'?' the user typed is
+ *  LITERAL text — never a match-time wildcard, which would silently pre-approve a materially
+ *  different command. Separator- and (win32) case-insensitive only, mirroring the engine's
+ *  own token folding. */
 export function targetMatches(input: string, pattern: string, win = process.platform === 'win32'): boolean {
   return foldToken(input, win) === foldToken(pattern, win);
 }
 
-/** Does any stored rule pre-approve this ask? The ask's (permission, target) is
- *  the concrete input; each rule's fields are the recorded literals it must
- *  equal. Never returns/decides a denial. */
+/** Does any stored rule pre-approve this ask? Never returns/decides a denial. */
 export function ruleMatches(
   askPermission: string,
   askTarget: string,
@@ -93,13 +76,10 @@ export function alwaysOptionId(options: ReadonlyArray<PermOption>): string | nul
   return opt ? opt.optionId : null;
 }
 
-/** The pure REPLAY decision for one incoming ask. Returns a PermDecision only to
- *  AUTO-ALLOW (with the allow_ONCE option — least privilege, never re-records),
- *  else null (forward to the UI). Guards, in order:
- *   - only a CHAT ask (kind !== 'agent'); board-agent asks keep their own path;
- *   - a QUESTION-shaped ask (no allow_always) is NEVER pre-approved;
- *   - an empty target never matches;
- *   - a stored rule must match; and an allow_once option must exist to answer with. */
+/** The pure REPLAY decision for one incoming ask: auto-allow with allow_ONCE only (least
+ *  privilege, never re-records), else null (forward to UI). Guards: chat ask only (not a
+ *  board agent), never a question-shaped ask, empty target never matches, and a stored rule
+ *  plus an allow_once option must both exist. */
 export function replayDecision(
   kind: 'chat' | 'agent' | undefined,
   options: ReadonlyArray<PermOption>,
@@ -133,15 +113,13 @@ export function resetPersistentPermissions(memento: Memento): void {
   void memento.update(RULES_KEY, []);
 }
 
-// --- reply-seam glue: the ask forwards to the UI, the reply comes back later ---
-// keyed only by toolCallId, so stash the little that recording needs at forward
-// time and consume it at reply time.
+// Reply-seam glue: the ask forwards to the UI and the reply comes back later, keyed only by
+// toolCallId, so stash what recording needs at forward time.
 interface Pending { permission: string; pattern: string; alwaysId: string }
 const pending = new Map<string, Pending>();
 
-/** At forward time: remember a CHAT ask that COULD be persisted (has a concrete
- *  target AND an allow_always option). Agent asks and target-less asks are
- *  skipped — nothing meaningful/safe to record. */
+/** At forward time: remember a chat ask that could be persisted (a concrete target and an
+ *  allow_always option); agent asks and target-less asks are skipped. */
 export function notePersistablePermission(
   kind: 'chat' | 'agent' | undefined,
   toolCallId: string,
@@ -155,9 +133,8 @@ export function notePersistablePermission(
   pending.set(toolCallId, { permission, pattern: target, alwaysId });
 }
 
-/** At reply time: if the user picked the allow_always option for a noted ask,
- *  persist its rule. Returns true iff a rule was recorded. Always consumes the
- *  stash for this toolCallId. */
+/** At reply time: if the user picked allow_always for a noted ask, persist its rule; always
+ *  consumes the stash for this toolCallId. */
 export function commitPersistablePermission(memento: Memento, toolCallId: string, chosenOptionId: string | null): boolean {
   const p = pending.get(toolCallId);
   pending.delete(toolCallId);

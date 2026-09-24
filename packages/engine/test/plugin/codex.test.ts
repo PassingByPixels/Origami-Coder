@@ -5,6 +5,7 @@ import {
   extractAccountIdFromClaims,
   extractAccountId,
   renderOAuthError,
+  OAUTH_MAX_CONCURRENT,
   type IdTokenClaims,
 } from "../../src/plugin/openai/codex"
 
@@ -287,6 +288,43 @@ describe("plugin.codex", () => {
       { authorization: "Bearer access-new", accountId: "acc-123" },
       { authorization: "Bearer access-new", accountId: "acc-123" },
     ])
+  })
+
+  /**
+   * t-52cxcw. The ChatGPT subscription backend answers 429 rather than queueing,
+   * and neither reference harness documents a parallel-stream number, so the
+   * route ships a DEFAULT cap of 4 instead of running a sub-agent fan-out
+   * unbounded. It rides on the auth loader's options, which provider.ts applies
+   * BEFORE the config pass — so `origami.json` still wins.
+   */
+  describe("default concurrency cap", () => {
+    const pluginInput = {
+      client: { auth: { async set() {} } },
+      project: {} as never,
+      directory: "",
+      worktree: "",
+      experimental_workspace: { register() {} },
+      serverUrl: new URL("https://example.com"),
+      $: {} as never,
+    } as never
+
+    test("installs max_concurrent 4 for an OAuth credential", async () => {
+      const hooks = await CodexAuthPlugin(pluginInput)
+      const loaded = await hooks.auth!.loader!(
+        async () => ({ type: "oauth", refresh: "r", access: "a", expires: Date.now() + 60_000 }) as never,
+        {} as never,
+      )
+      expect(OAUTH_MAX_CONCURRENT).toBe(4)
+      expect((loaded as { max_concurrent?: number }).max_concurrent).toBe(OAUTH_MAX_CONCURRENT)
+    })
+
+    test("leaves an api-key OpenAI credential uncapped", async () => {
+      // The cap belongs to the subscription backend, not to OpenAI's paid API,
+      // which has its own published rate limits.
+      const hooks = await CodexAuthPlugin(pluginInput)
+      const loaded = await hooks.auth!.loader!(async () => ({ type: "api", key: "sk-test" }) as never, {} as never)
+      expect((loaded as { max_concurrent?: number }).max_concurrent).toBeUndefined()
+    })
   })
 })
 

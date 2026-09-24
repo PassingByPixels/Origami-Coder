@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 250" role="img" aria-label="A long chat is kept in pages. The newest page shows at once. Older pages load when you scroll up. Reopen time for a very large chat fell from 36 seconds to about 1 second.">
+  <defs>
+    <marker id="wn-ll-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <text class="t-title" x="20" y="22">A long chat, in pages</text>
+  <rect class="box-dim" x="20" y="34" width="190" height="26" rx="4"/>
+  <text class="t-muted t-small" x="32" y="51">older messages</text>
+  <rect class="box-dim" x="20" y="66" width="190" height="26" rx="4"/>
+  <text class="t-muted t-small" x="32" y="83">older messages</text>
+  <rect class="box-dim" x="20" y="98" width="190" height="26" rx="4"/>
+  <text class="t-muted t-small" x="32" y="115">older messages</text>
+  <rect class="box-dim" x="20" y="130" width="190" height="26" rx="4"/>
+  <text class="t-muted t-small" x="32" y="147">older messages</text>
+  <rect class="box-hi" x="20" y="162" width="190" height="44" rx="4"/>
+  <text class="t-title" x="32" y="181">Newest messages</text>
+  <text class="t-small" x="32" y="197">shown at once</text>
+  <path class="line-hi" d="M232 198 V 44" marker-end="url(#wn-ll-head)"/>
+  <text class="t-small" x="244" y="106">Scroll up:</text>
+  <text class="t-small" x="244" y="120">the next older</text>
+  <text class="t-small" x="244" y="134">page loads</text>
+  <text class="t-muted t-small" x="20" y="234">Your place in the chat does not move while a page loads.</text>
+  <text class="t-title" x="360" y="22">Time to reopen a very large chat</text>
+  <text class="t-muted t-small" x="360" y="38">151 MB with 16 sub-agents (our test copy)</text>
+  <text x="360" y="72">0.4.155</text>
+  <rect class="fill-muted" x="360" y="80" width="220" height="16" rx="3"/>
+  <text class="t-small" x="588" y="93">36 s</text>
+  <text x="360" y="128">Now</text>
+  <rect class="fill-chat" x="360" y="136" width="7" height="16" rx="3"/>
+  <text class="t-small" x="374" y="149">about 1 s</text>
+  <text class="t-muted t-small" x="360" y="186">Extra memory while it opens:</text>
+  <text class="t-small" x="360" y="202">4.2 GB before, 0.2 GB now</text>
+</svg>

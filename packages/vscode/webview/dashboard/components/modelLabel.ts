@@ -58,3 +58,12 @@ export function parseModelId(value: string, displayName?: string): ModelLabel {
 
   return { provider, quant, name };
 }
+
+/** The id WITHOUT its provider prefix — "opencode-go/mimo-v2.6-flash" reads as
+ *  "mimo-v2.6-flash" on the picker trigger, where the provider is already named
+ *  by the tab. Returns the value unchanged when it carries no prefix. */
+export function modelIdWithoutProvider(value: string): string {
+  if (!value) return "";
+  const parts = value.split("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : value;
+}

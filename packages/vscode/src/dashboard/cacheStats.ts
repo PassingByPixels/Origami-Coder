@@ -1,11 +1,5 @@
 // The `cache_stats` host leaf — this session's prompt-cache token accounting
-// plus a lifetime sum across the workspace, for the Insights "cache hit
-// ratio" card (t-kgtw47). Sibling of promptCapture.ts, and separate from it
-// (and from AcpClient) for the same reason: AcpClient and boardData.ts are
-// both at their architecture caps, so the ratchet's remedy is a new module.
-//
-// No `vscode` import, so the no-session guard and the failure-into-an-`error`
-// shape are testable without an extension host.
+// plus a lifetime sum, for the Insights cache-hit-ratio card.
 import type { CacheStatsResult, SessionCacheTokens } from '../acpExtTypes';
 
 /** Just the two public members of AcpClient this needs, so a test can fake it. */
@@ -27,10 +21,8 @@ const EMPTY: CacheStatsPayload = { current: null, lifetime: null, sessionCount: 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
- * This session's cache read/write totals plus the workspace's lifetime sum —
- * the card renders read/(fresh+read+write) from these. No session yet is an
- * empty answer, not an error: a chat that has never sent a message has
- * nothing to report, same convention as `promptCapturePayload`.
+ * This session's cache totals plus the workspace's lifetime sum. No session
+ * yet is an empty answer, not an error.
  */
 export async function cacheStatsPayload(client: CacheStatsSource | null | undefined): Promise<CacheStatsPayload> {
   if (!client) return { ...EMPTY, error: NO_SESSION };

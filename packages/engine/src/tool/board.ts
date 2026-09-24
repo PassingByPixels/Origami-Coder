@@ -49,9 +49,9 @@ const REPO_PARAM = Schema.String.annotate({
 })
 
 /**
- * One metadata shape for all six tools. Declared rather than inferred: each
+ * One metadata shape for all six tools, declared rather than inferred: each
  * execute returns several result shapes (found / refused / empty) and inference
- * would pin the metadata type to whichever branch happens to come first.
+ * would pin the type to whichever branch happens to come first.
  */
 type BoardMetadata = {
   registry?: string
@@ -77,13 +77,11 @@ function unknownRepo(raw: string, repos: readonly RepoEntry[]): string {
 }
 
 /**
- * The checkout a tool does ticket IO in.
- *
- * A bare "." is the SESSION's own checkout and never follows `primary`: a fold
- * session runs in its own worktree, writes the ticket there, and the apply step
- * carries the file back. Rerouting it would send the session's writes into a
- * checkout its branch never touches. Every other form of the `repo` param names
- * a repo on the board, and the board's tickets live in that repo's primary.
+ * The checkout a tool does ticket IO in. A bare "." is the session's own
+ * checkout and never follows `primary`: a fold session runs in its own worktree,
+ * writes the ticket there, and the apply step carries the file back — rerouting
+ * it would send the writes into a checkout its branch never touches. Every other
+ * form of `repo` names a board repo, whose tickets live in that repo's primary.
  */
 function boardRoot(repo: RepoEntry, param: string | undefined): string {
   const raw = (param ?? "").trim()
@@ -112,11 +110,9 @@ function revParse(git: Git.Interface, cwd: string, what: string) {
 
 /**
  * The refusal for a bare "." in a workspace that has no VCS, or `undefined`.
- * A non-git workspace resolves its worktree to "/" — the DRIVE ROOT on Windows
+ * A non-git workspace resolves its worktree to "/" — the drive root on Windows
  * — so "." there would write tickets to `C:\.origami\tickets\`, shared across
- * every user account and every non-git folder. Refuse rather than scatter
- * files, mirroring the `instance.project.vcs` predicate the remember tool uses
- * against the same hazard.
+ * every user account and every non-git folder.
  */
 function rootlessDot(param: string, instance: InstanceContext): string | undefined {
   if (param?.trim() !== "." || instance.project.vcs) return undefined
@@ -154,6 +150,7 @@ export const BoardReposTool = Tool.define<typeof ReposParameters, BoardMetadata,
     return {
       description: REPOS_DESCRIPTION,
       parameters: ReposParameters,
+      deferrable: true,
       execute: (_params: {}, _ctx: Tool.Context) =>
         Effect.gen(function* () {
           const registry = reposPath()
@@ -171,7 +168,7 @@ export const BoardReposTool = Tool.define<typeof ReposParameters, BoardMetadata,
 
           const lines: string[] = []
           for (const repo of repos) {
-            // Tickets are counted where they LIVE — the primary checkout, which
+            // Tickets are counted where they live — the primary checkout, which
             // is the registered root unless the entry names another one.
             const root = primaryRoot(repo)
             const counts = countByStatus(yield* listTickets(fs, root))
@@ -213,6 +210,7 @@ export const BoardTicketsTool = Tool.define<typeof TicketsParameters, BoardMetad
     return {
       description: TICKETS_DESCRIPTION,
       parameters: TicketsParameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof TicketsParameters>, _ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
@@ -301,6 +299,7 @@ export const BoardCreateTool = Tool.define<typeof CreateParameters, BoardMetadat
     return {
       description: CREATE_DESCRIPTION,
       parameters: CreateParameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof CreateParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
@@ -319,10 +318,8 @@ export const BoardCreateTool = Tool.define<typeof CreateParameters, BoardMetadat
           }
           const root = boardRoot(repo, params.repo)
           // A `primary` that is not on disk is a typo in the registry, and
-          // board_create is the one board tool that CREATES directories: left
+          // board_create is the one board tool that creates directories: left
           // unchecked it would quietly build a ticket folder at the typo.
-          // Only the primary is checked — a missing registered root behaves
-          // exactly as it did before.
           if (pathKey(root) !== pathKey(repo.root) && !(yield* fs.isDir(root))) {
             return {
               title: "board_create: refused",
@@ -349,9 +346,9 @@ export const BoardCreateTool = Tool.define<typeof CreateParameters, BoardMetadat
           }
 
           const acceptance = (params.acceptance ?? []).map((item) => item.trim()).filter(Boolean)
-          // Spec'd work is launchable, a bare idea is not — that IS the Todo vs
-          // Triage split, so derive it here rather than trusting the caller to
-          // keep the two params consistent.
+          // Spec'd work is launchable, a bare idea is not — that is the Todo vs
+          // Triage split, so derive it rather than trust the caller to keep the
+          // two params consistent.
           const status = acceptance.length ? "todo" : "triage"
           const labels = (params.labels ?? []).map((item) => item.trim()).filter(Boolean)
 
@@ -439,6 +436,7 @@ export const BoardUpdateTool = Tool.define<typeof UpdateParameters, BoardMetadat
     return {
       description: UPDATE_DESCRIPTION,
       parameters: UpdateParameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof UpdateParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
@@ -499,9 +497,8 @@ export const BoardUpdateTool = Tool.define<typeof UpdateParameters, BoardMetadat
 
           const result: UpdateOutcome = yield* repoLock(root).withPermits(1)(
             Effect.gen(function* () {
-              // Re-read INSIDE the lock: the claim is a compare-and-set, and a
-              // CAS against a value read before an interactive prompt is not a
-              // CAS at all.
+              // Re-read inside the lock: the claim is a compare-and-set, and a
+              // CAS against a value read before an interactive prompt is not one.
               const text = yield* fs.readFileStringSafe(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
               if (text === undefined)
                 return { refusal: `Refused: no ticket "${id}" in ${repo.name} (${file}).`, changes: [] }
@@ -554,7 +551,7 @@ export const BoardUpdateTool = Tool.define<typeof UpdateParameters, BoardMetadat
               }
 
               if (!changes.length) return { changes }
-              // The stamp is bumped for ANY change, so the extension's poll can
+              // The stamp is bumped for any change, so the extension's poll can
               // spot a touched ticket without diffing whole files.
               fm = fmSet(fm, "updated", stamp())
               yield* fs.writeWithDirs(file, joinDoc({ fm, body, eol: doc.eol }))
@@ -610,6 +607,7 @@ export const BoardRegisterTool = Tool.define<typeof RegisterParameters, BoardMet
     return {
       description: REGISTER_DESCRIPTION,
       parameters: RegisterParameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof RegisterParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
@@ -637,9 +635,8 @@ export const BoardRegisterTool = Tool.define<typeof RegisterParameters, BoardMet
 
           // A folder inside a repo is never its own card: two cards over one
           // working tree would give the same file two ticket folders. Compare
-          // against the real path too — git resolves symlinks and `resolve`
-          // does not, so on macOS a repo at /tmp/x (really /private/tmp/x)
-          // would otherwise read as nested inside itself.
+          // against the real path too — git resolves symlinks and `resolve` does
+          // not, so a repo at /tmp/x would read as nested inside itself.
           const real = yield* fs.realPath(target).pipe(Effect.catch(() => Effect.succeed(target)))
           let toplevel = yield* revParse(git, target, "--show-toplevel")
           if (toplevel && pathKey(toplevel) !== pathKey(target) && pathKey(toplevel) !== pathKey(real)) {
@@ -670,7 +667,7 @@ export const BoardRegisterTool = Tool.define<typeof RegisterParameters, BoardMet
             }
           }
 
-          // One repository, ONE card. A linked worktree is its own toplevel, so
+          // One repository, one card. A linked worktree is its own toplevel, so
           // only the common git dir can tell it apart from a new repo.
           if (toplevel) {
             const common = yield* revParse(git, target, "--git-common-dir")
@@ -741,6 +738,7 @@ export const BoardWorktreesTool = Tool.define<typeof WorktreesParameters, BoardM
     return {
       description: WORKTREES_DESCRIPTION,
       parameters: WorktreesParameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof WorktreesParameters>, _ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context

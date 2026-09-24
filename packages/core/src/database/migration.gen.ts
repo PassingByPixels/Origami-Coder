@@ -46,5 +46,7 @@ export const migrations = (
     import("./migration/20260818153000_collab_concurrency"),
     import("./migration/20260818190000_collab_flavor"),
     import("./migration/20260829173056_add_todo_depth"),
+    import("./migration/20260923235007_session_steps"),
+    import("./migration/20260924014247_session_fork"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

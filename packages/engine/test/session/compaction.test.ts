@@ -10,6 +10,7 @@ import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
 import { usable } from "@/session/overflow"
+import { SessionPromptCapture } from "@/session/prompt-capture"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -1187,6 +1188,79 @@ describe("session.compaction.process", () => {
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 100 }) })),
   )
 
+  // t-u54x6w: the whole history was deep-copied for a plugin hook nobody had
+  // installed. The copy is made only when a plugin has the hook, and a
+  // rewriting plugin still cannot reach the caller's messages.
+  itCompaction.instance(
+    "does not copy the history when no plugin rewrites messages, and sends the same request",
+    () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "first question")
+        yield* createUserMessage(session.id, "second question")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const clone = globalThis.structuredClone
+        let copies = 0
+        globalThis.structuredClone = ((value: unknown, options?: StructuredSerializeOptions) => {
+          if (Array.isArray(value) && value.some((item) => item?.info?.id === msgs[0]!.info.id)) copies++
+          return clone(value, options)
+        }) as typeof structuredClone
+        yield* SessionCompaction.use
+          .process({ parentID: msgs.at(-1)!.info.id, messages: msgs, sessionID: session.id, auto: false })
+          .pipe(Effect.ensuring(Effect.sync(() => (globalThis.structuredClone = clone))))
+        expect(copies).toBe(0)
+        expect(captured).toContain("first question")
+        expect(captured).toContain("second question")
+      }).pipe(withCompaction({ llm: stub.llmLayer, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "copies the history for a plugin that rewrites messages, so the caller's messages stay as they were",
+    () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(reply("summary", (input) => (captured = JSON.stringify(input.messages))))
+      const rewriter = Layer.mock(Plugin.Service)({
+        trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
+          if (name !== "experimental.chat.messages.transform") return Effect.succeed(output)
+          return Effect.sync(() => {
+            for (const msg of (output as { messages: SessionV1.WithParts[] }).messages)
+              for (const part of msg.parts) if (part.type === "text") part.text = "REWRITTEN"
+            return output
+          })
+        },
+        list: () => Effect.succeed([{ "experimental.chat.messages.transform": async () => {} }] as never),
+        init: () => Effect.void,
+      })
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "first question")
+        yield* createUserMessage(session.id, "second question")
+        yield* createSummaryCompaction(session.id)
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+        expect(captured).toContain("REWRITTEN")
+        const texts = msgs.flatMap((msg) => msg.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])))
+        expect(texts).toContain("first question")
+        expect(texts).not.toContain("REWRITTEN")
+      }).pipe(withCompaction({ llm: stub.llmLayer, plugin: rewriter, config: cfg({ tail_turns: 0 }) }))
+    },
+    { git: true },
+  )
+
   itCompaction.instance(
     "falls back to full summary when even one recent turn exceeds preserve token budget",
     () => {
@@ -1751,6 +1825,388 @@ describe("session.compaction.process", () => {
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 500 }) })),
+  )
+})
+
+// ─── The working set the summariser is HANDED ─────────────────────────────
+// A summariser asked "which files did you touch" re-reads a truncated history
+// and guesses. The engine already holds the tool calls, so the list is
+// extracted and handed over; the model only has to keep it.
+function createToolCall(
+  sessionID: SessionID,
+  messageID: MessageID,
+  tool: string,
+  input: Record<string, unknown>,
+  output = "ok",
+) {
+  return SessionNs.Service.use((ssn) =>
+    ssn.updatePart({
+      id: PartID.ascending(),
+      messageID,
+      sessionID,
+      type: "tool",
+      callID: `call_${Math.random().toString(36).slice(2)}`,
+      tool,
+      state: {
+        status: "completed",
+        input,
+        output,
+        title: tool,
+        metadata: {},
+        time: { start: Date.now(), end: Date.now() },
+      },
+    }),
+  )
+}
+
+/** The compaction prompt as the summariser received it. */
+function lastUserText(input: LLM.StreamInput): string {
+  const content = input.messages.at(-1)?.content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content.map((part) => ("text" in part && typeof part.text === "string" ? part.text : "")).join("")
+}
+
+// Newline-anchored on purpose: the working-set RULES name the tags in prose
+// ("List every path from <files-touched> below"), so an unanchored search finds
+// the instruction rather than the block it points at.
+function blockOf(prompt: string, name: string): string | undefined {
+  const open = `\n<${name}>\n`
+  const close = `\n</${name}>`
+  const start = prompt.indexOf(open)
+  if (start < 0) return undefined
+  const end = prompt.indexOf(close, start)
+  if (end < 0) return undefined
+  return prompt.slice(start + open.length, end).trim()
+}
+
+describe("session.compaction — the working set handed to the summariser", () => {
+  itCompaction.instance(
+    "the files-touched block lists exactly the paths the session touched, most recent last",
+    () => {
+      const stub = llm()
+      let prompt = ""
+      stub.push(reply("summary", (input) => (prompt = lastUserText(input))))
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const user = yield* createUserMessage(session.id, "do the work")
+        const work = yield* createAssistantMessage(session.id, user.id, test.directory)
+        yield* createToolCall(session.id, work.id, "read", { filePath: "/repo/a.ts", offset: 10, limit: 51 })
+        yield* createToolCall(session.id, work.id, "write", { filePath: "/repo/b.ts", content: "x" })
+        // a.ts again, this time whole-file: the path moves to the newest
+        // position but KEEPS the line range, which is the more useful fact.
+        yield* createToolCall(session.id, work.id, "read", { filePath: "/repo/a.ts" })
+        yield* createToolCall(session.id, work.id, "edit", { filePath: "/repo/c.ts", oldString: "a", newString: "b" })
+        // Not a file tool, and a file tool with no path: neither may appear.
+        yield* createToolCall(session.id, work.id, "bash", { command: "/repo/never.sh" })
+        yield* createToolCall(session.id, work.id, "read", {})
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(blockOf(prompt, "files-touched")).toBe(
+          ["- /repo/b.ts (whole file)", "- /repo/a.ts (lines 10-60)", "- /repo/c.ts (whole file)"].join("\n"),
+        )
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "apply_patch paths are read from the patch body",
+    () => {
+      const stub = llm()
+      let prompt = ""
+      stub.push(reply("summary", (input) => (prompt = lastUserText(input))))
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const user = yield* createUserMessage(session.id, "patch it")
+        const work = yield* createAssistantMessage(session.id, user.id, test.directory)
+        yield* createToolCall(session.id, work.id, "apply_patch", {
+          patchText: [
+            "*** Begin Patch",
+            "*** Update File: /repo/one.ts",
+            "@@",
+            "-old",
+            "+new",
+            "*** Add File: /repo/two.ts",
+            "+hello",
+            "*** End Patch",
+          ].join("\n"),
+        })
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(blockOf(prompt, "files-touched")).toBe(
+          ["- /repo/one.ts (whole file)", "- /repo/two.ts (whole file)"].join("\n"),
+        )
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "open todo items come from the LAST todowrite call, finished ones dropped",
+    () => {
+      const stub = llm()
+      let prompt = ""
+      stub.push(reply("summary", (input) => (prompt = lastUserText(input))))
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        const user = yield* createUserMessage(session.id, "plan it")
+        const work = yield* createAssistantMessage(session.id, user.id, test.directory)
+        yield* createToolCall(session.id, work.id, "todowrite", {
+          todos: [{ content: "stale", status: "pending", priority: "high" }],
+        })
+        yield* createToolCall(session.id, work.id, "todowrite", {
+          todos: [
+            { content: "wire the gate", status: "in_progress", priority: "high" },
+            { content: "write the tests", status: "pending", priority: "medium" },
+            { content: "read the plan", status: "completed", priority: "low" },
+            { content: "rewrite core", status: "cancelled", priority: "low" },
+          ],
+        })
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        expect(blockOf(prompt, "open-todos")).toBe(
+          ["- wire the gate (in_progress)", "- write the tests (pending)"].join("\n"),
+        )
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "the prompt still carries core's template, plus the Working set section and a prose budget",
+    () => {
+      const stub = llm()
+      let prompt = ""
+      stub.push(reply("summary", (input) => (prompt = lastUserText(input))))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* createUserMessage(session.id, "hello")
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+        // core owns the section spec and keeps owning it.
+        expect(prompt).toContain("## Objective")
+        expect(prompt).toContain("## Relevant Files")
+        // The engine amends it. Anchored on the HEADING and its first
+        // subsection: the working-set rules also mention "## Working set" in
+        // prose, and an unanchored match survives the heading being renamed.
+        expect(prompt).toContain("\n## Working set\n### Files\n")
+        expect(prompt).toContain("\n### Decisions\n")
+        expect(prompt).toContain("\n### Open todo items\n")
+        expect(prompt).toContain("200 words")
+        // A session that touched nothing gets no empty block to copy from.
+        expect(blockOf(prompt, "files-touched")).toBeUndefined()
+        expect(blockOf(prompt, "open-todos")).toBeUndefined()
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+})
+
+// ─── A compaction that would not shrink the context is not performed ──────
+describe("session.compaction — the result is measured before it is kept", () => {
+  /** A fixed block of `tokens` tokens on this session, via the capture store. */
+  function recordFloor(sessionID: SessionID, tokens: number) {
+    return Effect.sync(() => {
+      SessionPromptCapture.draft(sessionID, [])
+      SessionPromptCapture.record({
+        sessionID,
+        capturedAt: new Date().toISOString(),
+        model: "test/test-model",
+        base: ["base"],
+        finalSystem: ["s".repeat(tokens * 4)],
+        tools: {},
+      })
+    })
+  }
+
+  const autoMarker = (sessionID: SessionID) =>
+    SessionCompaction.use.create({ sessionID, agent: "build", model: ref, auto: true })
+
+  itCompaction.instance(
+    "an auto compaction under a large fixed block is DISCARDED and leaves the history intact",
+    () => {
+      const stub = llm()
+      stub.push(reply("Summary of the work so far."))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* Effect.addFinalizer(() => Effect.sync(() => SessionPromptCapture.reset()))
+        // 20k of system prompt and tool schemas against a handful of tokens of
+        // conversation: the measured shape of the 8.3% shave.
+        yield* recordFloor(session.id, 20_000)
+        const first = yield* createUserMessage(session.id, "hello")
+        yield* autoMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        const result = yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        expect(result).toBe("stop")
+
+        const all = yield* ssn.messages({ sessionID: session.id })
+        const summary = all.find((msg) => msg.info.role === "assistant" && msg.info.summary)
+        expect(summary?.info.role === "assistant" ? summary.info.error?.name : undefined).toBe("ContextOverflowError")
+
+        // The marker did not take effect: the model still sees the whole
+        // conversation, and nothing was deleted from the database.
+        const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        expect(filtered.map((msg) => msg.info.id)).toContain(first.id)
+        expect(all.map((msg) => msg.info.id)).toContain(first.id)
+        // And no synthetic "continue" turn was manufactured on top of it.
+        expect(
+          all.some((msg) => msg.parts.some((part) => part.type === "text" && part.synthetic === true)),
+        ).toBe(false)
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "the SAME shape with real history to remove is kept",
+    () => {
+      const stub = llm()
+      stub.push(reply("Summary of the work so far."))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* Effect.addFinalizer(() => Effect.sync(() => SessionPromptCapture.reset()))
+        yield* recordFloor(session.id, 1_000)
+        const first = yield* createUserMessage(session.id, "y".repeat(200_000))
+        yield* autoMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        const result = yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+
+        expect(result).toBe("continue")
+        const all = yield* ssn.messages({ sessionID: session.id })
+        const summary = all.find((msg) => msg.info.role === "assistant" && msg.info.summary)
+        expect(summary?.info.role === "assistant" ? summary.info.error : undefined).toBeUndefined()
+        const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        expect(filtered.map((msg) => msg.info.id)).not.toContain(first.id)
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "a MANUAL /compact is never discarded, however large the fixed block",
+    () => {
+      const stub = llm()
+      stub.push(reply("Summary of the work so far."))
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* Effect.addFinalizer(() => Effect.sync(() => SessionPromptCapture.reset()))
+        yield* recordFloor(session.id, 20_000)
+        const first = yield* createUserMessage(session.id, "hello")
+        yield* createSummaryCompaction(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const parent = msgs.at(-1)?.info.id
+        const result = yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        expect(result).toBe("continue")
+        const all = yield* ssn.messages({ sessionID: session.id })
+        const summary = all.find((msg) => msg.info.role === "assistant" && msg.info.summary)
+        expect(summary?.info.role === "assistant" ? summary.info.error : undefined).toBeUndefined()
+        const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+        expect(filtered.map((msg) => msg.info.id)).not.toContain(first.id)
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "MEASUREMENT: context before and after one full auto compaction",
+    () => {
+      const stub = llm()
+      stub.push(reply("Objective\n- ship the gate\n\n## Working set\n### Files\n- /repo/a.ts (whole file)"))
+      return Effect.gen(function* () {
+        const test = yield* TestInstance
+        const ssn = yield* SessionNs.Service
+        const session = yield* ssn.create({})
+        yield* Effect.addFinalizer(() => Effect.sync(() => SessionPromptCapture.reset()))
+        const floor = 20_000
+        yield* recordFloor(session.id, floor)
+        for (let turn = 0; turn < 6; turn++) {
+          const user = yield* createUserMessage(session.id, `turn ${turn}: ${"q".repeat(4_000)}`)
+          const work = yield* createAssistantMessage(session.id, user.id, test.directory)
+          yield* createToolCall(session.id, work.id, "read", { filePath: `/repo/f${turn}.ts` }, "r".repeat(20_000))
+        }
+        yield* autoMarker(session.id)
+
+        const model = createModel({ context: 100_000, output: 32_000 })
+        const size = (msgs: SessionV1.WithParts[]) =>
+          MessageV2.toModelMessagesEffect(msgs, model).pipe(
+            Effect.map((out) => floor + Token.estimate(JSON.stringify(out))),
+          )
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        const before = yield* size(MessageV2.filterCompacted(yield* MessageV2.stream(session.id)))
+        const parent = msgs.at(-1)?.info.id
+        const result = yield* SessionCompaction.use.process({
+          parentID: parent!,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        })
+        const after = yield* size(MessageV2.filterCompacted(yield* MessageV2.stream(session.id)))
+
+        console.log(
+          [
+            "| context before | after | change |",
+            "|---|---|---|",
+            `| ${before} | ${after} | ${(((after - before) / before) * 100).toFixed(1)}% |`,
+            `(floor ${floor} of both, tail budget default)`,
+          ].join("\n"),
+        )
+        expect(result).toBe("continue")
+        // The requirement, as a number: the kept compaction bought at least
+        // MIN_COMPACTION_GAIN of the whole context, floor included.
+        expect(after).toBeLessThanOrEqual(before * (1 - SessionCompaction.MIN_COMPACTION_GAIN))
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
+    },
+    { git: true },
   )
 })
 

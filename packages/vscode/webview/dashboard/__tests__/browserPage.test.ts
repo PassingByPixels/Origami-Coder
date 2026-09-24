@@ -28,6 +28,8 @@ const { fake } = vi.hoisted(() => ({
     executed: [] as unknown[][],
     executeThrows: undefined as string | undefined,
     invokeResults: {} as Record<string, unknown>,
+    /** `origami.browser.reveal`. Undefined is "unset", which reads as "first". */
+    policy: undefined as string | undefined,
   },
 }));
 
@@ -43,7 +45,11 @@ vi.mock('vscode', () => ({
       if (fake.executeThrows) throw new Error(fake.executeThrows);
     },
   },
-  workspace: { getConfiguration: () => ({ get: () => false }) },
+  workspace: {
+    getConfiguration: () => ({
+      get: (key: string) => (key === 'origami.browser.reveal' ? fake.policy : false),
+    }),
+  },
   lm: {
     get tools() {
       return [];
@@ -53,6 +59,7 @@ vi.mock('vscode', () => ({
 }));
 
 import { lookupPage, planReveal, screenNote } from '../../../src/browserPage';
+import { markRevealed, resetRevealedPages } from '../../../src/browserReveal';
 import type { ListedPage } from '../../../src/browserResult';
 
 const SHIPPED_TOOLS = ['list_browser_pages', 'read_page', 'click_element'];
@@ -73,6 +80,10 @@ beforeEach(() => {
   fake.executed = [];
   fake.executeThrows = undefined;
   fake.invokeResults = {};
+  fake.policy = undefined;
+  // The set is process-wide by design, so one case's id would otherwise be the
+  // next case's "already revealed".
+  resetRevealedPages();
 });
 
 describe('planReveal — the decision, off VS Code’s own three states', () => {
@@ -186,5 +197,78 @@ describe('lookupPage — the reveal actually reaching VS Code', () => {
     const found = await lookupPage(['read_page']);
     expect(found).toEqual({ unshared: 0 });
     expect(fake.executed).toEqual([]);
+  });
+});
+
+/** One hidden page, the state that WOULD be revealed. */
+function hidden(id = 'bg') {
+  return {
+    list_browser_pages: pageList([{ id, title: 'Docs', url: 'https://docs.test/', state: 'not visible' }]),
+  };
+}
+
+describe('the reveal POLICY — the agent must stop grabbing the screen (t-qcwpyy)', () => {
+  it('under the default, a page is revealed ONCE and the second verb leaves it alone', async () => {
+    // THE acceptance item. The first verb on a page nobody opened this session
+    // still reveals — a page the agent has never shown is worth one move — and
+    // every verb after it must not touch the editor at all.
+    fake.invokeResults = hidden();
+    const first = await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed).toHaveLength(1);
+    expect(first.screen).toContain('brought to the front');
+
+    const second = await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed, 'the second verb revealed the tab again').toHaveLength(1);
+    expect(second.screen).toContain('LEFT where it is');
+    expect(second.screen).toContain('origami.browser.reveal');
+  });
+
+  it('a page ALREADY opened this session is never revealed, not even once', async () => {
+    // What an `open` records: VS Code's own open tool showed the tab, so the
+    // first driven verb is already the second sighting.
+    markRevealed('bg');
+    fake.invokeResults = hidden();
+    const found = await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed).toEqual([]);
+    expect(found.pageId).toBe('bg');
+    expect(found.screen).toContain('LEFT where it is');
+  });
+
+  it('"never" withholds the very first reveal', async () => {
+    fake.policy = 'never';
+    fake.invokeResults = hidden();
+    const found = await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed).toEqual([]);
+    expect(found.screen).toContain('"never"');
+  });
+
+  it('"always" is still the old behaviour, on every verb', async () => {
+    fake.policy = 'always';
+    fake.invokeResults = hidden();
+    await lookupPage(SHIPPED_TOOLS);
+    await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed).toHaveLength(2);
+  });
+
+  it('a reveal that THREW is not recorded — the next verb may still try', async () => {
+    // Otherwise a transient failure would silence the page for the whole
+    // session, and the user would never see the tab they asked the agent for.
+    fake.executeThrows = 'command "vscode.open" not found';
+    fake.invokeResults = hidden();
+    await lookupPage(SHIPPED_TOOLS);
+    fake.executeThrows = undefined;
+    const second = await lookupPage(SHIPPED_TOOLS);
+    expect(fake.executed).toHaveLength(2);
+    expect(second.screen).toContain('brought to the front');
+  });
+
+  it('the withheld sentence says the tab may be the reason a click fails', async () => {
+    // The reveal was load-bearing for Playwright's actionability check. Not
+    // revealing is the user's choice, but a failure must still be able to name
+    // the hidden tab as a suspect, or round 2 of the click work repeats itself.
+    fake.policy = 'never';
+    fake.invokeResults = hidden();
+    const found = await lookupPage(SHIPPED_TOOLS);
+    expect(found.screen).toContain('not laid out');
   });
 });

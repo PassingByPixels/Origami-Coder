@@ -3,6 +3,7 @@ import photonWasm from "@silvia-odwyer/photon-node/photon_rs_bg.wasm" with { typ
 import { Effect } from "effect"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { cachedInvalidateForever } from "../effect/cached"
 import { FileSystem } from "../filesystem"
 import { DecodeError, ResizerUnavailableError, SizeError } from "../image"
 
@@ -11,7 +12,7 @@ const JPEG_QUALITIES = [80, 85, 70, 55, 40]
 export const make = Effect.gen(function* () {
   ;(globalThis as typeof globalThis & { __ORIGAMI_PHOTON_WASM_PATH?: string }).__ORIGAMI_PHOTON_WASM_PATH =
     path.isAbsolute(photonWasm) ? photonWasm : fileURLToPath(new URL(photonWasm, import.meta.url))
-  const loadPhoton = yield* Effect.cached(
+  const [loadPhoton] = yield* cachedInvalidateForever(
     Effect.tryPromise({
       try: () => import("@silvia-odwyer/photon-node"),
       catch: () => new ResizerUnavailableError(),

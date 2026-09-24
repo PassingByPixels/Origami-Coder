@@ -214,6 +214,18 @@ export type ProviderHookContext = {
 export type ProviderHook = {
   id: string
   models?: (provider: ProviderV2, ctx: ProviderHookContext) => Promise<Record<string, ModelV2>>
+  /**
+   * Ask the PROVIDER which models this credential is actually served, instead
+   * of trusting a list baked at build time.
+   *
+   * Runs after the config pass and before the variants pass, so a discovered
+   * row still gets its reasoning variants. It only ADDS: an id the config or
+   * the catalog already carries is left exactly as it was, and a loader that
+   * throws or answers with nothing leaves the seed list standing. That is why
+   * it takes no `provider` argument - it is not a filter over an existing
+   * list, it is a second SOURCE of rows.
+   */
+  discoverModels?: (ctx: ProviderHookContext) => Promise<Record<string, ModelV2>>
 }
 
 /** @deprecated Use AuthOAuthResult instead. */

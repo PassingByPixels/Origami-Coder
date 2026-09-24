@@ -1,14 +1,6 @@
-// cronState.ts — `.origami/crons.json`, the git-trackable truth for scheduled
-// runs. Mirrors agentManager/state.ts's house pattern deliberately: atomic
-// write (tmp + rename), and a corrupt file BACKED UP beside itself rather than
-// clobbered, because the thing most likely to corrupt it is a human editing it
-// by hand and their work must survive our failure to parse it.
-//
-// Unlike the agent-manager registry, this file is meant to be hand-edited and
-// committed, so a malformed entry is NOT silently dropped: loadCrons returns it
-// in `invalid` with the reason, and the pane shows it. Fields we do not
-// recognise on an otherwise-valid record are carried through verbatim, so a
-// newer Origami's cron survives a round-trip through an older one.
+// cronState.ts — `.origami/crons.json`, the git-trackable truth for scheduled runs. Atomic write
+// (tmp + rename); a corrupt file is backed up beside itself rather than clobbered, since a human
+// hand-editing it is the likeliest cause.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -93,9 +85,8 @@ export function parseCronRecord(raw: unknown): { ok: true; cron: CronRecord } | 
 }
 
 /**
- * Read the crons file. Missing = no crons. Unparseable = the file is COPIED to
- * `<file>.corrupt-<ts>` and we start empty, so a bad hand-edit costs the user
- * nothing they cannot get back.
+ * Read the crons file. Missing means no crons. Unparseable copies the file to `<file>.corrupt-<ts>`
+ *  and starts empty, so a bad hand-edit costs the user nothing they cannot get back.
  */
 export function loadCrons(repoRoot: string): LoadResult {
   const file = cronsFilePath(repoRoot);

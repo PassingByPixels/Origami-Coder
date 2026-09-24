@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="meadow">
+<head>
+  <meta charset="UTF-8" />
+  <!-- viewport-fit=cover + the safe-area insets in remote.css keep the pinned
+       composer clear of the iPhone home indicator. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <!-- The VS Code panel gets its CSP from the webview host with a per-render
+       nonce. This shell is a STATIC file served by the relay, so it carries
+       its own: no nonce (there is nothing to generate one), 'self' for script
+       instead. `style-src 'unsafe-inline'` is required because the chat bundle
+       is built with esbuild-svelte `css: 'injected'` and writes its
+       component styles into <style> at runtime. `connect-src` opens the
+       relay socket and nothing else. -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none';
+             script-src 'self';
+             style-src 'self' 'unsafe-inline';
+             img-src 'self' data: blob:;
+             font-src 'self';
+             connect-src 'self' ws: wss:;
+             manifest-src 'self';
+             base-uri 'none';
+             form-action 'none'" />
+  <title>Origami Remote</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.png" />
+  <link rel="apple-touch-icon" href="icon.png" />
+  <meta name="theme-color" content="#1a1a1a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <!-- chat.css FIRST: it defines the :root[data-theme] --og-* palettes the
+       whole bundle paints from. remote.css second, so the phone overrides win
+       on equal specificity without editing the shared stylesheet. -->
+  <link rel="stylesheet" href="chat.css" />
+  <link rel="stylesheet" href="remote.css" />
+</head>
+<body>
+  <div id="remoteStatus" data-state="connecting">connecting</div>
+  <!-- The chat strip. Empty (and hidden) until the desktop announces its FIRST
+       chat, open from then on; webview/remote/sessions.ts fills it from the
+       sessionCreated messages the phone already receives, and holds the + (new
+       chat) and the x (close the current chat). -->
+  <div id="remoteSessions" data-open="false" role="tablist" aria-label="Chats"></div>
+  <div id="app"></div>
+
+  <!-- The page's own voice. `remoteFatal` ends the page; `remoteNotice` sits
+       above the chat and says what went wrong while the chat keeps working —
+       a lost pairing state, or a device that cannot save one. -->
+  <div id="remoteNotice" role="status"></div>
+
+  <!-- A page opened in a plain browser holds no device key, so the desktop lets
+       it read and nothing else. This line says so the first time the reader
+       tries to send or approve. -->
+  <div id="remoteWatch" role="status"></div>
+
+  <div id="remoteFatal" role="alert"></div>
+
+  <!-- Only the shell loads here. It installs the acquireVsCodeApi shim, then
+       injects chat.js itself once the desktop's snapshot names a session —
+       ChatView reads __ORIGAMI_SOLO_SESSION__ during mount, so the bundle
+       cannot be a static <script> tag. See webview/remote/shim.ts. -->
+  <script src="remote.js"></script>
+</body>
+</html>

@@ -13,6 +13,7 @@ import { ProviderTransform } from "@/provider/transform"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_FRONT_DESK from "./prompt/front-desk.txt"
 import PROMPT_GOAL_CRITIC from "./prompt/goal-critic.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -55,6 +56,23 @@ export const Info = Schema.Struct({
   ),
   variant: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
+  /**
+   * The archetype's OWN deferral defaults, in the same vocabulary as
+   * `experimental.tool_search` and the per-agent `tool_search` block of
+   * origami.json: `defer` = one catalog line, `always` = full schema.
+   *
+   * Here so a NATIVE can ship a default deferred list with no config file
+   * present - a file-defined agent already has one, its frontmatter, which
+   * reaches the spawn path through `config.agent[name].tool_search`. The two
+   * are overlaid in that order (`ToolSearch.forSpawn`), so a user block wins
+   * over the archetype default on the tools it names and leaves the rest.
+   */
+  tool_search: Schema.optional(
+    Schema.Struct({
+      defer: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+      always: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+    }),
+  ),
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
 }).annotate({ identifier: "Agent" })
@@ -72,8 +90,7 @@ export interface Interface {
   /**
    * Re-read the agent DEFINITION FILES from disk and rebuild the registry, so a
    * definition written after the engine started can back a session with no
-   * restart. See the implementation for exactly what this does and does not
-   * refresh.
+   * restart. The implementation states what it does and does not refresh.
    */
   readonly rescan: () => Effect.Effect<void>
   /**
@@ -127,15 +144,11 @@ const layer = Layer.effect(
         const whitelistedDirs = [
           Truncate.GLOB,
           path.join(Global.Path.tmp, "*"),
-          // Origami's own home (~/.origami): global plans, cross-project memory,
-          // sessions, skills, settings. Reading/writing it back is core to
-          // non-linear + resumable workflow — a non-git workspace keeps its plans
-          // there and all cross-project memory lives there — so never prompt for
-          // it. One "*" glob covers the whole subtree: Wildcard turns * into .*
-          // which spans path separators (wildcard.ts). Generalises the plan
-          // agent's plans-only grant below to every agent. Normalize on win32 the
-          // same way the external-directory ask does (FSUtil.normalizePath =
-          // realpath), so a junctioned/relocated ~/.origami still matches.
+          // Origami's own home (~/.origami): plans, cross-project memory,
+          // sessions, skills, settings — never prompt for it. One "*" glob
+          // covers the whole subtree, because Wildcard turns * into .* which
+          // spans path separators (wildcard.ts). Normalized on win32 so a
+          // junctioned/relocated ~/.origami still matches.
           path.join(
             process.platform === "win32" ? FSUtil.normalizePath(Global.Path.origami) : Global.Path.origami,
             "*",
@@ -151,13 +164,13 @@ const layer = Layer.effect(
         const defaults = Permission.fromConfig({
           "*": "allow",
           doom_loop: "ask",
-          // A whole-screen grab can hold anything that is on the desktop, so it
-          // is never taken without a fresh answer. This line is what makes that
-          // true: `"*": "allow"` above MATCHES an unnamed permission id, so the
-          // `ask` fallback in Permission.evaluate never fires for one, and a new
-          // tool that says nothing here is silently allowed. The tool pairs this
-          // with `always: []` so even an "Always allow" answer does not carry to
-          // the next capture.
+          // A whole-screen grab can hold anything on the desktop, so it is never
+          // taken without a fresh answer, and THIS line is what makes that true:
+          // `"*": "allow"` above matches an unnamed permission id, so the `ask`
+          // fallback in Permission.evaluate never fires and a new tool that says
+          // nothing here is silently allowed. The tool pairs this with
+          // `always: []` so an "Always allow" answer does not carry to the next
+          // capture.
           screenshot: "ask",
           external_directory: {
             "*": "ask",
@@ -177,9 +190,9 @@ const layer = Layer.effect(
 
         const user = Permission.fromConfig(cfg.permission ?? {})
 
-        // A FACTORY, not a shared literal: `build` below mutates the entries it
-        // overlays and deletes the disabled ones, so every rebuild needs its own
-        // copies or a rescan would inherit the previous pass's edits.
+        // A FACTORY, not a shared literal: `build` mutates and deletes entries,
+        // so every rebuild needs its own copies or a rescan inherits the
+        // previous pass's edits.
         const natives = (): Record<string, Info> => ({
           build: {
             name: "build",
@@ -190,10 +203,9 @@ const layer = Layer.effect(
               Permission.fromConfig({
                 question: "allow",
                 plan_enter: "allow",
-                // Allow plan_exit so a stray call in build mode (the model
-                // reaching for it out of habit after a plan→build switch) lands
-                // on the tool — which no-ops gracefully — instead of a scary
-                // "unavailable tool" error. See tool/plan.ts.
+                // Allow plan_exit so a stray call in build mode (habit, after a
+                // plan→build switch) lands on the tool, which no-ops gracefully,
+                // instead of an "unavailable tool" error. See tool/plan.ts.
                 plan_exit: "allow",
               }),
               user,
@@ -211,11 +223,9 @@ const layer = Layer.effect(
                 question: "allow",
                 plan_exit: "allow",
                 task: {
-                  // Plan mode delegates only to the READ-ONLY 'explore' sub-agent
-                  // (research + report back, no edits/execution). Deny 'general',
-                  // build, and custom types so planning can't fan out
-                  // execute-capable sub-agents mid-plan. Feedback still flows: the
-                  // task tool returns the sub-agent's final text to the planner.
+                  // Plan mode delegates only to the READ-ONLY 'explore'
+                  // sub-agent. Deny 'general', build and custom types so
+                  // planning cannot fan out execute-capable sub-agents mid-plan.
                   "*": "deny",
                   explore: "allow",
                 },
@@ -234,29 +244,17 @@ const layer = Layer.effect(
             native: true,
           },
           /**
-           * DEEP PLAN mode. Plan mode's shape, widened in exactly three places
-           * and for one reason each - it is for work large or new enough that
-           * starting off the cuff buys technical debt, so the plan itself has to
-           * be researched, argued against, and handed over as evidence.
+           * DEEP PLAN mode. Plan mode's shape, widened in exactly two places:
            *
-           * 1. `edit` covers the plan FOLDER TREE, not one `.md`. The
-           *    deliverable is a directory (PLAN.md, map.json, DECISIONS.md,
-           *    research/ and research/critiques/), so the glob drops `.md`.
-           *    `"*": "deny"` still stands ahead of it: this agent may write
-           *    inside its plan folder and NOWHERE else, which is what stops a
-           *    "deep plan" for a brand-new project from quietly scaffolding
-           *    that project.
-           * 2. `task` allows `general` as well as `explore`. Plan mode denies
-           *    `general` so a plan cannot fan out execute-capable children;
-           *    here the research fan-out and the adversarial critics ARE the
-           *    feature, and `explore` alone cannot read the web or hold a
-           *    critique brief. The children write nothing the parent does not:
-           *    a subagent's own ruleset governs it, and the plan folder is the
-           *    only place the parent will paste their findings.
-           * 3. Nothing is added for the web. `websearch`/`webfetch` are already
-           *    open through the `"*": "allow"` base (same as plan mode), and a
-           *    redundant allow would only invite the next reader to think one
-           *    of them was ever closed.
+           * 1. `edit` covers the plan FOLDER TREE, not one `.md`, since the
+           *    deliverable is a directory. `"*": "deny"` still stands ahead of
+           *    it: this agent may write inside its plan folder and NOWHERE else,
+           *    which stops a "deep plan" for a new project from scaffolding it.
+           * 2. `task` allows `general` as well as `explore`, because the
+           *    research fan-out and the adversarial critics ARE the feature and
+           *    `explore` alone cannot read the web or hold a critique brief. A
+           *    subagent's own ruleset governs it, and the plan folder is the
+           *    only place the parent pastes their findings.
            *
            * NOT hidden and `mode: "primary"`, which is the whole of the ACP
            * wiring: `acp/directory.ts` modeOptionsFrom() lists every non-hidden
@@ -294,13 +292,56 @@ const layer = Layer.effect(
           general: {
             name: "general",
             description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
+            /**
+             * todowrite is NAMED, not merely left out. Leaving it out would not
+             * grant it: `subagent-permissions.ts` appends a todowrite deny to
+             * every spawned child whose own ruleset does not name the tool, so
+             * silence reads as deny. Naming it `allow` is what actually lifts
+             * the old blanket deny - a general child plans its own multi-step
+             * work now (owner-approved default matrix, t-f39xs2).
+             */
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
-                todowrite: "deny",
+                todowrite: "allow",
+                // A delegate may ASK. The `defaults` above deny `question` so a
+                // primary agent cannot interrogate the user mid-turn; a child
+                // that hits an ambiguity has nobody else to put it to, and the
+                // parent is waiting on its answer either way.
+                question: "allow",
+                // The OWNER'S TOOLS, closed to a delegate: a child does not
+                // curate the user's memory (`remember`, `dream`), does not draw
+                // in the user's chat (`chart`), does not set the session's goal
+                // (`goal`), and does not address strangers on the flock
+                // (`flock_who`, `flock_ask`). Each is the user's own instrument,
+                // not a unit of delegated work.
+                remember: "deny",
+                dream: "deny",
+                chart: "deny",
+                goal: "deny",
+                flock_who: "deny",
+                flock_ask: "deny",
+                // The task SIDECARS follow `task` itself, which
+                // subagent-permissions.ts denies to any child that does not name
+                // it: with no way to spawn, listing and stopping other people's
+                // background work is reach, not capability.
+                task_list: "deny",
+                task_stop: "deny",
+                // t-f89g49. A side quest is a note to the OWNER about work
+                // outside the current job. A delegate's job IS the current
+                // job, and it already reports back in its result text.
+                side_quest: "deny",
               }),
               user,
             ),
+            /**
+             * The archetype's default catalog lines: reachable, but not worth a
+             * schema every turn for an agent whose usual job is code. A user
+             * `tool_search` block for `general` overlays this and wins.
+             */
+            tool_search: {
+              defer: ["webfetch", "websearch", "session_search", "browser", "board_*", "webmcp_*", "screenshot"],
+            },
             options: {},
             mode: "subagent",
             native: true,
@@ -314,22 +355,50 @@ const layer = Layer.effect(
                 grep: "allow",
                 glob: "allow",
                 // Read-only metadata retrieval over `wiki/` and
-                // `.origami/memory/`. Explore is the agent this exists for:
-                // a bare `"*": deny` would leave it grepping for phrasing when
-                // the workspace already files the answer under a tag.
+                // `.origami/memory/`. A bare `"*": deny` would leave explore
+                // grepping for phrasing when the workspace already files the
+                // answer under a tag.
                 wiki_search: "allow",
                 wiki_related: "allow",
                 list: "allow",
-                bash: "allow",
+                // NO `bash`. The description this archetype ships says
+                // read-only, and a shell is the one allow that makes that untrue
+                // (t-f39xs2, owner-approved matrix).
                 webfetch: "allow",
                 websearch: "allow",
                 read: "allow",
+                // t-f39xs2, owner-approved matrix: both are DEFERRED for
+                // explore, not off, and a tool this cage denies never reaches
+                // the deferral decision at all. So they are named here - the
+                // presentation the ledger shows needs the tool to exist first.
+                // `skill` also puts the skill roster back in explore's system
+                // prompt (session/system.ts hides it when skill is disabled).
+                skill: "allow",
+                screenshot: "allow",
+                // Reading what CHANGED and what a symbol IS are both searching.
+                git_diff: "allow",
+                lsp: "allow",
+                // Its own catalog. Without this explore is handed a deferred
+                // list it has no tool to open - the D list below would be dead
+                // weight rather than one round trip.
+                tool_search: "allow",
+                // Allowed so it can be DEFERRED: a denied tool never reaches the
+                // deferral decision. On explore's defer list just below.
+                session_search: "allow",
+                // t-f89g49. Redundant under the `"*": deny` above and named
+                // anyway: the deny list a reader checks is this one.
+                side_quest: "deny",
                 external_directory: readonlyExternalDirectory,
               }),
               user,
             ),
             description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
             prompt: PROMPT_EXPLORE,
+            /** Same idea as `general`, narrower: a searcher pays for no schema
+             *  it does not open with. */
+            tool_search: {
+              defer: ["skill", "webfetch", "websearch", "session_search", "screenshot"],
+            },
             options: {},
             mode: "subagent",
             native: true,
@@ -341,27 +410,22 @@ const layer = Layer.effect(
            * be grading its own homework with the transcript in hand - which is
            * the one thing this agent exists not to do.
            *
-           * Permissions are `explore`'s shape plus WRITE-TO-VALIDATE. `bash`
-           * was always open, for the reason `explore` has it and more so:
-           * verifying "the tests pass" means running the tests. `edit` - the id
-           * `edit`, `write` and `apply_patch` all ask under - is open for the
-           * same reason taken one step further: a condition whose only honest
-           * check is a test that does not exist yet cannot be verified by
-           * reading. The contract that makes an editor safe here is written in
-           * the PROMPT, not in the ruleset - write only to validate, never to
-           * make the condition true, and name every file you touched in the
-           * evidence. A ruleset cannot tell those two apart; a reader of the
-           * evidence can.
+           * Permissions are `explore`'s shape plus WRITE-TO-VALIDATE: `bash`
+           * because verifying "the tests pass" means running them, `edit`
+           * because a condition whose only honest check is a test that does not
+           * exist yet cannot be verified by reading. The contract that makes an
+           * editor safe here is in the PROMPT, not the ruleset - write only to
+           * validate, never to make the condition true, and name every file
+           * touched in the evidence. A ruleset cannot tell those two apart; a
+           * reader of the evidence can.
            *
-           * The denies that still matter are the ones no reviewer may have: it
-           * cannot delegate the judgement (`task`) or lobby anyone about it
+           * The denies that matter are the ones no reviewer may have: it cannot
+           * delegate the judgement (`task`) or lobby anyone about it
            * (`send_message`). The `"*": "deny"` base closes both, and
            * `subagent-permissions.ts` plus `criticPermission` close them again
            * at spawn so a parent chat on bypass cannot re-open them.
            *
-           * `steps: 15` is the cost cap. A verification is a bounded read: find
-           * the artefacts, run the check, report. A critic that needs fifty
-           * steps is re-doing the work, not reviewing it.
+           * `steps: 15` is the cost cap: a verification is a bounded read.
            */
           "goal-critic": {
             name: "goal-critic",
@@ -381,10 +445,8 @@ const layer = Layer.effect(
                 list: "allow",
                 read: "allow",
                 bash: "allow",
-                // WRITE TO VALIDATE. One id covers `edit`, `write` and
-                // `apply_patch` - all three ask under "edit". Scoped by the
-                // prompt, not by a path glob: the test a condition needs may
-                // live anywhere the project keeps its tests, and a glob that
+                // WRITE TO VALIDATE. Scoped by the prompt, not a path glob: the
+                // test a condition needs may live anywhere, and a glob that
                 // guessed wrong would send the critic back to reading.
                 edit: "allow",
                 git_diff: "allow",
@@ -394,6 +456,64 @@ const layer = Layer.effect(
                 external_directory: readonlyExternalDirectory,
               }),
               user,
+            ),
+            options: {},
+          },
+          /**
+           * THE FRONT DESK: the only agent in this registry that answers to
+           * someone who is not the owner.
+           *
+           * A flock question (`flock/frontdesk.ts`) is run by this archetype in
+           * a child session, never in the owner's chat. Two departures from
+           * every other native above, and both are the security story:
+           *
+           * 1. `user` IS NOT MERGED. Every other archetype ends
+           *    `Permission.merge(defaults, …, user)` so the owner's config has
+           *    the last word — correct when the owner is the one being served.
+           *    Here the caller is a stranger, and an owner running
+           *    `permission: {"*": "allow"}` for their own convenience would
+           *    hand that stranger a shell. The owner's say over this agent is
+           *    the `flock.frontDesk.scope` block, which `policy.ts` turns into
+           *    read rules appended AFTER these — narrowing only, never widening.
+           * 2. `external_directory: "deny"`, unlike `explore`'s read-only ask.
+           *    This is the FLOOR, not the final answer: the scope ruleset
+           *    (`flock/policy.ts scopeRuleset`) re-allows it for EXACTLY the
+           *    folders and out-of-worktree repos the owner marked shareable,
+           *    and appends those rules after these, so the deny stands for
+           *    everywhere else. Written as a blanket deny here so that a desk
+           *    with an empty scope — or a caller who forgot to compose the
+           *    scope at all — leaves the worktree nowhere.
+           *
+           * `hidden`, because the owner's own model has no reason to reach for
+           * it: it is spawned by an inbound question and by nothing else.
+           * `steps: 12` caps what one stranger's question can cost.
+           */
+          "front-desk": {
+            name: "front-desk",
+            mode: "subagent",
+            native: true,
+            hidden: true,
+            steps: 12,
+            description:
+              "Answers a question from a flock contact using only the files the owner marked shareable. Read-only, no shell, no network.",
+            prompt: PROMPT_FRONT_DESK,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                wiki_search: "allow",
+                wiki_related: "allow",
+                // Skills are NOT a permission: a skill is instructions, not a
+                // secret, so there is no meaningful "no" to offer. Allowing it
+                // also puts the skill roster back in the desk's system prompt
+                // (`session/system.ts` hides it whenever `skill` is disabled).
+                skill: "allow",
+                external_directory: "deny",
+              }),
             ),
             options: {},
           },
@@ -475,11 +595,9 @@ const layer = Layer.effect(
             item.steps = value.steps ?? item.steps
             item.options = mergeDeep(item.options, value.options ?? {})
             // THREE layers, in precedence order. The BOT CONTRACT sits in the
-            // middle: a `permissions:` tier and a `skills:` allowlist are a
-            // starting point the definition asked for by name, so they overlay
-            // the engine's defaults but lose to any explicit `permission:` line
-            // the same file wrote. Absent contract keys expand to an empty
-            // ruleset, so a definition that declares none is untouched.
+            // middle: a tier and a skills allowlist overlay the engine defaults
+            // but lose to any explicit `permission:` line the same file wrote.
+            // Absent contract keys expand to an empty ruleset.
             item.permission = Permission.merge(
               item.permission,
               AgentBot.rulesetFor(item.options),
@@ -509,45 +627,28 @@ const layer = Layer.effect(
         /** The definitions as of engine start: JSON `agent` blocks AND markdown. */
         let agents = build(cfg.agent ?? {})
 
-        /**
-         * The `agent` blocks the CONFIG FILES declared, without the markdown.
-         * The base every rescan rebuilds from - see below for why the boot-time
-         * `cfg.agent` cannot be that base.
-         */
+        /** The `agent` blocks the CONFIG FILES declared, without the markdown —
+         *  the base every rescan rebuilds from. */
         const declared = yield* config.getDeclaredAgents()
 
         /**
          * Re-read the agent DEFINITION FILES and rebuild the registry.
          *
-         * Rebuilt as "what the CONFIG declares, plus what is ON DISK NOW",
-         * never as a merge over the previous pass. That is what makes the
-         * disk the truth for everything the files own:
-         *
-         *  - A definition file ADDED since the engine started becomes visible
-         *    to `get`/`list`, so it can back a session immediately.
-         *  - A field EDITED in an existing file takes its new value.
-         *  - A definition file DELETED loses its registry entry, because
-         *    nothing puts it back. It used to survive for the life of the
-         *    process: the base was `cfg.agent`, which is the UNION of the
-         *    markdown and the origami.json `agent` blocks, so dropping the
-         *    entries the disk no longer had would have deleted the
-         *    config-declared agents along with them. `getDeclaredAgents` is
-         *    that union split by provenance, which is the whole fix.
-         *  - A field REMOVED from a file is really removed, for the same
-         *    reason - there is no previous pass left to inherit it from.
-         *
-         * A CONFIG-declared agent is never dropped, whatever the disk says. An
-         * agent both sources name falls back to the config block when its file
-         * goes, rather than disappearing.
+         * Rebuilt as "what the CONFIG declares, plus what is ON DISK NOW", never
+         * as a merge over the previous pass. That makes the disk the truth for
+         * everything the files own: a file ADDED becomes visible to `get`/`list`,
+         * an EDITED field takes its new value, and a DELETED file or REMOVED
+         * field is really gone. The base is `getDeclaredAgents` - the union split
+         * by provenance - not `cfg.agent`, which would take the config-declared
+         * agents down with the disk ones. A CONFIG-declared agent is never
+         * dropped, whatever the disk says.
          *
          * STILL needs an engine restart: `permission`, `skill` and `reference`
-         * config, and the `agent` blocks themselves. Those are captured once
-         * above, and a definition file cannot change them.
+         * config, and the `agent` blocks themselves.
          *
-         * An `Info` a caller ALREADY holds is never mutated - it is a plain
-         * value, and this replaces the record wholesale. A turn in flight
-         * therefore finishes on the definition it started with, which is what
-         * stops one edit from changing an agent mid-turn.
+         * An `Info` a caller ALREADY holds is never mutated - this replaces the
+         * record wholesale, so a turn in flight finishes on the definition it
+         * started with and one edit cannot change an agent mid-turn.
          */
         const rescan = Effect.fnUntraced(function* () {
           agents = build(mergeDeep(declared, yield* config.getLiveAgents()))

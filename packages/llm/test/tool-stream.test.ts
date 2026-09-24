@@ -96,4 +96,74 @@ describe("ToolStream", () => {
       })
     }),
   )
+  it.effect("degrades unparseable tool input into an invalid tool call", () =>
+    Effect.gen(function* () {
+      // Real shape from OpenRouter -> Novita -> inclusionai/ling-3.0-flash-fin:free
+      // (2026-09-03): the upstream stopped on its own token cap mid-string and
+      // OpenRouter still reported finish_reason "tool_calls". The bytes cannot
+      // parse, and the turn must survive it.
+      const truncated = '{"site": "https://origami.gratis/folio/", "tool": "search_docs", "args": {"query": "Origami'
+      const tools = ToolStream.start(ToolStream.empty<number>(), 0, {
+        id: "call_1",
+        name: "webmcp_call",
+        input: truncated,
+      })
+
+      const finished = yield* ToolStream.finish(ADAPTER, tools, 0)
+
+      expect(finished).toEqual({
+        tools: {},
+        events: [
+          { type: "tool-input-end", id: "call_1", name: "webmcp_call" },
+          {
+            type: "tool-call",
+            id: "call_1",
+            name: "webmcp_call",
+            input: truncated,
+            invalid: true,
+            error: "Invalid JSON input for test-route tool call webmcp_call",
+          },
+        ],
+      })
+    }),
+  )
+
+  it.effect("finishes the good calls beside the broken one", () =>
+    Effect.gen(function* () {
+      const first: ToolStream.State<number> = ToolStream.start(ToolStream.empty<number>(), 0, {
+        id: "call_1",
+        name: "lookup",
+        input: '{"query":"weather"}',
+      })
+      const tools = ToolStream.start(first, 1, { id: "call_2", name: "lookup", input: '{"query":' })
+
+      const finished = yield* ToolStream.finishAll(ADAPTER, tools)
+
+      expect(finished.events).toMatchObject([
+        { type: "tool-input-end", id: "call_1" },
+        { type: "tool-call", id: "call_1", input: { query: "weather" } },
+        { type: "tool-input-end", id: "call_2" },
+        { type: "tool-call", id: "call_2", input: '{"query":', invalid: true },
+      ])
+    }),
+  )
+
+  it.effect("marks an authoritative final input invalid without losing it", () =>
+    Effect.gen(function* () {
+      const tools = ToolStream.start(ToolStream.empty<string>(), "item_1", { id: "call_1", name: "lookup", input: "" })
+
+      const finished = yield* ToolStream.finishWithInput(ADAPTER, tools, "item_1", "not json")
+
+      expect(finished.events).toMatchObject([
+        { type: "tool-input-end", id: "call_1" },
+        {
+          type: "tool-call",
+          id: "call_1",
+          input: "not json",
+          invalid: true,
+          error: "Invalid JSON input for test-route tool call lookup",
+        },
+      ])
+    }),
+  )
 })

@@ -3,25 +3,17 @@ import path from "node:path"
 import { Global } from "@origami/core/global"
 
 /**
- * PEER AGENT BROKER — how one engine process finds the others (t-kgu05m).
+ * PEER AGENT BROKER - how one engine process finds the others.
  *
- * The topology this serves: one engine per VS Code window, each already running
- * a private loopback HTTP server on a random port (cli/cmd/acp.ts). Nothing on
- * the machine knows those ports, so discovery is a directory of heartbeat files:
- * every engine writes `~/.origami/agents/<pid>.json` at startup, refreshes
- * `lastSeen` on a timer, and deletes the file on a clean exit. A reader drops
- * anything older than STALE_MS, which is what covers the unclean exits.
- *
- * Why files and not mDNS/a daemon: the peers are the SAME user on the SAME
- * machine, so the user's own home directory is both the rendezvous point and the
- * access-control boundary — another user cannot read the directory, and every
- * `httpBase` is asserted loopback before anything is POSTed to it. There is no
- * LAN surface here at all, by construction.
- *
- * Plain `node:fs` rather than the FSUtil service: the writer is a timer and a
- * process finalizer, neither of which runs inside an Effect context, and
- * `Global.Path` (which this keys off, so ORIGAMI_TEST_HOME isolates tests) is
- * itself plain fs.
+ * Topology: one engine per VS Code window, each running a private loopback HTTP
+ * server on a random port. Discovery is a directory of heartbeat files: every
+ * engine writes `~/.origami/agents/<pid>.json`, refreshes `lastSeen` on a timer
+ * and deletes it on a clean exit; a reader drops anything older than STALE_MS.
+ * Files rather than mDNS because the peers are the SAME user on the SAME
+ * machine: the home directory is both rendezvous point and access-control
+ * boundary, and every `httpBase` is asserted loopback before a POST - there is
+ * no LAN surface by construction. Plain `node:fs` rather than FSUtil: the
+ * writer is a timer and a process finalizer, neither inside an Effect context.
  */
 
 export type AgentKind = "interactive" | "background"
@@ -44,14 +36,9 @@ export const REFRESH_MS = 20_000
 export const STALE_MS = 90_000
 /**
  * How recent a heartbeat must be before its `sessionIds` may be treated as the
- * peer's ATTACHED set — the sessions a chat is actually rendering right now.
- *
- * Tighter than STALE_MS on purpose, because the two answer different questions.
- * LISTING asks "is this engine alive", and a busy engine that missed a beat is
- * still worth showing. DELIVERING asks "will a human see this", and an answer
- * that may be a minute and a half old is not evidence of that. `refresh()` is
- * what makes the tighter bound affordable: the set is republished the moment it
- * changes, so a fresh file is a current file rather than merely a recent one.
+ * peer's ATTACHED set. Tighter than STALE_MS: listing asks "is this engine
+ * alive", delivering asks "will a human see this". `refresh()` republishes the
+ * set the moment it changes, which is what makes the tighter bound affordable.
  */
 export const ATTACH_FRESH_MS = 2 * REFRESH_MS
 
@@ -67,28 +54,18 @@ export function entryPath(pid: number): string {
 /**
  * This engine's display name.
  *
- * `ORIGAMI_AGENT_NAME` is the config home, and the choice is forced by what the
- * entry has to be unique across: one entry per ENGINE PROCESS, one process per
- * VS Code window. The engine's other config homes are all wrong for that —
- * `origami.json` (global) is shared by every window on the machine, so a name
- * set there would make every peer identical, and a project-level `origami.json`
- * is shared by every window open on the same repo. An environment variable is
- * the only per-process value the shell can already vary per window, and the
- * shell already composes exactly such an overlay at spawn (vscode/src/
- * engineEnv.ts), so the user-facing surface is the ordinary VS Code setting
- * `origami.agentName` with no config-schema change anywhere.
+ * `ORIGAMI_AGENT_NAME` is the config home because the entry must be unique per
+ * ENGINE PROCESS: `origami.json`, global or project-level, is shared by every
+ * window, so a name set there would make peers identical. The shell composes
+ * the per-window overlay at spawn (vscode/src/engineEnv.ts).
  */
 export function displayName(cwd: string, pid = process.pid): string {
   const set = process.env["ORIGAMI_AGENT_NAME"]?.trim()
   if (set) return set
-  // The FALLBACK carries a suffix, the user's own name does not. Round-3 UAT
-  // opened two windows on the same folder and got two agents both called
-  // "Origami UAT": every bare address was then ambiguous, so the sending model
-  // had to guess which one it was itself, and guessed wrong. basename(cwd) is
-  // still the readable half — the suffix only has to separate the peers, and
-  // the pid is the one value that is already unique per engine process and
-  // stable for its whole life. A user who sets a name has said which window is
-  // which, and suffixing that would be undoing their answer.
+  // The FALLBACK carries a suffix, the user's own name does not. Two windows
+  // on the same folder would otherwise share one name and every bare address
+  // would be ambiguous; the pid is unique per engine process and stable for
+  // its life. A user who set a name has already said which window is which.
   const base = path.basename(cwd) || "agent"
   return `${base}-${String(pid).slice(-4)}`
 }
@@ -97,17 +74,11 @@ export function displayName(cwd: string, pid = process.pid): string {
  * Interactive means a human is WATCHING this engine's transcript — not merely
  * that a client is attached to it.
  *
- * `ORIGAMI_CLIENT` alone cannot tell those apart. It names the TRANSPORT, and
- * the VS Code shell spawns one engine per LOCAL SESSION (acpClient.start), so
- * "acp" is equally true of a chat tab and of a headless Agent-Manager or loop
- * session that no chat renders. Round-3 UAT delivered three times into exactly
- * such a session: the POST was accepted, the tool said "Delivered", and the
- * text was never shown to anybody.
- *
- * Only the shell knows which of its sessions has a chat, so it DECLARES it in
- * `ORIGAMI_AGENT_KIND` at spawn (vscode/src/peerName.ts). A declared background
- * engine then falls under the existing opt-in gate and stays out of discovery,
- * which is the behaviour that already existed for every other unwatched engine.
+ * `ORIGAMI_CLIENT` names the TRANSPORT only, and the shell spawns one engine
+ * per local session, so "acp" is equally true of a headless Agent-Manager or
+ * loop session that no chat renders. Only the shell knows which session has a
+ * chat, so it declares it in `ORIGAMI_AGENT_KIND` at spawn; a declared
+ * background engine falls under the opt-in gate and stays out of discovery.
  */
 export function kindOf(
   client = process.env["ORIGAMI_CLIENT"],
@@ -124,11 +95,9 @@ export function backgroundOptIn(value = process.env["ORIGAMI_AGENT_PEERS"]): boo
   return flag === "true" || flag === "1"
 }
 
-/**
- * Only ever a loopback host. Enforced at the CALL site as well as here, because
- * the broker file is ordinary user-writable JSON: a tampered or stale entry must
- * not be able to aim a peer POST at a LAN address.
- */
+/** Only ever a loopback host. Enforced at the CALL site as well as here, because
+ *  the broker file is ordinary user-writable JSON: a tampered or stale entry must
+ *  not be able to aim a peer POST at a LAN address. */
 export function isLoopback(httpBase: string): boolean {
   if (!URL.canParse(httpBase)) return false
   const url = new URL(httpBase)
@@ -141,12 +110,9 @@ export function isLoopback(httpBase: string): boolean {
 let sessions: () => readonly string[] = () => []
 let live: { entry: Entry; timer: ReturnType<typeof setInterval>; beat: () => void } | undefined
 
-/**
- * Where the published session ids come from. The ACP session store is the only
- * place that knows which sessions are INTERACTIVE — a sub-agent's session is
- * never registered there — so "interactive sessions only" is a property of the
- * source, not a filter applied afterwards.
- */
+/** Where the published session ids come from. The ACP session store is the only
+ *  place that knows which sessions are INTERACTIVE - a sub-agent's session is
+ *  never registered there - so the filter is a property of the source. */
 export function attachSessions(read: () => readonly string[]): void {
   sessions = read
 }
@@ -154,42 +120,26 @@ export function attachSessions(read: () => readonly string[]): void {
 /**
  * Republish this engine's entry NOW, outside the beat.
  *
- * The heartbeat alone would leave the published set up to REFRESH_MS out of
- * date, and every one of those seconds is a window in which a peer delivers a
- * handoff into a session that has just been closed and reports it delivered.
- * The ACP layer calls this on every attach and detach, so the file describes
- * the session set as it IS rather than as it was up to twenty seconds ago —
- * which is what lets delivery trust it (ATTACH_FRESH_MS).
- *
- * A no-op for an engine that never registered, like every other writer here.
+ * The heartbeat alone would leave the published set up to REFRESH_MS stale, and
+ * a peer could deliver a handoff into a just-closed session and report it
+ * delivered. The ACP layer calls this on every attach and detach, which is what
+ * lets delivery trust the file (ATTACH_FRESH_MS). A no-op if never registered.
  */
 export function refresh(): void {
   live?.beat()
 }
 
 /**
- * Writes are SERIALISED, because two of them overlapping can publish the older
- * one (t-kgu05m round 4).
+ * Writes are SERIALISED, because two overlapping ones can publish the older.
  *
- * Every write goes tmp + rename so a reader never sees half an entry, and every
- * write in a process aims at the same two paths — one entry file, named for the
- * pid, and one scratch file beside it. Overlap them and the steps interleave:
- * the second write fills the scratch file, the FIRST write's rename publishes
- * it, and the second write's rename then finds nothing to move and is swallowed
- * as a missing-file error. Land the ordering the other way round and the file
- * published is the older content, permanently — nothing rewrites it until the
- * next twenty-second beat.
- *
- * That is not a rare shape here, it is the ordinary one: `start()` beats once
- * with an empty session set, and the attach that follows it calls `refresh()`
- * milliseconds later. An engine that loses that race advertises itself with NO
- * attached sessions, so peers can neither address it nor deliver to it while it
- * sits there looking alive — which is the round-4 report exactly.
- *
- * A queue rather than a unique scratch name per write: unique names stop the
- * two from corrupting each other but not from finishing out of order, and
- * out-of-order is the half that costs the attached set. The chain never
- * rejects, so a failed write cannot break the ones behind it.
+ * Every write goes tmp + rename, and every write in a process aims at the same
+ * two paths. Overlapped, the second write fills the scratch file, the first
+ * write's rename publishes it, and the second's rename finds nothing to move -
+ * so the published file can stay the older content until the next beat. A queue
+ * rather than a unique scratch name per write: unique names stop the two from
+ * corrupting each other but not from finishing out of order, and out-of-order
+ * is the half that costs the attached set. The chain never rejects, so a failed
+ * write cannot break the ones behind it.
  */
 let writes: Promise<void> = Promise.resolve()
 
@@ -207,11 +157,9 @@ async function publish(entry: Entry): Promise<void> {
   await fs.rename(tmp, file)
 }
 
-/**
- * Register this engine and start the heartbeat. Returns the stop hook; calling
- * it removes the file. A background engine that has not opted in registers
- * nothing and returns a no-op, so the caller needs no branch of its own.
- */
+/** Register this engine and start the heartbeat. Returns the stop hook; calling
+ *  it removes the file. A background engine that has not opted in registers
+ *  nothing and returns a no-op, so the caller needs no branch of its own. */
 export function start(input: {
   httpBase: string
   cwd: string
@@ -220,8 +168,7 @@ export function start(input: {
 }): { entry?: Entry; stop: () => Promise<void> } {
   const kind = input.kind ?? kindOf()
   if (kind === "background" && !backgroundOptIn()) {
-    // The other half of the receipt: an engine that registers NOTHING is the
-    // hardest case to diagnose from the outside, because it looks exactly like
+    // An engine that registers NOTHING looks, from the outside, exactly like
     // one whose write failed. Say which of the two it is.
     console.error(`[peer] skipped pid=${process.pid} kind=background — set ORIGAMI_AGENT_PEERS=true to be discoverable`)
     return { stop: async () => {} }
@@ -244,13 +191,9 @@ export function start(input: {
   // The heartbeat must never be the reason the process stays alive.
   timer.unref?.()
   live = { entry: base, timer, beat }
-  // The registration RECEIPT. Peer discovery is otherwise the one subsystem
-  // with no visible surface until it misbehaves: a chat missing from a roster
-  // looks identical whether its engine never registered, registered under a
-  // name nobody expected, or registered fine and is simply the caller itself.
-  // stderr needs no new plumbing — the VS Code shell already forwards it to the
-  // output channel (vscode/src/acpClient.ts) — so one line per engine turns
-  // that question into a lookup.
+  // The registration RECEIPT. A chat missing from a roster looks identical
+  // whether its engine never registered, registered under an unexpected name,
+  // or is the caller itself; stderr already reaches the VS Code output channel.
   console.error(`[peer] registered pid=${base.pid} name=${base.name} base=${base.httpBase} kind=${kind}`)
 
   return {
@@ -258,9 +201,8 @@ export function start(input: {
     stop: async () => {
       clearInterval(timer)
       live = undefined
-      // Drain first: a write still queued behind this would otherwise land
-      // after the removal and put the entry back, leaving a cleanly exited
-      // engine advertised as a live peer until it aged out.
+      // Drain first: a write still queued behind this would land after the
+      // removal and put the entry back, advertising a cleanly exited engine.
       await writes.catch(() => {})
       await fs.rm(entryPath(base.pid), { force: true }).catch(() => {})
     },
@@ -302,21 +244,13 @@ function parse(text: string): Entry | undefined {
 /**
  * Is the process that wrote this entry still running?
  *
- * Freshness alone cannot answer that, and there is one address on the machine
- * where the difference bites. `Server.listen` prefers port 4096 and falls back
- * to an ephemeral one (server/server.ts), so the FIRST engine to start owns
- * 4096 and every other engine owns a port no later process will choose while it
- * is in use. 4096 is therefore the only `httpBase` a DIFFERENT process can
- * inherit: kill the first engine and the next one to start answers on its
- * corpse's behalf. For the rest of STALE_MS the liveness probe then confirms a
- * dead chat (it only ever asked whether SOMETHING answers the port, never
- * whether it is the process this entry names), and a handoff addressed to it is
- * POSTed into a stranger's engine.
- *
- * Signal 0 sends nothing; it asks the OS whether the pid can be signalled.
- * ESRCH is the only answer that means GONE — EPERM means it exists and belongs
- * to somebody else, which is a reason to leave it alone, not to delete it. A
- * recycled pid can still fool this, which is why the freshness bound stays.
+ * Freshness alone cannot answer that. `Server.listen` prefers port 4096 and
+ * falls back to an ephemeral one, so 4096 is the only `httpBase` a DIFFERENT
+ * process can inherit: kill the first engine and the next one to start answers
+ * on its corpse's behalf, and a handoff addressed to it is POSTed into a
+ * stranger's engine. Signal 0 sends nothing; ESRCH is the only answer that
+ * means GONE - EPERM means it exists and belongs to somebody else. A recycled
+ * pid can still fool this, which is why the freshness bound stays.
  */
 export function processAlive(pid: number): boolean {
   // A pid from a hand-mangled entry, and on POSIX `kill(0, …)` addresses the
@@ -332,16 +266,12 @@ export function processAlive(pid: number): boolean {
 
 /**
  * Every live peer, newest heartbeat first. An entry whose engine is gone is
- * DELETED as it is found — a killed engine cannot clean up after itself, so the
- * next reader is the only thing that can. Our own entry is excluded: an agent
- * messaging itself is a loop, not a handoff.
+ * DELETED as it is found - a killed engine cannot clean up after itself. Our
+ * own entry is excluded: an agent messaging itself is a loop, not a handoff.
  *
- * `alive` is injectable for the same reason `now` is: the default asks the real
- * OS, and a test that wants a peer at a pid it does not own cannot otherwise
- * say so. Windows makes that sharper than it looks — it aliases the low two
- * bits of a pid onto the same process, so `process.pid + 1` reads ALIVE there
- * and ESRCH on POSIX, and a fixture built on it would make the suite disagree
- * with itself across platforms.
+ * `alive` is injectable so a test can claim a peer at a pid it does not own.
+ * Windows aliases the low two bits of a pid onto the same process, so a fixture
+ * built on `process.pid + 1` would make the suite disagree with POSIX.
  */
 export async function readPeers(options?: {
   now?: number
@@ -392,12 +322,9 @@ function parseSafe(text: string): Entry | undefined {
   }
 }
 
-/**
- * Resolve a `to` address against the live peers. Accepts a bare name or
- * `name#sessionId`. Two windows opened on the same folder share a fallback name,
- * so an ambiguous bare name is REFUSED with the qualified addresses rather than
- * silently resolved to whichever heartbeat happens to be newer.
- */
+/** Resolve a `to` address against the live peers. Accepts a bare name or
+ *  `name#sessionId`. Two windows on the same folder share a fallback name, so an
+ *  ambiguous bare name is REFUSED with the qualified addresses. */
 export function resolve(
   peers: readonly Entry[],
   to: string,
@@ -438,18 +365,11 @@ export function replyAddress(entry: Entry): string {
 }
 
 /**
- * Is this session one a peer is CURRENTLY showing somebody?
- *
- * The gate delivery has to pass, and deliberately two questions rather than
- * one. Membership answers "does a client hold this session open" — the entry
- * only ever lists what the ACP store holds. Freshness answers "was that still
- * true just now": the file is the only evidence available, so an entry old
- * enough to predate a close cannot be counted as evidence of attachment, no
- * matter what it says.
- *
- * A session that fails this is not a delivery failure to hide — it is the
- * round-3 defect itself, where three handoffs were accepted by an engine that
- * had no chat to show them in and the tool called all three "Delivered".
+ * Is this session one a peer is CURRENTLY showing somebody? The gate delivery
+ * has to pass, and two questions rather than one: membership (does a client
+ * hold this session open - the entry lists what the ACP store holds) and
+ * freshness (was that still true just now). An entry old enough to predate a
+ * close is not evidence of attachment, whatever it says.
  */
 export function attached(entry: Entry, sessionID: string, now = Date.now()): boolean {
   if (now - entry.lastSeen > ATTACH_FRESH_MS) return false

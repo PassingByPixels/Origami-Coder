@@ -1,17 +1,9 @@
-// The Labyrinth's PRICE TABLE, host side — the user's own $/Mtok figures per
-// model, persisted in workspaceState exactly the way the pane's column widths
-// are (DashboardPanel's `resizeLabyrinthColumn`), because the two are the same
-// kind of thing: a per-workspace preference the webview cannot keep itself.
+// The Labyrinth's price table, host side — the user's own $/Mtok figures, persisted in
+// workspaceState like the pane's column widths.
 //
-// A separate leaf rather than two more cases inline, for the reason the
-// architecture ratchet exists: DashboardPanel.ts carries the wiring, never the
-// decisions. The decisions here are all about NOT trusting the wire — a webview
-// message is JSON that crossed a boundary, so every field is re-checked before
-// it is stored, and anything unrecognised is dropped rather than persisted.
-//
-// There is deliberately NO BUNDLED PRICE LIST. A rate baked into a release goes
-// stale silently and is then presented as fact; an empty table simply produces
-// no currency figure at all, which is honest.
+// A separate leaf, not two more cases inline: every field off the wire is re-checked before storage
+// and anything unrecognised is dropped. No bundled price list — a rate baked into a release goes
+// stale silently and reads as fact; an empty table just shows no figure, which is honest.
 
 /** One model's prices. Dollars per MILLION tokens; `cachedPercent` is a percent
  *  of input, absent meaning the provider default the webview applies. */
@@ -32,9 +24,8 @@ function money(value: unknown): number | undefined {
 }
 
 /**
- * The table as it may be STORED: unknown keys dropped, unusable numbers
- * dropped, and a model left with no usable field dropped entirely — so an empty
- * row can never persist and then read as "priced at zero".
+ * The table as it may be stored: unknown keys dropped, unusable numbers dropped, a model with no
+ *  usable field dropped entirely — so an empty row can never persist and read as "priced at zero".
  */
 export function sanitisePrices(raw: unknown): PriceTable {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -64,9 +55,8 @@ export interface PricesHost {
 }
 
 /**
- * Read or write the table, then ECHO it back. The echo is what makes the panel
- * show what was actually stored rather than what it hoped to store — a value
- * the sanitiser refused must not stay on screen.
+ * Read or write the table, then echo it back, so the panel shows what was actually stored, not what
+ *  it hoped to store.
  */
 export function handleLabyrinthPricesMessage(host: PricesHost, message: Record<string, unknown>): void {
   if (message['type'] === 'saveLabyrinthPrices') {

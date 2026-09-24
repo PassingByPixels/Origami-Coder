@@ -72,3 +72,24 @@ describe('ThoughtPill — an empty body is empty, never filled in', () => {
     expect(container.querySelector('.thought-text')!.textContent).toBe('');
   });
 });
+
+describe('ThoughtPill — no separate arrow control (t-ocnxue)', () => {
+  it('the summary holds the mark, the label and the thought line — and nothing else', () => {
+    // The row used to carry a triangle AND a brain: two marks for one toggle.
+    // The brain is now the whole affordance, so a chevron sneaking back in
+    // (as a real DOM node, not the removed CSS ::before) must fail this.
+    //
+    // The third node is t-qmzegs item 4's travelling line, which has to live
+    // INSIDE the summary because a closed <details> hides every sibling after
+    // it. The nodes are NAMED rather than merely counted, so this still fails
+    // on a fourth one — counting alone would have let any node in behind it.
+    const { container } = mount({ text: 'x', label: 'Thought process' });
+    const summary = container.querySelector('.thought-summary')!;
+    // classList[0], not className: Svelte appends its own `svelte-xxxx` scope
+    // class, and a hash is not something a test should be asserting on.
+    expect([...summary.children].map((c) => c.classList[0])).toEqual([
+      'thought-brain', 'thought-label', 'tl-line',
+    ]);
+    expect(summary.querySelector('[class*="chevron"], [class*="arrow"]')).toBeNull();
+  });
+});

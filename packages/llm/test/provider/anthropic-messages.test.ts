@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
-import { CacheHint, LLM, LLMError, Message, ToolCallPart, Usage } from "../../src"
+import { CacheHint, LLM, LLMError, Message, ToolCallPart, ToolResultPart, Usage } from "../../src"
 import { Auth, LLMClient } from "../../src/route"
 import * as AnthropicMessages from "../../src/protocols/anthropic-messages"
 import { continuationRequest, nativeAnthropicMessagesContinuation } from "../continuation-scenarios"
@@ -467,6 +467,35 @@ describe("Anthropic Messages route", () => {
     }),
   )
 
+  it.effect("degrades a tool call whose partial JSON never completed", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        { type: "message_start", message: { usage: { input_tokens: 5 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call_1", name: "lookup" } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"query"' } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+      )
+
+      const response = yield* LLMClient.generate(
+        LLM.updateRequest(request, {
+          tools: [{ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }],
+        }),
+      ).pipe(Effect.provide(fixedResponse(body)))
+
+      expect(response.toolCalls).toMatchObject([
+        {
+          id: "call_1",
+          name: "lookup",
+          input: '{"query"',
+          invalid: true,
+          error: "Invalid JSON input for anthropic-messages tool call lookup",
+        },
+      ])
+      expect(response.events.at(-1)).toMatchObject({ type: "finish", reason: "tool-calls" })
+    }),
+  )
+
   it.effect("emits provider-error events for mid-stream provider errors", () =>
     Effect.gen(function* () {
       const response = yield* LLMClient.generate(request).pipe(
@@ -539,6 +568,47 @@ describe("Anthropic Messages route", () => {
       expect(error).toBeInstanceOf(LLMError)
       expect(error.reason).toMatchObject({ _tag: "InvalidRequest" })
       expect(error.message).toContain("HTTP 400")
+    }),
+  )
+
+  // t-ub95jp: a valid image of 5,505,020+ base64 characters was refused locally
+  // as "invalid base64" and never sent. Now it is sent as is: the provider's own
+  // per-image limit applies, and its answer reaches the caller in the error.
+  // The 400 body below is a stand-in for Anthropic's answer, not a live capture.
+  it.effect("sends an image of 5,505,020+ base64 characters and surfaces the provider's refusal", () =>
+    Effect.gen(function* () {
+      const data = Buffer.alloc(4_200_000).toString("base64") // 5,600,000 characters
+      let sent: string | undefined
+      const refusal = "messages.0.content.0.image.source.base64: image exceeds 5 MB maximum"
+      const error = yield* LLMClient.generate(
+        LLM.request({
+          id: "req_huge_image",
+          model,
+          messages: [Message.user({ type: "media", mediaType: "image/png", data })],
+          cache: "none",
+        }),
+      ).pipe(
+        Effect.provide(
+          dynamicResponse((input) =>
+            Effect.sync(() => {
+              sent = input.text
+              return input.respond(
+                JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: refusal } }),
+                { status: 400, headers: { "content-type": "application/json" } },
+              )
+            }),
+          ),
+        ),
+        Effect.flip,
+      )
+
+      const body = JSON.parse(sent ?? "{}") as AnthropicMessages.AnthropicMessagesBody
+      expect(body.messages[0]?.content).toEqual([
+        { type: "image", source: { type: "base64", media_type: "image/png", data } },
+      ])
+      expect(error).toBeInstanceOf(LLMError)
+      expect(error.message).toContain(refusal)
+      expect(error.message).not.toContain("valid base64")
     }),
   )
 
@@ -890,6 +960,165 @@ describe("Anthropic Messages route", () => {
       expect(body.tools.every((t) => t.cache_control !== undefined)).toBe(true)
       expect(body.system[0]?.cache_control).toBeUndefined()
       expect(body.messages[0]?.content[0]?.cache_control).toBeUndefined()
+    }),
+  )
+
+  it.effect("streams tool inputs eagerly by default", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          tools: [{ name: "lookup", description: "lookup tool", inputSchema: { type: "object", properties: {} } }],
+          prompt: "hi",
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.tools).toEqual([
+        {
+          name: "lookup",
+          description: "lookup tool",
+          input_schema: { type: "object", properties: {} },
+          eager_input_streaming: true,
+        },
+      ])
+    }),
+  )
+
+  it.effect("stops streaming tool inputs eagerly when the request opts out", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          tools: [{ name: "lookup", description: "lookup tool", inputSchema: { type: "object", properties: {} } }],
+          providerOptions: { anthropic: { toolStreaming: false } },
+          prompt: "hi",
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.tools?.[0]?.eager_input_streaming).toBeUndefined()
+    }),
+  )
+
+  it.effect("stops streaming inputs eagerly for a single opted-out tool", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          tools: [
+            {
+              name: "quiet",
+              description: "quiet tool",
+              inputSchema: { type: "object", properties: {} },
+              native: { anthropic: { eagerInputStreaming: false } },
+            },
+            { name: "loud", description: "loud tool", inputSchema: { type: "object", properties: {} } },
+          ],
+          prompt: "hi",
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.tools?.map((tool) => tool.eager_input_streaming)).toEqual([undefined, true])
+    }),
+  )
+
+  it.effect("puts a message-level cache marker on the message's last block", () =>
+    Effect.gen(function* () {
+      const marker = { anthropic: { cacheControl: { type: "ephemeral" } } }
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.make({ role: "user", content: "What's the weather?" }),
+            Message.make({
+              role: "assistant",
+              content: [ToolCallPart.make({ id: "call_1", name: "lookup", input: {} })],
+              native: marker,
+            }),
+            Message.make({
+              role: "tool",
+              content: [ToolResultPart.make({ id: "call_1", name: "lookup", result: { temp: 72 } })],
+              native: marker,
+            }),
+          ],
+          cache: "none",
+        }),
+      )
+
+      // The assistant turn ends in a `tool_use` block, which carries no
+      // canonical `cache` hint of its own -- the message-level marker is the
+      // only way to reach it, and `@ai-sdk/anthropic` marks the same block.
+      expect(prepared.body.messages.map((message) => message.content.map((block) => block.cache_control))).toEqual([
+        [undefined],
+        [{ type: "ephemeral" }],
+        [{ type: "ephemeral" }],
+      ])
+      expect(prepared.body.messages[1]?.content[0]?.type).toBe("tool_use")
+    }),
+  )
+
+  it.effect("keeps a part-level cache hint and does not re-mark it from the message", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<AnthropicMessages.AnthropicMessagesBody>(
+        LLM.request({
+          model,
+          messages: [
+            Message.make({
+              role: "user",
+              content: [
+                { type: "text", text: "cached prefix", cache: new CacheHint({ type: "ephemeral" }) },
+                { type: "text", text: "fresh tail" },
+              ],
+              native: { anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } } },
+            }),
+          ],
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages[0]?.content).toEqual([
+        { type: "text", text: "cached prefix", cache_control: { type: "ephemeral" } },
+        { type: "text", text: "fresh tail", cache_control: { type: "ephemeral", ttl: "1h" } },
+      ])
+    }),
+  )
+  it.effect("a body that ends before `message_stop` still ends the turn", () =>
+    Effect.gen(function* () {
+      // Same class as `openai-responses`: a body that stops before its terminal
+      // event used to leave the stream with no `finish` and no `text-end`, so
+      // the consumer's block never closed. "unknown" is what
+      // `@ai-sdk/anthropic` reports at its flush.
+      const body = sseEvents(
+        { type: "message_start", message: { id: "m1", usage: { input_tokens: 1, output_tokens: 0 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "half an ans" } },
+      )
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.map((event) => event.type)).toEqual([
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "step-finish",
+        "finish",
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "unknown" })
+    }),
+  )
+
+  it.effect("a body that produced NOTHING gets no invented finish", () =>
+    Effect.gen(function* () {
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(""))),
+      )
+
+      expect(events).toEqual([])
     }),
   )
 })

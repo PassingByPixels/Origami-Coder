@@ -1,14 +1,8 @@
-// t-kgtr6c — the per-chat VISION PROFILE write, as a leaf.
-//
-// The slug of the agent a chat hands an attached image to when its own model
-// cannot see one; `''` turns it off. It is an authoritative ACP write, the same
-// shape the approve preset takes: the engine stores it on the session ROW, so
-// the prompt loop reads it and it survives an engine restart.
-//
-// It lives out here rather than inline in DashboardPanel.ts's switch because
-// that file sat AT its 6298-line cap. Only the irreducible `case` stays there;
-// the client call, the optimistic-echo rules and the failure wording are all
-// here, with no `vscode` import, so every branch is exercised against a fake.
+// The per-chat VISION PROFILE write, as a leaf: the slug of the agent a chat hands an attached
+// image to when its own model can't see one; '' turns it off. An authoritative ACP write — the
+// engine stores it on the session row, so it survives an engine restart.
+// Lives out here, not inline in DashboardPanel.ts's switch, because that file sat at its line cap;
+// only the irreducible `case` stays there.
 
 /** The two things this write needs from the panel, and nothing else. */
 export interface VisionProfileHost {
@@ -17,13 +11,9 @@ export interface VisionProfileHost {
 }
 
 /**
- * Write the profile and echo the result.
- *
- * The echo on FAILURE is `''`, not the attempted slug, and that is the point of
- * having a function at all: the button is optimistic, so a refused write that
- * echoed the slug back would leave the eye lit for a profile the engine never
- * accepted — the user would believe images were being described and get silence.
- * Clearing it puts the button back where the engine actually is.
+ * Write the profile and echo the result. On FAILURE the echo is `''`, not
+ * the attempted slug — the button is optimistic, and echoing the slug back
+ * would leave the eye lit for a profile the engine never accepted.
  */
 export async function applyVisionProfile(
   host: VisionProfileHost,

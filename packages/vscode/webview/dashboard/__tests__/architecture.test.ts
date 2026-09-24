@@ -135,7 +135,37 @@ const CAPS: Record<string, number> = {
   // fetchLmStudioModels/detectLocalFlavor) left for src/dashboard/localProbe.ts.
   // The `lms` CLI helpers deliberately stayed: they drive a local PROCESS, not an
   // endpoint, which is the seam the split follows.
-  'src/dashboard/DashboardPanel.ts': 6336,
+  // 6336 HELD A FOURTH TIME (second opinion): the cap did NOT move and the file
+  // grew by THREE lines — an import and one dispatch line with its comment,
+  // routing to src/dashboard/secondOpinion.ts on the skillsPane/toolsPane
+  // pattern. A feature that owns a request/answer protocol does not go inline
+  // here. 6314 -> 6317.
+  // 6336 HELD A FIFTH TIME (card delete + Collabs collapse): the cap did NOT
+  // move and the file SHRANK, 6336 -> 6320, while gaining two features. The file
+  // was sitting EXACTLY on its cap — zero lines of slack, not one — so neither
+  // dispatch line could have fitted. EXTRACTION PAID FOR BOTH: the two inline
+  // `requestCollabsHeight`/`resizeCollabsSection` cases and their key left for
+  // src/dashboard/collabsSection.ts (which the new collapse flag joined there,
+  // never here), and the delete's three refusals and ACP call went to
+  // src/dashboard/sessionDelete.ts. What is left is two `X_MESSAGE_TYPES.has`
+  // routing lines in the form the file already uses seven times, with their
+  // imports MERGED onto the existing labyrinthPrices import line.
+  'src/dashboard/DashboardPanel.ts': 6354, // +2 (remote-hide lane): one more injected global, window.__ORIGAMI_REMOTE_ENABLED__, alongside the six renderHtmlFor already sets — not extractable, it's a single value read beside its siblings; browser-preview route (+2); 2026-09-05 merge of lane/ring-truth (+3) onto lane/glidepath (at cap): two lanes' one-line routes met in one file; +9 (remote-fixes lane): `setApproveMode` on bypass now calls the sticky-banner sync it always should have (applyPermissionMode, previously wired only for agent-mode writes) and drains the session's own stale pendingPermissions THROUGH ONE CALL to the new attention.ts leaf (releaseBypassedPermissions) — the decision logic lives there, not here; +11 (lane/ring-subagents): Session.runningChildren (Set) + a recordSpawn call in onToolCallUpdate + a delete in onSubagentDone + runningChildIds on both sessionList emission sites — the sidebar ring's 4th state; the actual Set-vs-string-id logic is the new runningChildren.ts leaf, not inline here
+  // 6354->6339 (lane/remote-settle, DOWNWARD, cap NOT raised): the bypass banner
+  // duplicated the InputBar's red "Access: Bypass" chip, so it's gone — the
+  // `#permModeBanner[data-mode="bypass"]` CSS rule and the private
+  // `renderPermBannerHtml` method both left. The copy switch moved to
+  // permissionBanner.ts as `permBannerCopy` (plan/auto only; bypass now falls to
+  // the same '' every unescalated mode already returns), testable beside the
+  // PermissionMode state it already shares a file with. Cap stays at the
+  // pre-existing ceiling; this lane only shrank the file.
+  // t-dih1p7: the auto banner duplicated the same chip's "Auto-approve" label
+  // (`setApproveMode` writes the identical mode id into both), so it's gone
+  // too — the `#permModeBanner[data-mode="auto"]` CSS rule left; `permBannerCopy`
+  // now returns '' for auto as well. One line shorter again; cap unchanged.
+  // modelStatusReason.ts (0.4.81): the ref parse + reason chooser extracted from
+  // sessionModelStatus so the panel could take the no-connections line. 34 at intro.
+  'src/dashboard/modelStatusReason.ts': 60,
   // localProbe.ts: every node:http probe against a self-hosted OpenAI-compatible
   // server (LM Studio / Ollama / vLLM / SGLang) — liveness, model list, context
   // window, server flavor. Extracted from DashboardPanel.ts at 6335/6336 (which
@@ -177,6 +207,10 @@ const CAPS: Record<string, number> = {
   // extraction the comment above promised happened: catalogPayload + findEntry
   // and the host contract left for toolsCatalog.ts, taking this file from
   // 150/150 down to 120.
+  // t-dkk5jd: the matrix's second-click revert (below) needed every post to go
+  // through one masking seam. CAP HELD at 150, not raised: the seam itself
+  // (`postCatalog`) went to toolsCatalog.ts, which had the slack; this file
+  // only renamed its `host.post(...)` call sites. 150/150.
   'src/dashboard/toolsPane.ts': 150,
   // toolsCatalog.ts: the Tools pane's catalog READ — the `list_tools` call, the
   // three `toolsData` payload shapes it can answer with, and the fresh-lookup
@@ -184,6 +218,11 @@ const CAPS: Record<string, number> = {
   // toolsPane.ts (which was at 150/150) when the problems list landed. It owns
   // the host contract because the only thing the host is asked for is the
   // client this module reads through. Intro 53 + slack.
+  // t-dkk5jd: gained `postCatalog` — the seam every post now goes through so a
+  // second cell change cannot cost the first its patch (subagentPendingOverrides.ts
+  // masks; `catalogPayload` itself stays UNMASKED, since setSubagentState's
+  // `current`-state read needs the engine's real baseline, not our own prior
+  // write reflected back at it). 63/70.
   'src/dashboard/toolsCatalog.ts': 70,
   // toolProblemActions.ts: the two actions the failed-tool-file card offers —
   // open it, or delete it. Its own module because it is one self-contained
@@ -212,6 +251,60 @@ const CAPS: Record<string, number> = {
   // 95, not raised: the parse + toast wording went to toolStateMessage.ts and
   // the file's own header prose was tightened to pay for the writer. 95/95.
   'src/dashboard/toolDeferConfig.ts': 95,
+  // subagentToolConfig.ts (t-di2u7z): the PER-AGENT twin of toolDeferConfig.ts
+  // above — one tool's state for one sub-agent type, written under that agent's
+  // own block (`permission` for on/off, `tool_search` for loaded/deferred). A
+  // separate file rather than more branches in the global writer: one owns
+  // "every chat" and the other owns "one delegate", and the agent name is a
+  // config KEY, so it carries the name validation the global writer has no use
+  // for. Pure Node I/O, no `vscode` import. Intro 114 + slack.
+  // t-dkk5jd: the session-length pending-overrides cache moved OUT to
+  // subagentPendingOverrides.ts below rather than raising this cap — this file
+  // keeps only the write and one call recording it. 105/130.
+  'src/dashboard/subagentToolConfig.ts': 130,
+  // subagentPendingOverrides.ts (t-dkk5jd): split out of subagentToolConfig.ts above when a
+  // second cell change was found to revert the first — the engine's `listTools()` answer is
+  // stale until the next spawn, so every cell confirmed written this session has to be masked
+  // back onto every payload the pane posts, not just the most recent one. Pure payload shaping
+  // plus one Map, no config I/O — kept apart from the writer so that file could stay under its
+  // own cap. Intro 67 + slack.
+  'src/dashboard/subagentPendingOverrides.ts': 85,
+  // subagentOverrideMask.ts (t-fiszlv R13): the mask's STORE, split out of
+  // subagentPendingOverrides.ts above when "Reset to defaults" stopped clearing the mask and
+  // started putting each cell back to where the ledger found it — a cell now remembers a
+  // `before`, and the reset walk that reads it did not fit beside the projection. That file
+  // keeps the projection onto a payload; this keeps the one Map. Intro 70 + slack.
+  'src/dashboard/subagentOverrideMask.ts': 85,
+  // subagentResetStates.ts (t-fiszlv R13): the one RULE a reset cell is shown by until the
+  // engine re-reads — which of the removed permission rules can be answered from the payload
+  // in hand, and which two rows are left to the engine instead. Its own leaf because it is
+  // pure and the reasoning is longer than the code; subagentToolReset.ts was at 115/130 and
+  // the rule is not about removing keys. Intro 70 + slack.
+  'src/dashboard/subagentResetStates.ts': 85,
+  // subagentDismissed.ts (t-fiszlv R9): the rows a chat's sub-agent drawer has retired, held
+  // per ENGINE session on the workspace memento so a window reload cannot resurrect them. Its
+  // own file rather than more state on DashboardPanel.ts (at its cap): the read, the bounded
+  // write and the eviction order are testable with no `vscode` at all. Intro 73 + slack.
+  'src/dashboard/subagentDismissed.ts': 90,
+  // storagePane.ts (t-dcjs40): the Storage card's host half — measure the store,
+  // dry-run a prune, prune. Shaped like mcpPane.ts rather than cacheWarmingPane.ts
+  // because it reads the ENGINE through the active chat's extMethod, not a
+  // setting. Intro 75 + slack.
+  'src/dashboard/storagePane.ts': 95,
+  // subagentToolWrites.ts (t-f1j2y3): the ledger's three WRITES — one cell, one
+  // whole column, one tool across every agent. Out of toolsPane.ts, which was at
+  // 148/150 when the two bulk verbs arrived. The bulk verbs are host-side on
+  // purpose: a column looped in the webview is one config read, one write, one
+  // toast and one catalog post PER TOOL, so forty toasts for one click. Here the
+  // loop is one message over one fresh catalog read. Intro 183 + slack.
+  'src/dashboard/subagentToolWrites.ts': 210,
+  // subagentToolReset.ts (t-f3a74m): the ledger's RESET — one agent, or the whole
+  // sheet, back on what the agent definitions say, by REMOVING what the ledger wrote
+  // rather than writing more on top. Its own file because the forward writer was at
+  // 105/130 and subagentToolWrites.ts at 183/210, and because the removal rule (scalar
+  // permission entries + tool_search, never a hand-written path-scoped object) is the
+  // part a screenshot cannot check. Intro 105 + slack.
+  'src/dashboard/subagentToolReset.ts': 130,
   // toolStateMessage.ts: reading the pane's state message and saying what the
   // write did. Extracted from toolsPane.ts when the two-state toggle became
   // three and that file hit its cap. Pure — no `vscode`, no fs. It is here
@@ -253,7 +346,23 @@ const CAPS: Record<string, number> = {
   // without a workbench, so "code mode off writes no variable at all" — the rule
   // that keeps an ORIGAMI_EXPERIMENTAL set outside VS Code from being
   // overridden — is a test rather than a claim. Intro 58 + slack.
-  'src/engineEnv.ts': 75,
+  // 75 -> 77 (t-ntmmvh): the EXTRACTION happened first — cache warming owns its
+  // setting, its bounds and its overlay in src/cacheWarming.ts, exactly as
+  // subagentLimit.ts and flockEnabled.ts do. What is left here is the two lines
+  // every such feature costs this file: the import and the one spread into the
+  // spawn overlay. Squeezing them out would mean deleting the comments that say
+  // which module owns what, which is the opposite of the point.
+  // 77 -> 79 (t-tijdof): same shape again — claudeSubscriptionFlag.ts owns the
+  // setting and the overlay, same two lines this file always costs (import +
+  // spread). Deliberately NOT in ENGINE_FLAGS: see that file's header.
+  'src/engineEnv.ts': 79,
+  // subagentLimit.ts (t-d93fjo): the sub-agent time limit's setting id, bounds,
+  // hours->ms conversion and accessors. EXTRACTED from engineEnv.ts, which was
+  // AT its cap — the split flockEnabled.ts already made for Flock's kill
+  // switch: engineEnv.ts owns the TABLE of variable names and the one spawn
+  // overlay, a feature with its own setting and unit owns those itself. The var
+  // NAME stays in ENGINE_FLAGS so one drift guard still covers it.
+  'src/subagentLimit.ts': 80,
   // --- Cross-session agent messaging leaves (t-kgu05m), capped at introduction. ---
   // peerName.ts: this window's peer-discovery NAME — the setting id, the env var
   // the engine's broker reads it from, and the trimmed reader. Split OUT of
@@ -264,6 +373,11 @@ const CAPS: Record<string, number> = {
   // acpPeerMeta.ts: the fail-closed `_meta.origami_peer` reader, a sibling of
   // acpTaskMeta.ts / questionBatch.ts. A LEAF; intro 29 + slack.
   'src/acpPeerMeta.ts': 45,
+  // acpPeerRiders.ts: WHICH kind of agent sent it — the flock rider and the
+  // sub-agent rider, both fail-closed. Split out of acpPeerMeta.ts when the
+  // sub-agent question (t-po041k) put that file over: the routing decision and
+  // the badge decision have different readers. A LEAF; intro 14 + slack.
+  'src/acpPeerRiders.ts': 55,
   // acpAudience.ts: the `annotations.audience` reader — "is this replayed text for
   // the human at all". The engine's LIVE stream drops `synthetic` parts, but
   // `session/load` replays them tagged `audience: ['assistant']` instead
@@ -288,6 +402,28 @@ const CAPS: Record<string, number> = {
   // function, the InstructionRowActions.svelte pattern, so "the human should not
   // read the XML the model does" is testable without mounting. Intro 91 + slack.
   'webview/dashboard/components/PeerMessageRow.svelte': 115,
+  // t-q90gj9. The dropped-stream card: three states on theme tokens, no agent
+  // name, Retry on the stopped one. A component and not a MessageRow branch,
+  // for the same reason PeerMessageRow is one — the card IS the message, and
+  // MessageRow.svelte is a markdown+highlight pipeline this row needs none of.
+  // Its rules (fold, recover, the bound on recovery) are the panes/ leaf below,
+  // so what is here is markup and scoped CSS.
+  'webview/dashboard/components/SystemAlertRow.svelte': 125,
+  // t-q90gj9. The stream-drop rules, and the webview HALF of the mirror with
+  // src/acpStreamDrop.ts (a webview .ts trips TS6059 on any import from src/).
+  // Kept out of ChatPane.svelte and chatRestore.ts on the ratchet's own rule:
+  // both were at or near their caps, and the live pane and the restore path
+  // must apply the SAME fold/recover rules or a reload disagrees with what the
+  // user was looking at. streamDropNotice.test.ts is the drift guard.
+  'webview/dashboard/panes/streamDropNotice.ts': 150,
+  // peerBadge.ts: which of the THREE senders a peer row is (handoff, flock
+  // contact, blocked sub-agent) and what the badge says. Pure; split out of
+  // PeerMessageRow.svelte when t-po041k put it over. Intro 12 + slack.
+  'webview/dashboard/components/peerBadge.ts': 45,
+  // peerEnvelope.ts: the envelope-stripping rule (`peerBody`), still re-exported
+  // from PeerMessageRow.svelte so no importer changed. Split out in the same
+  // pass, for the same cap. Intro 17 + slack.
+  'webview/dashboard/components/peerEnvelope.ts': 35,
   // 2700->2600 (S8, 2026-07-22, DOWNWARD restamp): the S8 chat-mode retirement removed
   // the in-chat contract card mount + its handlers, a session field + message case, and
   // the related send/queue plumbing. Cap = actual (2594) + slack.
@@ -407,7 +543,53 @@ const CAPS: Record<string, number> = {
   // in the pane because a grid shows twelve chats and each answers "focused?" for
   // itself, exactly as subagentsOpen/openThoughtIds already do. 2411 -> 2418 of
   // 2420: two lines left, so the next thing to land here extracts first.
-  'webview/dashboard/panes/ChatPane.svelte': 2420,
+  // second opinion (0.4.66): the cap did NOT move, and the instruction above was
+  // honoured — EXTRACTION CAME FIRST. `exportSession`'s field projection left for
+  // panes/exportProjection.ts (7 lines out, 1 import back), which is what paid
+  // for this pane's whole share of the feature: two imports and one
+  // `secondOpinionResult` case with its comment. Everything else is elsewhere —
+  // the control is ChangesPill's, the request is posted from there, and the rule
+  // that opens or fills a card is panes/secondOpinion.ts. 2418 -> 2418: the
+  // extraction paid for the feature exactly, and the same two lines are left.
+  // 2420->2432 (ring truth, +12 — FLAG FOR SIGN-OFF): the composer learns the
+  // ENGINE's own run state, so a turn the engine STARTED — a background task
+  // result being injected, a wakeup — shows its Stop affordance. Until now the
+  // flag went up in the send path and came down on `turnDone`, neither of which
+  // an injected turn has. EXTRACTION CAME FIRST, and the instruction left above
+  // ("two lines left, so the next thing to land here extracts first") is why the
+  // rule itself is NOT here: webview/shared/engineStatus.ts owns the reading of
+  // the label — only 'idle' means done, an unknown label must not — and is read
+  // by the chat list's ring too, so the two surfaces cannot drift apart. What is
+  // left in this pane is one import and the case that flips one boolean: four
+  // lines of it, and four of comment saying why turnDone still owns everything
+  // else about the end of a turn. There was nothing else in this pane's share of
+  // the feature to move out; the file was sitting EXACTLY on its cap, so no
+  // addition of any size could have fitted without a raise.
+  
+  // browser preview (lane/browser-preview): 2420 -> 2465, +45, and FLAG FOR
+  // SIGN-OFF — this is the largest raise this file has taken and it needs an
+  // owner's yes. EXTRACTION CAME FIRST and took everything that could leave:
+  // the frame ring, its cap and its per-session isolation are panes/
+  // browserFrames.ts (78 lines), the drawer itself is components/
+  // BrowserOverlay.svelte (237), and on the host side the focus rule and the
+  // snapshot rule are two new leaves rather than lines in browserBridge.ts.
+  // What is left here is irreducible pane wiring: two imports, two $state
+  // fields, a five-line `browserSnapshot` case, one line of clear-on-close —
+  // and the RAIL, which is where the +45 actually goes. The feature is
+  // specified as a pull-out mounted directly ABOVE the todo pull-out, and the
+  // todo overlay was absolutely positioned on the cell's vertical middle, so
+  // there was no "above" to mount into: a second overlay centred on the same
+  // point overlaps it the moment either grows. The rail is the smallest thing
+  // that makes the relationship real — a flex column that owns the anchor, the
+  // width and the collapse-slide clip (all of which MOVED here out of
+  // TodoOverlay.svelte, which shrank), holding both drawers as children. There
+  // is no third module to split a wrapper element and its own positioning into.
+  'webview/dashboard/panes/ChatPane.svelte': 2477, // 2026-09-05 merge: ring-truth (+12, engine status case) + browser-preview (+45, right-edge rail) on the 2420 base
+  // 2476->2465 (lane/remote-settle, DOWNWARD, cap NOT raised): the new
+  // `permissionAudit` case (settling an ask a phone or a sibling tab resolved)
+  // was paid for by moving `enqueuePermission`/`promoteNextPermission` and the
+  // local `PermissionAsk` interface OUT to the new panes/permissionSettle.ts —
+  // extraction came first, same as every other row on this file's history.
   // ChatTranscript.svelte: given a message list, the ROWS — the {#each} and its
   // whole kind dispatch (tool / verdict / todo / thought / compacted / peer /
   // agent+rewind / else), with the CSS that dresses them. Extracted from
@@ -434,7 +616,35 @@ const CAPS: Record<string, number> = {
   // would follow the shape the rest of the chain already has — one component per
   // kind — and both must take their scoped <style> rules with them, or the rules
   // silently stop matching and no test in this repo can see it.
+  // second opinion (0.4.66): the cap did NOT move and the file SHRANK, 320 ->
+  // 284. The instruction directly above was followed to the letter: `verdict`
+  // was the first candidate it named, and it left for VerdictRow.svelte WITH its
+  // ~38 scoped rules before the new `secondOpinion` branch was written. The
+  // class names came across unchanged, because this file's own tests select
+  // `div.turn-verdict`. `compacted` is now the remaining candidate.
   'webview/dashboard/components/ChatTranscript.svelte': 320,
+  // The three leaves the STEPPED TOOL STRIP arrived as (t-qmzegs item 3), new
+  // caps rather than a raise anywhere: the transcript's cap did not move, and
+  // it came out of this work two lines under where it went in.
+  // toolRuns.ts — WHICH cards belong to one run, off the ordered message list.
+  // Pure and DOM-free, so the rule ("adjacent, and never across a turn") is
+  // testable without rendering anything, which is where its real tests are.
+  'webview/dashboard/components/toolRuns.ts': 70,
+  // ToolRunGroup.svelte — the strip those runs are drawn in. Its own file
+  // because Svelte scopes <style> to the component holding the markup: the rail
+  // and the step nodes cannot be styled from the transcript, and it keeps the
+  // ToolCard call site to ONE place instead of two that could drift apart.
+  'webview/dashboard/components/ToolRunGroup.svelte': 110,
+  // StatusMark.svelte — one mark for a call's verdict, on the same rule: the
+  // draw-on-completion transition IS the component, and it only works because
+  // the svg node survives the status change.
+  'webview/dashboard/components/StatusMark.svelte': 120,
+  // VerdictRow.svelte (0.4.66): the per-turn terminal verdict row, lifted out of
+  // ChatTranscript.svelte at 319/320 — markup and every `.turn-verdict*` rule
+  // together. Its own file on FocusGap.svelte's precedent: the transcript is a
+  // row loop, and what one row draws is a leaf. Owns no state, posts nothing.
+  // Intro 74.
+  'webview/dashboard/components/VerdictRow.svelte': 90,
   // chatFocus.ts: WHICH transcript rows survive focus view — one predicate and a
   // per-kind disposition table. A pure leaf (no DOM, no Svelte, no `vscode`) for
   // the reason sessionChanges.ts is one beside ChangesPill.svelte: the rule is
@@ -481,7 +691,21 @@ const CAPS: Record<string, number> = {
   // one declaration. A type declared inside a .svelte <script> cannot be named
   // by another component, so sharing the renderer forced the shape into a leaf.
   // Imports only webview-side siblings, so it stays TS6059-clean. Intro 122 + slack.
+  // second opinion (0.4.66): the cap did NOT move. The `secondOpinion` kind, its
+  // `SecondOpinionInfo` and the field that carries it came to EXACTLY 150 of
+  // 150, and the doc comments were cut twice to fit rather than the number
+  // raised, with an instruction: the next addition splits the tool-card fields
+  // out first. 0.4.67 (resolution field) honoured it — the cap did NOT move and
+  // the file SHRANK to 107: the tool-card slice left VERBATIM for
+  // toolCardFields.ts (`Message extends ToolCardFields`, consumers unchanged),
+  // which paid for `SecondOpinionInfo.resolution` (the terminal accept/dismiss
+  // state — on the message so a re-render cannot resurrect the card's buttons).
   'webview/dashboard/panes/chatMessage.ts': 150,
+  // toolCardFields.ts (0.4.67): the tool-card slice of the row shape, split out
+  // of chatMessage.ts on that file's own cap instruction. Types only, no
+  // runtime — nothing to test. Future tool-card fields land HERE, not back in
+  // chatMessage.ts. Intro 72 + slack.
+  'webview/dashboard/panes/toolCardFields.ts': 90,
   // agentStreamSeal.ts: WHICH engine message an agent-text delta belongs to.
   // The pane merged two engine messages into one bubble because nothing closed
   // the open one when the engine moved on — invisible on a tidy turn, and
@@ -508,6 +732,15 @@ const CAPS: Record<string, number> = {
   // intact. ONE line of slack: the next rule here is a new leaf, not a fourth
   // function.
   'webview/dashboard/panes/interjectSplit.ts': 85,
+  // interjectHold.ts (t-4ahs3u): what a mid-turn Enter does when it is NOT an
+  // interjection, and the SENTENCE the composer shows for it. The interject wire
+  // carries attachments now, so the old hold-a-picture-until-idle branch is gone
+  // and what is left is two genuine refusals — a slash command, and a composer
+  // with no turn to reach. A leaf because the wording is a PROMISE: `held` says
+  // the composer re-sends at the boundary, and a sentence claiming that over a
+  // draft nothing will send is a worse lie than the silence it replaced. Pairing
+  // the two is what the test asserts, which needs no render. Intro 52 + slack.
+  'webview/dashboard/components/interjectHold.ts': 60,
   // turnVerdict.ts: what a turn's terminal `stop_reason` MEANS (verdictForStopReason)
   // and what the transcript calls it (verdictLabel). Lifted VERBATIM out of
   // ChatPane.svelte, which was ON its cap when the lightbox needed a mount line.
@@ -542,7 +775,15 @@ const CAPS: Record<string, number> = {
   // in ChatPane BECAUSE both paths need the same rule — a first announcement
   // and a catch-up replay disagreeing about one chat is the class of bug this
   // whole file exists for.
-  'webview/dashboard/panes/sessionReplay.ts': 90,
+  // 90->105 (0.4.69 Claude Code round 2): `kind` joined the identity set — a
+  // reattached tab must come back knowing its cell is bound to the CLI, or it
+  // paints engine-only controls over a chat the engine is not running — and
+  // `titleOf`/`kindOf` came IN from ChatPane.svelte, which was EXACTLY on its
+  // 2420 cap and had the title rule written out twice on its own. So the
+  // extraction DID happen; it happened in this direction. ChatPane paid for its
+  // new `sessionKind` case with the line the collapse gave back (2420 held),
+  // and the raise here is the other half of that move.
+  'webview/dashboard/panes/sessionReplay.ts': 105,
   // rewindSlice.ts: WHICH messages a "Rewind to here" drops — the walk-back to
   // the user message that OPENED the turn, because the engine's `revert` resolves
   // to the last user message and cutting from the agent row would strand the
@@ -580,7 +821,7 @@ const CAPS: Record<string, number> = {
   // EXTRACTION CAME FIRST and followed this file's own established pattern (the
   // acpPeerMeta / acpTaskMeta / questionBatch / acpTodoWrite / peerName leaves): the
   // four structure-payload readers left for acpNotify.ts, the DISPATCH stayed.
-  'src/acpClient.ts': 1370,
+  'src/acpClient.ts': 1381, // 2026-09-05 merge: ring-truth (sessionStatus dispatch) + browser-preview (snapshot hook) each held its own cap
   // acpNotify.ts: the four `origami/*` notifications whose payload is a whole
   // STRUCTURE (plan candidates, task shape, todo snapshot, arbiter decision) —
   // wire frame in, handler args out. Read out of acpClient.ts's extNotification
@@ -637,7 +878,20 @@ const CAPS: Record<string, number> = {
   // composer control here is built as was half-finished, and the strip owns no
   // state and posts nothing — the budget banner's numbers arrive on this file's
   // own message listener and would have had to stay behind anyway.
-  'webview/dashboard/components/InputBar.svelte': 1200,
+  // second opinion (0.4.66): the cap did NOT move and this file grew by FOUR
+  // lines — two attributes on the existing ChangesPill tag and the comment
+  // saying why. That is the whole of the composer's share: the button, the
+  // flyout, the request and the answer all live elsewhere. 1187 -> 1191.
+  // auto-grow textarea: the cap MOVED, 1200 -> 1230. The composer had ONE line
+  // of slack (1199/1200) and the feature needs a resize function plus the
+  // effect that drives it (`resizeComposer`, `growHeight`'s glue) — there is no
+  // sibling component to extract it into, because it reads THIS box's own
+  // computed style and sets THIS box's own `style.height`/`overflowY`. The
+  // clamp math itself left immediately, as a pure function in the new
+  // composerGrow.ts (testable with plain numbers — jsdom reports scrollHeight
+  // as 0, so the math cannot be proven against a real layout at all). 1199 ->
+  // 1223, 7 lines of slack left.
+  'webview/dashboard/components/InputBar.svelte': 1230,
   // ModelWarning.svelte (0.4.61): the composer's connectivity strip — the amber
   // line that stands until this chat's provider confirms a model. Markup and CSS
   // moved VERBATIM out of InputBar.svelte; the copy rule stayed in modelBanner.ts,
@@ -673,7 +927,25 @@ const CAPS: Record<string, number> = {
   // `left`/`max-width`, which were both measured off that padding. 197 -> 199,
   // all of it the comments saying why, twice-burnt. ONE line left: the next
   // thing here extracts (the popover is the obvious seam).
+  // second opinion (0.4.66): the cap did NOT move, and the file SHRANK — 199 ->
+  // 138. The standing instruction one line above was followed literally: the
+  // per-file popover WAS the obvious seam and it left first, markup, `baseName`
+  // and every scoped rule together (ChangedFilesPopover.svelte), which is ~75
+  // lines out for ~14 back. What landed is two props, a `row-end` wrapper for
+  // the right-hand pair, and one `pick` that posts the request itself on the
+  // popover's own openAbsoluteFile precedent — the host owns the round trip, so
+  // routing the click up through InputBar into ChatPane (two lines under ITS
+  // cap) would have bought a prop chain and nothing else.
   'webview/dashboard/components/ChangesPill.svelte': 200,
+  // ChangedFilesPopover.svelte (0.4.66): the per-file list above the pill —
+  // markup, the both-separators `baseName`, its own Escape (it is mounted only
+  // while open, so the parent's guarded `open &&` listener went with it) and the
+  // scoped rules, EXTRACTED VERBATIM from ChangesPill.svelte at 199/200. The
+  // class names are unchanged on purpose: ChangesPill.test.ts selects `.cp-pop`,
+  // `.cp-file` and `.cp-name`, and renaming during a move would be a behaviour
+  // change dressed as one. It carries the composer's rgba drop shadow with it,
+  // which is why the literal-colour assertion moved to this file too. Intro 141.
+  'webview/dashboard/components/ChangedFilesPopover.svelte': 155,
   // FocusEye.svelte: the eye at the right-hand end of that row, and nothing else.
   // Its own file on the ModeControl/CompactionThresholdMenu precedent — the row
   // is a row, what sits at either end of it is a leaf — and because a toggle that
@@ -681,6 +953,75 @@ const CAPS: Record<string, number> = {
   // is inline SVG: the webview ships no icon library, and one 13px eye does not
   // justify pulling one in. Intro 74 + slack.
   'webview/dashboard/components/FocusEye.svelte': 100,
+  // SecondOpinionButton.svelte (0.4.66): the scales immediately left of that eye
+  // — same file-per-control rule, same inline-SVG reasoning, same muted-outline
+  // idiom so neither of the pair looks lit at rest. It owns no state: whether
+  // the flyout is open belongs to the row (a grid shows twelve composers), and
+  // whether the control is live belongs to the composer (`inFlight`). Intro 84.
+  'webview/dashboard/components/SecondOpinionButton.svelte': 100,
+  // SecondOpinionMenu.svelte (0.4.66): the flyout that button opens. SELF-
+  // CONTAINED given a sessionId, on ModelPicker.svelte's precedent — it
+  // subscribes to the same `modelOptions` / `sessionModels` / `providerStatus`
+  // broadcasts that already fan out to this webview, so the catalogue never has
+  // to be threaded down through ChatPane and InputBar. What is capped here is
+  // the popover markup, the listener and the scoped CSS; the RULE — which
+  // models qualify, and how they tier — is secondOpinionModels.ts, the usual
+  // .ts-decides / .svelte-draws pair every other composer control here is
+  // built as. Intro 184. 200->265 (0.4.67 UAT tiered menu): EXTRACTION CAME
+  // FIRST — every decision (tiering, collapse counts, ranking, caps) lives in
+  // the leaf; what grew here is the tree's own markup (tier headings, provider
+  // header buttons, per-group hints) and its scoped CSS, which cannot leave a
+  // .svelte without duplicating style rules no test can guard (jsdom has no
+  // layout). Landed 256 + slack.
+  'webview/dashboard/components/SecondOpinionMenu.svelte': 265,
+  // secondOpinionModels.ts (0.4.66): which models may review this turn, and how
+  // the flyout arranges them. A pure leaf beside modelList.ts (which does the
+  // same job for the picker) and NOT folded into it, because it carries the one
+  // rule the whole feature rests on: THE CHAT'S OWN MODEL IS EXCLUDED. A second
+  // opinion from the model that just answered is the same opinion, and it is
+  // the most likely mis-click on the list — so the exclusion is a tested
+  // function, not a dimmed row. Intro 97. 110->180 (0.4.67 UAT tiered menu):
+  // this leaf IS the extraction target — the tier bucketing (classifySection,
+  // the connections picker's own sections, via the same import modelGrouping.ts
+  // uses), the collapsed-group counts and the search ranking all landed here
+  // precisely so the .svelte stayed markup. Landed 173 + slack.
+  'webview/dashboard/components/secondOpinionModels.ts': 180,
+  // SecondOpinionCard.svelte (0.4.66): the transcript row a review lands in —
+  // pending, answered, or failed — plus the action rail that is the point of
+  // asking: hand the chat to the reviewer, or dismiss. The BODY is a MessageRow
+  // with `kind="agent"`, which is the one branch in this webview that renders
+  // markdown with the code highlighting, copy buttons and file links the
+  // transcript already has; a second renderer here would drift from it in
+  // silence. Hand-over posts the EXISTING `setModel` message, so the engine sees
+  // one kind of model switch and not two. Intro 162. 180->235 (0.4.67 UAT:
+  // terminal accept + honest pending): EXTRACTION CAME FIRST — the action rules
+  // and the mm:ss formatter live in the new secondOpinionCard.ts leaf; what
+  // grew here is the two new rendered states (the handed stub/expansion, the
+  // pending subline + ticker) and their scoped CSS. Landed 227 + slack.
+  'webview/dashboard/components/SecondOpinionCard.svelte': 235,
+  // secondOpinionCard.ts (0.4.67): WHAT the card may offer, per state — the
+  // .ts-decides half of SecondOpinionCard.svelte, extracted for the UAT defect
+  // its rule closes: accept left both buttons clickable, so "any resolution
+  // kills BOTH actions" is now a pure function asserted with nothing rendered
+  // (in SecondOpinionCard.test.ts, one file for the pair — the ChatFind.test.ts
+  // precedent). Also owns the pending ticker's mm:ss format. Intro 48 + slack.
+  'webview/dashboard/components/secondOpinionCard.ts': 60,
+  // panes/secondOpinion.ts (0.4.66): what ONE `secondOpinionResult` does to a
+  // transcript. Pure, beside chatMessage.ts, because every rule in it is about
+  // CORRELATION and that is the thing a rendered test proves worst: an answer is
+  // matched to its card by the host's id, never by "the last pending card"
+  // (which is identical in every single-review test and fills the wrong card the
+  // first time two models are asked at once), and an answer matching no card is
+  // dropped rather than appended (the state after a webview reload). Intro 88.
+  'webview/dashboard/panes/secondOpinion.ts': 100,
+  // panes/exportProjection.ts (0.4.66): which of a row's fields survive into a
+  // markdown export. EXTRACTED from ChatPane.svelte's `exportSession`, which was
+  // two jobs — decide what an export contains, then post it — and only the first
+  // has a rule that can be wrong. That extraction is what paid for the
+  // second-opinion result handler landing in a pane at 2418 of 2420. Same shape
+  // as chatFocus.ts: "which rows survive focus view" there, "which fields
+  // survive an export" here. Intro 47.
+  'webview/dashboard/panes/exportProjection.ts': 60,
   'webview/dashboard/panes/sessionChanges.ts': 140,
   // ModeControl.svelte + modeControl.ts (deep-plan): the composer's session-mode
   // control, widened from a two-state Plan toggle to Build / Plan / Deep Plan.
@@ -719,6 +1060,19 @@ const CAPS: Record<string, number> = {
   // cannot import from src/ at all — tsconfig rootDir), with the drift test the
   // house rule demands in composerEnter.test.ts. A LEAF, pure. Intro 41.
   'webview/dashboard/panes/interjectRetry.ts': 55,
+  // permissionSettle.ts (lane/remote-settle): a permission ask can be resolved
+  // from somewhere other than THIS bar's own click — a phone's signed approve
+  // or signed YOLO (attention.ts's releaseBypassedPermissions drains every ask
+  // on the session), or a sibling popped-out tab answering the same
+  // sub-agent-forwarded ask. ChatPane had no handler for the resulting
+  // `permissionAudit` at all, so the bar sat on an already-resolved ask until
+  // the owner clicked it too. Holds `enqueuePermission`/`promoteNextPermission`
+  // (moved in verbatim, same pattern queuedFlush.ts and interjectSplit.ts
+  // already use) plus the new `settlePermissionAudit`, which promotes the SAME
+  // way a local click does when the resolved id is the bar's own ask, drops it
+  // from the queue with no promotion when it was only queued, and is a no-op
+  // otherwise. A LEAF, pure, no DOM. Intro 77.
+  'webview/dashboard/panes/permissionSettle.ts': 80,
   // turnMessages.ts: the messages that act on the turn a chat is RUNNING — the
   // pre-existing `stopBackgroundShell` (delegating to backgroundShellMessage.ts
   // unchanged) and the new `interject`, behind the one-line
@@ -728,6 +1082,13 @@ const CAPS: Record<string, number> = {
   // `shell_stop` already proves the generic extMethod needs no wrapper.
   // Intro 68 + slack.
   'src/dashboard/turnMessages.ts': 85,
+  // imageDataUrls.ts (t-4ahs3u): `data:image/png;base64,…` -> the {mimeType,data}
+  // pair the ACP wire carries. ONE regex, two callers — DashboardPanel's
+  // `sendWithImages` case (which now delegates, so the panel SHRANK) and
+  // turnMessages' interject, which has to produce the identical pair or a picture
+  // pushed into a running turn would reach the model in a different shape from
+  // one on a fresh prompt. Intro 31 + slack.
+  'src/dashboard/imageDataUrls.ts': 40,
   // engineSessionId.ts: which id a session-scoped ext-method may name on the
   // wire. Extracted BEFORE the plan_action fix, not after: DashboardPanel.ts
   // held 6335/6336, so the resolver had to pay for itself there — one import
@@ -813,6 +1174,14 @@ const CAPS: Record<string, number> = {
   // insert-in-place line edit and the two body sections. Pure text, no fs: a
   // round-trip assertion needs no temp dir. Intro 126 + slack.
   'src/dashboard/agentManager/ticketDoc.ts': 150,
+  // ticketMerges.ts (board git truth): the board stamps `merged` from GIT, not only
+  // from its own Apply button - real work lands via a hand-cut lane branch merged by
+  // hand, which the board never saw. Two git calls per repo per poll (a third only
+  // when a ticket is in question), and the status guard is the idempotence. Most of
+  // the file is the LANDED rule: reachable-from-HEAD is not enough (a lane is that
+  // from birth), so a fold on its baseSha and a tip on HEAD's first-parent chain are
+  // both dropped. A LEAF at 110 with NO slack - the next thing to land in it extracts.
+  'src/dashboard/agentManager/ticketMerges.ts': 110,
   // specRun.ts (Folds Board UAT-1 item 3): the SPEC conversation — session at the
   // REPO ROOT (no worktree, no record), chat opened before the prompt, the brief,
   // the live-spec marks the board's chip reads, and the file-decides-it settle.
@@ -834,6 +1203,14 @@ const CAPS: Record<string, number> = {
   // performs on it. Pure over plain objects, so the whole rule is tested on
   // literals with no temp dir. A LEAF; intro 151 + slack.
   'src/dashboard/agentManager/repoMerge.ts': 175,
+  // repoRemovals.ts (t-u479i9): removals made OUTSIDE the window (board_unregister,
+  // board_repoint, a hand edit). A root seen in repos.json at the last sync and absent from
+  // a file that parsed is dropped from the known list before the next sync writes it back.
+  // Also carries an adopted repo's board label in (foreignLabels). A LEAF; intro 73 + slack.
+  'src/dashboard/agentManager/repoRemovals.ts': 80,
+  // repoRepoint.ts (t-u479i9): the board's Edit path route. Its own module so repoOps.ts
+  // and manager.ts stay under their caps. Intro 51 + slack.
+  'src/dashboard/agentManager/repoRepoint.ts': 70,
   // repoCards.ts (repo cards): the REPOSITORY behind the registered path — the
   // git-ident cache the broadcast reads synchronously, the worktree-row
   // projection, adopt-on-read, and the four am* routes (worktrees / terminal /
@@ -867,6 +1244,11 @@ const CAPS: Record<string, number> = {
   // 370->395 (map-v2): cartographer prompt rewritten with 5-pillar table, sub-section
   // docs, v2 schema with status/section fields, and updated worked example.
   'src/dashboard/agentManager/archetypes.ts': 395,
+  // archetypeToolMatrix.ts (t-f3a74m): the owner-approved DEFAULT TOOL MATRIX for the six
+  // shipped archetypes, plus the two frontmatter blocks it renders. One table instead of six
+  // hand-written YAML blocks, because six transcriptions drift a cell at a time with nothing
+  // to say so — and archetypes.ts would have gone past its cap carrying them. Intro 160 + slack.
+  'src/dashboard/agentManager/archetypeToolMatrix.ts': 185,
   // mapSchema.ts (S15): the repo-map schema types + validateMap (structural + reference
   // integrity). A pure LEAF; capped at introduction (175) + slack.
   'src/dashboard/agentManager/mapSchema.ts': 200,
@@ -963,6 +1345,10 @@ const CAPS: Record<string, number> = {
   // S9, ARCHETYPES_V2 = S11), moved out of archetypes.ts so the live file stays
   // readable. Append-only static data (a new generation appends a const); capped at intro.
   'src/dashboard/agentManager/archetypesLegacy.ts': 240,
+  // archetypesV4.ts (t-f3a74m): the FROZEN generation-4 payloads — the six files 0.4.138
+  // shipped, before the matrix landed. Its own file rather than more surface on the capped
+  // archetypesLegacy.ts above; equally frozen and equally never edited. Intro 245 + slack.
+  'src/dashboard/agentManager/archetypesV4.ts': 260,
   // archetypeGlyphs.ts (S11): the brand-menagerie glyph data (crane/elephant/cat/fox/
   // wolf/dragon/deer polygon lists, harvested from origami-svgs) + the id->glyph lookup.
   // Almost entirely static polygon data; a LEAF, capped at actual + slack.
@@ -1011,7 +1397,13 @@ const CAPS: Record<string, number> = {
   // "needs you" surface — isSessionMounted (mounted-view check), questionPreview,
   // and the board aggregate (running/need-you counts + the status-bar label).
   // Capped at introduction; a LEAF (grows only if the derivations themselves change).
-  'src/dashboard/agentManager/attention.ts': 70,
+  // 70->97 (2026-09-06, remote-fixes lane): `releaseBypassedPermissions`, the
+  // YOLO-drain counterpart to `drainPermissions` — a session entering bypass has
+  // already had its outstanding asks answered ENGINE-side (Permission.refresh),
+  // so this unsticks the desk's own respond() callbacks and reports them
+  // approved, not denied. Still a leaf: no vscode import, called from ONE line
+  // in DashboardPanel's `setApproveMode` case.
+  'src/dashboard/agentManager/attention.ts': 105,
   // questionRouting.ts (S7.1, 2026-07-22): the pure discriminator + routing leaves —
   // isQuestionShaped (no allow_always => a question, not a real permission),
   // shouldBufferQuestion, questionReplayAction. A LEAF; capped at introduction.
@@ -1065,10 +1457,33 @@ const CAPS: Record<string, number> = {
   // that file's own cap comment already used once. Wiring only; the state
   // machine is chatSections.ts. Intro 98 + slack.
   'src/dashboard/chatSectionsManager.ts': 120,
+  // collabsSection.ts (Collabs collapse): the sidebar's Collabs half — its
+  // dragged height AND its new collapsed flag, on one reply. The two height
+  // cases were MOVED OUT of DashboardPanel.ts's inline switch, which measured
+  // exactly at its own cap, so the collapse flag could not have landed there at
+  // any size; the pair it belongs with came with it. Deliberately not folded
+  // into chatSectionsManager.ts above — SidebarLauncher.svelte's own comment
+  // says the collabs divider is "a wire of its own, deliberately separate from
+  // ChatsList's chatSections". Intro 91 + slack.
+  'src/dashboard/collabsSection.ts': 110,
+  // sessionDelete.ts (card delete): the Labyrinth card's delete, host side —
+  // three refusals (a chat OPEN in this window, a collab header, no live
+  // engine) and one ACP call. Routed out of DashboardPanel.ts the same way
+  // toolsPane.ts is, so the panel carries a dispatch line and no decisions.
+  // No `vscode` import, so every branch is exercised against a fake host.
+  // Intro 83 + slack.
+  'src/dashboard/sessionDelete.ts': 100,
   // Apply-to-main modules — never ratcheted at S4 (a verify gap). Stamped at
   // S4.2 at current size rounded up: apply.ts gained markUntracked wiring +
   // already-applied (reverse --check) detection; the other three are unchanged.
   'src/dashboard/agentManager/apply.ts': 300,
+  // applyMerge.ts (board git truth): the MERGE half of Apply-to-main, EXTRACTED
+  // from apply.ts at its cap (274/300, 25 lines of headroom) rather than raising it.
+  // A committed, clean fold lands with a real `git merge --no-ff`; every other shape
+  // keeps apply.ts's patch path. Holds mergeable/currentBranch/mergeFold + the
+  // controller step, so apply.ts gained only the one-line decision. A LEAF; intro
+  // 115 + slack.
+  'src/dashboard/agentManager/applyMerge.ts': 140,
   'src/dashboard/agentManager/diffProvider.ts': 90,
   // raceCompare.ts (S6c): the race Compare surface's server side — per-sibling
   // change sets (reusing apply.ts diffFiles) + the cross-diff path resolution.
@@ -1223,9 +1638,62 @@ const CAPS: Record<string, number> = {
   // per-tier markup block, which is why this SHRANK despite gaining three
   // more groups. Cap left at its old value; no reason to lower a number that
   // is not being gamed.
+  // The per-row VISION CHIP arrived with the file at 608 of 610 — two lines of
+  // slack against a feature needing markup, a second click target and its own
+  // block of CSS. The cap did NOT move: the model ROW went out to
+  // ModelPickerRow.svelte below (608 -> 566), which is the seam the file was
+  // asking for anyway — the menu decides which provider, which target and which
+  // filter; the row draws one model.
+  // t-di2zmm: the inline "also use for sub-agents" follow-up landed within a
+  // couple lines of the cap — its own markup and CSS went straight to the new
+  // ModelPickerFollowUp.svelte leaf below rather than ever touching this file's
+  // budget; what stayed here is the `justPicked` state plus the wiring three
+  // existing handlers already had a slot for. Cap NOT raised.
   'webview/dashboard/components/ModelPicker.svelte': 610,
+  // NoConnections.svelte: the picker's tier-1 EMPTY state — the non-selectable
+  // "No connections yet" row plus the one control that leaves for the sidebar's
+  // Add-provider fold. Extracted rather than inlined because ModelPicker sat at
+  // 609/610: the ratchet did its job, and the seam it forced is a real one (a
+  // list with nothing in it is not the same component as a list). Intro 65 + slack.
+  'webview/dashboard/components/NoConnections.svelte': 85,
+  // ModelPickerRow.svelte: one row of the picker's model list — the tick, the
+  // structured label, the quant and loaded chips, and the vision chip that
+  // forced the extraction. Named ...PickerRow because modelList.ts beside it
+  // already exports a `ModelRow` interface for the row DATA. It posts nothing:
+  // ModelPicker holds the sessionId and owns the wire, the same split it already
+  // draws with ContextLengthPrompt. Intro 182 + slack.
+  'webview/dashboard/components/ModelPickerRow.svelte': 200,
+  // ModelPickerFollowUp.svelte (t-di2zmm): the "also use for sub-agents" /
+  // "choose a sub-agent model…" row shown IN PLACE of the row just picked for
+  // this chat, so the popover stays open instead of close-reopen-navigate.
+  // Extracted at birth rather than inlined into ModelPicker.svelte, which sat
+  // at 610/610 already — the same seam ModelPickerRow drew: the menu decides
+  // WHICH model and WHOM the pick was for, this draws one small follow-up. A
+  // LEAF; posts nothing, ModelPicker owns the wire. Intro 46 + slack.
+  'webview/dashboard/components/ModelPickerFollowUp.svelte': 65,
+  // ModelPickerTab.svelte (t-q9013i): one tab button in the picker's type or
+  // source column. Extracted because ModelPicker.svelte renders it twice
+  // (tier-1 and tier-1b) and was already near its own cap; this leaf also
+  // took the `.mp-provider`/`.mp-dot` CSS that used to live in ModelPicker's
+  // stylesheet. A LEAF; posts nothing, the caller passes onClick. Intro 114 + slack.
+  'webview/dashboard/components/ModelPickerTab.svelte': 135,
+  // modelPickerMarks.ts (t-q9013i): the picker's type-glyph + vendor-monogram
+  // data, plus the tab/sub-tab tooltip builders that used to be inline
+  // ternaries in ModelPicker.svelte's template. A pure LEAF, no DOM. Intro
+  // 114 + slack.
+  'webview/dashboard/components/modelPickerMarks.ts': 130,
   // modelLabel.ts (tweak 4): the pure parseModelId provider/quant/name split — a LEAF.
+  // t-ry6ecn (+8, cap held): modelIdWithoutProvider, the picker trigger's own
+  // strip-the-prefix helper, MOVED here from ModelPicker.svelte rather than
+  // copied — this file is where a display-only label rule belongs, and the move
+  // paid for the hint line's wiring in a component that was at 606/610.
   'webview/dashboard/components/modelLabel.ts': 75,
+  // pickerHint.ts (t-ry6ecn): the ONE line under the model list explaining why
+  // it is short — the render cap, and the gateway prune that used to be silent
+  // (a row the entitlement sweep dropped just vanished, so the provider's
+  // refusal read as a picker bug). A pure LEAF: the host counts, this words it,
+  // ModelPicker renders one span. Intro 61 + slack.
+  'webview/dashboard/components/pickerHint.ts': 80,
   // modelGrouping.ts (0.2.177): the pure tier-1 projection — group local-vs-Lab.
   // Round 5 (t-o92558, 78->99): replaced the hardcoded local/Lab split with the
   // SAME four-way section connectionSection.ts already uses (Local/Hosted/
@@ -1253,6 +1721,11 @@ const CAPS: Record<string, number> = {
   // extracted when the dead `get_permission_mode` poll was replaced by the live
   // mode stream — so "does the banner follow mode updates?" is testable without
   // a webview host. A LEAF; capped at introduction (63) + slack.
+  // 76->80 (lane/remote-settle, AT cap, not raised): `permBannerCopy` joined
+  // `toPermissionMode` here — the bypass banner duplicated the InputBar's red
+  // chip, so DashboardPanel.ts's private copy switch moved out (and lost its
+  // bypass case) to be testable beside the mode state it renders. No slack left;
+  // the next line here extracts first.
   'src/dashboard/permissionBanner.ts': 80,
   // connectOllama.ts (0.2.177) is GONE — row removed with the file. The picker's
   // "+ Connect Ollama" was the only caller, and it was a config WRITE sitting in
@@ -1273,6 +1746,16 @@ const CAPS: Record<string, number> = {
   // the panel owns caching/pacing, this leaf owns only the verdicts and the
   // concurrency bound. Intro 68 + slack.
   'src/dashboard/gatewayEntitlements.ts': 85,
+  // gatewayEntitledCache.ts (t-ttmo5w): the panel's cache of those verdicts, moved
+  // OUT of DashboardPanel.ts so its two clocks (six-hour full sweep, five-minute
+  // catalog fingerprint) are testable without a panel. Intro 125 + slack.
+  'src/dashboard/gatewayEntitledCache.ts': 140,
+  // modelListRefresh.ts (t-ttmo5w): the Connections Refresh button's host handler,
+  // its own leaf so the drop-caches-then-broadcast ORDER is testable. Intro 47 + slack.
+  'src/dashboard/modelListRefresh.ts': 60,
+  // ConnectionsHeader.svelte (t-ttmo5w): the Connections label + Refresh button,
+  // extracted so SidebarLauncher.svelte (at its cap) SHRANK. Intro 104 + slack.
+  'webview/chat/ConnectionsHeader.svelte': 115,
   // setupProvider.ts (t-o92558 round 4): the add/re-key flow, lifted WHOLE out of
   // DashboardPanel.ts's message switch — which sat EXACTLY on its 6334 cap, so this
   // was extract-or-stop, not a preference. Dependency-injected like connectOllama.ts.
@@ -1341,6 +1824,17 @@ const CAPS: Record<string, number> = {
   // number is the gaming this ratchet exists to prevent. Raised to the exact
   // actual, no slack — the next line here is a deliberate decision again.
   'src/dashboard/providerRefresh.ts': 131,
+  // modelRefreshGate.ts: at most one engine provider refresh per picker-open
+  // burst. Its own file and not two lines in DashboardPanel.ts because that
+  // file is 13 under its cap and the rule needs its own header - live model
+  // discovery made opening the dropdown a thing that reaches the ACCOUNT, and
+  // the reason a second guard exists beside the engine's own ten-minute memo
+  // (this one stops the ext round trip and the provider-list rebuild; that one
+  // stops the network) belongs written down next to the number. Intro 46 + slack.
+  'src/dashboard/modelRefreshGate.ts': 60,
+  // approveModeFailure.ts: the two posts a failed approve-mode write makes (a
+  // system line + the unsigned `remote/set-mode` ask for the phone's chip).
+  'src/dashboard/approveModeFailure.ts': 30,
   // visionDetect.ts: "which of your models can see", asked of whichever local
   // server will answer — LM Studio's `/api/v0/models` type tag and Ollama's
   // `/api/show` capabilities array. Extracted from DashboardPanel.ts, which SHRANK
@@ -1356,7 +1850,14 @@ const CAPS: Record<string, number> = {
   // override inside the thing it overrules. Holds the store shape (a Memento, so
   // no `vscode` import), the reconcile write PLAN with both skips, and the click
   // handler — none of which needs a panel to test. Intro 179 + slack.
-  'src/dashboard/visionPin.ts': 200,
+  // 200->225: `visionStatesFor` moved IN, from a `.map` that was accreting
+  // inside DashboardPanel.broadcastModelOptions for the picker's per-row vision
+  // chips. This is a raise that PAID for one elsewhere rather than avoiding an
+  // extraction: DashboardPanel.ts sits at its own cap unchanged because of it,
+  // and "what vision state is this model in" belongs next to the single-model
+  // answer it calls — asking it for one model in a leaf and for forty in a panel
+  // is how the two stop agreeing.
+  'src/dashboard/visionPin.ts': 225,
   // oauthConnections.ts: the provider blocks an OAuth sign-in writes, plus the
   // method filter. A pure LEAF (no vscode, no network, no disk) so the catalog
   // is readable in one place and testable without a host. It is a MIRROR of
@@ -1373,14 +1874,54 @@ const CAPS: Record<string, number> = {
   // introduced it because the pane's own state (methods/connected/error) is
   // shared with the pill logic, and splitting that under the same change would
   // have been two refactors at once.
-  'webview/sidebar/ControlStrip.svelte': 1241,
+  // 1241 -> 1256 (GitHub Copilot OAuth, 2026-09-03). RAISED, and here is the
+  // why, because a raise is meant to be argued rather than typed.
+  // WHAT WAS EXTRACTED FIRST: oauthForm.ts, a new leaf carrying the form's two
+  // pure rules — deviceCodeOf (the user code out of the plugin's own
+  // `instructions`) and oauthFormHint (the per-provider sentence, which was an
+  // `{#if oauthTarget === 'xai'} … {:else}` chain in the markup and therefore
+  // gave ANY third provider OpenAI's copy). That took 6 lines of prose out of
+  // the component and is what stops the file growing by 21 instead of 15.
+  // WHAT THE RAISE BUYS (the file lands at 1255): a device-code field. Copilot's
+  // plugin has ONE method and it is a code the user transcribes into
+  // github.com/login/device; it used to render mid-sentence inside a hint line.
+  // It is now its own labelled row with a Copy button that only says "Copied" on
+  // a resolved write — 8 lines of markup, 5 of state, 1 import, 3 of CSS.
+  // WHY NOT THE OauthConnectForm.svelte SPLIT THE NOTE ABOVE NAMES: that block
+  // uses nine classes this component scopes and declares no :global rules, so
+  // lifting the markup means duplicating ~18 style rules with no test in this
+  // repo able to catch the visual regression (jsdom has no layout). The seam is
+  // still the right one, and it is still open — it needs the shared
+  // methods/connected/error state moved with it, which is its own change.
+  'webview/sidebar/ControlStrip.svelte': 1256,
   // providerIdentity.ts: the Add/Re-key form's pure decisions — the minted-vs-
   // reused provider id, the base-URL/model rules, and (0.4.28 incident) whether
   // a submit intends to CLEAR the stored API key. The whole payload builder
   // moved here out of ControlStrip.svelte, which was sitting EXACTLY on the cap
   // above with no room for the new field — extraction, not a raise, and the
   // rules gained a DOM-free test file (providerIdentity.test.ts) they never had.
+  // oauthCard.ts: what a provider's fold offers about OAuth — whether the
+  // sign-in action shows at all, the label, the status word, and the line for a
+  // credential the provider has REFUSED. Its own leaf beside providerIdentity.ts
+  // because ControlStrip.svelte was AT its 1241 cap and because both bugs it
+  // fixes are decisions, not markup: the action used to be gated on a credential
+  // map that is empty whenever the host could not ask the engine, so it vanished
+  // at the one moment it was needed. Intro 108 + slack; comment-heavy on
+  // purpose, because the two incidents are the whole value.
+  'webview/sidebar/oauthCard.ts': 125,
+  // oauthForm.ts: the sibling leaf — what the OPEN sign-in form displays (the
+  // device code pulled out of the plugin's instructions, and the per-provider
+  // hint) as against oauthCard.ts's "what the fold OFFERS". Extracted in the
+  // GitHub Copilot pass so ControlStrip.svelte's raise stayed at 15 lines.
+  // Intro 66 + slack for a fourth provider's hint.
+  'webview/sidebar/oauthForm.ts': 90,
   'webview/sidebar/providerIdentity.ts': 145,
+  // copilotCatalog.ts: GitHub Copilot's OAuth spec — the seed model catalog a
+  // sign-in writes into origami.json, in its own file the way anthropicCatalog.ts
+  // is, because oauthConnections.ts is capped at 160 and this entry carries the
+  // longest why of the three (github.com-only, and why the seed comes from the
+  // models.dev snapshot rather than the plugin, which ships no list). Intro 102.
+  'src/dashboard/copilotCatalog.ts': 130,
   // PinnedUserMessage.svelte (tweak 2): the sticky last-user-message mirror — a LEAF.
   'webview/dashboard/components/PinnedUserMessage.svelte': 70,
   // pinnedUser.ts (0.2.176 tweak 2): the pure latestUserText selector split out of ChatPane
@@ -1488,11 +2029,19 @@ const CAPS: Record<string, number> = {
   // labyrinthLayout.ts: the PURE map geometry (thread / corridor / flight) +
   // the glyph and formatting leaves, so every mode's defining property is
   // testable with no DOM. Mirrors modelGrouping.ts. Intro 179 + slack.
-  'webview/dashboard/components/labyrinthLayout.ts': 200,
+  // RAISED 200 -> 202: `run_steps` gained a `compaction` step kind, and
+  // LayoutStep MIRRORS RunStep field for field — the field cannot live anywhere
+  // else without the two drifting. Two lines, no new responsibility, and the
+  // kind's own payload type went to labyrinthLanes.ts rather than here.
+  'webview/dashboard/components/labyrinthLayout.ts': 202,
   // labyrinthLanes.ts: the lane / threshold / tone rules, extracted when the
   // map gained lanes and labyrinthLayout.ts had no room under its cap. A LEAF;
   // capped at introduction (81) + slack.
-  'webview/dashboard/components/labyrinthLanes.ts': 100,
+  // RAISED 100 -> 110: the wire gained a `compaction` step kind, and this file
+  // owns the kind VOCABULARY — the union and, now, that one kind's payload
+  // type, which LayoutStep mirrors from RunStep. A thirteen-line interface in a
+  // file of its own would be a worse split than this one. 103 after the change.
+  'webview/dashboard/components/labyrinthLanes.ts': 110,
   // labyrinthFormat.ts: the duration/clock/truncate/caption printing leaves,
   // extracted from labyrinthLayout.ts at its cap. Intro 32 + slack.
   'webview/dashboard/components/labyrinthFormat.ts': 50,
@@ -1628,7 +2177,18 @@ const CAPS: Record<string, number> = {
   // EXTRACTED from LabyrinthPane.svelte, which was at its cap when the map
   // toolbar needed its export control. Presentation only — the pane keeps the
   // history wire. A LEAF; capped at introduction (75) + slack.
+  // 95 HELD (card delete): the cap DID NOT MOVE — the file SHRANK, 94 -> 92,
+  // even while gaining two props and a refusal row. EXTRACTION CAME FIRST: the
+  // card markup and its eleven style rules went to LabyrinthRunCard.svelte
+  // below, which is where the delete control landed too.
   'webview/dashboard/components/LabyrinthRunIndex.svelte': 95,
+  // LabyrinthRunCard.svelte (card delete): ONE row of the run index — the card
+  // you pick a run with, plus the armed ✕ that deletes it and the inline
+  // confirm that arming opens. Extracted from LabyrinthRunIndex.svelte, which
+  // was at 94/95 when the control landed, exactly as LabyrinthRunSearch.svelte
+  // and LabyrinthCollabRows.svelte came out of it before. A LEAF; the parent
+  // still owns the wire. Intro 105 + slack.
+  'webview/dashboard/components/LabyrinthRunCard.svelte': 125,
   // labyrinthFlight.ts (UAT-2): the flight strip's geometry + its time-based
   // honesty gate, extracted from labyrinthLayout.ts (at cap) when flight grew
   // into the DETAIL view and needed its own sizing. Intro 87 + slack.
@@ -1757,7 +2317,119 @@ const CAPS: Record<string, number> = {
   // now lives with the element it measures. Extracted from LabyrinthPane.svelte
   // at its cap; the pane still binds the element, because the EXPORT reads the
   // rendered SVG out of it. Intro 54 + slack.
-  'webview/dashboard/components/LabyrinthMapCanvas.svelte': 70,
+  // 70->75 (analytics Flight view, owner-approved): the canvas now CHOOSES
+  // between two pictures — the analytics Flight page for an ordinary run, the
+  // older swimlane strip for a COLLAB map, whose parallel root sessions have no
+  // sub-agent band to draw. EXTRACTION CAME FIRST: the ResizeObserver moved out
+  // to labyrinthMeasure.ts, which took the file from 78 back to 74. The
+  // remaining growth is the branch itself plus the prop that carries the new
+  // view's highlight up to the pane; shaving the reasons out of the header to
+  // reach 70 would move a number and delete the explanation.
+  'webview/dashboard/components/LabyrinthMapCanvas.svelte': 75,
+  // labyrinthMeasure.ts: one element's live width, and the guard for an
+  // environment that has no ResizeObserver. Extracted from
+  // LabyrinthMapCanvas.svelte above, at its cap. Intro 27.
+  'webview/dashboard/components/labyrinthMeasure.ts': 40,
+  // --- The analytics FLIGHT view (0.4.79). Flight used to be a strip that grew
+  // 150px per step and had to be scrolled to be read; it is now a fit-to-width
+  // page. Every one of these is NEW, so each cap is its introduction size
+  // rounded up — none of them is a raise. ---
+  // labyrinthCategory.ts: tool id -> one of seven work categories, ids read off
+  // the engine's own Tool.define calls. Intro 106.
+  'webview/dashboard/components/labyrinthCategory.ts': 120,
+  // labyrinthAgentBand.ts: the sub-agent band's ROWS, nested spawns indented
+  // under their parent, off the one branch ledger every view shares. Intro 131.
+  'webview/dashboard/components/labyrinthAgentBand.ts': 145,
+  // labyrinthChart.ts: every coordinate the chart draws, as one pure value —
+  // the rows, and the marks that sit ON a row. Splitting those two would let
+  // them disagree, so they stay together. What did NOT stay is everything that
+  // crosses every row — idle windows, turn markers, the clock labels — which
+  // went to labyrinthAxis.ts when this file passed 290 during its own lane.
+  // Intro 271, 255 after that extraction.
+  'webview/dashboard/components/labyrinthChart.ts': 275,
+  // labyrinthAxis.ts: the annotations that cross every row, and the one gate
+  // that removes all three when the run has no usable clock. Intro 124.
+  'webview/dashboard/components/labyrinthAxis.ts': 140,
+  // labyrinthCache.ts: the cache read/write and LOSS derivation — the only part
+  // of this view allowed to state a cause, so it carries the refusals too.
+  // Intro 233. The two owner-reported Flight defects (compaction invisible,
+  // cache-blind providers drawn as losses) were paid for by TWO extractions
+  // rather than a raise: the hard-coded policy table went to
+  // labyrinthCachePolicy.ts, and the blind-provider rule to
+  // labyrinthCacheBlind.ts. The file came back at 211.
+  // t-rylq3t: the ENGINE now records the cause (0.4.160+); this file reads
+  // `step.cache.cause` first and keeps only the LEGACY (no-field) derivation
+  // as a fallback. labyrinthCachePolicy.ts — the client's own cache-window
+  // table — is DELETED outright (the engine is the one source now), which is
+  // what paid for the new field rather than a raise: the file came back at 204.
+  'webview/dashboard/components/labyrinthCache.ts': 255,
+  // labyrinthCacheText.ts: one sentence per cache-loss cause, and the legacy
+  // fallback's own sentence — split out of labyrinthCache.ts (t-rylq3t) at its
+  // cap, so a wording tweak can never risk the derivation next to it. Intro 103
+  // + slack.
+  'webview/dashboard/components/labyrinthCacheText.ts': 120,
+  // labyrinthCacheBlind.ts: which provider/model in a run reported cache read 0
+  // AND write 0 on every billed request, and is therefore not evidence about
+  // any cache at all. One place decides it, because reading those zeros as
+  // measurements is what turned a local run into seven "losses" a second apart.
+  // Intro 76 + slack. t-rylq3t: also now the one place `providerOf` lives,
+  // moved in from the deleted labyrinthCachePolicy.ts.
+  'webview/dashboard/components/labyrinthCacheBlind.ts': 90,
+  // LabyrinthStatPills.svelte: ONE stat row, shared by the spend headline and
+  // the Flight header so neither invents a rhythm. Intro 73.
+  'webview/dashboard/components/LabyrinthStatPills.svelte': 85,
+  // LabyrinthFlightChart.svelte: markup over labyrinthChart.ts and nothing
+  // else — no geometry of its own to drift from the leaf's. Intro 151; the
+  // SUB-AGENT band was extracted to LabyrinthFlightBand.svelte when the turn-
+  // label fixes took this past 170, leaving 133.
+  // CAP HELD at 150 through the SCRUB LINE (owner: "trying to click the small
+  // lines is too hard"), which needed ~45 lines of pointer and keyboard surface.
+  // TWO EXTRACTIONS PAID FOR IT rather than a raise, both the seam
+  // LabyrinthFlightBand.svelte already took out of this file: the ticks went to
+  // LabyrinthFlightMarks.svelte, the cross-row annotations to
+  // LabyrinthFlightAxis.svelte. What is left is the chart's FRAME and its one
+  // interaction surface — which is exactly what the cursor needed a home in.
+  // 139 after.
+  'webview/dashboard/components/LabyrinthFlightChart.svelte': 150,
+  // LabyrinthFlightMarks.svelte: the ticks themselves — per step, clickable, and
+  // the reference selection path the time cursor snaps onto. Intro 51 + slack.
+  'webview/dashboard/components/LabyrinthFlightMarks.svelte': 65,
+  // LabyrinthFlightAxis.svelte: the markup half of the split labyrinthChart.ts
+  // already made to labyrinthAxis.ts — cache losses, turn lines and the clock,
+  // none of which sits on a row. The idle shading stays with the parent because
+  // it is BACKGROUND and must be painted before any tick. Intro 51 + slack.
+  'webview/dashboard/components/LabyrinthFlightAxis.svelte': 65,
+  // LabyrinthScrubLine.svelte: the time cursor's markup — one rule down the
+  // whole picture with the snapped step's clock riding its top. Where it may sit
+  // is labyrinthScrub.ts's and the state is the chart's; nothing is decided
+  // here. Intro 45 + slack.
+  'webview/dashboard/components/LabyrinthScrubLine.svelte': 60,
+  // labyrinthScrub.ts: where the time cursor lands and which step it therefore
+  // selects — the snap candidates (every drawn x, span ends included), the
+  // nearest-with-ties-to-the-earlier rule, and the arrow-key walk. Pure but for
+  // the clientX -> user-unit conversion, which needs the drawn element's rect.
+  // Intro 130 + slack.
+  'webview/dashboard/components/labyrinthScrub.ts': 150,
+  // LabyrinthFlightBand.svelte: the labelled gap and one row per delegate. The
+  // only part of the chart with a SECOND fade dimension — a spend chip fades
+  // whole rows, not single ticks — so one file no longer carries two highlight
+  // models. Intro 69.
+  'webview/dashboard/components/LabyrinthFlightBand.svelte': 85,
+  // LabyrinthFlightCards.svelte: the prompts card and the category bars, as a
+  // STRETCH grid — the owner's no-dead-space caveat, made structural. Intro 108.
+  // RAISED 125 -> 132: the run's COMPACTIONS are an event, not a category, so
+  // they land here as a banner rather than as an eighth bar. Extracting six
+  // lines of banner into a file of its own would cost more than it saved, and
+  // this file's job did not change. 126 after the change.
+  'webview/dashboard/components/LabyrinthFlightCards.svelte': 132,
+  // LabyrinthCachePanel.svelte: derived cache measurement for the run. Intro
+  // 123. t-rylq3t: the hard-coded per-provider policy table (and its own
+  // section) is DELETED — the engine sends the cause and the facts it was
+  // derived from now, so the panel is down to 117.
+  'webview/dashboard/components/LabyrinthCachePanel.svelte': 140,
+  // LabyrinthFlightView.svelte: composition, zoom and which step is picked.
+  // Every number it prints comes from a leaf above. Intro 155.
+  'webview/dashboard/components/LabyrinthFlightView.svelte': 175,
   // runStats.ts: the `run_stats` host leaf — per-run counts for one PAGE of the
   // run index. Separate from boardData.ts, which sits on its cap, and asked for
   // once per index load: every id costs the engine a whole message read, which
@@ -1786,7 +2458,10 @@ const CAPS: Record<string, number> = {
   // LabyrinthNode.svelte: ONE marker — lane connector, threshold bar, circle,
   // glyph, labels. Extracted from LabyrinthMap.svelte at its cap when lanes and
   // per-kind glyphs landed. Capped at introduction (99) + slack.
-  'webview/dashboard/components/LabyrinthNode.svelte': 120,
+  // RAISED 120 -> 122: one more `.tone-*` rule, for the new `compaction` kind.
+  // labyrinthAtlas.test.ts pins this file's tone rules and labyrinthTone.ts's
+  // table as ONE set, so a kind that gains a tone must gain a rule here too.
+  'webview/dashboard/components/LabyrinthNode.svelte': 122,
   // LabyrinthRail.svelte (background sub-agents): ONE branch rail — its four
   // segments plus the open terminus of a sub-agent that never returned.
   // Extracted from LabyrinthMap.svelte at its cap. A LEAF; intro 46 + slack.
@@ -1813,10 +2488,49 @@ const CAPS: Record<string, number> = {
   // container ref, two one-line commit posts, the mount-time restore request,
   // one more `else if` in the existing message listener, and two
   // <LabyrinthDivider> mounts. Cap = actual (211) + slack.
-  'webview/dashboard/panes/LabyrinthPane.svelte': 215,
+  // 215->219 (card delete, +4 — the SMALLEST raise the feature admits, FLAG FOR
+  // SIGN-OFF): the pane was sitting 214/215, one line of slack. EXTRACTION CAME
+  // FIRST and took the whole feature with it — the ✕, the armed state, the
+  // confirm and its styles are in the new LabyrinthRunCard.svelte, and the
+  // refusal message is drawn by LabyrinthRunIndex.svelte, which SHRANK to 92 in
+  // the same pass. What is left here is the five lines only the pane can own,
+  // because it is the single owner of this board's message listener and of the
+  // selection: one state field for the last refusal, one `else if` branch with
+  // its comment, and its two-line body (record the refusal; on success clear the
+  // deleted run off the map and re-read the index). The onDelete post itself
+  // rides the existing <LabyrinthRunIndex> line. Cap = actual (219), NO slack,
+  // deliberately: this file has now paid for two raises in a row by being one
+  // line under, so the next thing to land in it should extract the message
+  // listener into a leaf of its own rather than shave lines to fit.
+  'webview/dashboard/panes/LabyrinthPane.svelte': 219,
   // InstructionsPane.svelte: the system-prompt inventory, biggest-first, with
   // the chars/4 estimate labelled as such. Intro 140 + slack.
-  'webview/dashboard/panes/InstructionsPane.svelte': 160,
+  // 160 -> 162 (t-d93fjo, RAISED AFTER EXTRACTING). The sub-agent time limit
+  // went into its own SubagentLimitCard.svelte (the control, its own message
+  // pair, its own CSS); this pane pays exactly two lines for it, an import and
+  // a mount, which is the smallest a new card can cost. It was at 159/160 with
+  // nowhere left to give, and squeezing the remaining line would mean
+  // compressing unrelated instruction-row markup purely to move a number.
+  // 162 -> 164 (t-ntmmvh): extraction first, again — the cache-warming switch is
+  // its own leaf (components/CacheWarmingCard.svelte), and the pane pays the two
+  // lines SubagentLimitCard.svelte's own comment names: an import and a mount.
+  // 164 -> 166 (t-dcjs40): extraction first, the THIRD time on this pane, and
+  // the price is the same two lines CacheWarmingCard.svelte's comment above
+  // names. The Storage card is its own leaf (components/StorageCard.svelte) with
+  // its own message pair, its own formatting module (components/storageSplit.ts)
+  // and its own host half (src/dashboard/storagePane.ts); the pane pays an import
+  // and a mount. It was at 163/164, so there was nothing left to give.
+  // t-qc1d69: the Browser card moved in from the sidebar, beside Cache warming
+  // and Storage. Rather than pay a FOURTH pair of lines with nothing left to
+  // give, those three cards (CacheWarmingCard + the incoming BrowserSettings +
+  // StorageCard) were pulled into one leaf, components/InsightsSettingsCards.svelte
+  // — the pane's net line count went DOWN, so 166 is unchanged, not raised.
+  // t-s9jr6u took both mounts out again (161/166); the cap is not lowered here
+  // only because a cap is a ceiling, not a budget.
+  'webview/dashboard/panes/InstructionsPane.svelte': 166,
+  // t-s9jr6u: InsightsSettingsCards.svelte is DELETED. Its settings cards moved
+  // to the Settings view (panes/SettingsPane.svelte) and Storage to the Nests
+  // view, so Insights shrank to instructions, cache ratio and prompt capture.
   // PromptCaptureSection.svelte: the harness-transparency section under that
   // inventory — the labelled parts of the last turn's REAL prompt, the final
   // assembled system after any plugin reshaped it, and the tool inventory,
@@ -1945,6 +2659,43 @@ const CAPS: Record<string, number> = {
   // purpose: a toggle shows what a tool IS but not what else it could be, which
   // is survivable at two states and a guessing game at three. Intro 71 + slack.
   'webview/dashboard/panes/ToolStateSwitch.svelte': 80,
+  // RETIRED: webview/dashboard/panes/SubagentToolsTable.svelte (t-di2u7z, gone
+  // in t-f1j2y3). It ran the axes the wrong way round — agents down, tools
+  // across, tool names rotated 90 degrees — and the owner replaced it with the
+  // ledger below. Its cap is not "raised somewhere else": the file is deleted.
+  //
+  // SubagentLedger.svelte (t-f1j2y3): the SUB-AGENT LEDGER. Tools are the rows
+  // (they are the long list, and the thing a search is aimed at), the Workspace
+  // state is the second column, and every sub-agent type is a column beside it.
+  // A cell is a GLYPH whose shape as well as fill carries the state, and the
+  // four glyphs are named in a legend pinned inside the sticky header row. Every
+  // number and every lock rule is ledgerRows.ts below, so what is capped here is
+  // markup and CSS. Intro 185 + slack.
+  'webview/dashboard/panes/SubagentLedger.svelte': 215,
+  // LedgerColumnHead.svelte (t-f3a74m): ONE agent column's header — the click-to-cycle
+  // control and the menu that carries 'Reset to defaults'. Split out when the header
+  // stopped being a single button and the sheet above was at 188/215; its own CSS came
+  // with it, since Svelte scopes styles per component. Intro 71 + slack.
+  'webview/dashboard/panes/LedgerColumnHead.svelte': 95,
+  // ledgerRows.ts (t-f1j2y3): the ledger's arithmetic with no DOM in it —
+  // grouping by source, the workspace/cell states, the two lock rules, the
+  // cycle, the header counts. A pure leaf, extracted at birth rather than after
+  // the fact: the lock rules are the half a screenshot cannot check, and here
+  // they are testable with no DOM at all. Intro 123 + slack.
+  'webview/dashboard/panes/ledgerRows.ts': 150,
+  // ToolsMainView.svelte (t-f1j2y3): the OTHER half of the switch — today's
+  // pane, unchanged in content (code mode, New tool, the failed-file cards, the
+  // tool grid, the catalog-off note). Extracted because ToolsPane.svelte was at
+  // 205/220 when the switch and the second view landed, which is more than its
+  // slack: the split the feature itself drew, one file per view. Intro 76 +
+  // slack.
+  'webview/dashboard/panes/ToolsMainView.svelte': 100,
+  // CodeModeCard.svelte (t-di2u7z): the code-mode setting, its switch and the
+  // paragraph explaining it, extracted out of ToolsPane.svelte — which had ONE
+  // line of slack left when the matrix above needed wiring in. Extraction
+  // first, exactly as Part 4 of docs/WORKING_ON_ORIGAMI_CODER.md requires: the
+  // pane's cap did not move. Intro 42 + slack.
+  'webview/dashboard/panes/CodeModeCard.svelte': 55,
   // NewToolPanel.svelte: the honest-create box — the name field, the
   // scaffold+open+copy button, and the sentence saying outright that this is a
   // scaffold and not a tool builder. Extracted alongside ToolCard for the same
@@ -2046,6 +2797,12 @@ const CAPS: Record<string, number> = {
   // agent->lane derivation that replaced the disproven branchModel stamping
   // (LABYRINTH_COLLAB_CONTRACTS S8). Intro 100 + slack.
   'webview/dashboard/components/labyrinthCollabIndex.ts': 105,
+  // labyrinthClaudeRuns.ts (t-47bk8j): Claude rows in the Labyrinth's run
+  // index — the `claude:` route stamped onto a listed row's id, the show/hide
+  // filter (the History popup's own preference, not a second one), and the
+  // per-row stats read off the row the scan already measured rather than from
+  // an engine that has never heard of the session. Pure. Intro 102.
+  'webview/dashboard/components/labyrinthClaudeRuns.ts': 115,
   // cronPosix.ts (2026-08-06): the macOS counterparts of cronCommand/
   // cronLauncher's Windows primitives — shQuote, the sh launcher, the launchd
   // plist, the launchctl-list parse. PURE by the same covenant, so the Mac
@@ -2234,7 +2991,28 @@ const CAPS: Record<string, number> = {
   // remaining --og-* usage is ordinary; the alpha-stencil mask that used to
   // justify the exemption left with the ring CSS (now in ChatsList.svelte,
   // which inherits the same exemption for the same reason).
-  'webview/chat/SidebarLauncher.svelte': 420,
+  // 420->426 (+6 — the SMALLEST raise the feature admits, FLAG FOR SIGN-OFF):
+  // the sidebar gains a FRONT DESK section under Collabs, with a count of the
+  // friends' questions parked on this Origami. EXTRACTION CAME FIRST and took
+  // everything with it — the queue wire, the thirty-second poll, the collapse
+  // flag and the whole body live in the new webview/chat/FrontDeskSection.svelte,
+  // the same whole-half extraction CollabsList.svelte made. What is left here is
+  // one import, one tag and the comment saying why it sits outside the 50/50
+  // split; the file was at 416 of 420, so the comment alone did not fit.
+  // 426->431 (+5, FLAG FOR SIGN-OFF, no extraction attempted): the Connections
+  // section-label folds into the brand row (t-ru0p04, one fewer 24px row above
+  // Chats) — a moved <span> plus its own small CSS rule. Nothing here is a
+  // module boundary; the whole change is the four lines it cost.
+  'webview/chat/SidebarLauncher.svelte': 431,
+  // The section itself. A queue, a badge and two buttons; anything larger
+  // arriving here means the sidebar is growing a second Flock pane.
+  'webview/chat/FrontDeskSection.svelte': 185,
+  // Its ROWS, extracted when the section sat at 183 of 185 and the owner asked
+  // for two more controls on them: "Open in chat" on a question, and the full
+  // destination picker on a reply. The section keeps the collapse, the badge and
+  // the poll; the rows keep their own markup and their own colours, so they are
+  // in both theme lists below for the reason the section is. Intro 83 + slack.
+  'webview/chat/FrontDeskRows.svelte': 105,
   // --- Collabs M2: the Slack-style stream, agent-def CRUD, the roster picker,
   // sidebar archive/History/rings, the `/` palette and the context tracker.
   // Every entry below is a NEW file; not one existing cap was raised, and the
@@ -2267,7 +3045,66 @@ const CAPS: Record<string, number> = {
   // seeds the ring the same way; falls back to the prior in-memory state only
   // for an older host reply. Landed EXACTLY on the held cap (799->800); no
   // room left.
+  // lane/ring-subagents: the file had drifted back down to 794 since then (an
+  // untracked shrink elsewhere). The ring's FOURTH state ("sub-agents
+  // running" — sessionRowState.ts) needed a SessionRow field, two message
+  // cases and one CSS rule; the row-array reducers moved to a new leaf,
+  // runningChildren.ts, to keep the case bodies to one line each. Landed
+  // EXACTLY on the cap again (794->800); no room left.
   'webview/chat/ChatsList.svelte': 800,
+  // t-s9k0q6 (Nests L4c): the sidebar's Here | Nest control and flat Nest tab.
+  // ChatsList.svelte gained ONE mount point (four optional props, 787/800) and
+  // nothing else; every part is its own leaf below. Intro + slack each.
+  'webview/chat/ChatsHereNest.svelte': 140,
+  'webview/chat/ChatsViewToggle.svelte': 95,
+  'webview/chat/NestList.svelte': 150,
+  'webview/chat/NestRow.svelte': 170,
+  // t-sc093o: the popover left (a plain click opens the chat read only), and
+  // its place is the composer gate. The wiring's host leaves: the hub, the
+  // pull loop, the engine-shape mirror, the window's instance, the nest group
+  // verbs, and the snapshot split out of groupController.ts at its cap.
+  'webview/chat/NestReadOnlyGate.svelte': 105,
+  'webview/shared/NestGlyph.svelte': 20,
+  'webview/shared/nestGlyph.ts': 20,
+  'src/dashboard/nestHub.ts': 275,
+  'src/dashboard/nestPull.ts': 80,
+  'src/dashboard/nestRelease.ts': 45,
+  'src/dashboard/nestContract.ts': 115,
+  'src/dashboard/nestHubWindow.ts': 35,
+  // t-selspn (Nests L6): the mother base's tail, and the per-chat row choice
+  // moved out of nestHub.ts to make room for it there; the reply waiters
+  // (several per peer + chat, since the tail and a click can overlap). Intro + slack.
+  'src/dashboard/nestTail.ts': 170,
+  'src/dashboard/nestReplies.ts': 45,
+  // t-sh7cog: the window's host engine (host features with no chat open): the
+  // rules (pure) and the window singleton + activation wiring. Intro + slack.
+  'src/dashboard/hostEngine.ts': 110,
+  'src/dashboard/hostEngineWindow.ts': 75,
+  'src/remote/nestWire.ts': 70,
+  'src/remote/groupSnapshot.ts': 55,
+  'webview/chat/DeskChip.svelte': 70,
+  'webview/chat/FromPill.svelte': 50,
+  'webview/chat/ForkParentLine.svelte': 55,
+  'webview/chat/nestIndex.ts': 220,
+  'src/dashboard/nestSidebar.ts': 125,
+  // t-sj39jx (artifacts lane 4): artifacts in the nest, three NEW leaves so
+  // nestHub.ts (at 273/275) only gained the hook: the pull and index sync
+  // (nestArtifacts.ts), the pure row rules (nestArtifactRows.ts), and the three
+  // desk-to-desk verbs (nestArtifactWire.ts, beside the capped nestWire.ts). Intro + slack.
+  'src/dashboard/nestArtifacts.ts': 200,
+  'src/dashboard/nestArtifactRows.ts': 110,
+  'src/remote/nestArtifactWire.ts': 65,
+  // t-t7lfho (hand-over UX): the "continued on <desk>" record (host, globalState),
+  // the chunk reassembly moved OUT of nestHub.ts (273/275) to make room for it, the
+  // words and the Continue-result rule (webview, so ChatsHereNest.svelte and the gate
+  // stay under their caps), and the transcript block. Intro + slack.
+  'src/dashboard/nestAway.ts': 80,
+  'src/dashboard/nestUnwrap.ts': 30,
+  'webview/chat/nestAway.ts': 85,
+  'webview/chat/NestAwayBlock.svelte': 60,
+  // t-t7lfho follow-up: the ONE write gate for a chat on another desk, applied
+  // inside getVsCodeApi (vscodeApi.ts) so every component's post passes it.
+  'webview/shared/nestWriteGate.ts': 60,
   // ChatSectionBlock.svelte (t-kgserq v2): ONE collapsible section's header
   // (chevron/count/optional delete) + row-list shell, generic over Main/a
   // custom section/Loops so three near-identical header blocks did not have
@@ -2294,6 +3131,18 @@ const CAPS: Record<string, number> = {
   // Set reducers ChatsList.svelte's requestPermission/permissionAudit cases
   // call. A LEAF, sibling of chatSections.ts; capped at introduction (56) + slack.
   'webview/chat/sessionRowState.ts': 70,
+  // runningChildren.ts: the row-array reducers behind the ring's FOURTH
+  // state ("sub-agents running", sessionRowState.ts's `subagentsRunning`) —
+  // pulled into its own leaf rather than sessionRowState.ts (which had no
+  // room) or inline in ChatsList.svelte (which sat AT its own cap). A LEAF,
+  // sibling of sessionRowState.ts; capped at introduction (38) + slack.
+  // t-dclj7z RAISE 55 -> 90: the WORKSPACE-WIDE roster's two reducers
+  // (rosterCount / rosterOwner) joined the ring's. NOTHING EXTRACTED, and the
+  // join is the reason: both read the SAME `runningChildren` sets the ring is
+  // built from, and a second file reading them would be a second answer to
+  // "who is out" free to disagree with the rings beside it — the exact drift
+  // this file's own header says it exists to prevent.
+  'webview/chat/runningChildren.ts': 90,
   // CollabStream.svelte: the message stream as a Slack-style transcript —
   // consecutive same-author runs under ONE avatar/name/time header, a brand
   // glyph where one resolves and a stable per-slug letter disc where none does.
@@ -2460,7 +3309,14 @@ const CAPS: Record<string, number> = {
   // t-kgtr6c round 3 folded the separate read-out chip into this button, which
   // took it to 132 — TWELVE over. The cap is UNCHANGED: the state table went to
   // visionButtonState.ts and the file came back to 112.
-  'webview/dashboard/components/VisionProfileMenu.svelte': 120,
+  // 120->110 (the Auto/On/Profile triad): the profile LIST left this file for
+  // VisionPinRow.svelte, taking its markup and its `.vision-item` CSS with it,
+  // because picking a profile became one of the three answers that control
+  // offers rather than a second menu underneath it. 119 -> 105. The cap comes
+  // DOWN with the lines: a cap left at 120 after a 14-line move is 14 lines of
+  // slack nobody argued for, and the next file to grow here should have to say
+  // why.
+  'webview/dashboard/components/VisionProfileMenu.svelte': 110,
   // visionButtonState.ts: what the Vision button says and what a click opens,
   // as a pure table — the extraction that paid for the cap above. Its own module
   // because the rule that matters (a NATIVE model wins the label and gets a note
@@ -2473,14 +3329,37 @@ const CAPS: Record<string, number> = {
   // its 120 cap, and InputBar.svelte at its 1200 one, so there was nowhere else
   // for it to go. It posts its own click (no InputBar callback) because the host
   // owns the pin and answers with a fresh modelStatus. Intro 68 + slack.
-  'webview/dashboard/components/VisionPinRow.svelte': 90,
+  // 90->160 (the Auto/On/Profile triad). EXTRACTION CAME FIRST and it was the
+  // whole design: visionTriad.ts below now owns which single choice is the
+  // current answer, which is the part with eight combinations in it. What
+  // remains here is genuinely bigger than what it replaced, and every line of
+  // the increase is accounted for: the profile LIST moved IN from
+  // VisionProfileMenu.svelte (whose cap came down by the same move — 15 lines of
+  // markup and scoped CSS), each choice gained a scope sublabel because the pin
+  // is per-model and the profile is per-chat and the old stack read as one
+  // setting, and the retired 'off' pin needs a chip of its own to keep being
+  // reported. Squeezing the rest would mean splitting one control's markup from
+  // its own CSS across a third file — the arrangement this codebase already
+  // proved produces `var(--og-green, #4caf50)`.
+  'webview/dashboard/components/VisionPinRow.svelte': 160,
+  // visionTriad.ts: WHICH of Auto / On / Profile is the current answer, and
+  // which of them are offered at all — the extraction that paid for the cap
+  // above. Its own module rather than more of visionPinState.ts because the
+  // question needs three inputs that file does not own (the armed profile, the
+  // profiles that exist, native vision), and because "exactly one answer, ever"
+  // is a property worth checking across all eight combinations without a DOM —
+  // showing two at once is the exact defect the triad replaced. Intro 141 + slack.
+  'webview/dashboard/components/visionTriad.ts': 165,
   // visionPinState.ts: what the tri-state SAYS, as a table — "Auto (on — detected)"
   // is a different sentence from "On (pinned)" even though both write the same
   // config flag, and that difference is the whole feature. A MIRROR of the
   // VisionState union in src/dashboard/visionPin.ts (webview code cannot import
   // host code: tsconfig.webview.json pins rootDir to webview/), guarded by
-  // visionPinState.test.ts. Intro 73 + slack.
-  'webview/dashboard/components/visionPinState.ts': 95,
+  // visionPinState.test.ts.
+  // 95->55: which button is armed, and the button table itself, went to
+  // visionTriad.ts (see above) — this is the read-out sentence and nothing else
+  // now, at 42. Down with the lines, for VisionProfileMenu.svelte's reason.
+  'webview/dashboard/components/visionPinState.ts': 55,
   // visionPersonaSeed.ts: the body a NEW vision profile is born with. Its own
   // module rather than a third branch of collabPersonaSeed.ts — that file seeds
   // COLLAB agents, and seeding a profile from its observer preset is exactly the
@@ -2648,6 +3527,24 @@ const CAPS: Record<string, number> = {
   // SlashDropdown.svelte already have — no --og-* shadow var exists anywhere in
   // this codebase. Capped at introduction (141) + slack.
   'webview/chat/HistoryDropdown.svelte': 165,
+  // historyKinds.ts (t-463pb6): the popup lists TWO kinds of past chat now, and
+  // this is every rule that follows — the filter, the CC mark, the row
+  // projection, which message a pick sends, and where the toggle's state is
+  // parked. A LEAF because ChatsList.svelte is ON its 800-line cap and none of
+  // this is drawing. Capped at introduction (129) + slack.
+  'webview/chat/historyKinds.ts': 140,
+  // claudeScanNote.ts (t-5nmtva): the one line the popup shows when the
+  // Claude rows are ON and none came back — the root scanned, how many
+  // project folders were in it, the key looked for. A LEAF because
+  // ChatsList.svelte is ON its 800-line cap and this is a decision, not
+  // drawing. Capped at introduction (49) + slack.
+  'webview/chat/claudeScanNote.ts': 60,
+  // HistoryKindToggle.svelte (t-463pb6): the popup's show/hide switch for the
+  // marked rows. Its own component because HistoryDropdown.svelte is the SHARED
+  // panel (the Collabs half draws archived rooms in it) and sits close to its
+  // cap — a control one caller passes belongs beside the panel, not inside it.
+  // Capped at introduction (58) + slack.
+  'webview/chat/HistoryKindToggle.svelte': 70,
   // ThoughtPill.svelte: the reasoning block, extracted from ChatPane.svelte at
   // its cap so a collab agent's live turn and a chat model's thought are ONE
   // object — two surfaces drawing "a model is thinking" would otherwise drift.
@@ -2659,6 +3556,14 @@ const CAPS: Record<string, number> = {
   // prop, one ontoggle handler on the <details> tag, a rewritten `open` doc.
   // 114 -> 119; cap did NOT move.
   'webview/dashboard/components/ThoughtPill.svelte': 125,
+  // ThoughtLine.svelte (t-qmzegs item 4): the summary's INDICATOR — the shimmer
+  // that sweeps the label while a thought grows and the line that travels under
+  // it — extracted out of ThoughtPill at 123/125 rather than raising that cap,
+  // which came back out of this work at 125 exactly. A real seam: the pill owns
+  // the FOLD (a <details>, its open state, the body) and this owns an animation
+  // vocabulary with no state of its own. It renders inside the <summary>,
+  // because a closed <details> hides every sibling after it.
+  'webview/dashboard/components/ThoughtLine.svelte': 110,
   // collabActivity.ts: WHICH agents get a live pill and what it may say. Its own
   // module because the load-bearing rules are honesty rules about a brand-new
   // OPTIONAL wire field — only a running agent gets a pill, a malformed or
@@ -2877,6 +3782,88 @@ const CAPS: Record<string, number> = {
   // shared part is thirty lines of CSS. Same call CollabTaskDrawer.svelte's own
   // cap comment records for the same idiom. Intro 84 + slack.
   'webview/dashboard/components/TodoOverlay.svelte': 110,
+  // TodoTabs.svelte (t-d93fjo): the one-line tab strip over the todo list —
+  // `Main` plus one tab per sub-agent keeping a list of its own. Split from
+  // TodoOverlay.svelte at birth (that file was 88/110 and the strip is thirty
+  // lines of CSS); WHICH tabs exist is neither's, it is todoTabs.ts below.
+  // Class prefix `todo-listtab`, not `todo-tab`: TodoStrip.svelte owns the
+  // latter for its own pull-tab and the two render in the same overlay.
+  // 110->125 (t-f9jxl1, owner-approved): every tab gets an explicit
+  // box-sizing:border-box height so "Main 1" and "T4 2" measure the same box
+  // regardless of which one is selected — the comment on `.todo-listtab`
+  // records why (box-shadow never touches layout size, but content-box height
+  // without one did). Comment growth, not new behaviour.
+  // 125->137->125 (t-ru0p04): the strip's scrollbar now paints at rest, not
+  // only mid-scroll. First landed as three local CSS declarations (raised the
+  // cap to 137); moved out to the reusable `.og-scrollbar-visible` utility in
+  // shared/theme.css on review, with the class named on this file's own
+  // markup instead — the cap comes back down to its original 125 since the
+  // component itself is back to net-zero lines.
+  'webview/dashboard/components/TodoTabs.svelte': 125,
+  // todoTabs.ts (t-d93fjo): which todo lists the panel OFFERS, what a tab is
+  // called, and what happens to the selection when the tab it named goes away.
+  // A LEAF beside todoTree.ts and todoCollapse.ts, for the same reason: the two
+  // rules worth getting right (when a tab disappears, where the selection falls
+  // back to) are assertions rather than a rendered component. Intro 115 + slack.
+  'webview/dashboard/components/todoTabs.ts': 130,
+  // todoClear.ts (t-h8gv8w): "Clear completed" on the Todo panel — which rows a
+  // click hides, and why the key is content+status rather than the wire's index
+  // (the index is the position in the array the model last wrote, so it hides
+  // whatever lands there next; content alone would keep hiding a row the model
+  // REOPENS). A pure LEAF beside todoTree.ts, for that file's reason: the cases
+  // worth getting right are assertions, not a render. Intro 77 + slack.
+  'webview/dashboard/panes/todoClear.ts': 95,
+  // TodoClearButton.svelte (t-h8gv8w): the Todo header's "Clear completed"
+  // control. EXTRACTED at birth rather than raising TodoStrip.svelte's cap —
+  // that file was at 348/360 and the control is a button plus twenty lines of
+  // CSS. It holds no state and knows no keys: the rule is todoClear.ts's and
+  // the hidden set is the pane's. Intro 51 + slack.
+  'webview/dashboard/components/TodoClearButton.svelte': 65,
+  // TodoStatusDot.svelte (t-qn0lpl): a todo row's state as a DOT, in the same
+  // vocabulary the chat list and SubagentRow.svelte's `.sa-dot` already use.
+  // EXTRACTED at birth rather than raising TodoRow.svelte's cap — that file was
+  // at 139/140 and the dot is an element plus its colours, its pulse and the
+  // reduced-motion opt-out. Intro 65 + slack.
+  'webview/dashboard/components/TodoStatusDot.svelte': 85,
+  // TodoProgressBar.svelte (t-qn0lpl): completed ÷ total as a 2px bar under the
+  // Todo header. EXTRACTED at birth rather than raising TodoStrip.svelte's cap —
+  // that file was at 356/360 — and it keeps the one thing worth asserting (the
+  // fill's width) checkable without rendering a panel. Intro 51 + slack.
+  'webview/dashboard/components/TodoProgressBar.svelte': 70,
+  // BrowserOverlay.svelte: the RAIL PEER above TodoOverlay — the film strip of
+  // pages the agent's browser verbs produced. Its own file for the obvious
+  // reason (a component) and NOT folded into TodoOverlay for the reason that
+  // file's own note already gives about SubagentDrawer: a twelve-frame ring of
+  // screenshots and a todo tree are two data shapes and two lifetimes, and the
+  // shared part is the pull-tab CSS. Intro 237 + slack.
+  'webview/dashboard/components/BrowserOverlay.svelte': 250,
+  // browserFrames.ts: the strip's frame RING — push, newest last, per session,
+  // clear on close, and TWO bounds: twelve frames, and 16 MB of held string.
+  // The byte budget is the one that actually holds the memory — a frame's size
+  // is the PAGE's, not ours — and it landed with the ring rather than in a file
+  // of its own because an eviction rule split from the push it guards is how
+  // the two disagree later. Split out of ChatPane.svelte on exactly the rule
+  // todoScratchbook.ts was: the pane was on its cap, and a bounded ring is
+  // arithmetic rather than markup. Intro 110 + slack.
+  'webview/dashboard/panes/browserFrames.ts': 125,
+  // BrowserFilmFrame.svelte (t-qn0lpl): ONE thumbnail of the strip — the fixed
+  // 104x66 box, the crop, the sequence badge and the newest-frame accent.
+  // EXTRACTED rather than raising BrowserOverlay.svelte's 250 cap, which the
+  // round-3 facelift put at 275. Intro 72 + slack.
+  'webview/dashboard/components/BrowserFilmFrame.svelte': 95,
+  // BrowserViewportRow.svelte (t-qn0lpl): the line under the film — what size
+  // the newest picture is, and the way out to the picture itself. Same reason
+  // and same pass as BrowserFilmFrame above. Intro 69 + slack.
+  'webview/dashboard/components/BrowserViewportRow.svelte': 90,
+  // t-ru1i84: the PNG header reader behind the caption's "shown" half. Its own leaf
+  // because src/browserViewport.ts was at 197/200 and this is a different question —
+  // how big the PICTURE is, not what the page was laid out at. Intro 45 + slack.
+  'src/browserShotSize.ts': 60,
+  // t-ru1i84: the per-session ring of context readings, and the sparkline geometry it
+  // draws. Both are leaves so InputBar.svelte (1204/1230) took only the wire line.
+  // Intro 58 / 32 + slack.
+  'src/dashboard/contextTrend.ts': 80,
+  'webview/dashboard/components/contextTrendLine.ts': 55,
   // SubagentDrawer.svelte: the LEFT-edge roster of sub-agents still out. Borrows
   // TodoStrip's pull-tab INTERACTION, not its top-strip layout. Draws nothing at
   // all (not even a tab) with no rows. Intro 148 + slack.
@@ -2888,32 +3875,116 @@ const CAPS: Record<string, number> = {
   // over after extraction, so raised to 185 rather than squeezing CSS to hit
   // the old number.
   'webview/dashboard/components/SubagentDrawer.svelte': 185,
+  // --- Side quests (t-f89g49), the second drawer on the same left rail. Five new
+  // files, each capped at introduction + slack, on the sub-agent family's own
+  // split: one DOCK that holds the wire, one DRAWER that holds the panel and the
+  // slide, one TAB that is the handle, one POPUP that is the read surface, and
+  // the prop/payload SHAPE in a .ts leaf both of them import. Nothing here is a
+  // raise: every number below is a file written this pass.
+  'webview/dashboard/components/SideQuestsDock.svelte': 100,
+  'webview/dashboard/components/SideQuestsDrawer.svelte': 170,
+  'webview/dashboard/components/SideQuestsTab.svelte': 60,
+  'webview/dashboard/components/SideQuestPopup.svelte': 145,
+  'webview/dashboard/panes/sideQuestProps.ts': 60,
+  // The host half of the same feature. sideQuestFile.ts is the PURE file contract
+  // (parse + stamp, no fs); sideQuestsPane.ts is the folder and the four messages
+  // (no `vscode`); sideQuestExport.ts is the one call that needs the editor.
+  'src/dashboard/sideQuestFile.ts': 150,
+  // 190->200 (t-f89g49, owner correction, same lane): Start PREFILLS the new
+  // chat's composer instead of prompting it — "new session would need to be
+  // prompted for what model and sub agent model" — which cost the `sideQuestStart`
+  // case seven lines of reasoning about WHY it does not send. Nothing was
+  // extracted and nothing needs to be: the number being restamped is one this
+  // same lane set a commit earlier, not a ceiling anyone has lived under.
+  'src/dashboard/sideQuestsPane.ts': 200,
+  'src/dashboard/sideQuestExport.ts': 40,
+  // The flag reader. EXTRACTED before it ever landed in engineEnv.ts: the two
+  // exports took that file from 73 to 97 against a cap of 75, and the rule is to
+  // extract rather than raise. subagentLimit.ts is the same shape — one setting,
+  // its own module, read by name.
+  'src/sideQuestsFlag.ts': 40,
+  // composerPrefill.ts: the ONE rule by which a host message writes text into a
+  // composer the user did not type (Start on a side quest). A leaf, and a small
+  // one on purpose — "never overwrite a draft, exact session only" is the
+  // dangerous part of this feature and belongs in one testable function rather
+  // than as a condition inside InputBar.svelte's message listener.
+  'webview/dashboard/components/composerPrefill.ts': 55,
   // SubagentGroup.svelte: ONE labelled band of the sub-agent drawer — its
   // heading, its count, and the rows under it. EXTRACTED from
   // SubagentDrawer.svelte (183/185) when the roster split into Running and
   // Complete, so adding a band is one more tag rather than a second copy of an
   // {#each} and its <ul> styling. An empty band draws nothing, not a standing
   // "Complete 0" — the drawer is a 240px glance surface. A LEAF; intro 66 + slack.
-  'webview/dashboard/components/SubagentGroup.svelte': 85,
+  // t-dclj7z RAISE 85 -> 100: the COMPLETE band gained its own "Clear
+  // complete" action (report item 10). NOTHING WAS EXTRACTED here and the
+  // judgement is deliberate: this file is already the minimal leaf — it WAS the
+  // extraction out of SubagentDrawer.svelte — and the only thing left to split
+  // is one <button> with no state and no rules, which would be a file to hold a
+  // control. Its prop shape did move out, to panes/subagentProps.ts.
+  'webview/dashboard/components/SubagentGroup.svelte': 100,
+  // SubagentLimitCard.svelte (t-d93fjo): the Insights pane's sub-agent time
+  // limit — a number box, its bounds and the "read at spawn" warning. Born as a
+  // module because InstructionsPane.svelte was at 159/160; the host half is
+  // src/dashboard/subagentLimitPane.ts, and the setting id and unit conversion
+  // are src/subagentLimit.ts. Intro 109 + slack.
+  'webview/dashboard/components/SubagentLimitCard.svelte': 120,
+  // StorageCard.svelte (t-dcjs40) is DELETED (t-s9jr6u): the Nests view's
+  // Storage card (components/NestStorage.svelte) replaces it, per desk and per
+  // class. storageSplit.ts stays: that card prints bytes with its formatBytes.
+  // storageSplit.ts: the pure byte formatting and the one-line prune summary
+  // behind that card, split out so they are testable with no DOM (the
+  // cacheRatio.ts precedent). Intro 39 + slack.
+  'webview/dashboard/components/storageSplit.ts': 55,
   // SubagentTranscriptView.svelte: a finished sub-agent's OWN session, drawn
   // with the chat's renderer instead of the flat forwarded log. Owns the
   // request keyed to the child id, the four draw states (loading / error /
   // gone / empty) and the READ-ONLY handoff into ChatTranscript — the child id
   // is real, so without that flag Kill and Stop would reach a live session.
   // The thought open-set is local $state here: there is no session to write to.
-  // Intro 165 + slack.
-  'webview/dashboard/components/SubagentTranscriptView.svelte': 195,
+  // t-krxap7 added selective loading: the newest block on open, older blocks by
+  // the button or by scrolling to the top. RAISED 195 -> 275 AFTER extraction:
+  // the whole window state machine (which block may be asked for, which reply
+  // may be applied, the single-in-flight guard) went out to
+  // components/subagentPaging.ts, where it is tested with no DOM. What is left
+  // here is DOM work the leaf cannot hold — the scroll anchor across a prepend,
+  // the IntersectionObserver, the button and its styles.
+  'webview/dashboard/components/SubagentTranscriptView.svelte': 275,
+  // subagentPaging.ts (t-krxap7): the loaded window's rules — the cursor that
+  // may be asked for next, and the reply that may be applied. Pure, because the
+  // double-fetch it guards against comes from an IntersectionObserver jsdom does
+  // not have. A LEAF; intro 102 + slack.
+  'webview/dashboard/components/subagentPaging.ts': 130,
   // SubagentRow.svelte (t-kgryh1 polish): ONE roster row — dot/name/age/model/
   // activity tail, plus a FAILED row's dismiss (x). Extracted OUT of
   // SubagentDrawer.svelte (see its cap comment above) rather than grown
   // in place. A LEAF; intro 108 + slack.
-  'webview/dashboard/components/SubagentRow.svelte': 130,
+  // 130->150 (t-f9jxl1, owner-approved): the row became explicit THREE lines
+  // (identity+buttons / tokens+elapsed / model) instead of a header line with
+  // age/tokens crammed onto it and model floating loose — every row starting
+  // COLLAPSED by default. No new component split makes sense here: the three
+  // lines are one row's own content, not three separable concerns.
+  'webview/dashboard/components/SubagentRow.svelte': 150,
   // chatScroll.ts: the follow-the-stream predicate. Its own module because the
   // threshold is the whole decision — an exact bottom test unsticks a user who
   // never touched the wheel — and a threshold nobody can unit-test is one
   // nobody can trust. A pure LEAF, mirroring pinnedUser.ts's split out of the
   // same pane. Intro 40 + slack.
   'webview/dashboard/panes/chatScroll.ts': 60,
+  // chatScrollRearm.ts: the other half of the same decision — not "is it at the
+  // bottom?" but "has it come BACK?". Its own leaf because it needs state
+  // chatScroll.ts deliberately does not keep: the metrics the user last SAW, so
+  // a return to a bottom that has since grown still reads as a return, and a
+  // wheel on a pane with nothing to scroll never latches the follow off. Both
+  // surfaces (ChatPane, collabStreamFollow) import it. Intro 60, cap = actual.
+  'webview/dashboard/panes/chatScrollRearm.ts': 60,
+  // chatScrollSeen.ts (t-v47ytt): the record chatScrollRearm.ts reads, EXTRACTED so our own
+  // scrolls (the follow, chatPin.ts, historyScroll.ts) write it too; a stale record left the
+  // jump pill up at the bottom. A pure LEAF. Intro 37 + slack.
+  'webview/dashboard/panes/chatScrollSeen.ts': 40,
+  // chatScrollInput.ts (t-v47ytt): which inputs move the TRANSCRIPT - the upward-wheel rule (moved
+  // out of chatScrollRearm.ts, which was at its cap) now also asks whether a box inside takes the
+  // wheel, and the resize rule (pin a follower, re-arm a reader put on the bottom). All three surfaces import it. A LEAF. Intro 45 + slack.
+  'webview/dashboard/panes/chatScrollInput.ts': 50,
   // subagentRows.ts: which sub-agents are still out, derived from the
   // transcript's OWN `task` cards rather than a second wire that could disagree
   // with the tool card above it. Owns the honesty rules — dedupe a RESUMED
@@ -2959,14 +4030,106 @@ const CAPS: Record<string, number> = {
   // chatToolMsg.ts at 180/180 (which came back to 170), and kept OUT of
   // subagentInbox.ts — that file owns where a side-channel event GOES, not what
   // a card's fields mean. A pure LEAF; intro 53 + slack.
-  'webview/dashboard/panes/taskRiders.ts': 70,
+  // t-dclj7z RAISE 70 -> 85: the `origami_task_tokens` rider, which is the one
+  // field on this card where LATEST wins rather than first (the engine re-sends
+  // a running total per child step), plus the comment that says why. NOTHING
+  // WAS EXTRACTED and nothing could be: this file is a single merge function
+  // whose whole value is that all the write-if-present rules sit in one place,
+  // so splitting "the tokens rule" out would put two halves of one rule in two
+  // files — the exact drift the file exists to prevent.
+  'webview/dashboard/panes/taskRiders.ts': 85,
   // SubagentDock.svelte: the drawer's LIVE wiring — this chat's rows plus the
   // 1s CLOCK that keeps their ages honest (they used to freeze at whatever age
   // they were born with, because the pane read Date.now() inline once per
   // render). EXTRACTED from ChatPane.svelte at its cap rather than growing it:
   // the drawer's shape stays in SubagentDrawer.svelte, one row in
   // SubagentRow.svelte, and "a roster is a live thing" lives here. Intro 50 + slack.
-  'webview/dashboard/components/SubagentDock.svelte': 70,
+  // t-dclj7z RAISE 70 -> 140, AFTER extracting twice: the ceiling's
+  // request/listen wire went to panes/subagentLimitWire.ts and both retirement
+  // rules to panes/subagentRetire.ts, so what stayed here is only the WIRING of
+  // four live facts (rows, clock, ceiling, map) — no rule at all. Squeezing the
+  // rest out would mean a component per $effect.
+  // t-h8gv8w: the sweep, the bulk clear and its confirm came back OUT (a
+  // finished row is history now), so the file is well under this cap again.
+  // Left at 140 rather than re-tightened — lowering a cap is the owner's call.
+  'webview/dashboard/components/SubagentDock.svelte': 140,
+  // --- t-dclj7z: the sub-agent UI round-2 leaves ---------------------------
+  // subagentTokens.ts: what a child's SPEND looks like on a 240px row — the
+  // compact `12.4k / 2.1k` and the exact breakdown behind it. A MIRROR of
+  // src/acpTaskTokens.ts's shape (the webview cannot import host code), read by
+  // subagentTokens.test.ts's guard. Pure LEAF; intro 79 + slack.
+  'webview/dashboard/panes/subagentTokens.ts': 100,
+  // t-ru1i84: TOKEN_LABELS + tokensTitle EXTRACTED out of subagentTokens.ts (99/100) so
+  // the derived-cost field could land there without the cap moving. subagentTokens.ts
+  // re-exports both names, so no importer changed. Intro 47 + slack.
+  'webview/dashboard/panes/subagentTokensTitle.ts': 70,
+  // t-ru1i84: the host-side price lookup — the engine's own provider-catalogue cache read
+  // read-only, plus the per-child cost maths. Intro 153 + slack.
+  'src/dashboard/subagentCost.ts': 175,
+  // subagentWarn.ts: "this one is about to be killed" — the amber threshold at
+  // 80% of the sub-agent ceiling, and the wording of the warning. Split from
+  // subagentTiming.ts on that file's own line: it answers HOW LONG, this
+  // answers IS THAT TOO LONG. Clock injected. Pure LEAF; intro 52 + slack.
+  'webview/dashboard/panes/subagentWarn.ts': 75,
+  // subagentRetire.ts DELETED by t-h8gv8w. Its two rules — the age sweep and
+  // "Clear complete" — were both retired: a finished row is HISTORY the drawer
+  // keeps, and the per-row × is the one way out. The 1 s tick it also carried
+  // collapsed to a boolean inside SubagentDock.svelte, which is smaller without
+  // it. No cap here, because there is no file.
+  // subagentMapNodes.ts: WHERE each sub-agent sits on the agent map's ring, and
+  // what its node says. The whole reason the map needs no chart library: a ring
+  // of N points is one cosine, and the cases a radial layout gets wrong (one
+  // node, no nodes, forty nodes) are testable with no SVG. Pure LEAF; intro 88.
+  // 105->111 (t-f6uvu5): the card's caption moved to subagentLabel.ts's
+  // `<type> · T<n> · <description>` (node.label) plus the CARD_LABEL_CLAMP
+  // constant the card's CSS class keys off of, both derived here.
+  // 111->118 (t-f9jxl1, owner-approved): TREE_NODE_X and TREE_NODE_HALF_WIDTH
+  // widened for the card's three-row layout (model back on the face, off the
+  // tooltip) — one constant each grew a value, not new surface area, plus the
+  // comment explaining why the column moved right with the box.
+  'webview/dashboard/panes/subagentMapNodes.ts': 118,
+  // subagentLimitWire.ts: how the WEBVIEW learns the ceiling — post
+  // `requestSubagentLimit`, listen for the host's `subagentLimitData`, exactly
+  // as SubagentLimitCard.svelte already does. Its own leaf so the whole
+  // subscribe/decode/teardown path is testable with no webview, and so
+  // SubagentDock.svelte (at 69/70) did not grow a second job. Intro 58 + slack.
+  'webview/dashboard/panes/subagentLimitWire.ts': 75,
+  // subagentProps.ts: the prop SHAPES of the three drawer components, declared
+  // once in a file the type gate reads. They left the .svelte files because
+  // tsconfig.webview EXCLUDES tests and types every `*.svelte` import as an
+  // untyped shim — so a renamed prop broke nothing anywhere, which is precisely
+  // how `onOpenInTab` and a deleted `stream` field survived in green suites.
+  'webview/dashboard/panes/subagentProps.ts': 95,
+  // subagentRowFixture.ts: the TYPED row + prop-bag factory the drawer tests
+  // build from. In panes/ and NOT __tests__/ on purpose — that folder is
+  // excluded from the type gate, and being typechecked is the only thing this
+  // file is for. Nothing in production imports it, so the bundler drops it.
+  'webview/dashboard/panes/subagentRowFixture.ts': 100,
+  // SubagentMap.svelte: the LIVE agent map — this chat's hub, one node per
+  // sub-agent in a left-to-right column. Inline SVG for the spokes and dots,
+  // HTML for the labels (SVG text does no wrap/clamp), every colour an --og-*
+  // token. The layout maths is subagentMapNodes.ts's; this is the surface.
+  // Intro 147. 165->177 (t-f6uvu5): the hub became a rounded-rectangle BOX
+  // (was a bare SVG circle + floating label) with a 3-line clamp, the header
+  // dropped its sub-agent count, and the card gained a title= tooltip helper
+  // now that provider/model moved off its face.
+  // 177->195 (t-f9jxl1, owner-approved): the card widened and the model came
+  // BACK onto the face as its own third line (mirrors SubagentRow.svelte's
+  // three rows) — a new `.sm-model` conditional + style block, and a comment
+  // on the width choice.
+  'webview/dashboard/components/SubagentMap.svelte': 195,
+  // SubagentTab.svelte: the drawer's EDGE HANDLE and its running badge —
+  // EXTRACTED from SubagentDrawer.svelte at 184/185 when the panel head gained
+  // the agent-map button. The handle is the affordance that exists precisely
+  // when the panel is NOT visible, and it carries a 20-line pill style of its
+  // own. Intro 53 + slack.
+  'webview/dashboard/components/SubagentTab.svelte': 70,
+  // SubagentRowActions.svelte: a row's three icon controls (open ↗ / fold ▾ /
+  // dismiss ×) and the shared button look they all take — EXTRACTED from
+  // SubagentRow.svelte at 129/130 when the token figure and the amber warning
+  // needed room, on FlockRowActions.svelte's precedent: a row's CONTENT and a
+  // row's CONTROLS are two jobs. Intro 53 + slack.
+  'webview/dashboard/components/SubagentRowActions.svelte': 70,
   // chatToolMsg.ts (2026-08-06): the transcript's tool-message merge rules
   // ('toolCall' append / 'toolResult' merge-by-id / detached fallback),
   // extracted from ChatPane's router at its cap, PLUS the shell-fact shaper
@@ -3050,7 +4213,15 @@ const CAPS: Record<string, number> = {
   // folds-ui4 (UAT round 4): the rename field it owns is now opened by TWO pencils —
   // its own and the strip card's — so the open/closed flag moved up to the pane that
   // enforces "one editor at a time". Two props, not a second editor; cap HELD at 139.
+  // board-remove (2026-08-30): the unregister ✕ grew a confirm step; at 139/140 that
+  // meant EXTRACTION, not a raise — ✕ + ConfirmModal left for RepoRemoveControl.svelte
+  // (the workspace guard stays here at the mount) and the file came back to 129.
   'webview/dashboard/components/RepoHeader.svelte': 140,
+  // RepoRemoveControl.svelte (board-remove): the toolbar ✕ for a non-workspace repo
+  // and its confirm step — the first click ARMS the branded ConfirmModal and posts
+  // NOTHING; only the modal's Remove fires amRemoveRepo. Extracted from RepoHeader
+  // (see above). A LEAF; intro 51 + slack.
+  'webview/dashboard/components/RepoRemoveControl.svelte': 65,
   // StatusColumn.svelte: one column — head (label / count / one-line subtitle),
   // an optional head action, and a snippet body, so the column knows nothing
   // about ticket-vs-fold cards. A LEAF; intro 78 + slack.
@@ -3094,15 +4265,59 @@ const CAPS: Record<string, number> = {
   // acpToolContent.ts: this wave's ACP tool-content leaf. Capped at
   // introduction (49) + slack.
   'src/acpToolContent.ts': 55,
+  // toolImageCard.ts / toolImageUri.ts (lane/t-d93nqh-read-images): the read-image
+  // card's two leaves — the pure message walk (facts off `display`, `readImage`
+  // stamped on, base64 dropped) and the webview-resource half (which roots a chat
+  // surface may draw a local file from). Two files because only the first can be
+  // tested without a `vscode` mock. Capped at introduction (95 / 51) + slack.
+  'src/dashboard/toolImageCard.ts': 105,
+  'src/dashboard/toolImageUri.ts': 60,
+  // toolImageStamp.ts (t-j50p3r): the stamping WALK, split out of toolImageCard.ts
+  // when a third host message shape (`subagentTranscriptData`) joined `toolResult`
+  // and `restoreMessages`. toolImageCard.ts keeps what a card IS; this keeps where
+  // it is attached. Capped at introduction (69) + slack.
+  'src/dashboard/toolImageStamp.ts': 80,
+  // revealPath.ts (t-qmzegs item 5): resolving a tool card's path — absolute or
+  // workspace-relative — to one absolute path, with the escape guard that stops
+  // a model-written `..` chain pointing the OS somewhere the workspace does not
+  // reach. Its own file so that guard is testable with no `vscode` import; the
+  // test proves it by deliberately disabling it and watching C:\Windows\System32
+  // come back through.
+  'src/dashboard/revealPath.ts': 45,
+  // readImageFit.ts (t-qmzegs item 5): how tall a read-image card may be. The
+  // cap is the TRANSCRIPT's height, not a viewport unit — the transcript shares
+  // the window with the composer, the header and, in multi-up, three other
+  // chats, so `60vh` is right in exactly one layout. CSS cannot read a height,
+  // so the measurement is here and reaches the rule as a custom property; the
+  // pure half is split from the action's DOM half because jsdom has no layout
+  // engine and a `max-height` claim is untestable any other way.
+  'webview/dashboard/components/toolcards/readImageFit.ts': 75,
   // acpTaskMeta.ts: the sub-agent `_meta` riders (child session, detached flag,
   // routed model, terminal marker), EXTRACTED from acpClient.ts — which sat SIX
   // lines under its 1350 cap — when the drawer needed three more facts than the
   // child's session id. A MIRROR of packages/engine/src/acp/event.ts, so it
   // owes the drift guard in acpTaskMeta.test.ts. Intro 64 + slack.
   'src/acpTaskMeta.ts': 80,
+  // t-q90gj9. The `_meta.origami_stream_drop` reader — the HOST half of the
+  // mirror with webview/dashboard/panes/streamDropNotice.ts. Its own leaf, not
+  // a branch of acpTaskMeta.ts: that file is the sub-agent riders, and this is
+  // an unrelated frame that happens to travel the same channel. There is NO
+  // text matching in it, which is the point of the whole change.
+  'src/acpStreamDrop.ts': 70,
+  // acpTaskTokens.ts (t-dclj7z): the `origami_task_tokens` rider — its six
+  // named counters and their fail-open decoder. Its own file because
+  // acpTaskMeta.ts sat at 68/80 AND because a rider with a SHAPE is a different
+  // kind of thing from the flat string/boolean/stamp riders beside it. Fail-open
+  // is the contract: a missing, mistyped or junk key all decode to undefined,
+  // which the drawer prints as nothing rather than as zero. Intro 52 + slack.
+  'src/acpTaskTokens.ts': 70,
   // chatToolMeta.ts: this wave's chat tool-metadata leaf. Capped at
   // introduction (100) + slack.
   'webview/dashboard/panes/chatToolMeta.ts': 110,
+  // toolReadImage.ts (lane/t-d93nqh-read-images): EXTRACTED from chatToolMeta.ts
+  // at 89/110 rather than pushing it 23 lines over — the read-image rider is the
+  // host's stamp, not a tool's own metadata. Intro (30) + slack.
+  'webview/dashboard/panes/toolReadImage.ts': 40,
   // BrowserCard.svelte: this wave's browser tool-card leaf. Capped at
   // introduction (205) + slack.
   'webview/dashboard/components/toolcards/BrowserCard.svelte': 230,
@@ -3160,6 +4375,18 @@ const CAPS: Record<string, number> = {
   // testable without an extension host. What is here is 6 lines of call under
   // 16 of why.
   'src/browserVsCode.ts': 130,
+  // browserFocus.ts: showing a page WITHOUT taking the user's cursor. Out of
+  // browserVsCode.ts (119/130, no room) because it is not a lookup: it probes
+  // for `_workbench.open` — which `getCommands(true)`, the probe that file
+  // already has, deliberately hides — and it carries the bundle reading that
+  // proves `vscode.open` forwards its uri alone. Intro 117 + slack.
+  'src/browserFocus.ts': 130,
+  // browserSnapshot.ts: the FRAME the chat pane draws, minted from an answered
+  // browser request. Out of browserBridge.ts (351/360, no room) along that
+  // file's own line — it decides what a verb means, this decides what the user
+  // is shown afterwards — and nothing here can fail a request: the tool result
+  // is already returned before any of it runs. Intro 118 + slack.
+  'src/browserSnapshot.ts': 130,
   // browserRetry.ts: the ONE bounded retry a failed page verb gets, extracted
   // rather than folded into browserBridge.ts (356/360, no room) because it is a
   // different question — that file decides which TOOL a verb means, this one
@@ -3184,6 +4411,14 @@ const CAPS: Record<string, number> = {
   // vscode.window.tabGroups, is the surface that can answer this. Intro 128 +
   // slack.
   'src/browserPage.ts': 145,
+  // browserReveal.ts (t-qcwpyy): WHETHER the agent's tab may be brought to the
+  // front, against browserFocus.ts's HOW. A file of its own rather than lines in
+  // browserFocus.ts (109/130) because it is the user's policy, not a probe: the
+  // pure half (toRevealPolicy / allowReveal) is testable without a workbench, and
+  // the session set that makes "first" mean first has to live in exactly one
+  // place or two callers would each keep their own. Most of it is the bundle
+  // reading for what "never" cannot do — VS Code's own open tool shows the tab.
+  'src/browserReveal.ts': 100,
   // browserForce.ts: the LAST rung of the click ladder — the forced click, and
   // the one attempt that skips Playwright's own actionability checks. Separate
   // from browserRetry.ts (158/170, no room) and a different question: that file
@@ -3208,6 +4443,25 @@ const CAPS: Record<string, number> = {
   // field is quoted from the 1.133.0 `inputSchema` it was read from. Intro 287 +
   // slack; a new VS Code verb is one builder and one case.
   'src/browserDrive.ts': 320,
+  // browserViewport.ts (t-ntmm93): the page viewport a capture is taken at, and
+  // the FINDING behind it — VS Code 1.138.0 publishes no tool, command or setting
+  // that sizes the embedded browser, so `page.setViewportSize` through
+  // `run_playwright_code` is the only seam, and every capture says which size it
+  // actually got. Intro 184 + slack; a new refusal is one sentence.
+  'src/browserViewport.ts': 200,
+  // browserViewportControl.ts (t-ntmm93): the Settings card's host-side
+  // read/write, the same leaf shape as browserAutoApproveControl.ts above.
+  'src/dashboard/browserViewportControl.ts': 70,
+  // BrowserSettings.svelte (t-ntmm93): the Browser card — the viewport pair +
+  // the open-beside switch. Its own file rather than lines in ControlStrip.svelte,
+  // which is connections ONLY by its own architecture rule. MOVED (t-qc1d69,
+  // not raised) from webview/sidebar/ to webview/dashboard/components/, beside
+  // CacheWarmingCard and StorageCard in InsightsSettingsCards.svelte — the
+  // sidebar's Connections block goes back to ControlStrip only.
+  'webview/dashboard/components/BrowserSettings.svelte': 175,
+  // The reveal row (t-qcwpyy), extracted rather than added to the card above,
+  // which was at 160 of 175. One setting end to end. MOVED with the card above.
+  'webview/dashboard/components/BrowserRevealRow.svelte': 110,
   // questionAsks.ts: who OWNS a clarifying-question batch, and which one the
   // modal may render. EXTRACTED from ChatPane.svelte, which was at 2700/2700
   // with no room for the fix at all — the ownership rules (one batch per chat,
@@ -3252,13 +4506,46 @@ const CAPS: Record<string, number> = {
   // fourth module to split three sibling writers into. `archiveLog` below is a
   // separable concern and is the extraction to make if this file grows again.
   'src/dashboard/sessionLog.ts': 115,
+  // sessionLogTitle.ts (t-q90p6v): the two SHAPING rules logToolResult applies before it merges —
+  // which title the stored CALL may adopt, and which rawInput fields are small enough to keep. Its
+  // own leaf because sessionLog.ts was AT 115/115 when the restored-title fix landed, and because
+  // the title rule has to stay in step with the webview's updatedToolTitle, which src/ may not
+  // import (TS6059). Pure functions, no `vscode` import; intro 6 + slack.
+  'src/dashboard/sessionLogTitle.ts': 45,
+  // sessionLogStreamDrop.ts (t-q90gj9, split at merge): the stream-drop append/collapse write.
+  'src/dashboard/sessionLogStreamDrop.ts': 30,
+  // runningChildren.ts (lane/ring-subagents): the HOST half of the sidebar
+  // ring's 4th state ("sub-agents running"). One pure function, `recordSpawn`,
+  // over the plain Set<string> DashboardPanel.ts already carries per Session
+  // — no separate registry, so a closed session's children are freed for free
+  // when its Session object is deleted. A LEAF; intro 24 + slack.
+  'src/dashboard/runningChildren.ts': 40,
+  // t-wusuep: the PER-CHAT model-op lock. Its own leaf because DashboardPanel.ts
+  // sits ON its cap and the three call sites (lms eject, lms load, ACP switch)
+  // must stay one line each — the keying, the deadline and the "already running"
+  // sentence all live here, where they can be tested without an extension host.
+  'src/dashboard/modelOps.ts': 120,
   // subagentTranscript.ts: the engine's transcript entries as sessionLog.ts's
   // REPLAY-LOG rows, so the webview rebuilds them through chatRestore's own
   // merge rules rather than a second mapper free to disagree with the first.
   // The per-field readers are the live path's (decodeToolContent /
   // toolNameRider / taskRiders). No `vscode` import, so the shaping is testable
-  // without an extension host — boardData.ts's rule. Intro 161 + slack.
+  // without an extension host — boardData.ts's rule. t-krxap7 added the page
+  // echo (`before`/`hasMore`/`cursor`) so the panel can tell a newest-page reply
+  // from an earlier block to prepend. Intro 161 + slack.
   'src/dashboard/subagentTranscript.ts': 190,
+  // subagentTodos.ts (t-d93fjo): how a SUB-AGENT's todo list reaches the host,
+  // which is not how the parent's does. The engine forwards a child's tool
+  // parts as one text line and drops the payload, so the line is a SIGNAL and
+  // the host pulls that child's stored session through the same request the
+  // drawer's ↗ makes. Holds the coalescing rule (one read per child at a time)
+  // that keeps a chatty model from costing one transcript read per todowrite.
+  'src/dashboard/subagentTodos.ts': 110,
+  // subagentLimitPane.ts (t-d93fjo): read/write the sub-agent time-limit
+  // SETTING for the Insights pane. Its own module on remotePane.ts's precedent
+  // — a pane that needs nothing from the panel but `post` costs it one routing
+  // line instead of a handler it would then own. Intro 58 + slack.
+  'src/dashboard/subagentLimitPane.ts': 70,
   'webview/dashboard/panes/chatRestore.ts': 75,
   // --- Collab lane L1 (host plumbing): the engine's `no-lead` notice reaches
   // the room, and the host polls collabs itself so a shut tab is not a blind
@@ -3452,6 +4739,173 @@ const CAPS: Record<string, number> = {
   // it — and fifteen call sites had each been left to remember their own
   // fallback inline. Pure, so the corpse case is a Map literal. Intro 54 + slack.
   'src/dashboard/activeSession.ts': 70,
+  // secondOpinion.ts (0.4.66): the second-opinion host half, lifted out of
+  // DashboardPanel.ts's message switch on skillsPane.ts's pattern. It owns a
+  // PROTOCOL, which is why it is not an inline case: one message in, up to two
+  // out (a `pending` answer the webview draws a card from, then the review or
+  // the failure), with an `id` correlating them because a chat can have two
+  // reviews in flight at once. It also owns the `<provider>/<id>` split, cut at
+  // the FIRST slash — every OpenRouter model id carries slashes of its own.
+  // Every refusal is an error CARD, never a silent drop. Intro 142.
+  'src/dashboard/secondOpinion.ts': 160,
+  // ── Claude Code passthrough (0.4.68) ───────────────────────────────────────
+  // A chat cell driven by the user's OWN installed `claude` CLI instead of the
+  // Origami engine. Split four ways on purpose, because only the first of them
+  // can be fixture-tested against the real thing and only the third needs a
+  // process:
+  //   protocol.ts   — PURE. Arg vector, child env, line splitter, the readers
+  //                   and builders for the wire. Every shape in it was read off
+  //                   a captured live session (claudeCodeFixtures.ts), which is
+  //                   only possible because it owns no I/O. Intro 267.
+  //   translator.ts — PURE. CLI events → the webview messages ChatPane ALREADY
+  //                   reduces, so a passthrough chat draws through the existing
+  //                   components rather than a second renderer. Intro 256.
+  //   driver.ts     — the child: spawn, stdout pump, permission round-trip,
+  //                   interrupt, idle park, respawn-with-resume. Mirrors
+  //                   acpClient.start's spawn shape; `spawn` is injectable, so
+  //                   the rules test against a scripted fake child. Intro 273.
+  //   discovery.ts  — WHICH binary. Probe table + `where claude`, and
+  //                   deliberately NO setting: a path a repository can carry is
+  //                   the foreign-agents def-origin hole. Intro 124.
+  // Caps are intro + a little slack. When one bites, the split above says where
+  // the new code belongs — a fifth file, not a fatter one.
+  'src/claudeCode/protocol.ts': 285,
+  'src/claudeCode/translator.ts': 275,
+  // 290->355 (+65, lane/t-d94nra-passthrough-hardening). EXTRACTION CAME FIRST: the whole of
+  // "what a dead, stalled or refused child MEANS" is a new pure leaf, childFailure.ts (the stderr
+  // ring, the plan-refusal readers, the recovery rule, and every sentence the user reads), and
+  // driver.ts imports it. What stayed here is MECHANISM that cannot leave a class owning a
+  // process: keeping the stderr tail and the turn's own prompt, deferring a mid-turn settings park
+  // to the turn's `result` (parking there killed a live turn to apply a flag the CLI only reads at
+  // spawn), retiring an ask the child cancelled, and the ONE respawn-with-resume that re-sends the
+  // prompt. Squeezing the remaining lines would mean inlining the exit handler's decisions back
+  // into the leaf they were just taken out of.
+  'src/claudeCode/driver.ts': 360,
+  //   childFailure.ts — PURE, and the fifth file the split above asked for. Every shape in it was
+  //   read out of the INSTALLED CLI's own schema rather than assumed: `rate_limit_info.status`,
+  //   `result.api_error_status`, and the error half of the `result` union, which carries
+  //   `errors[]` and NO `result` string — the reason an errored turn used to explain nothing.
+  'src/claudeCode/childFailure.ts': 175,
+  // 140 UNCHANGED. The probe list grew from 4 win32 rows to 6 cross-platform
+  // sources with a probe trail; the cap did not move, because the table, the
+  // node deps and the report formatting were EXTRACTED into the three files
+  // below. What is left in discovery.ts is the walk.
+  'src/claudeCode/discovery.ts': 140,
+  'src/claudeCode/discoveryProbes.ts': 185,
+  'src/claudeCode/discoveryNode.ts': 120,
+  'src/claudeCode/discoveryReport.ts': 95,
+  'src/dashboard/claudeCodeDetect.ts': 95,
+  // claudeCodeManager.ts: the SEAM. Same MESSAGE_TYPES-set + handler shape as
+  // secondOpinion.ts above, so DashboardPanel (which was at its cap) grew by
+  // exactly one dispatch line and none of this feature. Intro 236.
+  // Round 2 SHRANK it to 184 without the cap moving: binding a cell turned out
+  // to be a second job (driver construction, the resume write-back, the
+  // permission round trip), so it left for claudeCodeCell.ts and this file kept
+  // only "which messages does this feature own, and what does each one do".
+  'src/dashboard/claudeCodeManager.ts': 260,
+  // claudeCodeCell.ts: ONE chat cell while Claude Code drives it. EXTRACTED
+  // from the manager above at 235/260 when round 2 replaced phase 1's private
+  // `claude-N` ids with a binding onto a REAL engine cell — the fix for the
+  // no-pane UAT, since openSessionInEditor and replaySessionsTo both resolve
+  // ids against DashboardPanel.sessions and nothing else can open a surface.
+  // Intro 212.
+  'src/dashboard/claudeCodeCell.ts': 235,
+  // claudeHistory.ts (t-463pb6): Claude Code's OWN past chats — finding them in
+  // ~/.claude/projects (scoped to the open workspace folders) and continuing a
+  // picked one as a passthrough cell seeded to resume it. A NEW LEAF because
+  // DashboardPanel.ts is on its cap: the panel grew by ONE changed line and the
+  // manager by three. Holds the sanitised-directory rule, the streaming
+  // byte-budget pass, and the message-id dedupe that stops one assistant turn's
+  // usage being counted once per content block. Capped at introduction (350).
+  'src/dashboard/claudeHistory.ts': 365,
+  // claudeProjects.ts (t-5nmtva): WHICH directory under the Claude Code
+  // projects root belongs to a workspace, as ONE answer History, the
+  // Labyrinth, a passthrough resume and the diagnostics blob share. A NEW
+  // LEAF, not a claudeHistory.ts addition, because three of those four
+  // callers do not import each other and the previous copy-of-a-rule is
+  // exactly how a work laptop ended up scanning a name the CLI never wrote.
+  // Holds the folded key, the CLAUDE_CONFIG_DIR root, the directory scan and
+  // the `cwd`-record tie-break. Capped at introduction (199) + slack.
+  'src/dashboard/claudeProjects.ts': 210,
+  // claudeRecordedCwd.ts (t-5yejvo): WHERE a transcript says it ran. EXTRACTED
+  // from claudeProjects.ts, which was on its cap when the review replaced the
+  // blind 256 KB `toString()` with the chunked StringDecoder pass every other
+  // transcript reader here already uses. A separate question from that file's
+  // (which directory belongs to a workspace) with no dependency on it, so the
+  // tie-break reads a field and this leaf owns the budget, the decoder and the
+  // step over a record too big for the budget. Capped at introduction (95).
+  'src/dashboard/claudeRecordedCwd.ts': 100,
+  // claudeSteps.ts (t-47bk8j): a Claude transcript's records -> the SAME step
+  // list the Labyrinth draws for an engine run. PURE — no fs — so every rule
+  // (one step per content block, usage attached ONCE per message.id to that
+  // message's LAST step, a tool_use with no tool_result left open and saying
+  // `no result`) is answerable from an array of records. Every convention is
+  // the engine's own run-steps.ts, restated because a vscode file cannot
+  // import from the engine package. Capped at introduction (347).
+  'src/dashboard/claudeSteps.ts': 360,
+  // claudeLabyrinth.ts (t-47bk8j): the OTHER half — which bytes on disk. The
+  // `claude:<uuid>[#agent-<id>]` run id and its path-segment guard, the
+  // streaming byte-budget read, and the sub-agent link: a sidecar
+  // `<session>/subagents/agent-<id>.meta.json` carries the EXACT `toolUseId` of
+  // the spawn, so nothing here matches on a time window. DashboardPanel.ts pays
+  // ONE line for the route. Capped at introduction (260).
+  'src/dashboard/claudeLabyrinth.ts': 275,
+  // models.ts: the four picker rows and the `claude-code/` prefix that routes
+  // a pick away from the engine. STATIC on purpose — the CLI resolves the
+  // aliases itself and reports the real id back on system/init, so a table of
+  // dated model ids here could only go stale. Pure, no process. Intro 77.
+  'src/claudeCode/models.ts': 100,
+  // ── The 0.4.69 UAT round: presenting a passthrough truthfully ─────────────
+  // sessionFacts.ts: what the CLI TELLS us about a session, and how to say it
+  // back without over-claiming. Three presentation truths, all of them places
+  // where an ENGINE idiom was rendered over a harness that does not work like
+  // the engine: `total_cost_usd` is money only when an API KEY paid (on a plan
+  // it is a notional list price, and showing it invents a bill); the plan's own
+  // headroom off `rate_limit_event` is what IS true there; and `init.skills` is
+  // a strict SUBSET of `init.slash_commands` (25 vs 53 on the captured probe),
+  // so a headline skill COUNT presented as a roster is what sent the owner
+  // hunting for a skill that was there all along. PURE, and every shape is off
+  // a real transcript. Its own file rather than more protocol.ts, because
+  // protocol.ts owns the WIRE and this owns what we SAY. Intro 199.
+  'src/claudeCode/sessionFacts.ts': 215,
+  // sessionState.ts: the translation state bag and the posts that are about the
+  // SESSION rather than about a turn (system/init, the initialize
+  // control_response, rate_limit_event). EXTRACTION CAME FIRST and was forced:
+  // translator.ts went 255 → 325 against its 275 cap when the round gave it a
+  // second job, so the split the EVENTS already make was taken — turn events
+  // stayed, session events left — and translator came back DOWN to 223 with its
+  // cap untouched. Types live here so the dependency runs one way; translator
+  // re-exports them, so no caller changed an import. Intro 129.
+  'src/claudeCode/sessionState.ts': 145,
+  // SpendBadge.svelte: the composer's ONE funding readout, and the decision
+  // about which readout is honest for this chat — money on an API key, plan
+  // headroom on a subscription, and NOTHING while it knows the price is wrong
+  // and not yet the headroom. EXTRACTED from InputBar.svelte at 1199/1200
+  // (which came back to 1193, cap untouched). Intro 73.
+  'webview/dashboard/components/SpendBadge.svelte': 90,
+  // money.ts: how a dollar figure is written. A three-line formatter gets a
+  // file only because it now has TWO callers — the badge above and InputBar's
+  // monthly-cap banner, which stayed behind — and a duplicated money format is
+  // exactly how one line ends up showing $0.75 and $0.7500. Intro 12.
+  'webview/dashboard/lib/money.ts': 25,
+  // offeredProviders.ts: tier-1 tabs for a provider the host OFFERS with
+  // nothing to configure. Claude Code has no endpoint and no key, so
+  // providerStatus can never list it and its rows would have no tab to sit
+  // under. Opt-in via an explicit `group` on the row — NOT "derive a provider
+  // from every id", which is the tab-reshuffle ModelPicker already warns about.
+  // Pure leaf beside modelGrouping.ts, same split. Intro 58.
+  'webview/dashboard/components/offeredProviders.ts': 80,
+  // ConnectionPill.svelte: one square of the sidebar's connection strip.
+  // EXTRACTED from ControlStrip.svelte, which sat EXACTLY on its 1241 cap when
+  // the passthrough needed a square — and because "match the provider squares
+  // exactly" is a promise two copies of a box model cannot keep. ControlStrip
+  // SHRANK to 1204 as a result, and its cap did NOT move. Intro 97.
+  'webview/sidebar/ConnectionPill.svelte': 120,
+  // passthroughCaps.ts: the five chat affordances a passthrough cell cannot
+  // honour, in ONE table with the reason each is off. Pure + webview-side so
+  // every gated render site asks the same question; the kind string it declares
+  // is mirrored host-side and has a drift test. Intro 45.
+  'webview/dashboard/panes/passthroughCaps.ts': 60,
   // skillsPane.ts: the Skills pane's host half, lifted out of
   // DashboardPanel.ts's message switch (which sat two lines under its cap) so
   // the resolution bug above could be TESTED rather than argued about. Same
@@ -3476,6 +4930,20 @@ const CAPS: Record<string, number> = {
   // a blank body — and a rule earns a test without rendering ten panes.
   // Intro 85 + slack.
   'webview/dashboard/panes/boardViews.ts': 105,
+  // boardVisibility.ts: the remote-hide RULE (visibleViews/resolveView), split
+  // out rather than added to boardViews.ts (104/105 at the time). Pure, no
+  // Svelte, no DOM — the regression it catches is the rule drifting, not a
+  // render that happens to look right.
+  'webview/dashboard/panes/boardVisibility.ts': 30,
+  // SchedulesPane.svelte (t-ru1qsp): Crons and Loops folded into one rail item
+  // — the tab header plus which of the two unchanged panes is showing. Intro 55.
+  'webview/dashboard/panes/SchedulesPane.svelte': 90,
+  // scheduleTabRequest.ts: the ONE-SHOT deep-link tab override, extracted so
+  // boardViews.ts (at its own cap) did not carry the state. Pure, no DOM.
+  'webview/dashboard/panes/scheduleTabRequest.ts': 35,
+  // scheduleTabGlobal.ts: reads window.__ORIGAMI_SCHEDULE_TAB__, mirroring
+  // chatDensityClass.ts's chatDensityCompactFromGlobal. Pure, no DOM.
+  'webview/dashboard/panes/scheduleTabGlobal.ts': 20,
   // botContractView.ts: what a bot CARD and the bot FORM say about a contract.
   // Pure, and its own module because the interesting cases are the ones a
   // screenshot cannot show: "an unstated tier is not `open`", "a def with no
@@ -3509,6 +4977,1076 @@ const CAPS: Record<string, number> = {
   // wipe. Extracted from CollabAgentsPane.svelte, which the panel pushed to
   // 389 of its 380 cap. Intro 57 + slack.
   'webview/dashboard/components/BotMemoryPanel.svelte': 75,
+  // seedGlobal.ts: the once-per-VERSION global seed sweep — writes the default
+  // skill library to ~/.origami/skills so a workspace that never ran /firstfold
+  // still gets it. Its own file rather than more surface on firstFold.ts (which
+  // is workspace-scoped by definition) or on extension.ts (which only calls it).
+  // MOSTLY COMMENT: the reconcile policy is four branches and ~35 lines of code;
+  // the rest is the engine-side evidence a future seed author needs — the skill
+  // roots, the home resolution, and the duplicate-name behaviour across roots.
+  // Intro 170 + slack for the prior-generation tables each release appends.
+  'src/dashboard/seedGlobal.ts': 200,
+  // webmcpFile.ts: the EXTENSION's half of ~/.origami/webmcp.json — the WebMCP
+  // address book, written by the MCP pane's Web MCP section AND by the engine's
+  // webmcp_launch/webmcp_note. Kept as ONE module rather than repoFile/repoMerge's
+  // two: that pair split only because repoFile hit its cap, and the pure half
+  // here is ~60 lines. MOSTLY COMMENT for the same reason repoMerge is — the
+  // merge rule is what a future writer of this shared file has to be told.
+  // Intro 194 + slack.
+  'src/dashboard/webmcpFile.ts': 210,
+  // webmcpPane.ts: the Web MCP section's host side — request/add/remove/open.
+  // A sibling leaf to mcpPane.ts in the same shape, deliberately NOT folded into
+  // it: that file routes every job through a live engine session because the
+  // engine owns the MCP config and clients, and this one owns a plain file and
+  // needs no session at all. Intro 98 + slack.
+  'src/dashboard/webmcpPane.ts': 110,
+  // WebMCPSection.svelte: the "Web MCP" half of the MCP pane — the site list
+  // plus its add form. Extracted rather than inlined: MCPPane.svelte had the
+  // headroom (256 of 330 after this), but a browser-native site shares no state
+  // and no code path with a server card — no command, no connection, nothing to
+  // enable — so the two only share the pane. Intro 208 + slack.
+  'webview/dashboard/components/WebMCPSection.svelte': 225,
+  // ── Claude Code passthrough, phase 2 (0.4.70) ─────────────────────────────
+  // "Make Claude feel like a member of the team." Five new leaves, and every
+  // one of them exists because a cap bit and EXTRACTION CAME FIRST — no cap in
+  // this table moved for this round.
+  //
+  // usagePill.ts: the plan-headroom readout, out of sessionFacts.ts at 198/215.
+  // sessionFacts owns what the CLI TELLS us — the roster, the funding, the
+  // connected line, all of them true indefinitely. This owns one sentence with
+  // a property none of those have: it GOES STALE. `rate_limit_event` arrives
+  // once per turn, so the countdown cannot be formatted when the frame lands;
+  // the wire carries `resetsAt` + the pct and the picker formats at render
+  // time, against a clock, with no ticking timer anywhere. Intro 111.
+  'src/claudeCode/usagePill.ts': 130,
+  // images.ts: how a composer attachment becomes a content block, out of
+  // protocol.ts at 315/285. An allowlist, a data-URL decoder and one block
+  // shape — a subject of its own beside "the shape of a session". The
+  // allowlist is duplicated from the composer's intake ON PURPOSE: widening
+  // intake is a one-line Svelte edit, and the cost of that edit reaching the
+  // wire is a child that rejects the whole turn rather than one attachment.
+  // Intro 57.
+  'src/claudeCode/images.ts': 75,
+  // flags.ts: what a vector may NEVER carry, and what a clean room adds — out
+  // of protocol.ts at 317/285 when the reviewer spawn arrived. The two lists
+  // are each other's counterweight (one widens what a child may do, the other
+  // is the guarantee that widening never reaches the thing this feature
+  // refuses to hand over), and both are asserted over the BUILT vector rather
+  // than trusted to code review. Intro 62.
+  'src/claudeCode/flags.ts': 80,
+  // claudeCodeLog.ts: a passthrough cell's replay log. `replaySessionsTo`
+  // catches a reattached webview up from `session.messageLog` and nothing
+  // else; an engine turn writes that log on its way past and a passthrough
+  // turn did not, so every Claude turn lived only in the live DOM and vanished
+  // when the tab was closed. Its own writer rather than sessionLog.ts's,
+  // because that one reads the ENGINE's `contentText` field and would have
+  // logged every Claude tool result empty. Capped at 500 entries: a
+  // passthrough child compacts on its own schedule, so nothing else bounds it.
+  // Intro 143.
+  'src/dashboard/claudeCodeLog.ts': 165,
+  // claudeCodePermissions.ts: SUPERVISION — the level a cell runs at, and the
+  // asks that level produces. Out of claudeCodeCell.ts at 256/235, then it
+  // took the mode handlers off claudeCodeManager.ts at 297/260, which is why
+  // it is the largest of the five. The split is one the WIRE makes and the UI
+  // does not: `ExitPlanMode` arrives as an ordinary `can_use_tool`, so the
+  // driver cannot tell a plan from a tool — but a plan is a proposal, not a
+  // consent, and it draws the QUESTION MODAL (no allow_always) rather than the
+  // permission bar. That is the engine's own plan_exit surface, reached by
+  // sending the shape isQuestionShaped already recognises: no new component.
+  // Intro 239.
+  'src/dashboard/claudeCodePermissions.ts': 260,
+  // claudeCodeReview.ts: a second opinion from the user's own install, in the
+  // card the engine's reviewers already use. The four Claude rows were ALREADY
+  // in the reviewer menu's Labs tier (`claude-code` is in LAB_IDS) and picking
+  // one always errored, because the message went to the engine's
+  // `second_opinion` with a provider the engine does not have. The digest is
+  // built from the replay log above rather than the engine's message store —
+  // the engine digest carries real file diffs and is unreachable from this
+  // lane — so REVIEW_ATTRIBUTION states the gap on every card. Intro 211.
+  // It also owns a TIMEOUT the chat path has no need of: a chat can wait
+  // forever because a human is watching it and can press Stop, while a review's
+  // card has a spinner and no cancel and its child is off screen. Intro 239.
+  'src/dashboard/claudeCodeReview.ts': 260,
+  // approveRowOptions.ts: the Access rail's notches, out of approveButtonState.ts
+  // at 88/70 when the passthrough rail gained a fourth. That file reduces two
+  // settings to a LABEL and answers to nothing; every notch here must have a
+  // branch in claudeCodePermissions.modeFromApprove or picking it silently does
+  // nothing — a different question, with a real mirror. approveOptions.test.ts
+  // reads both files and fails in either direction. Intro 39.
+  'webview/dashboard/components/approveRowOptions.ts': 60,
+  // passthroughUsagePill.ts: the webview MIRROR of usagePill.usagePillText.
+  // Copied, not imported — a .ts leaf under webview/ trips TS6059 on ANY import
+  // from src/ — and the host cannot pre-format this one the way it does the
+  // OAuth quota, because that read is pulled on demand (fresh by construction)
+  // while `rate_limit_event` is PUSHED once a turn and then goes quiet.
+  // claudeCodeUsagePill.test.ts reads both files. Intro 48.
+  'webview/dashboard/components/passthroughUsagePill.ts': 65,
+  // usageWindowsTooltip.ts: the pill's hover tooltip (every reported window,
+  // not only the tightest), pulled out of passthroughUsagePill.ts at that
+  // file's cap above. NO host mirror — the host never renders a tooltip, so
+  // there is nothing on the other side for this one to drift from (t-d942yi).
+  'webview/dashboard/components/usageWindowsTooltip.ts': 60,
+  // claudeCodeMirror.ts: a finished passthrough turn, copied into the cell's own
+  // ENGINE session (`session_append_foreign`). Its own file for claudeCodeLog's
+  // reason and the opposite job: that one keeps the replay log a TAB reattaches
+  // from, this one feeds the surfaces that read ENGINE truth — the History
+  // dropdown (which drops a session still carrying the "New session - <ISO>"
+  // placeholder), the Labyrinth, the usage tables. Neither of them ever looks at
+  // the other's store. Buffering a TURN is also a second job on its own: the log
+  // is per-post and stateless, while a mirror has to hold a turn open from
+  // `echoUser` to `turnDone` and correlate tool results into it. Intro 199.
+  'src/dashboard/claudeCodeMirror.ts': 215,
+  // claudeCodeResume.ts: WHICH Claude conversation a chat cell may resume.
+  // EXTRACTED from claudeCodeCell.ts (233/235, no room) when the cross-chat
+  // contamination bug was fixed: phase 1 keyed the resume map by CWD, so every
+  // passthrough chat in a workspace resumed the SAME Claude session — a new chat
+  // opened saying "resuming your last session", and the model answered about
+  // messages the user had sent in a different chat. The key is the CELL now, and
+  // the entry carries two guards (the cwd `--resume` is only valid in, and the
+  // extension-host run that wrote it, because `session-<n>` ids restart at 1 in
+  // every window). Those rules are a job of their own, and a pure one — no
+  // process, no vscode — so claudeCodeResume.test.ts can drive them directly.
+  // Intro 113.
+  'src/dashboard/claudeCodeResume.ts': 130,
+  // webmcpFilter.ts: the Web MCP view's one filter predicate. A pure leaf
+  // because TWO components need the SAME answer — MCPPane.svelte draws the
+  // box and its n/m count, WebMCPSection.svelte narrows the cards — and a
+  // second copy would let the count drift from the cards. Intro 35.
+  'webview/dashboard/components/webmcpFilter.ts': 45,
+  // sessionCommandSeed.ts: the re-send of a session's cached engine command
+  // list, for a composer that mounted after the engine's ONE-SHOT
+  // `available_commands_update`. Its own file rather than a private method
+  // because DashboardPanel.ts has no test of its own, and the interesting part
+  // is a reconciliation (skip an empty list, or the palette loses its fallback)
+  // that has to be provable. Mostly the header explaining the bug. Intro 60.
+  'src/dashboard/sessionCommandSeed.ts': 70,
+  // ── Claude Code passthrough, the adversarial round (0.4.74) ───────────────
+  // Five leaves, and every one of them exists because a cap bit and EXTRACTION
+  // CAME FIRST. No cap above moved for this round.
+  //
+  // turnUsage.ts: how much a turn USED, off the closing `result`. Out of
+  // protocol.ts at 282/285 when the reading gained a RULE: `usage.input_tokens`
+  // and the cache halves are the SUM over every model call in the turn, which is
+  // a spend figure and the wrong numerator for a context gauge — an eight-call
+  // turn counts the same conversation eight times, so the meter climbed
+  // 6% → 14% → 23% on chats that had barely started. Occupancy is the LAST
+  // `usage.iterations` entry. protocol.ts owns the WIRE (shapes); this is the
+  // one place it is INTERPRETED, which is where the bug lived. Intro 90.
+  'src/claudeCode/turnUsage.ts': 100,
+  // cellState.ts: one cell's translation STATE and the turn bookkeeping that has
+  // to survive a turn ending badly. Out of sessionState.ts at 143/145 — that
+  // file's own header already named two jobs (the bag, and the session posts),
+  // and the round grew both halves. The rule it exists for is `settleOpenTools`:
+  // a card is opened by one event and closed by another that is NOT guaranteed
+  // (a child that dies mid-answer, an interrupt, a `result` with blocks still
+  // open), and 0.4.73 UAT hit a Read card that spun for the rest of the session.
+  // Every producer of `turnDone` drains the open set first. Intro 155.
+  // 165->185 (the Task-tools round — FLAG FOR SIGN-OFF). EXTRACTION CAME FIRST
+  // and took every RULE with it: the todo-strip fold lives in the new
+  // taskStrip.ts, the background-agent lifecycle in the new subagentClose.ts,
+  // and neither has a line in this file. What landed here is what a STATE BAG
+  // cannot delegate — two field declarations (`tasks`, and two flags on
+  // `AgentBeat`) with the comments that say why they exist, plus the one rule
+  // that is genuinely about the bag's own lifetime: `settleOpenTools` now KEEPS
+  // a background agent, because a turn ending is not news about a child that
+  // outlives turns, and clearing it would strand its drawer row as "running"
+  // with nothing left that could ever settle it. Splitting a bag by size means
+  // splitting the cell, which is the opposite of what this file is for.
+  'src/claudeCode/cellState.ts': 185,
+  // planUsage.ts: the plan-headroom read that does NOT wait for a warning. The
+  // badge was fed only by `rate_limit_event`, which the CLI sends once an
+  // account is NEAR a limit, so a plan with headroom showed nothing while every
+  // Grok/OpenAI cell beside it showed a pill. Same shape as the engine's
+  // acp/provider-usage.ts — read a stored OAuth credential, ONE lazy GET, answer
+  // in percentages — for the one provider the engine cannot ask about, because
+  // `claude-code` is OFFERED rather than configured and has no engine-side
+  // credential. THE TOKEN NEVER LEAVES THIS FILE: read, put on one header,
+  // dropped; never logged, never posted, never persisted. Response shape read
+  // off a live 200 from this machine. MOSTLY COMMENT — the rules are what a
+  // future reader of an unpublished endpoint needs. Intro 208.
+  'src/claudeCode/planUsage.ts': 220,
+  // claudeCodeCells.ts: WHICH cells Claude Code is driving — the map, the shape
+  // of one, and the four questions asked of it. Out of claudeCodeCell.ts at
+  // 333/235 when a fourth reader arrived: `isEngineEchoOnBoundCell`, the guard
+  // that stops the engine's re-broadcast of a MIRRORED row from drawing a second
+  // (and, on a same-named tool, a permanently spinning) card in the cell that
+  // mirrored it. Intro 113.
+  'src/dashboard/claudeCodeCells.ts': 125,
+  // claudeCodePill.ts: putting the account-wide headroom reading onto one bound
+  // cell's badge. Out of claudeCodeCell.ts at 256/235 (after the registry had
+  // already left) by the same test the other splits used — that file owns a
+  // cell's lifecycle and nothing in it reaches outside the process, while this
+  // is the only part of the feature that can fail without the user doing
+  // anything. Intro 64.
+  'src/dashboard/claudeCodePill.ts': 80,
+  // subagentBeat.ts: the SUB-AGENT HEARTBEAT of a passthrough cell — how many
+  // children are out and how busy each is, counted off the frames the
+  // translator drops. A new leaf rather than lines in translator.ts (269/275)
+  // or cellState.ts, and the whole reason the drop can stay: the count is the
+  // one thing it cost that needs no child text rendered. Intro 26 + slack.
+  'src/claudeCode/subagentBeat.ts': 130,
+  // subagentPassthrough.ts: what that tally MEANS on the drawer — roster
+  // admission on the parent `Task` id, the row's name, and the plain statement
+  // that no stream was captured. A new leaf because every roster file it would
+  // otherwise have joined was AT its cap (subagentEntry.ts 130/130,
+  // ChatPane.svelte 2420/2420), and because the rule is genuinely its own:
+  // subagentEntry.ts owns admission BY CHILD SESSION, which this path has none
+  // of. Intro 25 + slack.
+  // 100->135 (the Task-tools round — FLAG FOR SIGN-OFF). EXTRACTION WAS
+  // CONSIDERED AND REJECTED, which is the only honest way to describe this one.
+  // The background rules that landed (`beatState`, the two extra rider fields
+  // and their shaping, the note a background row shows instead of a count that
+  // will always read 0) are all answers to the SAME question this file already
+  // owns — what a `taskBeat` means on the drawer — read by the same two callers,
+  // off the same rider. A third file would put "what taskBeat means" in two
+  // places, which is exactly the drift the mirror rule warns about, to move a
+  // number. The two files that would otherwise have taken this are still AT
+  // their caps (subagentEntry.ts 130/130, subagentRows.ts 120/120), and
+  // subagentRows.ts absorbed its half of the change without growing a line.
+  'webview/dashboard/panes/subagentPassthrough.ts': 135,
+  // ── Claude Code passthrough, the Task-tools round (0.4.76) ────────────────
+  // Three new leaves. Two of them exist because translator.ts was sitting
+  // EXACTLY on its cap (275/275) with two features to land, and the third
+  // because "the parent reported its result" stopped being one rule.
+  //
+  // toolCards.ts: what a tool call is CALLED and which ACP kind draws it. Out
+  // of translator.ts, and the cheapest correct split there: every other rule in
+  // that file reads the WIRE, neither of these does, and they are the only part
+  // of it a test drives directly. translator.ts went 275 -> 268 WITH both new
+  // features in it. Intro 37 + slack.
+  'src/claudeCode/toolCards.ts': 45,
+  // taskStrip.ts: the live todo strip, folded from the CLI's OWN Task tools.
+  // CLI 2.1.198 does not ship TodoWrite — TaskCreate/TaskUpdate ARE the todo
+  // system — so the strip never lit up on a live session. A leaf rather than
+  // lines in translator.ts because it is a FOLD with real state: one task per
+  // call, and the row's id is not in the call at all (it comes back in the
+  // result text), so a row opens provisionally on its tool_call id and binds
+  // later. Intro 102 + slack.
+  'src/claudeCode/taskStrip.ts': 115,
+  // subagentClose.ts: how a passthrough sub-agent's card ENDS — which is three
+  // different things now that `Agent` (2.1.198's BACKGROUND launcher) exists.
+  // Out of subagentBeat.ts, which owns how a row is BORN and how the dropped
+  // frames are counted, and would have had to grow by a third to own this too.
+  // The split is the seam the CLI itself draws: a foreground `Task` result is
+  // its child coming home, a background launch's is not, and the background row
+  // then needs two settle paths because the first (the injected completion
+  // notification) has never been observed crossing stdout. Mostly comment —
+  // the reasoning is what the next reader of an unverified path needs.
+  // Intro 147 + slack.
+  'src/claudeCode/subagentClose.ts': 160,
+  // --- Origami Remote (src/remote/). Caps at INTRODUCTION size + slack, one
+  // row per leaf, so the lane starts under the same ratchet as the rest of the
+  // host rather than being exempt because it is new. The split is by
+  // responsibility and each file is already the smallest version of its job:
+  // crypto (key material + AES-GCM + padding), frame (the byte layout + replay
+  // rejection), chunk (message-level splitting), transport (the socket),
+  // pairing (Ks lifecycle + the QR string), approvals (the PIN policy),
+  // remoteView (the DashboardPanel seam), qr (the encoder), remoteController
+  // (the wiring that owns all of the above), deviceNames (a name per pairing),
+  // activate (the only file that imports vscode at runtime). The pairingPanel
+  // row is GONE: the Remote pane replaced that webview outright.
+  // --- MULTI-WINDOW OWNERSHIP (0.4.88). The owner runs several VS Code windows
+  // at once; every one restored the same pairing and the relay allows ONE socket
+  // per role per rid, so they evicted each other in a loop. The MECHANISM was
+  // extracted to a new file — src/remote/ownerLease.ts, the whole claim /
+  // heartbeat / stale / take-over rule — and what raises the five caps below is
+  // the WIRING that cannot live there: one injected predicate on the controller,
+  // one state in the pane's union with the words for it, one message type, one
+  // button. Each raise is the width of what landed plus its why; nothing was
+  // moved into a file to make a number pass.
+  // --- FIRST-TIME RELIABILITY (0.4.96, tickets t-utufjk / t-uttzsd). Two rules
+  // landed on the controller — the relay's presence control frame (stop posting
+  // the fan-out into a socket with nobody on the other end) and the answer to a
+  // phone whose seq marks are gone. Neither raised a cap: `presence.ts` holds
+  // the two rules, and `pipes.ts` took the codec's two ends OUT of the
+  // controller (decode + mark + reassemble; chunk + seal + serialise), which is
+  // what paid for the wiring that stayed. The controller came back UNDER its
+  // existing 290 with both features in it.
+  // 115->130 (+15, privilege lane): `note()` now answers WHICH edge a control
+  // frame is — `arrived` (the phone was away) or `replaced` (a `peer:present`
+  // while the relay had already said present, which the relay's one-socket rule
+  // makes either a duplicate or a DIFFERENT client evicting the phone). The two
+  // need different answers: a replacement must prove the device key again, and
+  // re-hydrating on every duplicate would push a transcript up the relay for
+  // nothing. RAISED, not extracted: it is one method's return type plus the
+  // paragraph that says why the distinction exists, on the class this file is.
+  'src/remote/presence.ts': 130,
+  'src/remote/pipes.ts': 130,
+  // --- STREAM SHAPING (lane/remote-stream). DashboardPanel.post() fans out one
+  // message PER TOKEN, and each one was its own sealed frame — padded to a 1 KiB
+  // size class, so a 20-byte delta cost 1,058 bytes on the wire. Two leaves, for
+  // the same reason remoteVerbs.ts and remoteVerbsTable.ts are two:
+  //   remoteOutbound.ts — the buffering, the clock and the one thing no table
+  //   can answer, WHICH CHAT THE PHONE IS ON. Introduced AT 200, which is the
+  //   cap: the ordering rule and the focus rule are one object's state machine,
+  //   and splitting them would put a flush on one side of a seam and the switch
+  //   that must precede it on the other.
+  'src/remote/remoteOutbound.ts': 200,
+  //   remoteScope.ts — the three lists and the one verdict they produce, pure
+  //   data with a `scopeOf` over it, testable with no clock and no buffers.
+  'src/remote/remoteScope.ts': 120,
+  // 255->215 (remote-nopin lane, DOWN): hashPin / verifyPin / isValidPin /
+  // constantTimeEqual / PBKDF2_ITERS are gone with the pairing PIN. A cap that
+  // stayed at 255 would bank 40 deleted lines as room for the next change.
+  'src/remote/crypto.ts': 215,
+  'src/remote/frame.ts': 205,
+  // --- WIRE v1.3, THE SESSION KEY (lane/remote-v13). Three new rows and NO
+  // raise anywhere: every one of them is an EXTRACTION that paid for the
+  // feature in the file it left.
+  //   padBuckets.ts — padding became a DECISION (a v2 frame pads to one of the
+  //   §9 buckets, a v1 frame to a flat 1,024), so it left crypto.ts, which is
+  //   "key material and AES-GCM" and must have nothing to decide. v1's own two
+  //   functions moved unchanged; crypto.ts came back at 174/215.
+  'src/remote/padBuckets.ts': 130,
+  //   frameCodec.ts — SeqGuard + FrameCodec left frame.ts for the same reason
+  //   they were extractable at all: frame.ts is the byte layout and a STATELESS
+  //   encode/decode, and the v2 switch (which key a version byte names, and the
+  //   rule that a v1 frame after an accepted v2 one is a downgrade) is per-
+  //   socket STATE. frame.ts came back at 148/205 with version 2 in it.
+  'src/remote/frameCodec.ts': 160,
+  //   sessionKey.ts — the ephemeral P-256 key, the ECDH, the HKDF and the
+  //   per-socket exchange. Introduced at 204: the derivation and the exchange
+  //   are one secret's LIFETIME (mint, agree, derive, discard), and splitting
+  //   them would put the zeroing on one side of a seam and the bytes it zeroes
+  //   on the other. deviceSession.ts came back at 149/155 by delegating to it.
+  'src/remote/sessionKey.ts': 215,
+  'src/remote/chunk.ts': 160,
+  'src/remote/transport.ts': 225,
+  // The lease itself. Introduced at 165; the cap is that plus slack. It is one
+  // job — who owns this rid — and the reason it is not inside control.ts is
+  // that activate.ts needs it before a controller exists.
+  'src/remote/ownerLease.ts': 180,
+  // --- SEQUENCE CONTINUITY (0.4.90). A frame seq is per SENDER per PAIRING and
+  // the pairing outlives the process, but `FrameCodec` was built per `open()`
+  // and started again at 1 — so the window that TOOK a pairing had every frame
+  // it sent dropped by the phone's replay guard (blank page, pill `open`), and
+  // asked the relay to replay every message the phone had sent. The marks were
+  // EXTRACTED to their own file rather than added to the controller: they are a
+  // machine-wide fact in globalState, the same shape ownerLease.ts holds.
+  'src/remote/seqStore.ts': 160,
+  // 190->205 (+15): the pairing gained a THIRD stored secret, the confirmation
+  // marker, and with it the rule that an offer is not a pairing until a phone
+  // answers it. That is a constant with its doc, a field on ActivePairing, a
+  // getter, and a load() that now checks three values and forgets a fragment
+  // instead of repairing it. RAISED, not extracted: the file is one class and
+  // the persistence rule is the class's own invariant — splitting it would put
+  // half the "what counts as a pairing" answer in another file.
+  'src/remote/pairing.ts': 205,
+  // THE DEVICE GROUP (t-rz1b14), split on the same rule as the phone lane:
+  // one job per file, caps = intro size + slack. deviceGroup holds Kg and this
+  // machine's id, groupCrypto turns Kg + two ids into a rid and a key,
+  // groupWire is the three sentences two desks say, groupLink is one socket's
+  // worth of sealing and presence, groupMembers is the roster, groupController
+  // the wiring, groupControl/activateGroup the seams the pane and activation
+  // use. Nothing here may grow into a second controller.
+  'src/remote/deviceGroup.ts': 160,
+  'src/remote/groupCrypto.ts': 155,
+  'src/remote/groupWire.ts': 110,
+  'src/remote/groupLink.ts': 145,
+  'src/remote/groupMembers.ts': 180,
+  'src/remote/groupController.ts': 300,
+  'src/remote/groupControl.ts': 90,
+  'src/remote/groupRefusals.ts': 45,
+  'src/remote/activateGroup.ts': 75,
+  // t-sfyata (Nests L7): the roster gossip rule and its wire, and the two
+  // leaves extracted to make room for it (groupMembers -> the record reader,
+  // groupController -> the invitation window). Intro + slack, each.
+  'src/remote/groupGossip.ts': 95,
+  'src/remote/groupRosterRecord.ts': 45,
+  'src/remote/groupInvite.ts': 50,
+  // t-t8khdv: the admission/removal order (stamps, the tie rule, the tombstone
+  // cap), written at birth as its own leaf: groupMembers.ts sat 5 lines under
+  // its cap and groupGossip.ts is the wire. Intro 80 + slack.
+  'src/remote/groupMembership.ts': 95,
+  // t-sj32zl: the join handshake with its Accept step, extracted from
+  // groupController.ts (which came back at 258); Kg sealed to the joiner's
+  // ephemeral key; the join verbs, extracted from groupControl.ts at its cap;
+  // and the view's Accept step, Security card and JoinCheck mirror. Intro + slack.
+  'src/remote/groupHandshake.ts': 215,
+  'src/remote/groupWelcomeSeal.ts': 90,
+  'src/remote/groupJoinControl.ts': 45,
+  'webview/dashboard/components/NestJoinCheck.svelte': 60,
+  'webview/dashboard/components/NestsSecurity.svelte': 75,
+  'webview/dashboard/components/nestJoinCheck.ts': 30,
+  'src/dashboard/groupPane.ts': 135,
+  // t-s9jr6u: the card left the Remote pane and became the Nests view's Desks
+  // card (RemoteGroupCard.svelte -> NestDesks.svelte, same cap). Its round-4
+  // redraw was split at birth: one tile per desk, the empty state, the words.
+  'webview/dashboard/components/NestDesks.svelte': 195,
+  'webview/dashboard/components/RemoteGroupInvite.svelte': 75,
+  'webview/dashboard/components/NestDeskTile.svelte': 150,
+  'webview/dashboard/components/NestDesksEmpty.svelte': 80,
+  'webview/dashboard/components/nestsStatus.ts': 125,
+  'webview/dashboard/components/OsGlyph.svelte': 35,
+  // Nests L4b (t-s9jr6u): the view, its Storage and Config cards, the switch,
+  // and the host leaves split out of files that sat at their caps (groupPane
+  // -> groupPayload, groupControl -> groupChange, groupMembers -> deskOs).
+  // Intro size + slack, each.
+  'webview/dashboard/panes/NestsPane.svelte': 115,
+  'webview/dashboard/components/NestStorage.svelte': 250,
+  'webview/dashboard/components/nestStorageModel.ts': 115,
+  'webview/dashboard/components/NestsConfig.svelte': 80,
+  'webview/dashboard/components/OnOffSwitch.svelte': 45,
+  'src/dashboard/groupPayload.ts': 60,
+  'src/dashboard/nestStoragePane.ts': 115,
+  // t-vbivj4: the Storage card always settles. The bounded measure loop (host)
+  // and the card's silence bound + progress (webview), split out at birth.
+  'src/dashboard/nestStorageMeasure.ts': 65,
+  'webview/dashboard/components/nestStorageSettle.ts': 55,
+  'src/remote/deskOs.ts': 25,
+  'src/remote/groupChange.ts': 20,
+  'src/remote/nestsSetting.ts': 30,
+  // The Settings view (t-s9jr6u): the pane, its table and the row shell. The
+  // rows themselves are the former Insights cards, restyled in place.
+  'webview/dashboard/panes/SettingsPane.svelte': 100,
+  'webview/dashboard/panes/settingsGroups.ts': 85,
+  'webview/dashboard/components/SettingRow.svelte': 50,
+  'webview/dashboard/components/BackdropSetting.svelte': 50,
+  // BoardRail.svelte: BoardShell.svelte's rail, extracted at 189/190 so the
+  // rail could gain its FOOT (Settings above Docs). BoardShell came back at 87.
+  'webview/dashboard/panes/BoardRail.svelte': 140,
+  'webview/dashboard/panes/boardIconsNests.ts': 30,
+  // DEVICE IDENTITY (R-2b, the iOS app's whole point), split in three at
+  // introduction on the same rule as the rest of this block — one job each, and
+  // the caps are intro size + slack:
+  //   deviceAuth.ts    — what a device-key claim and a signature ARE (the wire
+  //     shapes, the P-256 verifier, the enrolment record in SecretStorage).
+  //     Pure but for the store, and the file the iOS harness's own reference
+  //     verifier is cross-checked against.
+  //   deviceSession.ts — WHEN the desktop asks, per socket. A machine and not a
+  //     flag because three of its four fields each caught a real failure
+  //     (generated != delivered, held != dropped, verified is per socket).
+  //   inbound.ts       — the dispatch table, EXTRACTED from remoteController.ts
+  //     (289/290 at the time). That file's own header says it 'holds no
+  //     protocol knowledge of its own'; the table was the one place that had
+  //     stopped being true, and device identity would have doubled it. The
+  //     controller SHRANK 289 -> 283 as a result and its cap did NOT move.
+  // --- PRIVILEGE (spec v1.2, 2026-09-06). The phone drives the desktop's REAL
+  // permission system, and every grant of authority is bound to the enrolled
+  // key. Four rows, split on the same one-job rule as the block above, and all
+  // four are NEW files rather than growth in old ones:
+  //   remoteVerbs.ts   — the R-1 default-deny allowlist and the R-2a envelope.
+  //     A DATA TABLE plus the two predicates that read it, so adding a verb the
+  //     phone may send is one reviewed line and not a code path.
+  //   authority.ts     — the byte layouts a grant is signed over, and the ONE
+  //     P-256 verifier in this lane. `deviceAuth.ts` was 197/200 and now
+  //     DELEGATES its own verify here (197 -> 150), so the byte-shape refusals
+  //     the owner reads cannot drift between the device-auth and grant paths.
+  //   privilege.ts     — the state: an approvalNonce per ask, a mode-challenge
+  //     nonce per session, which sessions are in YOLO and who put them there,
+  //     and the four ways YOLO ends. Introduced at 242.
+  //   inboundApproval.ts — the two roads a permission ANSWER takes (signed, or
+  //     the keyless page's PIN), EXTRACTED from inbound.ts when the signed road
+  //     landed: that file's job is the ORDER of the ladder, and two bodies of
+  //     "what an answer does" had stopped being about order. inbound.ts came
+  //     back UNDER its existing 155 with the allowlist and the fork in it, and
+  //     its cap did NOT move.
+  // 2026-09-06 (phone-drives-the-desk sweep): the table GREW from four verbs
+  // to the shell's whole surface (a source-scan-backed coverage test, see
+  // remoteVerbsCoverage.test.ts), so it was extracted FIRST into its own leaf,
+  // `remoteVerbsTable.ts` — this file came back DOWN to just the predicates
+  // that read it (160 -> 118), same one-job rule as the rest of this block.
+  'src/remote/remoteVerbs.ts': 130,
+  // The DATA the row above reads. Owner-tiered rows plus the coverage sweep's
+  // default-refused tail (see the file's own header) — a table, not logic, so
+  // its size tracks the shell's surface rather than anything to extract.
+  'src/remote/remoteVerbsTable.ts': 250,
+  // remoteRefusalsTable.ts: the NAMED_REFUSALS half, extracted when the table
+  // above reached 250/250 and a new desk-settings write (t-qcwpyy) had to be
+  // dispositioned. EXTRACTION, not a cap raise: the two lists answer opposite
+  // questions and both only ever grow.
+  'src/remote/remoteRefusalsTable.ts': 150,
+  'src/remote/authority.ts': 135,
+  'src/remote/privilege.ts': 250,
+  // The desk's half of the mode REPORT (lane/remote-mode-state), split out
+  // because privilege.ts had no room and the two jobs are different anyway:
+  // privilege.ts decides who may hold authority, this only says who does. Intro
+  // 58 + slack.
+  'src/remote/modeReport.ts': 90,
+  // 65->45 (remote-nopin lane, DOWN): the PIN half of this file is gone; one
+  // road to an approval, and it is the signature.
+  'src/remote/inboundApproval.ts': 45,
+  'src/remote/deviceAuth.ts': 200,
+  'src/remote/deviceSession.ts': 155,
+  'src/remote/inbound.ts': 155,
+  'src/remote/remoteView.ts': 160,
+  // remote-hydrate lane: the five leaves that cut a reconnect's cost. Caps at
+  // the size they were introduced at, per the rule at the top of this file.
+  'src/remote/remoteTranscript.ts': 115,
+  'src/remote/phoneView.ts': 60,
+  // phoneCaps.ts (lane/remote-seams): WHAT THIS PHONE SAYS IT CAN OPEN. The
+  // compressed replay is only safe for a page that has an arm for the type —
+  // the CURRENT iOS app ships its own copy of the phone web layer and would
+  // paint an EMPTY transcript — so `remote/hello` carries an optional
+  // `caps: string[]`, the desk records it per socket on the webview beside
+  // `REMOTE_VIEW_BRAND`, and a hello without caps gets the plain tail. Its own
+  // leaf and not phoneView.ts: that file is "what the phone is NOT sent", this
+  // is "what the phone CAN read", and the two answer different questions.
+  // Intro 51 + slack.
+  'src/remote/phoneCaps.ts': 60,
+  // WHAT THE PHONE ALREADY HAS. A leaf of its own and not a wing of
+  // remoteTranscript.ts (which is at its cap) nor of phoneCaps.ts: the cursor a
+  // phone sends, the desk nonce that qualifies it, and the four roads back to
+  // the plain tail are ONE rule with one failure mode, and the tail itself is a
+  // different question. Intro 147 + slack.
+  'src/remote/remoteDelta.ts': 150,
+  'src/remote/hydrateGate.ts': 125,
+  'src/dashboard/replaySession.ts': 155,
+  'webview/remote/inflate.ts': 95,
+  // 265->275 (+10): one getter, `confirmedAt` — the phone's hello time, which
+  // is the ONLY honest "is a phone paired". `connected` was standing in for it
+  // and reported the desktop's own relay socket, so a live relay made every
+  // freshly-minted code read as a paired device. RAISED by the width of the
+  // accessor plus its why: there is nothing here to extract.
+  // 275->290 (+15): the ownership predicate. `claim(rid)` is asked before ANY
+  // socket opens and again when a fresh code is minted, because the window where
+  // Pair was pressed is the one that owns the phone. Four lines of code, the
+  // rest its why. RAISED: an injected gate on the object that owns the socket is
+  // not extractable — the whole point is that it sits on the path to `open()`.
+  // 290->318 (+28, privilege lane): the signed-authority wiring, on the SAME
+  // precedent as the two raises above and after extraction was done FIRST —
+  // four new leaves took the rules themselves (remoteVerbs / authority /
+  // privilege / inboundApproval), and deviceAuth.ts and inbound.ts both came
+  // back under their own caps. What is left here is what only the object owning
+  // the socket can do: construct Privilege with its four seams, stamp the
+  // approval nonce on the ONE outbound path, revert every escalated session in
+  // teardown BEFORE the view is disposed, say so when a peer replacement threw
+  // a verdict away, and read the envelope live into the dispatch table. Each is
+  // a line or two plus its why; none of it is extractable, because extracting
+  // it would mean a second object holding the same socket's lifecycle. The last
+  // three of the 28 are the peer-EDGE fork the live relay run demanded: a
+  // repeated `peer:present` used to re-greet and re-hydrate, which is a whole
+  // transcript up the relay for a frame that may be a duplicate.
+  'src/remote/remoteController.ts': 318,
+  // socketGreeting.ts (lane/remote-seams): EXTRACTED, and the cap above was NOT
+  // raised to take the merge. Two lanes met on the controller — the outbound
+  // coalescer's shaper and the once-per-socket hydrate gate — and it went to
+  // 329 against 318, so what came out is the one thing in it that was neither
+  // wiring nor lifecycle: the GREETING SEQUENCE. `connecting` is a new socket,
+  // `open` greets (hello once, the challenge every time, then a hydration), and
+  // a relay control frame is the presence edge whose `arrived`/`replaced` fork
+  // decides whether the key must be proved again. One flag, three entry points,
+  // every collaborator injected — the same shape `inbound.ts` already is. The
+  // controller came back to 299 WITH the two seams this lane added to it.
+  // Intro 107 + slack.
+  'src/remote/socketGreeting.ts': 115,
+  // 95->100 (+5): pairingPanel.ts is GONE - the whole branded pairing webview,
+  // 165 lines under a 175 cap, deleted because the Remote pane draws the same
+  // QR, clock and PIN box. What replaced it in this file is a two-call command
+  // and the three lines that explain the board-section handshake.
+  // 100->130 (+30): this is the file that ran in every window and restored the
+  // same pairing in each, so this is where the lease is registered, beaten and
+  // released. Registration + the loss hook + the interval + the release in
+  // dispose, with the paragraph that explains why a shared globalState is the
+  // right store for it.
+  // 130->139 (+9, remote-hide lane): the command-palette context key. The
+  // SETTER (syncRemoteEnabledContext) was extracted first, to its own leaf,
+  // remoteEnabledContext.ts — what stays here is the two call sites (on
+  // activation, on the one relevant config change) and folding the watcher's
+  // teardown into the disposable this file already returns. Not further
+  // extractable: both call sites need `readRemoteConfig`, which is this file's.
+  'src/remote/activate.ts': 139,
+  // remoteEnabledContext.ts: the ONE setter activate.ts calls to keep
+  // origamicoder.remoteEnabled in sync — no state, easy to unit test alone.
+  'src/remote/remoteEnabledContext.ts': 25,
+  // flockEnabled.ts (flock-messenger lane): the ONE place this shell decides
+  // whether Flock is on — the setting, its default (FALSE, same as Remote's),
+  // the engine kill-switch variable it mirrors, and the spawn overlay. Its own
+  // module rather than three getConfiguration calls, because the board, the
+  // sidebar and the engine spawn must never disagree; the mirror's drift guard
+  // lives in flockKillSwitch.test.ts.
+  'src/flockEnabled.ts': 60,
+  // qr.ts is the outlier and is MEANT to be: it is one algorithm (ISO/IEC
+  // 18004, byte mode, EC M, versions 1-10) and splitting it into "the tables"
+  // and "the matrix" would put the block table and the placement that reads it
+  // in different files for no gain. 466 at introduction; the cap is the ceiling
+  // for that one algorithm, not a budget for a second feature.
+  'src/remote/qr.ts': 480,
+
+  // Origami Remote — the phone shell (webview/remote/*). Opted IN at
+  // introduction rather than left uncapped: the shell is a HOST for the chat
+  // bundle, so every line of growth here is a line of divergence between what
+  // the phone runs and what the VS Code panel runs. Caps = intro size + slack.
+  // The wire modules are deliberately one job each (frame / chunk / socket /
+  // api-shim / pairing / chrome); if one wants to grow, the answer is almost
+  // always that a job belongs in a sibling, not that the cap is wrong.
+  'webview/remote/crypto.ts': 170,
+  // The phone's twins of `src/remote/padBuckets.ts` and `src/remote/sessionKey.ts`,
+  // deliberately shaped so the two halves of each pair diff against each other
+  // line by line — the wire has burned a lane before on a one-byte disagreement
+  // nobody could see because the two files did not look alike. pad.ts carries
+  // v1's own code UNCHANGED (a v1 socket must behave exactly as it did) plus
+  // the §9 buckets; sessionKey.ts carries the v2 payload, the derivation, the
+  // one bridge call and `WireKeys`, which is where §4's two version rules live
+  // so the transport keeps choosing neither a key nor a version.
+  'webview/remote/pad.ts': 110,
+  'webview/remote/sessionKey.ts': 200,
+  'webview/remote/chunk.ts': 135,
+  'webview/remote/transport.ts': 165,
+  'webview/remote/shim.ts': 140,
+  // The phone's half of the same pair: the two frames the DESK may send about a
+  // mode, and the rule that separates them — a revert is honoured, an unsigned
+  // yolo never is, and the once-per-hydration report is adopted whole. Out of
+  // privilege.ts (at its cap) because that file is the SIGNED road outward and
+  // this is what may come back the other way. Intro 109 + slack.
+  'webview/remote/modeState.ts': 140,
+  // WHICH chat the phone opens on. Extracted from shim.ts rather than added to
+  // it: the rule is about `replaySessionsTo`'s ORDER (every session, oldest
+  // first, the active one named last), which is a fact about the HOST, and the
+  // shim is about the webview API. Intro 63 + slack.
+  'webview/remote/mountPick.ts': 80,
+  // THE TRANSCRIPT ACROSS AN APP KILL. Not part of main.ts (the boot ORDER,
+  // already at its cap) and not part of seq.ts (the marks): what is persisted,
+  // what is painted before the socket opens, and what the desk is told about it
+  // are one rule, and so are the latch that keeps the painted bundle off v1
+  // frames and the re-declare that keeps the desk's copy of the cursor level.
+  // Half the file is the argument for those three. Intro 402 + slack.
+  'webview/remote/cache.ts': 420,
+  // cacheStore.ts (lane/remote-cache-fixes): the STORAGE half — what
+  // localStorage holds and the order records are evicted in. Split out when
+  // eviction grew its second clause (a chat the page has DECLARED on this
+  // socket outranks a chat it has not, because the desk answers a cursor with
+  // the rows after it and nothing else). cache.ts is the argument for painting
+  // from a cache; a quota is not part of that argument. Intro 132 + slack.
+  'webview/remote/cacheStore.ts': 150,
+  // The chat list, and the strip that draws it, split in two. Both deliberately
+  // add NOTHING to the wire: the list is built from the sessionCreated /
+  // sessionTitle / restoreActiveSession / sessionClosed messages the phone
+  // already receives, and the strip's three controls are a local re-pin, the
+  // composer's own newSession and the desktop tab close's own closeSession.
+  // The split came when CLOSE arrived: what a chat list KNOWS (which chats
+  // exist, which one is live, which one succeeds a closed one) is a rule about
+  // the HOST, and it was being read past forty lines of DOM building to find
+  // it. Caps are each half's size + slack, and they are deliberately unequal —
+  // the strip is the half that grows when a control is added, the list only
+  // when the host adds a session message.
+  'webview/remote/sessions.ts': 130,
+  'webview/remote/sessionBar.ts': 175,
+  'webview/remote/pairing.ts': 130,
+  // The phone's half of the same rule, plus the counter the transport delegates
+  // to. In its own file for the same reason the desktop's is: a page load is
+  // not the pairing, and the transport should not know what localStorage is.
+  'webview/remote/seq.ts': 150,
+  // The phone's half of the same pair. `repair.ts` is the three ways a pairing
+  // ends up wedged and the one sentence that answers them; `bundle.ts` is the
+  // chat-bundle loader lifted out of main.ts so the boot file stays the boot
+  // ORDER and nothing else. Introduction size + slack, like every row here.
+  'webview/remote/repair.ts': 155,
+  'webview/remote/bundle.ts': 50,
+  // 110->70 (remote-nopin lane, DOWN): the PIN sheet went; what is left is the
+  // status strip, the notice strip and the one watch-only line.
+  'webview/remote/ui.ts': 70,
+  'webview/remote/main.ts': 130,
+  // native.ts: the iOS shell bridge (getPairing / forgetPairing /
+  // signWithDevice / deviceInfo) and the two frames built on it — the hello's
+  // deviceKey block and the challenge answer. EVERY branch in it is behind
+  // `globalThis.__ORIGAMI_NATIVE__`, which a browser never defines, so the
+  // relay-served page is unchanged. It also holds the shell's pairing read,
+  // which the upstream diff put in pairing.ts: that leaf was 121/130 and a
+  // second source of truth for a pairing does not belong in it anyway.
+  'webview/remote/native.ts': 215,
+  // The phone's half of the signed privilege road (`src/remote/privilege.ts`
+  // is the desk's half and the authority): the two byte layouts, the approval
+  // signer, and the translation of the chat bundle's own `setApproveMode` onto
+  // the signed set-mode handshake. Introduction size + slack. A THIRD grant
+  // family arriving here is a second file, not a bigger one.
+  'webview/remote/privilege.ts': 305,
+  // The phone stylesheet: layout overrides + feature gates + the shell's own
+  // chrome. A FOURTH concern arriving here means a second stylesheet, not a
+  // bigger one.
+  // 290->265, back to the pre-strip cap: the CHAT STRIP moved OUT to
+  // strip.css. It came in here as "one flex sibling above #app and one chip
+  // rule" — the third concern this file already named — and grew a
+  // current-tab state, a new-chat control and a close control, which is a
+  // component's stylesheet, not a chrome rule. Its geometry (tap targets, the
+  // two border halves that make one pill) reviews better in one place.
+  // 265->225 (remote-nopin lane, DOWN): the PIN sheet's scrim and card are
+  // gone; the watch-only line that replaced them is 13 lines.
+  'webview/remote/remote.css': 225,
+  'webview/remote/strip.css': 110,
+
+  // The Remote and Flock RAIL PANES (owner: "a new Icon below MCP that was Rem
+  // and Flo"). Caps = intro size + slack, and the leaves were split at
+  // introduction rather than after a cap bit: the Flock pane is five unrelated
+  // blocks (identity, desk, friends, inbox, card) and three of them own editable
+  // state, which is three components' worth of work in one file otherwise.
+  'webview/dashboard/panes/boardIconsPeer.ts': 35,
+  // 265->280 (+15): the pane is still a pure wire. What landed is the new state
+  // in its local union and the three-line `takeOver` post — the words and the
+  // button are in RemoteHero and RemotePills, which both stayed under their caps.
+  'webview/dashboard/panes/RemotePane.svelte': 280,
+  // 240->250 (+10): one import and one wired line. The words for "the flock is
+  // running in another window" went to FlockElsewhere.svelte rather than into
+  // the pane, which is the rule this pane was rebuilt under.
+  'webview/dashboard/panes/FlockPane.svelte': 250,
+  // flock-switch lane: the master on/off switch on the Front Desk card. The
+  // pane's own `copy()` helper left for its own leaf to pay for the wiring
+  // (the enabled state, the inbound case, the two new FlockSide props) without
+  // raising the cap above.
+  'webview/dashboard/panes/flockCopy.ts': 15,
+  // --- Remote pane, rebuilt to the owner's mock F2 (story + pair column + two
+  // reference cards). The pane stayed a WIRE and every block that owns state, a
+  // clock or a picture left it. NOT ONE CAP WAS RAISED: RemoteExplainer and
+  // RemotePrivilege were DELETED with the folds and the Privilege card, the
+  // 95-line RemotePairCard became the three-faced RemotePairCode under a cap of
+  // its own, and RemoteHero came DOWN 190->103 by handing the code box away.
+  'webview/dashboard/components/remoteLinks.ts': 25,
+  'webview/dashboard/components/RemotePills.svelte': 100,
+  'webview/dashboard/components/RemoteHero.svelte': 190,
+  'webview/dashboard/components/RemoteDeviceRow.svelte': 140,
+  // RemoteStory.svelte: the "What this is" card — the master switch on its head
+  // row, the app's four explainer pages at one line each, and the two lists. Its
+  // own leaf because it is the only card that is pure argument, and because the
+  // switch has to sit level with a caps label the pane does not otherwise own.
+  // Introduced at 146.
+  'webview/dashboard/components/RemoteStory.svelte': 155,
+  // RemotePairCode.svelte: the tall box inside the Pair card, in three faces —
+  // a live code with its m:ss clock and the three steps, the attached phone's
+  // summary, or the forecast with nothing paired. Replaces RemotePairCard.svelte
+  // (95, one face and a ring). Introduced at 158.
+  'webview/dashboard/components/RemotePairCode.svelte': 170,
+  // RemoteRelay.svelte: the address field, the picture, SEES / DOES NOT SEE and
+  // the one guide link. Its own leaf because the draft-versus-broadcast rule is
+  // about this field alone, and the pane must not own a text box. Introduced at 115.
+  'webview/dashboard/components/RemoteRelay.svelte': 125,
+  // RemoteRelayDiagram.svelte: phone — sealed — relay — sealed — desktop, as a
+  // five-column grid capped at 520px. Its own leaf on the same ground the QR is:
+  // it is a picture with its own geometry, and it reviews better alone.
+  // Introduced at 87.
+  'webview/dashboard/components/RemoteRelayDiagram.svelte': 95,
+  // RemoteDeviceKey.svelte: the enrolled device key — platform, app version,
+  // the backend badge and the FULL 43-char fingerprint with a copy button, in a
+  // fold that opens by default and is remembered per pairing. Its own leaf
+  // because RemoteDeviceRow.svelte is the editable NAME (a draft with a
+  // commit/abandon rule) and this is read-only identity with a clipboard.
+  'webview/dashboard/components/RemoteDeviceKey.svelte': 130,
+  // remoteFoldState.ts: which pairings had their fingerprint folded away, over
+  // the webview's shared state bag. Pure map arithmetic, so it is asserted
+  // without a DOM — the same reason remoteFormat.ts is a module. Introduced at 35.
+  'webview/dashboard/components/remoteFoldState.ts': 45,
+  // The two pure leaves the pane's words and glyphs live in. Asserted without a
+  // DOM, which is the point of splitting them out at all.
+  'webview/dashboard/components/remoteFormat.ts': 60,
+  'webview/dashboard/components/remoteIcons.ts': 40,
+  'webview/dashboard/components/FlockFrontDesk.svelte': 170,
+  'webview/dashboard/components/FlockInbox.svelte': 100,
+  // The banner the multi-window fix owed since 0.4.83. Introduced at 44.
+  'webview/dashboard/components/FlockElsewhere.svelte': 70,
+  // --- Flock: Address Book / Permissions / Front Desk (owner: "it needs split
+  // into a clean Address Book, Permissions, Front Desk"). NINE NEW files; the
+  // pane itself SHRANK to 227 against its 240 and not one existing cap moved
+  // except the host's, one note down. The pane is a wire now: each section's
+  // body is a component, because three of them own editable state.
+  // 100->110 (+10): `transport` — which engine holds the friend links. The one
+  // field on this page that is not a file read.
+  'webview/dashboard/panes/flockTypes.ts': 110,
+  'webview/dashboard/panes/flockHandle.ts': 40,
+  'webview/dashboard/components/FlockExplainer.svelte': 75,
+  'webview/dashboard/components/FlockPermissions.svelte': 220,
+  'webview/dashboard/components/FlockScopePicker.svelte': 130,
+  'webview/dashboard/components/FlockCard.svelte': 75,
+  'webview/dashboard/components/FlockInviteQr.svelte': 40,
+  // --- Flock: the mock-C tile rebuild (owner picked "Flock Mock C" of the six
+  // pane mocks). SEVEN NEW files and TWO DELETED (FlockSection.svelte and
+  // FlockAddressBook.svelte, whose jobs are now the tile grid and two tiles);
+  // NOT ONE existing cap moved, and the pane came in at 238 against its 240
+  // after two extractions rather than a raise. FlockChrome.svelte is the one
+  // that made that possible: the pane's whole type scale, buttons, pills and
+  // rows are `:global` rules under `.flock-pane` written ONCE there, instead of
+  // the same button restated in eleven leaves. Caps = intro size + slack.
+  'webview/dashboard/panes/flockRows.ts': 90,
+  // --- Flock: the MAILBOX wave. THREE NEW files and not one existing cap was
+  // raised — FlockPane.svelte and src/dashboard/flockPane.ts both went OVER on
+  // the first pass and were paid for by extraction and by DELETION (the
+  // separate `flock_pending` read went: the questions waiting are rows in the
+  // mailbox the pane already fetches), landing on 250/250 and 205/215.
+  //
+  // flockMail.ts: the trays, the badge count, the state prose, and the sentence
+  // a reply carries into a chat. Pure, and it owns its own types rather than
+  // growing flockTypes.ts — that module was at its cap and this is a
+  // sub-surface, not a field. Intro 138 + slack.
+  'webview/dashboard/panes/flockMail.ts': 165,
+  // FlockMail.svelte: the three trays and one set of buttons per kind of row —
+  // a question's three decisions, a draft's Send/Edit, a reply's four doors.
+  // The tile it replaced (FlockInbox.svelte, now the cost log alone and down to
+  // 52) had two buttons and no state; this one owns an editor, so it is its own
+  // component rather than a bigger Inbox. Intro 162 + slack.
+  'webview/dashboard/components/FlockMail.svelte': 190,
+  // src/dashboard/flockMailbox.ts: the host half — the mailbox read, the four
+  // ACP writes, and the ONLY two places in the Flock feature that touch a chat
+  // session. Its own leaf on the flockScope.ts pattern because flockPane.ts had
+  // four lines of slack. Intro 158 + slack.
+  'src/dashboard/flockMailbox.ts': 185,
+  // --- Flock: the FLOW wave (a reply comes home). THREE NEW files and not one
+  // existing cap raised. flockMail.ts and src/dashboard/flockMailbox.ts both
+  // went over on the first pass and were paid for by extraction, landing on
+  // 119/165 and 170/185.
+  //
+  // flockDeliverTargets.ts: where a reply can go and in what order — the chat
+  // that ASKED first, then a new one, then the rest — plus the one message a
+  // pick posts. Split out of flockMail.ts because it is a different job: that
+  // file knows TRAYS and prose, this one is the only place in the feature that
+  // tells a webview chat id from an engine one. Intro 80 + slack.
+  'webview/dashboard/panes/flockDeliverTargets.ts': 105,
+  // src/dashboard/flockMailboxRead.ts: the mailbox READ and the one webview
+  // message shape both the poll and the engine's push produce. Split from
+  // flockMailbox.ts on the same rule — a read and a message shape, against a
+  // file that is now about what a CLICK does. Intro 42 + slack.
+  'src/dashboard/flockMailboxRead.ts': 60,
+  'webview/dashboard/components/FlockChrome.svelte': 110,
+  'webview/dashboard/components/FlockTile.svelte': 65,
+  // --- Flock: the owner's full-width layout (two rows of three, no 1180px cap).
+  //   Identity | Front desk | Auto-answer permissions
+  //   Invite   | Mail       | Contacts
+  // THREE NEW files and not one existing cap was raised. FlockPane.svelte went
+  // over its 250 on the new grid and came back under it by giving its composite
+  // tiles files of their own, which is what the eight-tile version had already
+  // done for every SIMPLE tile:
+  //   FlockDeskTile — the desk is two components and a disclosure (the desk's
+  //     own controls, and the cost log pinned to the tile floor);
+  //   FlockContactsTile (DELETED at the messenger wave) — the search draft belongs beside the list it filters,
+  //     not in a pane that has one tile able to read it;
+  //   FlockInviteActions — the invite tile's HEAD: two pills and the expiry
+  //     chip, split from the panels they write so FlockInvite stays a body.
+  // FlockPermissions.svelte and FlockInvite.svelte draw their OWN FlockTile for
+  // the same reason FlockDeskTile does — a tile with a head snippet is a shape,
+  // and shapes do not belong in the wire.
+  'webview/dashboard/components/FlockDeskTile.svelte': 65,
+  'webview/dashboard/components/FlockInviteActions.svelte': 50,
+  'webview/dashboard/components/FlockSwitch.svelte': 45,
+  // 55->100 (contacts wave, FLAG FOR SIGN-OFF). The tile was two lines of TEXT;
+  // it is a FORM now — the display name and the sigil are the owner's to change,
+  // and they are what every contact renders. The extraction came FIRST and is
+  // FlockIconPicker.svelte below (the whole grid, its keys and its themed picked
+  // state); what is left here is the field, the avatar, the handle label, Save
+  // and the paragraph saying why the handle does not follow the name. Splitting
+  // that further would put "what is editable" in one file and "what is frozen"
+  // in another, which is the one distinction the tile exists to teach.
+  'webview/dashboard/components/FlockIdentity.svelte': 100,
+  // FlockIconPicker.svelte (contacts wave): the sigil grid, extracted at
+  // introduction rather than after the cap bit. Its keys are DERIVED from the
+  // glyph table (`glyphKeys()`), never hand-listed — glyphNames.ts records what
+  // the hand-kept copy cost. Capped at intro (71) + slack.
+  'webview/dashboard/components/FlockIconPicker.svelte': 80,
+  'webview/dashboard/components/FlockInvite.svelte': 95,
+  // The per-friend override row: three-state auto-answer, budget, scope. It is
+  // the biggest of the new leaves because "revoke a default for one friend" is
+  // three controls, and each has to be able to say `null` as well as on/off.
+  // --- Flock: the scope wave (owner: skills are not a permission, folders are,
+  // per-contact overrides live on the contact). THREE NEW files and ONE DELETED
+  // (FlockOverrides.svelte, whose job is now FlockContactScope.svelte in the
+  // thread head). NOT ONE existing cap was raised: FlockScopePicker.svelte went
+  // 27 lines over with the Folders column inline, so that column left for
+  // FlockFolderList.svelte; FlockThread.svelte took the popover and came out
+  // SMALLER, because the rename branch it used to draw inline went with it.
+  // FlockContactScope.svelte: the Edit popover — the rename, the overlaid scope
+  // pills, the auto-answer pill, the budget and Reset to default. The pill
+  // arithmetic (effective scope, what differs from the default, what a click
+  // posts) is panes/contactScope.ts, so it is assertable without a DOM: jsdom
+  // cannot see the mark that says "somebody decided this for this person".
+  'webview/dashboard/components/FlockContactScope.svelte': 175,
+  'webview/dashboard/components/FlockFolderList.svelte': 80,
+  'webview/dashboard/panes/contactScope.ts': 140,
+  // --- Flock: tick pills (owner: the Edit popover's pills should read as the
+  // bots page's tool grid, and the Permissions chip should read as defaults).
+  // ONE NEW file, not one existing cap raised: FlockContactScope.svelte had no
+  // room left for three headed groups after the rename/budget/Reset controls,
+  // so the groups — Repos, Wiki, Folders, each a `.bc-tool`-style tick pill —
+  // are FlockScopePills.svelte. Intro 77 + slack.
+  'webview/dashboard/components/FlockScopePills.svelte': 90,
+  // --- The messenger wave (13-inch reflow): a thread's question and reply as
+  // two chat bubbles, extracted at introduction because BOTH FlockMail.svelte
+  // and FrontDeskSection.svelte draw a thread and neither had the room left on
+  // its own cap for a bubble pair, a direction marker and an origin chip.
+  'webview/dashboard/components/FlockMailBubbles.svelte': 60,
+  // --- Flock: the MESSENGER wave (owner picked mock C of the three Flock pane
+  // mocks). EIGHT NEW files, TWO DELETED (FlockContactsTile.svelte and
+  // FlockFriends.svelte — the rail is the contact list now, and Edit/Revoke
+  // moved into the thread head, which is the only place unambiguously ABOUT one
+  // contact), and NOT ONE existing cap was raised. FlockPane.svelte stayed
+  // under its 250 because the right rail left for FlockSide.svelte before the
+  // grid was rewritten, and FlockMail.svelte SHRANK 173 -> 94 because its four
+  // button sets left for FlockRowActions.svelte, which the thread shares.
+  //
+  // flockThread.ts: the per-contact threads, the day separators, the last line
+  // and the rule that decides which rail row opens first. Pure, and takes `now`
+  // rather than reading the clock, so "TODAY" is assertable.
+  'webview/dashboard/panes/flockThread.ts': 165,
+  // flockChips.ts: which right-rail chip starts open (facts, overridden by what
+  // the owner last clicked) and the permissions chip's shut line. Its own leaf
+  // rather than three $state initialisers, because both halves have a wrong
+  // answer that hides work from the owner.
+  'webview/dashboard/panes/flockChips.ts': 70,
+  // FlockRail.svelte: the contacts rail, its filter, and the "All mail" row
+  // that keeps "what waits on me across everybody" answerable at all.
+  'webview/dashboard/components/FlockRail.svelte': 125,
+  // FlockThread.svelte: one contact's whole exchange, the contact card's two
+  // controls in its head, and the composer at its floor.
+  // 170->195 (flock-polish lane, FLAG FOR SIGN-OFF, +25): EXTRACTION CAME
+  // FIRST — `shouldPin`, the pure "is the owner at the foot of the list"
+  // arithmetic, lives in panes/flockThread.ts where its siblings already do.
+  // What landed here is DOM wiring that leaf cannot own: the scroll-container
+  // ref, the scroll listener, the pin-on-mount/pin-on-new-row effect, and the
+  // sticky "jump to newest" button + its style. FlockPane.svelte now keys this
+  // component on the contact's handle so a SWITCH remounts it pinned fresh,
+  // which kept the same logic from needing its own handle-tracking here too.
+  'webview/dashboard/components/FlockThread.svelte': 195,
+  // FlockAllMail.svelte: the three trays in the thread's card chrome. A thin
+  // wrapper on purpose — FlockMail.svelte is unforked underneath it.
+  'webview/dashboard/components/FlockAllMail.svelte': 55,
+  // FlockSide.svelte: the desk card and the three chips. Split from the pane
+  // before the pane was rewritten, for the reason the pane's own comment gives:
+  // FlockPane is the wire, and this column is four components and a dressing
+  // rule.
+  'webview/dashboard/components/FlockSide.svelte': 140,
+  // FlockChip.svelte: one collapsible right-rail chip. Its head control sits
+  // beside the toggle button, never inside it — a checkbox in a button is both
+  // invalid markup and a control every click of which also toggles the chip.
+  'webview/dashboard/components/FlockChip.svelte': 85,
+  // FlockRowActions.svelte: the four button sets and the box that takes the
+  // words, extracted so the trays and the thread cannot drift apart. Two copies
+  // would be two places to rename `flockDecide`, and the second one would keep
+  // posting the old name with the whole suite green.
+  'webview/dashboard/components/FlockRowActions.svelte': 130,
+  // Their host halves. Same shape as mcpPane.ts / pluginsPane.ts: one message
+  // table, one read, one write helper, and the panel keeps only the dispatch.
+  // 165->170 (+5, extraction came FIRST): device naming's whole feature —
+  // the store, the sanitising, the forget-on-revoke — is in the new
+  // src/remote/deviceNames.ts. What LANDED here is what could not leave: one
+  // import, one entry in the message table, the payload field, and a case that
+  // hands the string straight to the leaf.
+  // 170->185 (+15): one message type and its case — `remoteTakeOver`. The
+  // payload did not grow: `connection` was already a string, so the new state
+  // rides the wire that was there.
+  'src/dashboard/remotePane.ts': 185,
+  // A name for a paired phone, kept in globalState against its rid. NOT
+  // secrets: a name someone typed for their own phone is not a credential, and
+  // the pairing secret stays where pairing.ts keeps it.
+  'src/remote/deviceNames.ts': 100,
+  // The board's pending-section handshake, OUT of botsManager.ts (which was at
+  // 200 of 200) when a second caller appeared: a COMMAND has no webview to post
+  // from, and importing the whole Bots dispatcher into the Remote lane for one
+  // assignment would have been the wrong direction. botsManager SHRANK to 188.
+  'src/dashboard/boardSection.ts': 55,
+  // 190->205 (+15 — the SMALLEST raise the feature admits, FLAG FOR SIGN-OFF):
+  // EXTRACTION CAME FIRST and took the whole picker feature with it — the three
+  // option sources, the workspace-relative rule and the folder dialog are all in
+  // the new src/dashboard/flockScope.ts, which owns its own message-type set the
+  // way control.ts does for Remote. What LANDED here is what could not leave: two
+  // imports, the four new entries in the pane's message table (the sidebar's
+  // queue-only read plus the two the scope leaf owns, spread in), a `cwd` field
+  // on the host, the invite QR helper (the encoder tops out at version 10, so an
+  // over-long invite must degrade to text rather than throw), and a `default:`
+  // that hands the rest to the leaf.
+  // 205->215 (contacts wave, FLAG FOR SIGN-OFF, +6 actual). One more message in
+  // the table and one more case in the switch, for `flock_set_identity`. This
+  // module IS the message table — every case is three lines of `write(host,
+  // '<method>', picked(...))` — so there is no leaf inside it to extract: a
+  // "identity messages" file would be one case in a file of its own, and the
+  // dispatch would then live in two places.
+  // 215->225 (flock-polish lane, FLAG FOR SIGN-OFF, +10): EXTRACTION CAME
+  // FIRST — pickFlockClient, its candidate list and the reroute-then-cache
+  // logic all live in the new flockRoute.ts, shared with flockMailbox.ts, so
+  // neither host reinvents its own pid plumbing. What landed here is the seam
+  // that could not leave: one import, two `sessions()`/`chat()` type fields,
+  // and the two call sites (`statePayload`, `write`) that use the pick.
+  'src/dashboard/flockPane.ts': 225,
+  'src/dashboard/flockScope.ts': 160,
+  // t-qcx1cb — the chat pane's repo/branch pills, host side. A leaf on the
+  // flockScope.ts pattern (its own message-type set, routed from the panel in
+  // one line) because DashboardPanel.ts is at its cap and this owns a whole
+  // chain: registry read -> `git worktree list` -> createWorktree -> a new
+  // chat's cwd. Intro 152 + slack; the pure halves (`selectionPlan`,
+  // `branchRows`) are exported so the cwd-is-fixed rule is testable with no
+  // panel, no webview and no git.
+  'src/dashboard/repoPicker.ts': 190,
+  'webview/dashboard/components/repoBranchPicker.ts': 135,
+  'webview/dashboard/components/RepoBranchPicker.svelte': 230,
+  // t-ru1i84 worktree state — ONE host read of `git status --porcelain=v2 --branch`,
+  // TWO consumers. WorktreeDot.svelte exists because RepoBranchPicker.svelte had four
+  // lines of headroom: the ratchet asked for an extraction, and a dot that owns its own
+  // wire is a better leaf than the same wire written into the pill and the repo card.
+  // Intro 108 / 73 / 76 + slack.
+  'src/dashboard/worktreeState.ts': 130,
+  'webview/dashboard/components/worktreeStateView.ts': 95,
+  'webview/dashboard/components/WorktreeDot.svelte': 100,
+  // EXTRACTED from ChatPane.svelte (2476/2477) so the pills above could take
+  // their import and mount lines without the cap moving. It did not move: the
+  // pane came DOWN to 2469. Two pure formatters, testable with no render.
+  'webview/dashboard/panes/chatLabels.ts': 60,
+  // flock-polish lane: pickFlockClient + its candidate-gathering helper, split
+  // out so a workspace's one-engine-per-chat pid can be matched against the
+  // owner lease from BOTH flockPane.ts and flockMailbox.ts without either
+  // growing, and so the pick is a pure leaf a unit test can drive directly.
+  // 70->105: readFlockState + the shared holder-pid cache landed here too,
+  // rather than in flockPane.ts, for the same reason — flockMailboxRead.ts's
+  // mailbox poll needs the cached pid without ever calling flock_state itself
+  // (flockPane.test.ts asserts that read stays `['flock_mailbox']` alone).
+  // +5 for resetHolderPidForTest, needed because the cache is a singleton
+  // across every test in a file.
+  'src/dashboard/flockRoute.ts': 105,
+  // The seam between the activation-owned RemoteController and the pane. It is
+  // a registry and four calls; anything bigger arriving here means the pane is
+  // reaching for controller internals that should stay in remoteController.ts.
+  // 135->150 (+15): RemoteConnection gained `pending` — the state this model
+  // had no word for, a code on screen that no phone has answered — so the
+  // snapshot maps four states instead of three and reads the pairing time off
+  // the controller instead of stamping its own at offer-mint time.
+  // 150->185 (+35): control.ts is the ONLY module that knows both the controller
+  // and the pane, so the multi-window state is decided here — the new member of
+  // RemoteConnection with the paragraph saying why it outranks the others, the
+  // 4001 latch (another desktop took the slot whether or not it took the lease),
+  // and remoteTakeOver. Extracting any of it would put half of "which window
+  // owns the phone" in a file the pane cannot see.
+  'src/remote/control.ts': 185,
+
+  // --- t-q8zfo7, redesign port A1: the sidebar dock, the shared swipe row,
+  // the animated list and the connections carousel. Six new leaves, FIRST
+  // caps, stamped here rather than raised anywhere: every one of them exists
+  // because the file that would otherwise have grown was already at or within
+  // a line of its cap. ControlStrip.svelte in particular sat at 1255 of 1256,
+  // and its own cap comment above names the connection surface as its seam —
+  // so the surface (grid, Add control, empty state) left whole, and the strip
+  // came DOWN to 1219.
+  //
+  // SidebarDock.svelte took the History popup's whole wire with the toolbar
+  // that held it, which is why ChatsList.svelte fell from 755 to 684: the
+  // control and its state moved together rather than the control moving and
+  // the state staying behind a callback.
+  'webview/chat/SidebarDock.svelte': 235,
+  'webview/chat/sidebarDockItems.ts': 65,
+  'webview/chat/animatedList.ts': 60,
+  'webview/shared/SwipeRow.svelte': 345,
+  'webview/shared/swipeRow.ts': 95,
+  'webview/shared/WarmTooltip.svelte': 115,
+  'webview/shared/warmTip.ts': 160,
+  // t-stuck-tip: the open-tip watchdog extracted from warmTip.ts (cap held).
+  'webview/shared/warmTipWatch.ts': 60,
+  'webview/sidebar/ConnectionCarousel.svelte': 175,
+  'webview/sidebar/connectionCarouselFit.ts': 90,
+
+  // --- t-qlgav5: the dock pages instead of clipping at a narrow sidebar.
+  // Two new leaves, FIRST caps: SidebarDock.svelte was already at its 235
+  // cap, so the whole-item window (state, measure/resize, the item button's
+  // own markup and CSS) went to SidebarDockTrack.svelte rather than growing
+  // the file that held it — SidebarDock.svelte came DOWN to 165. The fit
+  // arithmetic reuses connectionCarouselFit's fitTiles for its count, so
+  // sidebarDockFit.ts is a thin second leaf, not a second fit rule.
+  'webview/chat/SidebarDockTrack.svelte': 180,
+  'webview/chat/sidebarDockFit.ts': 70,
+  // t-s49986 — artifacts round 2, three NEW leaves so no capped file grew for
+  // them: the chat's card (ArtifactCard.svelte, mounted by MessageRow and
+  // ToolCard), the pure link parse both of them read (artifactLink.ts), and the
+  // host's auto-open guard (artifactAutoOpen.ts), which DashboardPanel.ts calls
+  // from its existing onArtifactsChanged line. Intro sizes + slack.
+  'webview/dashboard/components/ArtifactCard.svelte': 85,
+  'webview/dashboard/components/artifactLink.ts': 70,
+  'src/dashboard/artifactAutoOpen.ts': 70,
+  // t-vbj8xu: the "?" help popover and its two users. New leaves, so the two
+  // panes grew by one import and one tag each. Intro sizes + slack.
+  'webview/shared/HelpPopover.svelte': 200,
+  'webview/dashboard/components/ArtifactsHelp.svelte': 60,
+  'webview/dashboard/components/NestsHelp.svelte': 50,
 };
 
 // Five themes ship with this board, two of them dark. A literal colour in a
@@ -3517,6 +6055,85 @@ const CAPS: Record<string, number> = {
 // to theme vars ONLY (the coder_mockup.html these were drawn from is
 // hard-coded cream/ink; the SHAPE was taken from it, never the palette).
 const THEMED_FILES = [
+  // t-rz4555 — the Artifacts pane and its two leaves. Held to the rule for the
+  // same reason the rest of the board is: five themes ship, two of them dark,
+  // and the conflict banner's warning wash is exactly the kind of colour a
+  // literal would render invisible in one of them.
+  'webview/dashboard/panes/ArtifactsPane.svelte',
+  'webview/dashboard/components/ArtifactVersions.svelte',
+  'webview/dashboard/components/ArtifactConflictBanner.svelte',
+  // t-s49986: the chat's artifact card, held to the same rule as the pane.
+  'webview/dashboard/components/ArtifactCard.svelte',
+  // t-ru1i84: the worktree dot is two theme colours and nothing else.
+  'webview/dashboard/components/WorktreeDot.svelte',
+  // The two new rail panes and their leaves. DELIBERATELY ABSENT:
+  // RemotePairCode.svelte — its QR needs a real white ground behind real black,
+  // because a themed QR is one some phone cameras refuse. Contrast there is a
+  // function, not a decoration — the ruling the retired pairing webview made
+  // and the pane inherited.
+  'webview/dashboard/panes/RemotePane.svelte',
+  'webview/dashboard/components/RemotePills.svelte',
+  'webview/dashboard/components/RemoteHero.svelte',
+  'webview/dashboard/components/RemoteStory.svelte',
+  'webview/dashboard/components/RemoteRelay.svelte',
+  'webview/dashboard/components/RemoteRelayDiagram.svelte',
+  'webview/dashboard/components/RemoteDeviceRow.svelte',
+  'webview/dashboard/components/RemoteDeviceKey.svelte',
+  'webview/dashboard/panes/FlockPane.svelte',
+  'webview/dashboard/components/FlockFrontDesk.svelte',
+  'webview/dashboard/components/FlockInbox.svelte',
+  'webview/dashboard/components/FlockMail.svelte',
+  // The three-section split. DELIBERATELY ABSENT: FlockInviteQr.svelte, on the
+  // RemotePairCode precedent directly above — the invite QR needs a real white
+  // ground behind real black, and isolating those two literals in a component
+  // of their own is what lets every other file here stay var-only.
+  'webview/dashboard/components/FlockExplainer.svelte',
+  'webview/dashboard/components/FlockPermissions.svelte',
+  'webview/dashboard/components/FlockScopePicker.svelte',
+  'webview/dashboard/components/FlockCard.svelte',
+  // The mock-C tile rebuild. FlockChrome.svelte matters most of the seven: it
+  // is where the pane's every button, pill, row and avatar colour is written,
+  // so one literal there would be one literal in every tile at once.
+  'webview/dashboard/components/FlockChrome.svelte',
+  'webview/dashboard/components/FlockTile.svelte',
+  'webview/dashboard/components/FlockSwitch.svelte',
+  'webview/dashboard/components/FlockIdentity.svelte',
+  'webview/dashboard/components/FlockIconPicker.svelte',
+  'webview/dashboard/components/FlockInvite.svelte',
+  'webview/dashboard/components/FlockElsewhere.svelte',
+  'webview/dashboard/components/FlockContactScope.svelte',
+  'webview/dashboard/components/FlockFolderList.svelte',
+  'webview/dashboard/components/FlockScopePills.svelte',
+  // The three tiles the full-width layout split out. They carry no colour of
+  // their own at all, which is the point of listing them: the next hairline or
+  // state edge somebody adds to one lands under this rule rather than beside it.
+  'webview/dashboard/components/FlockDeskTile.svelte',
+  'webview/dashboard/components/FlockInviteActions.svelte',
+  'webview/dashboard/panes/flockRows.ts',
+  // The sidebar's Front Desk. In the SIDEBAR rather than the board, but held to
+  // the same rule for the same reason: five themes ship, two of them dark. Its
+  // rows moved to a leaf of their own and took the colour with them.
+  'webview/chat/FrontDeskSection.svelte',
+  // The messenger wave's shared bubble leaf, and the sidebar row it sits in.
+  'webview/dashboard/components/FlockMailBubbles.svelte',
+  // The messenger wave's eight new files. All eight are held to the rule for
+  // the same reason the rest of the pane is: five themes ship, two of them
+  // dark, and a literal colour is invisible in at least one of them.
+  'webview/dashboard/components/FlockRail.svelte',
+  'webview/dashboard/components/FlockThread.svelte',
+  'webview/dashboard/components/FlockAllMail.svelte',
+  'webview/dashboard/components/FlockSide.svelte',
+  'webview/dashboard/components/FlockChip.svelte',
+  'webview/dashboard/components/FlockRowActions.svelte',
+  'webview/dashboard/panes/flockThread.ts',
+  'webview/dashboard/panes/flockChips.ts',
+  'webview/dashboard/panes/contactScope.ts',
+  'webview/chat/FrontDeskRows.svelte',
+  // t-ntmm93's Browser card, moved to webview/dashboard/components/ by
+  // t-qc1d69. Five themes ship, two of them dark, so a literal colour here
+  // would be invisible in at least one of them.
+  'webview/dashboard/components/BrowserSettings.svelte',
+  'webview/dashboard/components/BrowserRevealRow.svelte',
   'webview/dashboard/components/labyrinthLayout.ts',
   'webview/dashboard/components/labyrinthLanes.ts',
   'webview/dashboard/components/labyrinthFormat.ts',
@@ -3558,6 +6175,12 @@ const THEMED_FILES = [
   'webview/dashboard/components/labyrinthLedger.ts',
   'webview/dashboard/components/labyrinthTone.ts',
   'webview/dashboard/components/LabyrinthRunIndex.svelte',
+  // ...and the CARD extracted out of it, which is now the sharpest case on that
+  // panel: the delete control's ARMED state and its confirm panel are drawn in
+  // --og-error, so a literal there is a destructive control that reads as an
+  // ordinary one in whichever of the five themes it clashes with. It took the
+  // picked-row border (--og-accent) and the collab seam (--og-accent-2) with it.
+  'webview/dashboard/components/LabyrinthRunCard.svelte',
   // LabyrinthDivider.svelte (t-q41pe0): its hover/focus state is carried in
   // colour alone (the hairline switching from --og-border to --og-accent, the
   // focus ring from --og-chat), so a literal here is a "you can grab this"
@@ -3618,6 +6241,9 @@ const THEMED_FILES = [
   'webview/dashboard/components/LabyrinthInspector.svelte',
   'webview/dashboard/panes/LabyrinthPane.svelte',
   'webview/dashboard/panes/InstructionsPane.svelte',
+  // The Nests Storage card (t-s9jr6u, StorageCard.svelte's successor) joins on
+  // the same rule: its Remove confirm and its warnings are carried in colour.
+  'webview/dashboard/components/NestStorage.svelte',
   // The Tools view joins on the same rule as its Insights sibling: a row's
   // LOADED/DEFERRED badge and the code-mode switch's ON state are carried
   // partly in colour, so a literal there is a deferred tool reading as loaded
@@ -3647,6 +6273,19 @@ const THEMED_FILES = [
   // with a fill colour per segment, so a literal there is a tool reading as
   // Loaded when it is Off — on the one control whose only job is saying which.
   'webview/dashboard/panes/ToolStateSwitch.svelte',
+  // ...and the LEDGER that replaced the matrix beside it (t-f1j2y3), on the same
+  // rule for the same reason: a cell is a glyph whose fill is drawn from the
+  // badge vocabulary, so a literal there is one sub-agent's tool reading as
+  // Loaded when it is Off — and the legend that names the glyphs would go with
+  // it.
+  'webview/dashboard/panes/SubagentLedger.svelte',
+  // ...and the main-agent half of the switch, which is where the tool GRID and
+  // the catalog-off note went when the pane split in two: the note's --og-accent-2
+  // seam is what makes "every tool is being sent in full" read as a warning.
+  'webview/dashboard/panes/ToolsMainView.svelte',
+  // ...and the code-mode card extracted out of the pane, which took the ON
+  // state of its switch with it — the same rule the pane itself joined on.
+  'webview/dashboard/panes/CodeModeCard.svelte',
   // ...and the create box beside it, on the weaker but real version of the same
   // rule: its disabled-button state and dashed border are drawn from the same
   // vars, so a literal there is a "you cannot press this yet" that disappears.
@@ -3727,6 +6366,11 @@ const THEMED_FILES = [
   // in the same pass — every var it names is defined in all five themes, so a
   // fallback only ever hid a missing one.
   'webview/dashboard/panes/LoopsPane.svelte',
+  // SchedulesPane.svelte joins on the same rule as the two panes it wraps: its
+  // own tab toggle carries the "which is active" state in --og-accent alone
+  // (the am-viewbtn pattern from RepoDetail.svelte), so a literal there is a
+  // tab that reads as unselected in whichever of the five themes it clashes with.
+  'webview/dashboard/panes/SchedulesPane.svelte',
   'webview/dashboard/components/LoopCard.svelte',
   // ...and the head row extracted out of it, which took the card's tone-coded
   // controls with it (the reopen button's accent hover, the cancel button's
@@ -3765,6 +6409,56 @@ const THEMED_FILES = [
   // of the five themes the literal clashes with. Like FocusEye it has nothing
   // to exempt it: no popover, so no drop shadow.
   'webview/dashboard/components/FocusGap.svelte',
+  'webview/dashboard/components/ContextBreakdownCard.svelte',
+  // t-q8zfo7 — the redesign port's new leaves. They are the clearest case the
+  // rule has: each one was ported from a react-bits reference that carries a
+  // FIXED palette (the warm tooltip's browns, the swipe panel's #e5484d), and
+  // the whole point of the port is that the palette did not come with it.
+  'webview/chat/SidebarDock.svelte',
+  'webview/shared/SwipeRow.svelte',
+  'webview/shared/WarmTooltip.svelte',
+  'webview/sidebar/ConnectionCarousel.svelte',
+  'webview/sidebar/ConnectionPill.svelte',
+  // t-qcx1cb — the repo/branch pills. The SELECTED row is drawn in colour alone
+  // (--og-accent behind --og-btn-text), which is the whole of "you are on this
+  // branch"; a literal there is a tick on an unreadable band in whichever of the
+  // five themes it clashes with. No popover shadow, so nothing to exempt.
+  'webview/dashboard/components/RepoBranchPicker.svelte',
+  // t-rz1b14 — the device-group card, now the Nests Desks card (t-s9jr6u).
+  // DELIBERATELY ABSENT beside it: RemoteGroupInvite.svelte, on the
+  // RemotePairCode / FlockInviteQr precedent — its QR needs a real white ground
+  // behind real black, and holding that one literal in a component of its own
+  // is what keeps the card var-only.
+  'webview/dashboard/components/NestDesks.svelte',
+  // Nests L4b + Settings (t-s9jr6u): every new leaf, same rule. Five themes.
+  'webview/dashboard/components/NestDeskTile.svelte',
+  'webview/dashboard/components/NestDesksEmpty.svelte',
+  'webview/dashboard/components/NestsConfig.svelte',
+  // t-sj32zl: the Accept step and the Security card. Same rule, five themes.
+  'webview/dashboard/components/NestJoinCheck.svelte',
+  'webview/dashboard/components/NestsSecurity.svelte',
+  'webview/dashboard/components/OnOffSwitch.svelte',
+  'webview/dashboard/components/OsGlyph.svelte',
+  'webview/dashboard/components/SettingRow.svelte',
+  'webview/dashboard/components/BackdropSetting.svelte',
+  'webview/dashboard/panes/NestsPane.svelte',
+  'webview/dashboard/panes/SettingsPane.svelte',
+  'webview/dashboard/panes/BoardRail.svelte',
+  // t-s9k0q6 - the sidebar Nest view leaves.
+  'webview/chat/ChatsHereNest.svelte',
+  'webview/chat/ChatsViewToggle.svelte',
+  'webview/chat/NestList.svelte',
+  'webview/chat/NestRow.svelte',
+  'webview/chat/NestReadOnlyGate.svelte',
+  'webview/chat/NestAwayBlock.svelte', // t-t7lfho
+  'webview/shared/NestGlyph.svelte',
+  'webview/chat/DeskChip.svelte',
+  'webview/chat/FromPill.svelte',
+  'webview/chat/ForkParentLine.svelte',
+  // t-vbj8xu: the help popover and its diagrams, read in all five themes.
+  'webview/shared/HelpPopover.svelte',
+  'webview/dashboard/components/ArtifactsHelp.svelte',
+  'webview/dashboard/components/NestsHelp.svelte',
 ];
 // NOT added: webview/dashboard/components/ChangesPill.svelte, for exactly the
 // reason ModeControl.svelte is not, one note down. Its list carries the same
@@ -3809,6 +6503,153 @@ describe('theme discipline — the Wave 4a board views use theme vars only', () 
         ...src.matchAll(/\bhsla?\(/g),
       ].map((m) => m[0]);
       expect(literals, `${rel} hard-codes ${literals.join(', ')} — use an --og-* var instead.`).toEqual([]);
+    });
+  }
+});
+
+// A theme var that does not EXIST is the same silent failure a literal colour
+// is, and the test above cannot see it: `var(--og-danger-border, var(--og-border))`
+// passes the no-literals rule, reads as deliberate, and renders the fallback in
+// every theme — which is exactly what happened to the Flock pane's red
+// "no model set" line during this task. It rendered, in the surface colour,
+// saying nothing.
+//
+// Scoped to the panes added with this rule rather than to every themed file:
+// it is a NEW rule, and retro-fitting it to a hundred existing files is a
+// separate piece of work with its own review.
+const VAR_CHECKED_FILES = [
+  // t-rz4555 — the Artifacts pane and its two leaves. Held to the rule for the
+  // same reason the rest of the board is: five themes ship, two of them dark,
+  // and the conflict banner's warning wash is exactly the kind of colour a
+  // literal would render invisible in one of them.
+  'webview/dashboard/panes/ArtifactsPane.svelte',
+  'webview/dashboard/components/ArtifactVersions.svelte',
+  'webview/dashboard/components/ArtifactConflictBanner.svelte',
+  // t-s49986: the chat's artifact card, held to the same rule as the pane.
+  'webview/dashboard/components/ArtifactCard.svelte',
+  'webview/dashboard/components/WorktreeDot.svelte',
+  'webview/sidebar/ClaudeSubscriptionCard.svelte', // t-tsw90t
+  'webview/dashboard/panes/RemotePane.svelte',
+  'webview/dashboard/components/RemotePills.svelte',
+  'webview/dashboard/components/RemoteHero.svelte',
+  'webview/dashboard/components/RemoteStory.svelte',
+  'webview/dashboard/components/RemoteRelay.svelte',
+  'webview/dashboard/components/RemoteRelayDiagram.svelte',
+  'webview/dashboard/components/RemoteDeviceRow.svelte',
+  'webview/dashboard/components/RemoteDeviceKey.svelte',
+  'webview/dashboard/panes/FlockPane.svelte',
+  'webview/dashboard/components/RemotePairCode.svelte',
+  'webview/dashboard/components/FlockFrontDesk.svelte',
+  'webview/dashboard/components/FlockInbox.svelte',
+  'webview/dashboard/components/FlockMail.svelte',
+  // The three-section split, INCLUDING FlockInviteQr.svelte: it is out of the
+  // no-literals list above for its two QR colours, which is no reason for the
+  // one theme var it does use to be allowed to not exist.
+  'webview/dashboard/components/FlockExplainer.svelte',
+  'webview/dashboard/components/FlockPermissions.svelte',
+  'webview/dashboard/components/FlockScopePicker.svelte',
+  'webview/dashboard/components/FlockCard.svelte',
+  'webview/dashboard/components/FlockInviteQr.svelte',
+  // BrowserOverlay.svelte joins the var-existence rule but NOT the no-literals
+  // one above, on the FlockInviteQr precedent: its panel carries the same
+  // `rgba(0, 0, 0, 0.35)` drop shadow TodoStrip.svelte uses, moved verbatim so
+  // the two drawers on one rail do not sit at different depths. A shadow is
+  // opacity over whatever is behind it rather than a themed surface and there
+  // is no --og-* shadow var, so opting it in would fail on that one deliberate
+  // literal. Every other colour in the file IS an --og-* var — including
+  // --og-text-muted, which is exactly the trap this list catches: its sibling
+  // TodoStrip.svelte reaches for `var(--og-muted, #6c7086)`, and --og-muted is
+  // a var theme.css has never declared, so that file has been rendering its
+  // hex fallback in all five themes since the day it shipped.
+  'webview/dashboard/components/BrowserOverlay.svelte',
+  // NestStorage.svelte (StorageCard.svelte's successor, t-s9jr6u): a card whose
+  // danger and warning colours must EXIST, not fall back — it removes stored data.
+  'webview/dashboard/components/NestStorage.svelte',
+  // The mock-C tile rebuild. FlockChrome.svelte matters most of the seven: it
+  // is where the pane's every button, pill, row and avatar colour is written,
+  // so one literal there would be one literal in every tile at once.
+  'webview/dashboard/components/FlockChrome.svelte',
+  'webview/dashboard/components/FlockTile.svelte',
+  'webview/dashboard/components/FlockSwitch.svelte',
+  'webview/dashboard/components/FlockIdentity.svelte',
+  'webview/dashboard/components/FlockIconPicker.svelte',
+  'webview/dashboard/components/FlockInvite.svelte',
+  'webview/dashboard/components/FlockElsewhere.svelte',
+  'webview/dashboard/components/FlockContactScope.svelte',
+  'webview/dashboard/components/FlockFolderList.svelte',
+  'webview/dashboard/components/FlockScopePills.svelte',
+  'webview/dashboard/components/FlockDeskTile.svelte',
+  'webview/dashboard/components/FlockInviteActions.svelte',
+  'webview/dashboard/panes/flockRows.ts',
+  'webview/chat/FrontDeskSection.svelte',
+  'webview/dashboard/components/FlockMailBubbles.svelte',
+  // The messenger wave's eight new files. All eight are held to the rule for
+  // the same reason the rest of the pane is: five themes ship, two of them
+  // dark, and a literal colour is invisible in at least one of them.
+  'webview/dashboard/components/FlockRail.svelte',
+  'webview/dashboard/components/FlockThread.svelte',
+  'webview/dashboard/components/FlockAllMail.svelte',
+  'webview/dashboard/components/FlockSide.svelte',
+  'webview/dashboard/components/FlockChip.svelte',
+  'webview/dashboard/components/FlockRowActions.svelte',
+  'webview/dashboard/panes/flockThread.ts',
+  'webview/dashboard/panes/flockChips.ts',
+  'webview/dashboard/panes/contactScope.ts',
+  // The context gauge's hover card (t-q9079b). Every colour in it is a part of
+  // the bar or a row's text, in five themes, two of them dark.
+  'webview/dashboard/components/ContextBreakdownCard.svelte',
+  'webview/chat/FrontDeskRows.svelte',
+  // t-q8zfo7 — the redesign port's new leaves. The react-bits references they
+  // came from carry FIXED palettes (the warm tooltip's browns, the swipe
+  // panel's #e5484d); those became --og-surface / --og-border / --og-text and
+  // --og-error / --og-error-text here, because the brown read as a foreign
+  // panel on the harbour theme and its cream text was near-invisible on ember.
+  'webview/chat/SidebarDock.svelte',
+  'webview/shared/SwipeRow.svelte',
+  'webview/shared/WarmTooltip.svelte',
+  'webview/sidebar/ConnectionCarousel.svelte',
+  'webview/dashboard/components/RepoBranchPicker.svelte',
+  // t-rylyhm - the composer's cache badge. Three states, three colours, and its
+  // whole job is being legible at a glance on every one of the five themes.
+  'webview/dashboard/components/CacheWarmDot.svelte',
+  'webview/dashboard/components/NestDesks.svelte',
+  'webview/dashboard/components/NestDeskTile.svelte',
+  'webview/dashboard/components/NestsConfig.svelte',
+  'webview/dashboard/components/NestJoinCheck.svelte', // t-sj32zl
+  'webview/dashboard/components/NestsSecurity.svelte',
+  'webview/dashboard/components/OnOffSwitch.svelte',
+  'webview/dashboard/components/SettingRow.svelte',
+  'webview/dashboard/panes/NestsPane.svelte',
+  'webview/dashboard/panes/SettingsPane.svelte',
+  // t-s9k0q6 - the sidebar Nest view leaves.
+  'webview/chat/ChatsHereNest.svelte',
+  'webview/chat/ChatsViewToggle.svelte',
+  'webview/chat/NestList.svelte',
+  'webview/chat/NestRow.svelte',
+  'webview/chat/NestReadOnlyGate.svelte',
+  'webview/chat/NestAwayBlock.svelte', // t-t7lfho
+  'webview/shared/NestGlyph.svelte',
+  'webview/chat/DeskChip.svelte',
+  'webview/chat/FromPill.svelte',
+  'webview/chat/ForkParentLine.svelte',
+  'webview/chat/ConnectionsHeader.svelte', // t-ttmo5w: done/failed colours must exist in all five themes
+  'webview/shared/HelpPopover.svelte', // t-vbj8xu
+];
+
+describe('theme discipline — every --og-* var the new panes name is one theme.css defines', () => {
+  const theme = readFileSync(path.join(pkgRoot, 'webview/shared/theme.css'), 'utf8');
+  const declared = new Set([...theme.matchAll(/(--og-[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+
+  it('theme.css really does declare a useful number of vars (guards the regex itself)', () => {
+    expect(declared.size).toBeGreaterThan(20);
+  });
+
+  for (const rel of VAR_CHECKED_FILES) {
+    it(`${rel} names no --og-* var that does not exist`, () => {
+      const src = readFileSync(path.join(pkgRoot, rel), 'utf8');
+      const used = [...src.matchAll(/var\((--og-[a-z0-9-]+)/g)].map((m) => m[1]);
+      const missing = [...new Set(used)].filter((name) => !declared.has(name));
+      expect(missing, `${rel} uses ${missing.join(', ')}, which theme.css does not define`).toEqual([]);
     });
   }
 });

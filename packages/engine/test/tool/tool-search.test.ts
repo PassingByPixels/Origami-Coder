@@ -1,11 +1,15 @@
 import { describe, expect, it as bunIt, afterEach } from "bun:test"
 import path from "path"
+import fsp from "fs/promises"
 import { Effect, Layer } from "effect"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { ToolSearch } from "@/tool/tool-search"
+import { ToolEnabled } from "@/tool/tool-enabled"
+import { SessionPromptCapture } from "@/session/prompt-capture"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { SessionTools } from "@/session/tools"
+import { LLMRequestPrep } from "@/session/llm/request"
 import { Session } from "@/session/session"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
@@ -112,6 +116,41 @@ describe("tool_search — which tools are deferred", () => {
     ])
   })
 
+  bunIt("never defers a core tool, however hard the config or a Def asks", () => {
+    // The failure this guards against is not hypothetical: `deferrable: true`
+    // is a one-line flag next to `description`, and `defer: ["*"]` is a
+    // plausible thing for a user chasing context to write. Either one reaching
+    // `read` or `edit` would leave the model a catalog line away from every
+    // action it can take, with no error to explain it.
+    const entries = [...ToolSearch.CORE].map((id) => entry(id, "builtin", true))
+
+    expect(ToolSearch.deferred(entries, ToolSearch.settings({ defer: ["*"] }))).toEqual([])
+    expect(ToolSearch.CORE.has("read")).toBe(true)
+    expect(ToolSearch.CORE.has("edit")).toBe(true)
+    expect(ToolSearch.CORE.has("bash")).toBe(true)
+    expect(ToolSearch.CORE.has("task")).toBe(true)
+    // The memory write path stays loaded: a `remember` must never need a search first.
+    expect(ToolSearch.CORE.has("remember")).toBe(true)
+  })
+
+  bunIt("does not extend the core exemption to an MCP tool of the same name", () => {
+    // CORE names BUILTIN ids. An MCP server is free to publish a tool called
+    // `read`, and that one is a stranger's tool, not the loop's own.
+    expect(ToolSearch.deferred([entry("read", "mcp")], ToolSearch.settings())).toEqual(["read"])
+  })
+
+  bunIt("defers the builtins whose Def files this change could not mark", () => {
+    // browser / webmcp_* / flock_* carry no `deferrable` flag - it is declared
+    // in tool-search.ts instead - so this is the only place that pins them.
+    const ids = ToolSearch.deferred(
+      [entry("browser", "builtin"), entry("webmcp_call", "builtin"), entry("flock_ask", "builtin")],
+      ToolSearch.settings(),
+    )
+
+    expect(ids).toEqual(["browser", "webmcp_call", "flock_ask"])
+    expect(ToolSearch.deferred([entry("browser", "builtin")], ToolSearch.settings({ always: ["browser"] }))).toEqual([])
+  })
+
   bunIt("never defers tool_search itself", () => {
     const ids = ToolSearch.deferred(
       [entry(ToolSearch.TOOL_SEARCH_TOOL, "builtin", true)],
@@ -119,6 +158,84 @@ describe("tool_search — which tools are deferred", () => {
     )
 
     expect(ids).toEqual([])
+  })
+
+  bunIt("keeps task_list and task_stop loaded when task is loaded, whatever defer says", () => {
+    // t-fdveov. Both carry `deferrable: true` on their own Def AND get named
+    // by a `defer` entry here - either alone already hid them before this
+    // fix; the companion rule has to beat both at once.
+    const overridden: string[] = []
+    const ids = ToolSearch.deferred(
+      [entry("task", "builtin"), entry("task_list", "builtin", true), entry("task_stop", "builtin", true)],
+      ToolSearch.settings({ defer: ["task_list", "task_stop"] }),
+      new Set(),
+      (found) => overridden.push(...found),
+    )
+
+    expect(ids).toEqual([])
+    expect(overridden.sort()).toEqual(["task_list", "task_stop"])
+  })
+
+  bunIt("defers task_list and task_stop by the normal rules when task itself is deferred or absent", () => {
+    // task is not in CORE by accident of this fixture - it is simply not one
+    // of `entries` here, the same as an agent whose ruleset denies it or a
+    // build that switched it off before the deferral decision runs.
+    const withoutTask = ToolSearch.deferred(
+      [entry("task_list", "builtin", true), entry("task_stop", "builtin", true)],
+      ToolSearch.settings(),
+    )
+    expect(withoutTask.sort()).toEqual(["task_list", "task_stop"])
+
+    // task present but neither companion carries `deferrable` and neither is
+    // named by `defer`: normal rules leave them loaded, same as any other
+    // builtin.
+    const notDeferrable = ToolSearch.deferred(
+      [entry("task", "builtin"), entry("task_list", "builtin"), entry("task_stop", "builtin")],
+      ToolSearch.settings(),
+    )
+    expect(notDeferrable).toEqual([])
+  })
+
+  bunIt("holds for a spawned child too: forSpawn's merged settings still cannot hide task's companions", () => {
+    // t-fdveov acceptance: "main agent and forSpawn". A native archetype ships
+    // its own default defer list (`Agent.Info.tool_search`), the user's
+    // `agent.<name>.tool_search` block overlays it, and `forSpawn` is the one
+    // function both session/tools.ts (the real spawn path) and
+    // acp/subagent-tools.ts (the ledger) merge them through. Build settings
+    // the same way a child with a native default AND a user override sees
+    // them, and confirm the companions still survive both layers naming them.
+    const native = { defer: ["task_list"] }
+    const userConfig = { defer: ["task_stop"] }
+    const childSettings = ToolSearch.forSpawn(ToolSearch.settings(), native, userConfig)
+    const overridden: string[] = []
+
+    const ids = ToolSearch.deferred(
+      [entry("task", "builtin"), entry("task_list", "builtin", true), entry("task_stop", "builtin", true)],
+      childSettings,
+      new Set(),
+      (found) => overridden.push(...found),
+    )
+
+    expect(ids).toEqual([])
+    expect(overridden.sort()).toEqual(["task_list", "task_stop"])
+  })
+
+  bunIt("does not fire the override callback when nothing was actually overridden", () => {
+    // task loaded, companions loaded too, but there is no `defer` entry and
+    // no `deferrable` flag to override - the callback must stay silent, or
+    // every session would log the INFO line whether anything happened or not.
+    let called = false
+    const ids = ToolSearch.deferred(
+      [entry("task", "builtin"), entry("task_list", "builtin"), entry("task_stop", "builtin")],
+      ToolSearch.settings(),
+      new Set(),
+      () => {
+        called = true
+      },
+    )
+
+    expect(ids).toEqual([])
+    expect(called).toBe(false)
   })
 
   bunIt("anchors wildcard patterns at both ends", () => {
@@ -157,6 +274,15 @@ describe("tool_search — ranking", () => {
 
   bunIt("returns nothing when no term matches", () => {
     expect(ToolSearch.rank(catalog, "kubernetes")).toEqual([])
+  })
+
+  bunIt("a two-letter word does not drag unrelated tools into the session", () => {
+    // "in" and "a" are substrings of half the catalog; with thirty deferred
+    // builtins one such query would permanently load five of them. Only the
+    // tool the nouns name comes back.
+    expect(ToolSearch.rank(catalog, "weather in a city").map((item) => item.id)).toEqual(["weather_current"])
+    // A short term is still an exact id match, so a tool really named that way stays findable.
+    expect(ToolSearch.score(candidate("db", "mcp", "Query the database", {}), [["db"]])).toBe(20)
   })
 
   bunIt("browses the whole catalog on an empty query", () => {
@@ -341,6 +467,18 @@ const PROCESSOR = {
   completeToolCall: () => Effect.void,
 } as unknown as Parameters<typeof SessionTools.resolve>[0]["processor"]
 
+/**
+ * A `ToolSearch` service that defers nothing - the shape of
+ * `experimental.tool_search: { enabled: false }`. Provided over the layer's own
+ * instance rather than built as a third layer stack: only the settings differ.
+ */
+const disabledSearch = ToolSearch.Service.of({
+  settings: () => Effect.succeed(ToolSearch.settings({ enabled: false })),
+  loaded: () => Effect.succeed(new Set<string>() as ReadonlySet<string>),
+  load: () => Effect.void,
+  clear: () => Effect.void,
+})
+
 const resolveOnce = (agent: Agent.Info) =>
   SessionTools.resolve({
     agent,
@@ -380,8 +518,43 @@ describe("SessionTools.resolve — deferral across steps", () => {
 
       const second = yield* resolveOnce(agent)
       expect(Object.keys(second)).toContain("weather_current")
-      // ...and the catalog is empty now, so the search tool retires with it.
-      expect(Object.keys(second)).not.toContain(ToolSearch.TOOL_SEARCH_TOOL)
+      // ...and it is off the catalog, so the second call does not pay for it
+      // twice. It used to assert the catalog was EMPTY and `tool_search` gone
+      // with it, which was true only while the MCP mock was the sole deferred
+      // tool in the build; widening deferral to the non-core builtins means
+      // roughly thirty of them are still listed here. The claim that mattered -
+      // a loaded tool leaves the catalog - is the one kept. `tool_search`
+      // retiring when NOTHING is left is pinned separately below.
+      expect(second[ToolSearch.TOOL_SEARCH_TOOL]!.description).not.toContain("weather_current")
+    }),
+  )
+
+  withMcp.instance("offers no tool_search at all when the feature is switched off", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const tools = yield* SessionTools.resolve({
+        agent: yield* agents.defaultInfo(),
+        model: MODEL,
+        session: { id: SessionID.make("ses_off"), permission: undefined } as unknown as Session.Info,
+        processor: PROCESSOR,
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {} as never,
+      })
+      expect(Object.keys(tools)).toContain(ToolSearch.TOOL_SEARCH_TOOL)
+
+      const off = yield* SessionTools.resolve({
+        agent: yield* agents.defaultInfo(),
+        model: MODEL,
+        session: { id: SessionID.make("ses_off2"), permission: undefined } as unknown as Session.Info,
+        processor: PROCESSOR,
+        bypassAgentCheck: false,
+        messages: [],
+        promptOps: {} as never,
+      }).pipe(Effect.provideService(ToolSearch.Service, disabledSearch))
+
+      expect(Object.keys(off)).toContain("browser")
+      expect(Object.keys(off)).not.toContain(ToolSearch.TOOL_SEARCH_TOOL)
     }),
   )
 
@@ -404,5 +577,308 @@ describe("SessionTools.resolve — deferral across steps", () => {
       expect(Object.keys(tools)).not.toContain("weather_current")
       expect(Object.keys(tools)).toContain(ToolSearch.TOOL_SEARCH_TOOL)
     }),
+  )
+})
+
+
+// ── The agent's cage, in the PROMPT and not only in execution ────────────────
+// Two halves have to hold together for item 2.2's per-agent trim: a denied tool
+// must not be DECLARED (`session/llm/request.ts` resolveTools) and must not be
+// a CATALOG LINE either (`session/tools.ts`). Both functions are driven here,
+// in that order, because either one alone would pass while the model still paid
+// for a tool it can never call.
+
+const alwaysBrowserConfig = TestConfig.layer({
+  directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".origami")])),
+  get: () => Effect.succeed({ experimental: { tool_search: { always: ["browser"] } } } as never),
+})
+
+const withAlwaysBrowser = testEffect(
+  LayerNode.compile(
+    LayerNode.group([
+      Config.node,
+      ToolRegistry.node,
+      Agent.node,
+      ToolSearch.node,
+      Truncate.node,
+      Session.node,
+      Permission.node,
+      Plugin.node,
+      MCP.node,
+      RuntimeFlags.node,
+    ]),
+    [
+      [Config.node, alwaysBrowserConfig],
+      [RuntimeFlags.node, RuntimeFlags.layer()],
+      [MCP.node, mcpMock],
+    ],
+  ),
+)
+
+const resolveFor = (agent: Agent.Info, id: string) =>
+  SessionTools.resolve({
+    agent,
+    model: MODEL,
+    session: { id: SessionID.make(id), permission: undefined } as unknown as Session.Info,
+    processor: PROCESSOR,
+    bypassAgentCheck: false,
+    messages: [],
+    promptOps: {} as never,
+  })
+
+/**
+ * INVARIANT: THE DEFERRED CATALOG NEVER HIDES A TOOL THE PROMPT NAMES.
+ *
+ * Deferral is a bet that the model does not need a tool's schema until it asks
+ * for it. The bet is off the moment the engine's OWN prompt text tells the
+ * model to use a tool by id: the instruction then points at something that is
+ * not in the tool list, and the model has no way to know the name it was just
+ * given is one search away. `skill` is the case that was caught by hand -
+ * `tool/skill.ts` carries a comment explaining why it is not deferrable, and
+ * the reason is exactly this - but nothing pinned it, and nothing pinned any
+ * of the others.
+ *
+ * WHAT THIS READS. The shipped prompt text: `src/session/prompt/*.txt`, which
+ * is what the system prompt is built from, plus the reminder strings in
+ * `session/reminders.ts` (comments stripped, since those are not sent). It
+ * pulls out the two forms that unambiguously NAME a tool rather than use an
+ * English word - a backticked identifier, and "the <id> tool" - and keeps the
+ * ones that are real tool ids in this build.
+ *
+ * WHAT IT ASSERTS. Every one of those is in the tool MAP handed to the model,
+ * not on the `tool_search` catalog. It runs against `SessionTools.resolve`
+ * rather than the pure deferral rules on purpose: `deferrable: true` is a flag
+ * on a Def, so a rules-level test would have to restate which tools carry it,
+ * and would then agree with the code by construction instead of checking it.
+ */
+describe("the prompt never names a tool the catalog hides", () => {
+  const PROMPT_DIR = path.join(import.meta.dir, "..", "..", "src", "session", "prompt")
+  const REMINDERS = path.join(import.meta.dir, "..", "..", "src", "session", "reminders.ts")
+
+  /** TS source minus its comment lines: only sent text should be scanned. */
+  function sentText(source: string): string {
+    return source
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trim()
+        return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*")
+      })
+      .join("\n")
+  }
+
+  /**
+   * Tool ids that are also ordinary English words. A bare occurrence of one of
+   * these in prose proves nothing ("read the file", "the goal is", "a task"),
+   * so they are only counted when they appear in a form that can ONLY be a tool
+   * id. Every other id is a coined name - `todowrite`, `webfetch`, `git_diff` -
+   * and a bare occurrence of one of those in the prompt is the model being told
+   * to use it. This list is about English, not about which tools are deferred.
+   */
+  const ALSO_ENGLISH = new Set([
+    "read", "write", "edit", "task", "question", "goal", "file", "process", "chart", "browser",
+    "skill", "dream", "execute", "grep", "glob", "list", "invalid", "remember", "screenshot",
+    "shell", "bash", "patch", "plan", "search", "todo", "fetch",
+  ])
+
+  function namedTools(corpus: string, universe: ReadonlySet<string>): Set<string> {
+    const found = new Set<string>()
+    for (const match of corpus.matchAll(/`([a-z][a-z0-9_]*)`/g)) found.add(match[1]!)
+    for (const match of corpus.matchAll(/\bthe ([a-z][a-z0-9_]*) tool\b/g)) found.add(match[1]!)
+    // A coined id standing alone in the prose is a tool name and nothing else.
+    for (const id of universe) {
+      if (ALSO_ENGLISH.has(id)) continue
+      if (new RegExp("\\b" + id + "\\b").test(corpus)) found.add(id)
+    }
+    return found
+  }
+
+
+  /** The ids on the `tool_search` catalog, read back off its description. */
+  function catalogIds(description: string): Set<string> {
+    const ids = new Set<string>()
+    for (const match of description.matchAll(/^- ([a-z_][a-z0-9_]*) \((builtin|mcp)\)/gm)) ids.add(match[1]!)
+    return ids
+  }
+
+  withMcp.instance("every tool id the shipped prompt text names is offered, not deferred", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const tools = yield* resolveOnce(yield* agents.defaultInfo())
+
+      const offered = new Set(Object.keys(tools))
+      const catalog = catalogIds(tools[ToolSearch.TOOL_SEARCH_TOOL]!.description!)
+      // The catalog has to be non-empty or this test proves nothing: with
+      // deferral off there is no way for it to fail.
+      expect(catalog.size).toBeGreaterThan(0)
+
+      const files = (yield* Effect.promise(() => fsp.readdir(PROMPT_DIR))).filter((name) => name.endsWith(".txt"))
+      expect(files.length).toBeGreaterThan(0)
+      const chunks: string[] = []
+      for (const name of files) chunks.push(yield* Effect.promise(() => fsp.readFile(path.join(PROMPT_DIR, name), "utf8")))
+      chunks.push(sentText(yield* Effect.promise(() => fsp.readFile(REMINDERS, "utf8"))))
+
+      const universe = new Set([...offered, ...catalog])
+      const named = [...namedTools(chunks.join("\n"), universe)].filter((id) => universe.has(id)).sort()
+
+      // A corpus that names no tool at all would pass vacuously.
+      expect(named.length).toBeGreaterThan(0)
+      expect(named.filter((id) => !offered.has(id))).toEqual([])
+    }),
+  )
+
+  withMcp.instance("...and the guard bites: a deferred tool named in that text would fail it", () =>
+    Effect.gen(function* () {
+      // The negative control. Without it the test above could pass because the
+      // extractor found nothing interesting rather than because the invariant
+      // holds. `browser` is deferred by default (tool-search.ts BUILTIN_DEFER),
+      // so if the prompt said "the browser tool" the check must go red.
+      const agents = yield* Agent.Service
+      const tools = yield* resolveOnce(yield* agents.defaultInfo())
+      const offered = new Set(Object.keys(tools))
+      const catalog = catalogIds(tools[ToolSearch.TOOL_SEARCH_TOOL]!.description!)
+
+      const pretend = [...namedTools("Use the browser tool to open a page.", new Set([...offered, ...catalog]))].filter((id) =>
+        new Set([...offered, ...catalog]).has(id),
+      )
+      expect(pretend).toEqual(["browser"])
+      expect(pretend.filter((id) => !offered.has(id))).toEqual(["browser"])
+    }),
+  )
+
+  withMcp.instance("the repair tool is dispatchable but never advertised", () =>
+    Effect.gen(function* () {
+      // BOTH HALVES. `invalid` is where `experimental_repairToolCall` sends a
+      // malformed call (session/llm.ts), so it must be in the map the AI SDK
+      // dispatches from - a repair target that is missing is a repair that
+      // cannot happen. It must equally never be sold to anyone as a capability:
+      // not on the `tool_search` catalog, not in the Tools pane, and not in the
+      // transparency capture's tool list.
+      const agents = yield* Agent.Service
+      const tools = yield* resolveOnce(yield* agents.defaultInfo())
+
+      for (const id of SessionPromptCapture.REPAIR_ONLY_TOOLS) {
+        expect(Object.keys(tools)).toContain(id)
+        expect(catalogIds(tools[ToolSearch.TOOL_SEARCH_TOOL]!.description!).has(id)).toBe(false)
+        // Not deferrable by any config, so the catalog can never gain it.
+        expect(ToolSearch.deferred([entry(id, "builtin", true)], ToolSearch.settings({ defer: ["*"] }))).toEqual([])
+        // ...and not switchable off by one either, or the repair path breaks.
+        expect(ToolEnabled.isOff(id, ["*"])).toBe(false)
+        expect(SessionPromptCapture.offeredToolNames(tools)).not.toContain(id)
+      }
+    }),
+  )
+})
+
+describe("the agent cage reaches the prompt", () => {
+  withMcp.instance("a denied tool is neither declared nor a catalog line", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const build = yield* agents.defaultInfo()
+      const explore = yield* agents.get("explore")
+
+      // `explore` is deny-by-default (agent/agent.ts:309-341): no browser.
+      // `build` is not, so it is the control that proves the catalog line
+      // exists at all and that its absence below is the cage, not a typo.
+      const buildTools = yield* resolveFor(build, "ses_cage_build")
+      const buildDeclared = LLMRequestPrep.resolveTools({
+        tools: buildTools as never,
+        agent: build,
+        permission: undefined,
+        user: {} as never,
+      })
+      expect(buildDeclared[ToolSearch.TOOL_SEARCH_TOOL]!.description).toContain("- browser (builtin)")
+      expect(Object.keys(buildDeclared)).not.toContain("browser")
+
+      const exploreTools = yield* resolveFor(explore, "ses_cage_explore")
+      const exploreDeclared = LLMRequestPrep.resolveTools({
+        tools: exploreTools as never,
+        agent: explore,
+        permission: undefined,
+        user: {} as never,
+      })
+      expect(Object.keys(exploreDeclared)).not.toContain("browser")
+      // The CATALOG LINE form, not the bare word: explore may reach `screenshot`
+      // now (t-f39xs2) and that tool's own description says "outside the
+      // browser", which a substring check reads as a leak that is not there.
+      expect(exploreDeclared[ToolSearch.TOOL_SEARCH_TOOL]!.description).not.toContain("- browser (builtin)")
+      // The tools it CAN run are still reachable: the catalog is not empty and
+      // `tool_search` survived a ruleset that denies everything it does not name.
+      expect(exploreDeclared[ToolSearch.TOOL_SEARCH_TOOL]!.description).toContain("- wiki_search (builtin)")
+    }),
+  )
+
+  withAlwaysBrowser.instance("`always` puts a deferred builtin back in full", () =>
+    Effect.gen(function* () {
+      const agents = yield* Agent.Service
+      const build = yield* agents.defaultInfo()
+      const tools = yield* resolveFor(build, "ses_always_browser")
+
+      expect(Object.keys(tools)).toContain("browser")
+      expect(tools[ToolSearch.TOOL_SEARCH_TOOL]!.description).not.toContain("- browser (builtin)")
+    }),
+  )
+})
+
+// ── t-fdveov, on the real resolve path ───────────────────────────────────────
+// The bug as UAT actually hit it: a `tool_search.defer` entry naming
+// `task_list` and `task_stop` on the OWNER'S OWN chat (the primary/build
+// agent, which the ticket's session was), where `task` itself is always
+// offered. Reproduced here through `SessionTools.resolve` rather than the
+// pure `deferred()` rules, so a regression that only showed up after `caged`
+// or `off` filtering runs would still be caught.
+const deferTaskCompanionsConfig = TestConfig.layer({
+  directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".origami")])),
+  get: () => Effect.succeed({ experimental: { tool_search: { defer: ["task_list", "task_stop"] } } } as never),
+})
+
+const withDeferredTaskCompanions = testEffect(
+  LayerNode.compile(
+    LayerNode.group([
+      Config.node,
+      ToolRegistry.node,
+      Agent.node,
+      ToolSearch.node,
+      Truncate.node,
+      Session.node,
+      Permission.node,
+      Plugin.node,
+      MCP.node,
+      RuntimeFlags.node,
+    ]),
+    [
+      [Config.node, deferTaskCompanionsConfig],
+      // task_list/task_stop are only registered at all behind this flag
+      // (tool/registry.ts:413) - off, the bug this ticket fixes cannot even
+      // reproduce because there is no tool to hide.
+      [RuntimeFlags.node, RuntimeFlags.layer({ experimentalBackgroundSubagents: true })],
+      [MCP.node, mcpMock],
+    ],
+  ),
+)
+
+describe("t-fdveov — task's companions survive the real resolve path", () => {
+  withDeferredTaskCompanions.instance(
+    "task_list and task_stop are in the tool map, not the catalog, on the owner's own chat",
+    () =>
+      Effect.gen(function* () {
+        const agents = yield* Agent.Service
+        const build = yield* agents.defaultInfo()
+        const tools = yield* SessionTools.resolve({
+          agent: build,
+          model: MODEL,
+          session: { id: SessionID.make("ses_task_companions"), permission: undefined } as unknown as Session.Info,
+          processor: PROCESSOR,
+          bypassAgentCheck: false,
+          messages: [],
+          promptOps: {} as never,
+        })
+
+        expect(Object.keys(tools)).toContain("task")
+        expect(Object.keys(tools)).toContain("task_list")
+        expect(Object.keys(tools)).toContain("task_stop")
+        const catalog = tools[ToolSearch.TOOL_SEARCH_TOOL]?.description ?? ""
+        expect(catalog).not.toContain("- task_list (builtin)")
+        expect(catalog).not.toContain("- task_stop (builtin)")
+      }),
   )
 })

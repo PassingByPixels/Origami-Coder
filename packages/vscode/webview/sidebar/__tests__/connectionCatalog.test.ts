@@ -62,6 +62,36 @@ describe('the Labs entries pair each lab with its own OAuth twin', () => {
   });
 });
 
+// t-tsw90t: the owner could not find the opt-in setting and asked for it to
+// live in the + Add flow instead, beside the existing Anthropic entry.
+describe('Claude (subscription, experimental) sits in the + Add list, beside Claude (API key)', () => {
+  it('is a real catalog entry, directly after anthropic, with no fields', () => {
+    const ids = catalogIds();
+    const i = ids.indexOf('anthropic');
+    expect(ids[i + 1]).toBe('claude-subscription');
+    const entry = SETUP_PROVIDERS.find((p) => p.id === 'claude-subscription')!;
+    expect(entry.label).toBe('Claude (subscription, experimental)');
+    expect(entry.kind).toBe('claude-subscription');
+    expect(entry.label).not.toMatch(/Claude Code/);
+  });
+
+  it('classifies into Labs, next to the rest of Anthropic’s entries', () => {
+    expect(classifySection({ id: 'claude-subscription' })).toBe('labs');
+  });
+
+  it('picking it posts claudeSubscriptionAdd and closes the picker — no setupProvider write, no form', async () => {
+    render(ControlStrip);
+    await fireEvent.click(screen.getByRole('button', { name: /Add provider/ }));
+    await fireEvent.click(screen.getByRole('button', { name: /^Labs/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Claude (subscription, experimental)' }));
+
+    expect(posted.some((m) => m['type'] === 'claudeSubscriptionAdd')).toBe(true);
+    expect(posted.some((m) => m['type'] === 'setupProvider')).toBe(false);
+    // The picker fold closed rather than showing a Connect form for it.
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+  });
+});
+
 // The Claude entry, 0.4.60. It was there before under the company's name
 // ("Anthropic (API)", model claude-sonnet-4-5) and read as a lab nobody had
 // heard of next to "OpenAI" and "Grok" — the product people actually ask for is

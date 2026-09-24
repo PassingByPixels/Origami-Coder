@@ -1,7 +1,4 @@
-// Agent Manager - rows.ts (S6b): the record+runtime -> AgentRow projection,
-// extracted from manager.ts to keep it under its line cap. Pure over (state
-// file, runtime map, host.sessionAlive), so it stays unit-testable and the
-// owner just calls buildRows in its broadcast.
+// The record+runtime -> AgentRow projection, extracted from manager.ts. Pure, so it stays testable.
 
 import { loadState } from './state';
 import type { AgentRunState, Runtime, ManagerHost } from './manager';
@@ -23,19 +20,16 @@ export interface AgentRow {
   ahead: number;
   adds: number;
   dels: number;
-  /** The stored task of a queued record ('' otherwise) - the card's tooltip and
-   *  a card-filter target. */
+  /** The stored task of a queued record ('' otherwise) — the card's tooltip and filter target. */
   queuedPrompt: string;
   mergedAt: number; // ms of a CLEAN apply-to-main (0 = not merged); >0 retires the card to Merged
   /** Fan-out race grouping (S5): siblings of one race share this id; '' = none. */
   groupId: string;
-  /** S7: a pending engine QUESTION with no mounted view to answer it (null = none).
-   *  Projected only while the row is IN PROGRESS, so a settled run never shows a
-   *  stale chip and the status-bar aggregate can trust it directly. */
+  /** A pending engine QUESTION with no mounted view, projected only while the row is in progress,
+   *  so a settled run shows no stale chip. */
   needsYou: { kind: 'question'; preview: string } | null;
-  /** Folds board: the ticket this fold came from ('' = a plain fold), its title
-   *  resolved from the list passed IN (so this stays pure), and the live activity
-   *  line - working rows only, so a settled row can't show a stale "doing now". */
+  /** Folds board: the ticket this fold came from, its title resolved from the passed-in list, and
+   *  the live activity line. */
   ticketId: string;
   ticketTitle: string;
   activity: string;
@@ -46,9 +40,8 @@ export function buildRows(root: string, runtime: Map<string, Runtime>, host: Man
   return loadState(root).worktrees.map((rec) => {
     const rt = runtime.get(rec.id) ?? { state: 'detached' as AgentRunState };
     const alive = rt.sessionId ? host.sessionAlive(rt.sessionId) : false;
-    // A WORKING row whose engine session has died mid-run is a real failure ->
-    // surface it red, never as a benign 'detached'. An IDLE row whose session
-    // is gone STAYS idle (it finished; hasSession false simply hides Chat).
+    // A WORKING row whose session died mid-run is a real failure, surfaced red; an IDLE row
+    // whose session is gone stays idle since it finished.
     const diedMidRun = rt.state === 'working' && !alive;
     const state: AgentRunState = diedMidRun ? 'error' : rt.state;
     return {

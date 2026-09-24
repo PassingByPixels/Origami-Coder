@@ -14,9 +14,15 @@
 
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import InputBar from './InputBar.svelte';
-import { PROVIDER_PROBING } from './modelBanner';
-import { approveButtonState } from './approveButtonState';
+
+const thisDir = path.dirname(fileURLToPath(import.meta.url));
+import { NO_CONNECTIONS, NO_CONNECTIONS_TEXT, PROVIDER_PROBING } from './modelBanner';
+import { actionsRowOptions, approveButtonState } from './approveButtonState';
+import { FUSE_MS } from './contextFuse';
 
 const SID = 'sess-ctx-1';
 const post = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent('message', { data }));
@@ -55,7 +61,9 @@ describe('InputBar — the action row belongs to THIS chat and never disappears'
   it('renders the full row in the normal mode', () => {
     const { container } = mount(() => {});
     expect(actionRow(container)).not.toBeNull();
-    expect(labels(container)).toEqual(expect.arrayContaining(['/', 'Plan', 'Approve']));
+    // t-obf3jw: the merged button starts on "Access: Bypass" — Browser
+    // bypass is now the default — not plain "Approve".
+    expect(labels(container)).toEqual(expect.arrayContaining(['/', 'Plan', 'Access: Bypass']));
     for (const gone of GONE) expect(labels(container).join(' ')).not.toContain(gone);
   });
 
@@ -64,10 +72,11 @@ describe('InputBar — the action row belongs to THIS chat and never disappears'
     post({ type: 'modeUpdate', sessionId: SID, mode: 'plan' });
     await new Promise((r) => setTimeout(r, 0));
     // The toggle reflects it — and everything else is still reachable. The row
-    // is FOUR buttons now: `/`, Plan, Approve and Vision (Effort is hidden
-    // without variants, Export without an onExport). Temp was removed (the
-    // sampling control was rarely used and added clutter). Asserted exactly,
-    // because ">= N" would have gone on passing through both removals.
+    // is FOUR buttons now: `/`, Plan, Access: Bypass and Vision (Effort is
+    // hidden without variants, Export without an onExport). Temp was removed
+    // (the sampling control was rarely used and added clutter). Asserted
+    // exactly, because ">= N" would have gone on passing through both
+    // removals.
     // t-kgtr6c added the Vision button (round 2 called it "Eye" and stood a
     // separate read-out chip beside it; round 3 folded the two into this one),
     // and it stays in PLAN mode on purpose: a plan-mode chat still reads
@@ -78,7 +87,9 @@ describe('InputBar — the action row belongs to THIS chat and never disappears'
     // fifth button — the merged trigger itself stays enabled in plan mode for
     // the same reason (Browser must stay reachable), and it wears whichever
     // label (approveButtonState.ts) is correct for both settings at once.
-    expect(labels(container)).toEqual(['/', 'Plan: on', 'Approve', 'Vision']);
+    // t-obf3jw: Browser bypass is now the default, so that label is
+    // "Access: Bypass" rather than "Approve" even with no click at all.
+    expect(labels(container)).toEqual(['/', 'Plan: on', 'Access: Bypass', 'Vision']);
     expect(actionRow(container)!.querySelectorAll('button').length).toBe(4);
   });
 
@@ -93,17 +104,41 @@ describe('InputBar — the action row belongs to THIS chat and never disappears'
 });
 
 describe('InputBar — the compact affordance', () => {
-  it('UNKNOWN window: still offers a clickable compact control, and clicking it compacts', async () => {
+  // t-okz748 — the gauge no longer compacts on ONE click: that click arms a
+  // FUSE_MS fuse (the cancel window), and onCompact fires only once the fuse
+  // burns out. Fake timers stand in for the real setTimeout the component
+  // schedules.
+  it('UNKNOWN window: still offers a clickable compact control; a click arms the fuse, which then compacts', async () => {
+    vi.useFakeTimers();
     const onCompact = vi.fn();
     const { container } = mount(onCompact);
     // Real tokens, no window (contextWindow 0 = the server reported none).
     post({ type: 'contextUpdate', sessionId: SID, turns: 3, contextWindow: 0, contextUsed: 24000, contextTotal: 0 });
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.advanceTimersByTimeAsync(0);
     const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement | null;
     expect(gauge).not.toBeNull();
     expect(gauge!.getAttribute('role')).toBe('button');
     await fireEvent.click(gauge!);
+    expect(onCompact).not.toHaveBeenCalled(); // armed, not fired yet
+    expect(gauge!.className).toMatch(/armed/);
+    await vi.advanceTimersByTimeAsync(FUSE_MS);
     expect(onCompact).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('UNKNOWN window: a second click during the fuse cancels it — no compaction', async () => {
+    vi.useFakeTimers();
+    const onCompact = vi.fn();
+    const { container } = mount(onCompact);
+    post({ type: 'contextUpdate', sessionId: SID, turns: 3, contextWindow: 0, contextUsed: 24000, contextTotal: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
+    await fireEvent.click(gauge); // arm
+    await fireEvent.click(gauge); // cancel
+    expect(gauge.className).not.toMatch(/armed/);
+    await vi.advanceTimersByTimeAsync(FUSE_MS);
+    expect(onCompact).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('UNKNOWN window: keeps the honest ⚠ face and invents NO percentage or denominator', async () => {
@@ -118,28 +153,34 @@ describe('InputBar — the compact affordance', () => {
     expect(gauge.className).toMatch(/ctx-unknown/);       // still styled as the unknown state
   });
 
-  it('UNKNOWN window: the keyboard path compacts too (it is a real control, not a div)', async () => {
+  it('UNKNOWN window: the keyboard path arms and burns the fuse too (it is a real control, not a div)', async () => {
+    vi.useFakeTimers();
     const onCompact = vi.fn();
     const { container } = mount(onCompact);
     post({ type: 'contextUpdate', sessionId: SID, turns: 1, contextWindow: 0, contextUsed: 900, contextTotal: 0 });
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.advanceTimersByTimeAsync(0);
     const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
     expect(gauge.getAttribute('tabindex')).toBe('0');
     await fireEvent.keyDown(gauge, { key: 'Enter' });
+    await vi.advanceTimersByTimeAsync(FUSE_MS);
     expect(onCompact).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
-  it('KNOWN window: unchanged — real percentage, real denominator, still clickable', async () => {
+  it('KNOWN window: unchanged — real percentage, real denominator, still arms+burns to compact', async () => {
+    vi.useFakeTimers();
     const onCompact = vi.fn();
     const { container } = mount(onCompact);
     post({ type: 'contextUpdate', sessionId: SID, turns: 2, contextWindow: 64000, contextUsed: 32000, contextTotal: 0 });
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.advanceTimersByTimeAsync(0);
     const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
     expect(gauge.textContent).toMatch(/50%/);
     expect(gauge.querySelector('.gauge-svg')).not.toBeNull();
     expect(gauge.className).not.toMatch(/ctx-unknown/);
     await fireEvent.click(gauge);
+    await vi.advanceTimersByTimeAsync(FUSE_MS);
     expect(onCompact).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 
   it('NO tokens used yet: no compact control at all (nothing to compact)', async () => {
@@ -164,8 +205,23 @@ describe('InputBar — the gauge tooltip names its OWN source honestly', () => {
     post({ type: 'contextUpdate', sessionId: SID, turns: 1, contextWindow: 64000, contextUsed: 32000, contextTotal: 0 });
     await new Promise((r) => setTimeout(r, 0));
     const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
-    expect(gauge.title).toContain("this chat's loaded context window");
-    expect(gauge.title).not.toContain('catalog max');
+    expect(gauge.dataset.tip).toContain("this chat's loaded context window");
+    expect(gauge.dataset.tip).not.toContain('catalog max');
+  });
+
+  // t-ffziaz. One vocabulary with the sub-agent rows: the pill's figure is ONE
+  // step's context, the drawer row's first figure is a SUM over a child's steps.
+  // The two were read as the same kind of number ("38k versus 19k"), so each
+  // surface now says which it is.
+  it('names its figure as a LAST-STEP context, never as a total for the chat', async () => {
+    const { container } = mount(vi.fn());
+    post({ type: 'contextUpdate', sessionId: SID, turns: 4, contextWindow: 64000, contextUsed: 32000, contextTotal: 0 });
+    await new Promise((r) => setTimeout(r, 0));
+    const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
+    expect(gauge.dataset.tip).toContain('32k context (last step)');
+    expect(gauge.dataset.tip).toContain('not a total for the chat');
+    // The compact affordances the wording sits beside are untouched.
+    expect(gauge.dataset.tip).toContain('click to compact');
   });
 
   it('a catalog-fallback window (contextWindow 0, contextTotal from usageUpdate) says "(catalog max)" instead', async () => {
@@ -175,11 +231,11 @@ describe('InputBar — the gauge tooltip names its OWN source honestly', () => {
     post({ type: 'usageUpdate', sessionId: SID, used: 32000, size: 64000 });
     await new Promise((r) => setTimeout(r, 0));
     const gauge = container.querySelector('.ctx-gauge-btn') as HTMLElement;
-    expect(gauge.title).toContain("this chat's context window (catalog max)");
-    expect(gauge.title).not.toContain('loaded context window');
+    expect(gauge.dataset.tip).toContain("this chat's context window (catalog max)");
+    expect(gauge.dataset.tip).not.toContain('loaded context window');
     // The affordance itself is untouched by the wording change.
-    expect(gauge.title).toContain('click to compact');
-    expect(gauge.title).toContain('right-click to set a custom auto-compact threshold');
+    expect(gauge.dataset.tip).toContain('click to compact');
+    expect(gauge.dataset.tip).toContain('right-click to set a custom auto-compact threshold');
   });
 });
 
@@ -240,17 +296,17 @@ describe('InputBar — compaction threshold menu', () => {
 
   it('a confirming compactionThresholdUpdate for THIS session updates the tooltip', async () => {
     const { gauge } = await openGauge();
-    expect(gauge.title).not.toContain('currently');
+    expect(gauge.dataset.tip).not.toContain('currently');
     post({ type: 'compactionThresholdUpdate', sessionId: SID, value: '70%' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(gauge.title).toContain('currently 70%');
+    expect(gauge.dataset.tip).toContain('currently 70%');
   });
 
   it('a compactionThresholdUpdate for a DIFFERENT session changes nothing here', async () => {
     const { gauge } = await openGauge();
     post({ type: 'compactionThresholdUpdate', sessionId: 'some-other-chat', value: '70%' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(gauge.title).not.toContain('currently');
+    expect(gauge.dataset.tip).not.toContain('currently');
   });
 });
 
@@ -282,6 +338,77 @@ describe('InputBar — the chat keeps its own slash rules', () => {
   });
 });
 
+// t-oipmfz: a registered command named anywhere in the body, not only at the
+// start. `/delegate` is not one of InputBar's own defaults, so these mounts
+// pass it in via `commands` the way a real session's `availableCommands`
+// would — the registry a mid-body token is checked against.
+describe('InputBar — a slash command named mid-body', () => {
+  const withDelegate = () => render(InputBar, {
+    props: {
+      inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+      sessionId: SID, onCompact: () => {}, onSend: () => {}, onCancel: () => {},
+      commands: [{ name: '/delegate', description: 'Delegate this', category: 'Other' }],
+    },
+  });
+  const slashSent = () => globalThis.__vscodeApiMock.postMessage.mock.calls
+    .map((c) => c[0] as { type: string; command?: string; args?: string })
+    .filter((m) => m.type === 'slashCommand');
+
+  it('runs the command and hands it the surrounding text as args', async () => {
+    const { container } = withDelegate();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'summarise this and then /delegate' } });
+    await fireEvent.keyDown(box, { key: 'Enter' });
+    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'delegate', args: 'summarise this and then' }]);
+  });
+
+  it('leaves an unregistered /word as literal text — sent as a normal prompt', async () => {
+    const onSend = vi.fn();
+    const { container } = render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+        sessionId: SID, onCompact: () => {}, onSend, onCancel: () => {},
+      },
+    });
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'meet me at the /notacommand later' } });
+    await fireEvent.keyDown(box, { key: 'Enter' });
+    expect(slashSent()).toEqual([]);
+    expect(onSend).toHaveBeenCalledWith('meet me at the /notacommand later');
+  });
+
+  it('only the FIRST of two commands runs — the second stays literal in the args', async () => {
+    const { container } = render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+        sessionId: SID, onCompact: () => {}, onSend: () => {}, onCancel: () => {},
+        commands: [
+          { name: '/delegate', description: 'Delegate this', category: 'Other' },
+          { name: '/spend', description: 'Show cost', category: 'Info' },
+        ],
+      },
+    });
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'please /delegate this and also /spend the log' } });
+    await fireEvent.keyDown(box, { key: 'Enter' });
+    expect(slashSent()).toEqual([
+      { type: 'slashCommand', command: 'delegate', args: 'please this and also /spend the log' },
+    ]);
+  });
+
+  it('the existing leading-slash path is untouched — still fires unconditionally', async () => {
+    const { container } = mount(() => {});
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: '/deep-plan ' } });
+    await fireEvent.keyDown(box, { key: 'Enter' });
+    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'deep-plan', args: '' }]);
+  });
+});
+
 // The SAME composer serves the collab pane, stripped: everything the chat row
 // carries is about an engine session, and a collab has none. What must survive
 // the stripping is the box, Send, the `/` palette and Export — a composer that
@@ -302,7 +429,7 @@ describe('InputBar — bare mode (the collab composer)', () => {
   it('keeps the box, Send, `/` and Export — and nothing that speaks to a session', () => {
     const { container } = bare({ onExport: () => {}, canExport: true });
     expect(container.querySelector('textarea.input')).not.toBeNull();
-    expect(container.querySelector('.btn.send')).not.toBeNull();
+    expect(container.querySelector('.action-btn')).not.toBeNull();
 
     const labels = Array.from(container.querySelectorAll('.mode-row button')).map((b) => b.textContent?.trim() ?? '');
     expect(labels).toHaveLength(2);
@@ -314,7 +441,10 @@ describe('InputBar — bare mode (the collab composer)', () => {
     // button's OWN class — `.vision-indicator` was the round-2 read-out chip,
     // and once that was deleted the old assertion could never fail again.
     expect(container.querySelector('.model-bar')).toBeNull();
+    // There is no Cancel button anywhere any more: Send and Stop are one
+    // control, and a bare composer's never becomes a Stop (change 25).
     expect(container.querySelector('.btn.cancel')).toBeNull();
+    expect((container.querySelector('.action-btn') as HTMLElement).dataset.busy).toBeUndefined();
     expect(container.querySelector('.vision-btn')).toBeNull();
     expect(container.querySelector('.model-warning')).toBeNull();
   });
@@ -338,7 +468,7 @@ describe('InputBar — bare mode (the collab composer)', () => {
     const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
     expect(box.disabled).toBe(true);
     expect(box.placeholder).toBe('This collab is archived');
-    expect((container.querySelector('.btn.send') as HTMLButtonElement).disabled).toBe(true);
+    expect((container.querySelector('.action-btn') as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
@@ -789,7 +919,7 @@ describe('InputBar — the cost badge is live and rolls sub-agents up', () => {
 describe('InputBar — the Approve toggle follows an externally-set mode', () => {
   const approveBtn = (c: HTMLElement) =>
     Array.from(c.querySelectorAll('.mode-row button'))
-      .find((b) => /^(Approve|Auto-approve|Bypass)$/.test(b.textContent?.trim() ?? '')) as HTMLButtonElement;
+      .find((b) => /^(Approve|Auto-approve|Bypass|Access: Bypass|Bypass: All)$/.test(b.textContent?.trim() ?? '')) as HTMLButtonElement;
 
   const mount = () => render(InputBar, {
     props: {
@@ -798,14 +928,18 @@ describe('InputBar — the Approve toggle follows an externally-set mode', () =>
     },
   });
 
-  it('starts on Approve and switches to Bypass when the host echoes it', async () => {
+  // t-obf3jw: Browser bypass is now the default, so the button starts on
+  // "Access: Bypass" (the Browser axis alone), not plain "Approve" — and
+  // arming Actions bypass too reaches the wider "Bypass: All" state.
+  it('starts on Access: Bypass (the new Browser default) and reaches Bypass: All when Actions also goes bypass', async () => {
     const { container } = mount();
-    expect(approveBtn(container).textContent?.trim()).toBe('Approve');
+    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass');
 
     post({ type: 'approveUpdate', sessionId: SID, mode: 'bypass' });
-    await waitFor(() => expect(approveBtn(container).textContent?.trim()).toBe('Bypass'));
-    // The badge above the composer mirrors it too — one of the two lagging
-    // would be a composer disagreeing with itself about what happens next.
+    await waitFor(() => expect(approveBtn(container).textContent?.trim()).toBe('Bypass: All'));
+    // The badge above the composer mirrors Actions' own state (never the
+    // Browser axis) — one of the two lagging would be a composer disagreeing
+    // with itself about what happens next.
     expect(container.querySelector('.mode-badge.mode-bypass')?.textContent).toBe('BYPASS');
   });
 
@@ -815,25 +949,19 @@ describe('InputBar — the Approve toggle follows an externally-set mode', () =>
     const { container } = mount();
     post({ type: 'approveUpdate', sessionId: 'some-other-chat', mode: 'bypass' });
     await new Promise((r) => setTimeout(r, 0));
-    expect(approveBtn(container).textContent?.trim()).toBe('Approve');
+    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass');
   });
 });
 
 // t-kgsupy round 4 — the Approve gauge and the Browser control MERGED into
-// ONE trigger + ONE popover with TWO labeled rows (round 3 shipped these as
-// two separate buttons/popovers; see git history for that shape). The button
-// itself can now wear any of five labels depending on WHICH setting is
-// riskier (approveButtonState.ts), so the finder matches all of them. Row
-// selectors key on ApprovePopover's `.approve-row-{actions,browser}` class —
-// scoped, not a global `.approve-notch` index, because opening the ONE
-// popover now renders BOTH rows' notches into the same DOM at once.
-// Owner UAT: the merged control is named ACCESS, not Browser. It holds BOTH
-// access settings — this chat's own Actions preset and VS Code's global
-// browser/tool auto-approve — so a label saying "Browser" named the smaller
-// half of what the button controls, and read as "this only affects the
-// browser". The rename is the USER-VISIBLE strings only; `setApproveMode`,
-// `setBrowserAutoApprove` and the popover's own "Browser:" ROW (which really
-// is just VS Code's global setting) all keep their names.
+// ONE trigger + ONE popover (round 3 shipped these as two separate
+// buttons/popovers; see git history for that shape). The button itself can
+// still wear any of five labels depending on WHICH setting is riskier
+// (approveButtonState.ts), so the finder matches all of them.
+// t-obf3jw: the popover's Browser row is REMOVED — bypass-browser is now the
+// DEFAULT with no setup step. `browserApproveMode` and `setApproveMode` still
+// feed the badge/Actions row respectively; only the row/click UI is gone.
+// Row selectors key on ApprovePopover's `.approve-row-actions` class.
 describe('approveButtonState — the button names itself Access, never Browser', () => {
   it('calls the browser-only bypass "Access: Bypass"', () => {
     expect(approveButtonState('default', 'bypass').label).toBe('Access: Bypass');
@@ -857,9 +985,6 @@ describe('InputBar — the merged Access popover', () => {
   const actionsNotches = (c: HTMLElement) => c.querySelectorAll('.approve-row-actions .approve-notch');
   const actionsLabels = (c: HTMLElement) =>
     Array.from(c.querySelectorAll('.approve-row-actions .approve-label')).map((l) => l.textContent?.trim());
-  const browserNotches = (c: HTMLElement) => c.querySelectorAll('.approve-row-browser .approve-notch');
-  const browserLabels = (c: HTMLElement) =>
-    Array.from(c.querySelectorAll('.approve-row-browser .approve-label')).map((l) => l.textContent?.trim());
 
   const mount = () => render(InputBar, {
     props: {
@@ -880,14 +1005,14 @@ describe('InputBar — the merged Access popover', () => {
   });
 
   // The tooltip is the only place the control explains itself, so it carries
-  // the ACCESS name too — and still has to name BOTH rows, since the whole
-  // point of the rename is that the button is not the browser one.
-  it('the trigger tooltip calls the control Access and still names both rows', () => {
+  // the ACCESS name and still says what Browser bypass now defaults to, even
+  // with no row of its own any more (t-obf3jw).
+  it('the trigger tooltip calls the control Access and still explains Browser bypass', () => {
     const { container } = mount();
-    const title = approveBtn(container).getAttribute('title') ?? '';
+    const title = approveBtn(container).getAttribute('data-tip') ?? '';
     expect(title).toContain('Access settings');
     expect(title).toContain('Actions');
-    expect(title).toContain('Browser');
+    expect(title).toContain('bypassed by default');
   });
 
   it('asks the host for the live Browser setting on mount, before anything is clicked', async () => {
@@ -896,19 +1021,26 @@ describe('InputBar — the merged Access popover', () => {
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'requestBrowserAutoApprove' });
   });
 
-  // Round 5 (t-kgsupy): the header no longer spells out the option names —
-  // they already show under the dots (actionsLabels/browserLabels below) — so
-  // the row title shrinks to just "Actions:" / "Browser:".
-  it('opens ONE popover with both rows, titled just "Actions:" and "Browser:"', async () => {
+  // t-obf3jw: the Browser row is REMOVED — bypass-browser is now the default
+  // with no setup step, so the popover holds only the Actions row.
+  it('opens ONE popover with only the Actions row — no Browser row/setup step', async () => {
     const { container } = mount();
     await fireEvent.click(approveBtn(container));
     await settle();
     expect(container.querySelector('.approve-pop')).not.toBeNull();
-    expect(container.querySelectorAll('.approve-row').length).toBe(2);
+    expect(container.querySelectorAll('.approve-row').length).toBe(1);
     expect(container.querySelector('.approve-row-actions .approve-row-title')?.textContent?.trim()).toBe('Actions:');
-    expect(container.querySelector('.approve-row-browser .approve-row-title')?.textContent?.trim()).toBe('Browser:');
+    expect(container.querySelector('.approve-row-browser')).toBeNull();
     expect(actionsLabels(container)).toEqual(['Ask', 'Auto', 'Bypass']);
-    expect(browserLabels(container)).toEqual(['Ask', 'Bypass']);
+  });
+
+  // t-obf3jw acceptance: bypass-browser is the default with no user setup —
+  // before any host reply lands, the composer already assumes bypass rather
+  // than showing 'ask' and waiting on a click.
+  it('defaults to Browser bypass before any browserAutoApproveUpdate reply lands', async () => {
+    const { container } = mount();
+    await settle();
+    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass');
   });
 
   it('re-requests the live Browser value EVERY time the popover opens — never trusts a stale local echo', async () => {
@@ -941,39 +1073,20 @@ describe('InputBar — the merged Access popover', () => {
     expect(container.querySelector('.approve-pop')).not.toBeNull();
   });
 
-  it('the Browser row drives setBrowserAutoApprove only (true/false), stays open, and never touches Actions', async () => {
-    const { container } = mount();
-    await fireEvent.click(approveBtn(container));
-    await settle();
-    await fireEvent.click(browserNotches(container)[1]); // Bypass
-    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'setBrowserAutoApprove', value: true });
-    await fireEvent.click(browserNotches(container)[0]); // Ask
-    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'setBrowserAutoApprove', value: false });
-    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'setApproveMode' })
-    );
-    expect(container.querySelector('.approve-pop')).not.toBeNull();
-  });
-
-  it('the active dot in each row reflects its OWN setting, independently of the other row', async () => {
+  it('the active dot in the Actions row reflects its own setting', async () => {
     const { container } = mount();
     post({ type: 'approveUpdate', sessionId: SID, mode: 'bypass' }); // Actions -> Bypass
-    post({ type: 'browserAutoApproveUpdate', value: false }); // Browser stays Ask
     await settle();
     await fireEvent.click(approveBtn(container));
     await settle();
     expect(actionsNotches(container)[2].classList.contains('active')).toBe(true); // Actions: Bypass
     expect(actionsNotches(container)[0].classList.contains('active')).toBe(false);
-    expect(browserNotches(container)[0].classList.contains('active')).toBe(true); // Browser: Ask
-    expect(browserNotches(container)[1].classList.contains('active')).toBe(false);
   });
 
-  // Round 4's own requirement: the Actions row is a per-session permission
-  // (nothing to auto-approve in plan mode), but Browser is VS Code's global
-  // setting and must stay reachable — so plan mode dims the ROW, not the
-  // trigger, unlike round 3 where the whole (then Actions-only) button
-  // disabled itself.
-  it('plan mode disables the Actions row notches but leaves the trigger and the Browser row clickable', async () => {
+  // Round 4's own requirement, still true with the Browser row gone: the
+  // Actions row is a per-session permission (nothing to auto-approve in plan
+  // mode), so plan mode dims the ROW, not the trigger.
+  it('plan mode disables the Actions row notches but leaves the trigger clickable', async () => {
     const { container } = mount();
     post({ type: 'modeUpdate', sessionId: SID, mode: 'plan' });
     await settle();
@@ -981,7 +1094,6 @@ describe('InputBar — the merged Access popover', () => {
     await fireEvent.click(approveBtn(container));
     await settle();
     for (const n of Array.from(actionsNotches(container))) expect((n as HTMLButtonElement).disabled).toBe(true);
-    for (const n of Array.from(browserNotches(container))) expect((n as HTMLButtonElement).disabled).toBeFalsy();
   });
 
   it('an external browserAutoApproveUpdate(true) lights the MERGED button — the setting can change outside Origami', async () => {
@@ -1008,31 +1120,18 @@ describe('InputBar — the merged Access popover', () => {
     expect(approveBtn(container).classList.contains('bypass')).toBe(true);
   });
 
-  // Fix round (verifier-confirmed, carried into round 4): the Browser row's
-  // notch flips OPTIMISTICALLY on click, before the host's config write
-  // resolves. This drives the failure all the way through the MERGED button
-  // and checks what it is left displaying. The dangerous direction: Bypass
-  // was on, the user clicks Ask to turn it off, the write throws — the
-  // button must NOT settle on the optimistic "safe-looking" label; it must
-  // revert once the host's corrective browserAutoApproveUpdate arrives.
-  it('a failed Browser write reverts the optimistic click on the merged button once the host corrects it', async () => {
+  // t-obf3jw: the Browser row (and its optimistic click) is gone, but the
+  // badge must still track a host correction arriving with no click at all —
+  // e.g. the user flips VS Code's own setting outside Origami.
+  it('a browserAutoApproveUpdate the user never clicked for still updates the merged button', async () => {
     const { container } = mount();
-    post({ type: 'browserAutoApproveUpdate', value: true }); // starts on Bypass
     await settle();
-    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass');
+    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass'); // default
 
-    await fireEvent.click(approveBtn(container)); // open popover
+    post({ type: 'browserAutoApproveUpdate', value: false }); // explicit OFF switch, set outside Origami
     await settle();
-    await fireEvent.click(browserNotches(container)[0]); // click Ask
-    // optimistic: the merged button already shows the guess, before any host reply
     expect(approveBtn(container).textContent?.trim()).toBe('Approve');
     expect(approveBtn(container).classList.contains('bypass')).toBe(false);
-
-    // host's write failed; it corrects with the real (unchanged) live value
-    post({ type: 'browserAutoApproveUpdate', value: true });
-    await settle();
-    expect(approveBtn(container).textContent?.trim()).toBe('Access: Bypass');
-    expect(approveBtn(container).classList.contains('bypass')).toBe(true);
   });
 });
 
@@ -1111,12 +1210,23 @@ describe('InputBar — the vision profile button', () => {
     expect(posts().some((p) => p.type === 'listCollabAgentDefs')).toBe(true);
   });
 
+  /** The profile list is one ANSWER of the Auto/On/Profile triad now, so with
+   *  nothing armed it is behind the Profile choice rather than standing open
+   *  under a second armed row (visionTriad.ts). */
+  const openProfiles = async (c: HTMLElement) => {
+    await fireEvent.click(
+      Array.from(c.querySelectorAll('.pin-btn')).find((b) => b.querySelector('.pin-name')?.textContent?.trim() === 'Profile')!,
+    );
+    await settle();
+  };
+
   it('picking a profile posts its slug for THIS panel’s session', async () => {
     const { container } = mount();
     roster(['vision-eye']);
     await settle();
     await fireEvent.click(eyeBtn(container));
     await settle();
+    await openProfiles(container);
 
     const item = Array.from(container.querySelectorAll('.vision-item')).find((b) => b.textContent?.includes('vision-eye'))!;
     await fireEvent.click(item);
@@ -1129,7 +1239,10 @@ describe('InputBar — the vision profile button', () => {
     expect(eyeBtn(container).textContent?.trim()).toBe('Vision: vision-eye');
   });
 
-  it('Off posts an EMPTY string — the engine’s clear-word, not the word "off"', async () => {
+  it('None posts an EMPTY string — the engine’s clear-word, not the word "off"', async () => {
+    // The row used to read "Off", which was the same word the capability pin
+    // beside it used for a different subject. It is "None" now; the wire value
+    // it carries is unchanged.
     const { container } = mount();
     roster(['vision-eye']);
     post({ type: 'visionUpdate', sessionId: SID, profile: 'vision-eye' });
@@ -1138,8 +1251,9 @@ describe('InputBar — the vision profile button', () => {
 
     await fireEvent.click(eyeBtn(container));
     await settle();
-    const off = Array.from(container.querySelectorAll('.vision-item')).find((b) => b.textContent?.trim() === 'Off')!;
-    await fireEvent.click(off);
+    // A profile IS armed, so the list is open on arrival — no extra click.
+    const none = Array.from(container.querySelectorAll('.vision-item')).find((b) => b.textContent?.trim() === 'None')!;
+    await fireEvent.click(none);
     await settle();
 
     expect(posts().find((p) => p.type === 'setVisionProfile')).toMatchObject({ profile: '' });
@@ -1249,22 +1363,22 @@ describe('InputBar - the third session mode', () => {
     expect(sent('setApproveMode')).toEqual([]);
   });
 
-  it('dims the Actions rail in deep-plan, and keeps Browser reachable', async () => {
+  // t-obf3jw: the Browser row is gone, so this now only has the Actions row
+  // to dim; the trigger itself still stays live in deep-plan.
+  it('dims the Actions rail in deep-plan, and keeps the trigger reachable', async () => {
     const { container } = mountMode();
     post({ type: 'modeUpdate', sessionId: MSID, mode: 'deep-plan' });
     await tick();
     const approve = Array.from(container.querySelectorAll('.mode-row button')).find(
-      (b) => b.textContent?.trim() === 'Approve',
+      (b) => b.textContent?.trim() === 'Access: Bypass',
     ) as HTMLButtonElement;
-    // The TRIGGER stays live - Browser is VS Code's own global setting, not a
-    // per-session permission, so it must stay reachable in every mode.
     expect(approve.disabled).toBe(false);
     await fireEvent.click(approve);
     await tick();
     const rows = container.querySelectorAll('.approve-row');
+    expect(rows.length).toBe(1);
     const notches = (row: Element) => Array.from(row.querySelectorAll('.approve-notch')) as HTMLButtonElement[];
     expect(notches(rows[0]).every((b) => b.disabled)).toBe(true);
-    expect(notches(rows[1]).some((b) => b.disabled)).toBe(false);
   });
 
   it('wears a DEEP-PLAN badge, not a bare mode name', async () => {
@@ -1352,7 +1466,7 @@ describe('InputBar — the utility row belongs to the textarea, not to the foote
     const col = c.querySelector('.input-row > .input-col');
     expect(col, 'the textarea needs a column of its own to align the row to').not.toBeNull();
     // Both children of the same column — this is the whole fix.
-    expect(col!.querySelector(':scope > .changes-row')).not.toBeNull();
+    expect(col!.querySelector(':scope > .composer-util')).not.toBeNull();
     expect(col!.querySelector(':scope > textarea.input')).not.toBeNull();
     // ...and the buttons are NOT in it, or the row would span them again.
     expect(col!.querySelector('.btn-col'), 'Send must stay outside the column').toBeNull();
@@ -1363,7 +1477,7 @@ describe('InputBar — the utility row belongs to the textarea, not to the foote
     // Order is the difference between a row that sits on the textarea and one
     // that sits under it; both would satisfy "same parent".
     const kids = [...mountFooter().querySelector('.input-col')!.children].map((el) => el.className);
-    expect(kids[0]).toContain('changes-row');
+    expect(kids[0]).toContain('composer-util');
     expect(kids[1]).toContain('input');
   });
 
@@ -1373,8 +1487,613 @@ describe('InputBar — the utility row belongs to the textarea, not to the foote
     const c = mountFooter({ bare: true, onToggleFocus: undefined, sessionId: null });
     const col = c.querySelector('.input-row > .input-col');
     expect(col).not.toBeNull();
-    expect(col!.querySelector('.changes-row'), 'no transcript, no row').toBeNull();
+    expect(col!.querySelector('.composer-util'), 'no transcript, no row').toBeNull();
     expect(col!.querySelector('textarea.input')).not.toBeNull();
     expect(col!.children.length, 'the box alone').toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.4.69 UAT round: a passthrough cell must PRESENT what it actually does.
+// Three separate lies were on screen at once, and each one had the same shape:
+// an engine idiom rendered over a harness that does not work like the engine.
+//   * a dollar figure for a turn the user's PLAN had already paid for;
+//   * "Access: Bypass" on a cell that was in fact asking about every tool;
+//   * a Bypass notch that the host silently clamped to acceptEdits.
+// The transcript truth for the first is in claudeCodeTranslator.test.ts; this
+// file owns the composer end of all three.
+// ---------------------------------------------------------------------------
+
+describe('InputBar - a plan-funded chat shows headroom, never a price', () => {
+  const badge = (c: HTMLElement) => c.querySelector('.cost');
+  const mount = (passthrough: boolean) => render(InputBar, {
+    props: {
+      inFlight: true, agentName: 'Tsuru', modelName: 'sonnet', modelOnline: true,
+      passthrough, sessionId: SID, onSend: () => {}, onCancel: () => {},
+    },
+  });
+
+  it('SUPPRESSES the dollar figure once the host says the cell is on a plan', async () => {
+    const { container } = mount(true);
+    // A real cost frame lands first, exactly as it does today.
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.316 } });
+    await waitFor(() => expect(badge(container)!.textContent).toBe('$0.3160'));
+    // ...and the moment the CLI's init says apiKeySource is none, the claim is
+    // withdrawn. It is not a smaller number; there is no honest number.
+    post({ type: 'passthroughMeter', sessionId: SID, subscription: true, pillPct: -1, pillResetsAt: 0, pillWindow: '', pillTitle: '' });
+    await waitFor(() => expect(badge(container)).toBeNull());
+  });
+
+  it('draws NO money badge on a plan, even once headroom is known', async () => {
+    // PHASE 2 moved the headroom READOUT to the model picker's usage slot, beside
+    // the model name, where the OAuth providers already write theirs
+    // (SpendBadge.svelte says why). What stays HERE is the decision the badge was
+    // extracted for: a plan is never shown a dollar figure. So this asserts the
+    // slot is EMPTY, not that it holds the other thing.
+    const { container } = mount(true);
+    post({ type: 'passthroughMeter', sessionId: SID, subscription: true, pillPct: 90, pillResetsAt: 1788195600000, pillWindow: '7d', pillTitle: 'Claude subscription - 90% of your 7d limit used.' });
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.316 } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)).toBeNull();
+  });
+
+  it('shows NOTHING while it knows the price is wrong and not yet the headroom', async () => {
+    const { container } = mount(true);
+    post({ type: 'passthroughMeter', sessionId: SID, subscription: true, pillPct: -1, pillResetsAt: 0, pillWindow: '', pillTitle: '' });
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.316 } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)).toBeNull();
+  });
+
+  it('gives the money back when the cell returns to the engine', async () => {
+    // unbindCell RETRACTS the meter. An engine turn spends real money, so a
+    // suppressed price left in place would be the same lie reversed.
+    const { container } = mount(true);
+    post({ type: 'passthroughMeter', sessionId: SID, subscription: true, pillPct: 90, pillResetsAt: 1788195600000, pillWindow: '7d', pillTitle: 'x' });
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.316 } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)).toBeNull();
+    post({ type: 'passthroughMeter', sessionId: SID, subscription: false, pillPct: -1, pillResetsAt: 0, pillWindow: '', pillTitle: '' });
+    await waitFor(() => expect(badge(container)!.textContent).toBe('$0.3160'));
+  });
+
+  it('leaves an ENGINE chat bit-identical - no meter, no change', async () => {
+    const { container } = mount(false);
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.316 } });
+    await waitFor(() => expect(badge(container)!.textContent).toBe('$0.3160'));
+    // Another cell's meter must not reach into this one.
+    post({ type: 'passthroughMeter', sessionId: 'someone-else', subscription: true, pill: '7d 90%', pillTitle: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)!.textContent).toBe('$0.3160');
+  });
+});
+
+// A chat run directly on the ENGINE's own native OAuth/flat-rate connections
+// (Copilot, ChatGPT, Grok, opencode-go) hits the exact same "plan, not money"
+// defect as the Claude Code passthrough above, but on a DIFFERENT signal —
+// there is no passthroughMeter here, only `sessionModels` (this session's raw
+// provider id) and `providerAuthData` (which ids hold an OAuth credential).
+// billing.ts is the decision; this proves InputBar wires it end to end.
+describe('InputBar - a native OAuth/plan connection shows no dollar figure either', () => {
+  const badge = (c: HTMLElement) => c.querySelector('.cost');
+  const mount = () => render(InputBar, {
+    props: {
+      inFlight: true, agentName: 'Tsuru', modelName: 'gpt-5.5', modelOnline: true,
+      sessionId: SID, onSend: () => {}, onCancel: () => {},
+    },
+  });
+
+  it('hides the cost once the session resolves to an OAuth-connected provider (github-copilot)', async () => {
+    const { container } = mount();
+    post({ type: 'sessionModels', models: { [SID]: 'github-copilot/gpt-5.5' } });
+    post({ type: 'providerAuthData', methods: {}, connected: { 'github-copilot': { type: 'oauth' } } });
+    // The engine's own usage_update still carries Copilot's list-price cost.amount.
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.5613 } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)).toBeNull();
+  });
+
+  it('hides the cost for OAuth openai (ChatGPT plan)', async () => {
+    const { container } = mount();
+    post({ type: 'sessionModels', models: { [SID]: 'openai/gpt-5.5' } });
+    post({ type: 'providerAuthData', methods: {}, connected: { openai: { type: 'oauth' } } });
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.9 } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(badge(container)).toBeNull();
+  });
+
+  it('still shows the cost for a keyed connection on the SAME provider id (no OAuth credential)', async () => {
+    const { container } = mount();
+    post({ type: 'sessionModels', models: { [SID]: 'openai/gpt-5.5' } });
+    post({ type: 'providerAuthData', methods: {}, connected: {} }); // no OAuth credential for openai
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.9 } });
+    await waitFor(() => expect(badge(container)!.textContent).toBe('$0.9000'));
+  });
+
+  it('shows the cost for OpenRouter, OAuth data notwithstanding', async () => {
+    const { container } = mount();
+    post({ type: 'sessionModels', models: { [SID]: 'openrouter/x-ai/grok-4' } });
+    post({ type: 'providerAuthData', methods: {}, connected: { xai: { type: 'oauth' } } }); // a DIFFERENT provider's credential
+    post({ type: 'usageUpdate', sessionId: SID, used: 900, size: 100000, cost: { amount: 0.05 } });
+    await waitFor(() => expect(badge(container)!.textContent).toBe('$0.0500'));
+  });
+});
+
+describe('InputBar - the Access control tells a passthrough cell the truth', () => {
+  const approveBtn = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('.mode-row button'))
+      .find((b) => /^(Approve|Auto-approve|Bypass|Access: Bypass|Bypass: All)$/.test(b.textContent?.trim() ?? '')) as HTMLButtonElement;
+  const actionsNotches = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('.approve-row-actions .approve-notch')) as HTMLButtonElement[];
+  const mount = (passthrough: boolean) => render(InputBar, {
+    props: {
+      inFlight: false, agentName: 'Tsuru', modelName: 'sonnet', modelOnline: true,
+      passthrough, sessionId: SID, onSend: () => {}, onCancel: () => {},
+    },
+  });
+
+  it('offers the Bypass notch DEAD, with the reason on it', async () => {
+    const { container } = mount(true);
+    await fireEvent.click(approveBtn(container));
+    const notches = actionsNotches(container);
+    // PHASE 2: a passthrough rail lists CLAUDE's three real levels. 'Edits' is
+    // the CLI's own acceptEdits, which phase 1 folded away and left unreachable.
+    expect(notches.map((n) => n.getAttribute('aria-label'))).toEqual(['Ask', 'Edits', 'Auto', 'Bypass']);
+    expect(notches[3].disabled).toBe(true);
+    expect(notches[3].getAttribute('title')).toContain('Not available on a Claude Code passthrough');
+    // The three that DO work are still live - the cell is supervised, not frozen.
+    expect(notches[0].disabled).toBe(false);
+    expect(notches[1].disabled).toBe(false);
+    expect(notches[2].disabled).toBe(false);
+  });
+
+  it('keeps Bypass selectable on an engine chat', async () => {
+    const { container } = mount(false);
+    await fireEvent.click(approveBtn(container));
+    expect(actionsNotches(container)[2].disabled).toBe(false);
+  });
+
+  it('never claims bypass on a passthrough cell, whatever the two settings say', async () => {
+    // THE UAT REPORT: the composer read "Access: Bypass" on a Claude Code chat
+    // that was asking about every single tool. That label came from VS Code's
+    // GLOBAL chat-tool auto-approve - which governs VS Code's own tools, and a
+    // passthrough turn never calls one.
+    const { container } = mount(true);
+    post({ type: 'browserAutoApproveUpdate', mode: 'bypass' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(approveBtn(container).textContent?.trim()).toBe('Approve');
+    // Even a stale 'bypass' echo resolves to the mode the harness will really
+    // run (modeFromApprove clamps it to acceptEdits, i.e. auto).
+    post({ type: 'approveUpdate', sessionId: SID, mode: 'bypass' });
+    await waitFor(() => expect(approveBtn(container).textContent?.trim()).toBe('Auto-approve'));
+  });
+});
+
+// THE BUG REPORT: typing `/wr` in the composer offered `/compose` and nothing
+// else — never `/wrap`, which every folded workspace seeds as a skill. The
+// screenshot is a picture of the DEFAULT_COMMANDS fallback: `/compose`'s
+// description is "Help me write a good /loop", and "write" is the only "wr"
+// anywhere in the nine baseline entries. The engine's real list — which carries
+// one entry per discovered skill — had simply never arrived. The host now
+// re-seeds it on mount (src/dashboard/sessionCommandSeed.ts); this pins the
+// composer half: given the list, a skill IS findable by its name.
+describe('InputBar — the / palette carries the workspace SKILLS, not just the shell', () => {
+  const SKILLS = [
+    { name: 'wrap', description: 'End of session — HANDOFF block plus wiki depth' },
+    { name: 'grill-me', description: 'Interview the user until the plan is understood' },
+    { name: 'Board_Ticket', description: 'Open a ticket' }, // an MCP prompt: foreign vocabulary, its own casing
+  ];
+  const mount = () => render(InputBar, {
+    props: {
+      inFlight: false, agentName: 'Tsuru', modelName: 'sonnet', modelOnline: true,
+      sessionId: SID, onSend: () => {}, onCancel: () => {},
+    },
+  });
+  const names = (c: HTMLElement) => Array.from(c.querySelectorAll('.slash-name')).map((n) => n.textContent?.trim());
+  const type = async (c: HTMLElement, value: string) => {
+    const box = c.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value } });
+    return box;
+  };
+
+  it('reproduces the report while the engine list is missing — /wr finds only /compose', async () => {
+    // Not a contrived fixture: this is the shipped fallback, unmodified, and the
+    // single hit it produces is the one the user photographed.
+    const { container } = mount();
+    await type(container, '/wr');
+    await waitFor(() => expect(names(container)).toEqual(['/compose']));
+  });
+
+  it('offers a skill by its name prefix once the engine has sent the list', async () => {
+    const { container } = mount();
+    post({ type: 'availableCommands', sessionId: SID, commands: SKILLS });
+    await type(container, '/wr');
+    await waitFor(() => expect(names(container)).toContain('/wrap'));
+    // And the NAME hit ranks above the description-only one, so the command the
+    // user is typing is the one under the cursor.
+    expect(names(container)[0]).toBe('/wrap');
+    expect(names(container)).toContain('/compose'); // the shell's own survive the update
+  });
+
+  it('matches a name that carries a capital, which the drifted copy could not', async () => {
+    // MCP prompts arrive with the server's own casing. The old inline filter
+    // lowercased the query and the description but NOT the name, so `board`
+    // could never reach `/Board_Ticket` — the description does not say "board".
+    const { container } = mount();
+    post({ type: 'availableCommands', sessionId: SID, commands: SKILLS });
+    await type(container, '/board');
+    await waitFor(() => expect(names(container)).toEqual(['/Board_Ticket']));
+  });
+
+  it('still filters rather than dumping the library', async () => {
+    const { container } = mount();
+    post({ type: 'availableCommands', sessionId: SID, commands: SKILLS });
+    await type(container, '/grill');
+    await waitFor(() => expect(names(container)).toEqual(['/grill-me']));
+  });
+});
+
+describe("InputBar - the / palette carries Claude's own commands", () => {
+  const CC = [
+    { name: '/delegate', description: 'Delegation + cost policy', category: 'Claude Code' },
+    { name: '/wrap', description: 'Session close-out', category: 'Claude Code' },
+  ];
+  const mount = () => render(InputBar, {
+    props: {
+      inFlight: false, agentName: 'Tsuru', modelName: 'sonnet', modelOnline: true,
+      passthrough: true, sessionId: SID, onSend: () => {}, onCancel: () => {},
+    },
+  });
+  const rows = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('.slash-item')).map((b) => ({
+      name: b.querySelector('.slash-name')?.textContent?.trim(),
+      cat: b.querySelector('.slash-cat')?.textContent?.trim(),
+    }));
+
+  it('lists them under one Claude Code group and inserts the pick verbatim', async () => {
+    const { container } = mount();
+    post({ type: 'passthroughCommands', sessionId: SID, commands: CC });
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: '/dele' } });
+    await waitFor(() => expect(rows(container)).toEqual([{ name: '/delegate', cat: 'Claude Code' }]));
+    // The CLI executes it server-side when the line is SENT, so the pick just
+    // types it - no interception, no translation.
+    await fireEvent.keyDown(box, { key: 'Tab' });
+    expect(box.value).toBe('/delegate ');
+  });
+
+  it("replaces the engine's vocabulary AND the shell's own", async () => {
+    const { container } = mount();
+    post({ type: 'availableCommands', sessionId: SID, commands: [{ name: 'compact', description: 'Engine compaction' }] });
+    post({ type: 'passthroughCommands', sessionId: SID, commands: CC });
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: '/' } });
+    await waitFor(() => expect(rows(container).length).toBeGreaterThan(0));
+    const names = rows(container).map((r) => r.name);
+    expect(names).toContain('/delegate');
+    // PHASE 2: the shell commands went too. They were kept on the grounds that
+    // they are intercepted host-side and work on either harness — untrue of this
+    // cell. `slashCommand` is not a type claudeCodeManager intercepts, so /spend
+    // and /firstfold acted on the ENGINE session hiding under the cell, and
+    // /loop and /compose started an autonomous ENGINE turn from a Claude
+    // composer. On Claude, the palette is Claude's.
+    expect(names).not.toContain('/spend');
+    expect(names).not.toContain('/compact'); // engine-only; Claude cannot run it
+  });
+
+  it('hands the vocabulary back when the cell returns to the engine', async () => {
+    const { container } = mount();
+    post({ type: 'availableCommands', sessionId: SID, commands: [{ name: 'compact', description: 'Engine compaction' }] });
+    post({ type: 'passthroughCommands', sessionId: SID, commands: CC });
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: '/' } });
+    await waitFor(() => expect(rows(container).map((r) => r.name)).toContain('/delegate'));
+    post({ type: 'passthroughCommands', sessionId: SID, commands: [] });
+    await waitFor(() => expect(rows(container).map((r) => r.name)).toContain('/compact'));
+    expect(rows(container).map((r) => r.name)).not.toContain('/delegate');
+  });
+
+  it("ignores another chat's command list", async () => {
+    const { container } = mount();
+    post({ type: 'passthroughCommands', sessionId: 'someone-else', commands: CC });
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: '/' } });
+    await waitFor(() => expect(rows(container).length).toBeGreaterThan(0));
+    expect(rows(container).map((r) => r.name)).not.toContain('/delegate');
+  });
+});
+
+describe('actionsRowOptions - the notch table', () => {
+  it('is unchanged for an engine chat', () => {
+    expect(actionsRowOptions(false)).toEqual([
+      { value: 'default', name: 'Ask' }, { value: 'auto', name: 'Auto' }, { value: 'bypass', name: 'Bypass' },
+    ]);
+  });
+
+  it('disables ONLY bypass for a passthrough, and says why', () => {
+    const opts = actionsRowOptions(true);
+    expect(opts.map((o) => o.value)).toEqual(['default', 'acceptEdits', 'auto', 'bypass']);
+    expect(opts.filter((o) => o.disabled).map((o) => o.value)).toEqual(['bypass']);
+    expect(String(opts[3].hint)).toContain('Not available on a Claude Code passthrough');
+  });
+});
+
+describe('approveButtonState - a passthrough label states the mode it will really run', () => {
+  it('ignores the global Browser axis, which no passthrough turn goes through', () => {
+    expect(approveButtonState('default', 'bypass').label).toBe('Access: Bypass');
+    expect(approveButtonState('default', 'bypass', true).label).toBe('Approve');
+    expect(approveButtonState('auto', 'bypass', true).label).toBe('Auto-approve');
+  });
+
+  it('never says Bypass on a passthrough, in ANY combination', () => {
+    for (const actions of ['default', 'auto', 'bypass', 'something-else']) {
+      for (const browser of ['ask', 'bypass']) {
+        const st = approveButtonState(actions, browser, true);
+        expect(st.label, `${actions}/${browser}`).not.toContain('Bypass');
+        expect(st.bypass, `${actions}/${browser}`).toBe(false);
+      }
+    }
+  });
+});
+
+// The clamp math itself is covered exhaustively, in plain numbers, by
+// composerGrow.test.ts (jsdom reports scrollHeight as 0, so it can prove
+// nothing about the real curve). What belongs HERE is only the wiring: an
+// input event reaches resizeComposer(), which reads the box's OWN computed
+// style and writes style.height/overflowY back onto it.
+describe('InputBar — the composer auto-grows on input', () => {
+  function mountBox() {
+    const { container } = render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+        sessionId: SID, onSend: () => {}, onCancel: () => {},
+      },
+    });
+    return container.querySelector('textarea.input') as HTMLTextAreaElement;
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('grows past rest using the measured line height, and caps at 10 lines with overflow auto', async () => {
+    const box = mountBox();
+    // scrollHeight is always 0 in jsdom — stub it as content far past the cap.
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 300 });
+    // Pin the computed style this box reads so the expected number is exact:
+    // 10 lines * 17px + 12px padding = 182px.
+    const realGCS = window.getComputedStyle;
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element, ...rest: unknown[]) => {
+      if (el === box) return { lineHeight: '17px', fontSize: '12px', paddingTop: '6px', paddingBottom: '6px' } as CSSStyleDeclaration;
+      return realGCS(el, ...(rest as []));
+    });
+    await fireEvent.input(box, { target: { value: 'x'.repeat(500) } });
+    await waitFor(() => expect(box.style.height).toBe('182px'));
+    expect(box.style.overflowY).toBe('auto');
+  });
+
+  it('resets to the rest height when the draft is cleared (e.g. after send)', async () => {
+    const box = mountBox();
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 20 });
+    await fireEvent.input(box, { target: { value: 'hi' } });
+    await waitFor(() => expect(box.style.height).not.toBe(''));
+    const restHeight = box.style.height;
+    expect(restHeight).not.toBe('');
+  });
+
+  it('drops the manual resize handle in favour of the computed cap', () => {
+    // jsdom-under-vitest does not inject Svelte's scoped <style> into the
+    // document (this test env doesn't apply component CSS at all), so the
+    // rule is checked at the source rather than via getComputedStyle.
+    const src = readFileSync(path.join(thisDir, 'InputBar.svelte'), 'utf8');
+    const rule = src.match(/\.input\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toMatch(/resize:\s*none/);
+    expect(rule).not.toMatch(/resize:\s*vertical/);
+  });
+});
+
+// A composer that accepts a turn with nowhere to send it is a trap: the message
+// disappears into a failure the user has to read an error to understand. With
+// NO provider configured at all the honest thing is to refuse up front and say
+// what is missing — the same sentence the strip above the box is showing.
+describe('InputBar — with nothing connected, Send refuses and says why', () => {
+  const mountWith = (modelReason: string) =>
+    render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: '', modelOnline: false, modelReason,
+        sessionId: SID, onCompact: () => {}, onSend: () => {}, onCancel: () => {},
+      },
+    });
+  const send = (c: HTMLElement) => c.querySelector('button.action-btn') as HTMLButtonElement;
+  const box = (c: HTMLElement) => c.querySelector('textarea.input') as HTMLTextAreaElement;
+
+  it('disables Send and the box, and names the reason in the tooltip', () => {
+    const { container } = mountWith(NO_CONNECTIONS);
+    expect(send(container).disabled).toBe(true);
+    expect(send(container).dataset.tip).toBe(NO_CONNECTIONS_TEXT);
+    // The box too — a disabled textarea takes no keydown, so the Enter path
+    // cannot route around the button.
+    expect(box(container).disabled).toBe(true);
+  });
+
+  it('leaves Send ALONE for every other kind of not-ok', () => {
+    // The regression this pairs with: refusing turns whenever a model is merely
+    // offline or still being probed would block chats that recover on their own.
+    for (const reason of [PROVIDER_PROBING, 'ECONNREFUSED 100.64.1.20:8000', 'no model loaded', '']) {
+      const { container, unmount } = mountWith(reason);
+      expect(send(container).disabled, reason || '(no reason)').toBe(false);
+      unmount();
+    }
+  });
+});
+
+// The gauge's hover breakdown (t-q9079b). The gauge FACE is not the subject
+// here — the ring, the % and click-to-compact are covered above and must not
+// move. What matters is the two paths: with a composition the long `title`
+// paragraph gives way to the card, and with none the paragraph stays, because
+// an engine that reports no composition must not make the shell invent one.
+describe('InputBar — the context gauge breakdown card', () => {
+  const gauge = (c: HTMLElement) => c.querySelector('.ctx-gauge') as HTMLElement;
+  const COMPOSITION = { systemPrompt: 1800, tools: 4200, conversation: 106900, estimated: true, method: 'chars/4' };
+
+  async function withComposition(composition?: Record<string, unknown>) {
+    const { container } = mount(() => {});
+    post({
+      type: 'contextUpdate', sessionId: SID, turns: 3, contextWindow: 128000,
+      contextUsed: 112900, contextTotal: 0, ...(composition ? { composition } : {}),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    return container;
+  }
+
+  it('no composition: no card, and the gauge keeps its own title', async () => {
+    const container = await withComposition();
+    await fireEvent.mouseEnter(container.querySelector('.ctx-gauge-wrap') as HTMLElement);
+    expect(container.querySelector('.ctx-card')).toBeNull();
+    expect(gauge(container).getAttribute('data-tip')).toContain('context (last step)');
+  });
+
+  it('a composition arrives: the title paragraph gives way, but only the hover draws the card', async () => {
+    const container = await withComposition(COMPOSITION);
+    // Still no card — nothing is hovered yet.
+    expect(container.querySelector('.ctx-card')).toBeNull();
+    expect(gauge(container).getAttribute('title')).toBeNull();
+    // The reading is still reachable without a hover, for a screen reader.
+    expect(gauge(container).getAttribute('aria-label')).toContain('113k context (last step)');
+  });
+
+  it('hovering the gauge draws the card: header total, one segment per part, headroom muted', async () => {
+    const container = await withComposition(COMPOSITION);
+    await fireEvent.mouseEnter(container.querySelector('.ctx-gauge-wrap') as HTMLElement);
+
+    const card = container.querySelector('.ctx-card') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(card.querySelector('.ctx-card-total')!.textContent).toBe('112,900 / 128,000');
+    // Three parts plus headroom, in both the bar and the rows.
+    expect(card.querySelectorAll('.ctx-card-seg').length).toBe(4);
+    const rows = Array.from(card.querySelectorAll('.ctx-card-row'));
+    expect(rows.map((r) => r.querySelector('.ctx-card-label')!.textContent))
+      .toEqual(['System prompt', 'Tools', 'Conversation + files', 'Headroom']);
+    expect(rows.map((r) => r.querySelector('.ctx-card-value')!.textContent))
+      .toEqual(['1,800', '4,200', '106,900', '15,100']);
+    // The headroom row is the muted one; the class is what the stylesheet dims
+    // (jsdom loads no <style>, so the computed colour would assert nothing).
+    expect(rows[3].classList.contains('is-headroom')).toBe(true);
+    expect(rows.slice(0, 3).some((r) => r.classList.contains('is-headroom'))).toBe(false);
+  });
+
+  it('leaving the gauge puts the card away', async () => {
+    const container = await withComposition(COMPOSITION);
+    const wrap = container.querySelector('.ctx-gauge-wrap') as HTMLElement;
+    await fireEvent.mouseEnter(wrap);
+    await fireEvent.mouseLeave(wrap);
+    expect(container.querySelector('.ctx-card')).toBeNull();
+  });
+
+  it('a usageUpdate carries it too, and a later frame without one keeps the last breakdown', async () => {
+    const { container } = mount(() => {});
+    post({ type: 'usageUpdate', sessionId: SID, used: 112900, size: 128000, composition: COMPOSITION });
+    await new Promise((r) => setTimeout(r, 0));
+    post({ type: 'usageUpdate', sessionId: SID, used: 113500, size: 128000 });
+    await new Promise((r) => setTimeout(r, 0));
+    await fireEvent.mouseEnter(container.querySelector('.ctx-gauge-wrap') as HTMLElement);
+    expect(container.querySelector('.ctx-card')).not.toBeNull();
+    expect(gauge(container).getAttribute('title')).toBeNull();
+  });
+
+  it('clicking the gauge still arms and burns the fuse to compact, card or no card', async () => {
+    vi.useFakeTimers();
+    const onCompact = vi.fn();
+    const { container } = mount(onCompact);
+    post({ type: 'contextUpdate', sessionId: SID, turns: 3, contextWindow: 128000, contextUsed: 112900, contextTotal: 0, composition: COMPOSITION });
+    await vi.advanceTimersByTimeAsync(0);
+    await fireEvent.mouseEnter(container.querySelector('.ctx-gauge-wrap') as HTMLElement);
+    await fireEvent.click(container.querySelector('.ctx-gauge-btn') as HTMLElement);
+    await vi.advanceTimersByTimeAsync(FUSE_MS);
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+});
+
+// t-qi09w0 item 3 — the autocomplete must open wherever the `/` is typed, not
+// only at the start of the line. The owner's first-command-only rule governs
+// EXECUTION (the block above); this is the completion popup, and the two are
+// deliberately separate — the last case here proves execution did not move.
+describe('InputBar — the slash palette opens mid-message', () => {
+  const COMMANDS = [
+    { name: '/delegate', description: 'Delegate this', category: 'Other' },
+    { name: '/spend', description: 'Show cost', category: 'Info' },
+  ];
+
+  function composer(onSend: (text: string, mode?: string) => void = () => {}) {
+    const { container } = render(InputBar, {
+      props: {
+        inFlight: false, agentName: 'Tsuru', modelName: 'qwen3-8b', modelOnline: true,
+        sessionId: SID, onCompact: () => {}, onSend, onCancel: () => {}, commands: COMMANDS,
+      },
+    });
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    return { container, box: container.querySelector('textarea.input') as HTMLTextAreaElement };
+  }
+
+  /** Type `value` and park the caret. jsdom leaves selectionStart at the end of
+   *  an assigned value, which is only the case the user is usually in. */
+  async function type(box: HTMLTextAreaElement, value: string, caret = value.length) {
+    await fireEvent.input(box, { target: { value } });
+    box.setSelectionRange(caret, caret);
+    await fireEvent.input(box, { target: { value } });
+  }
+
+  const names = (c: HTMLElement) => Array.from(c.querySelectorAll('.slash-name')).map((n) => n.textContent);
+
+  it('a bare `/` typed mid-message opens the same list as one at the start', async () => {
+    const { container, box } = composer();
+    await type(box, 'summarise this and then /');
+    expect(container.querySelector('.slash-dropdown')).not.toBeNull();
+    expect(names(container)).toEqual(['/delegate', '/spend']);
+  });
+
+  it('the partial name mid-message filters the list', async () => {
+    const { container, box } = composer();
+    await type(box, 'summarise this and then /spe');
+    expect(names(container)).toEqual(['/spend']);
+  });
+
+  it('Tab completes IN PLACE, keeping the prose on both sides', async () => {
+    const { container, box } = composer();
+    await type(box, 'please /del the log', 11);
+    expect(container.querySelector('.slash-dropdown')).not.toBeNull();
+    await fireEvent.keyDown(box, { key: 'Tab' });
+    expect(box.value).toBe('please /delegate the log');
+    expect(container.querySelector('.slash-dropdown')).toBeNull();
+  });
+
+  it('clicking a row completes in place too', async () => {
+    const { container, box } = composer();
+    await type(box, 'please /s the log', 9); // caret just after the 's'
+    await fireEvent.click(container.querySelectorAll('.slash-item')[0]);
+    expect(box.value).toBe('please /spend the log');
+  });
+
+  it('free text with a stray slash never opens it', async () => {
+    const { container, box } = composer();
+    await type(box, 'meet me at 5/6');
+    expect(container.querySelector('.slash-dropdown')).toBeNull();
+    await type(box, 'see example.com/delegate');
+    expect(container.querySelector('.slash-dropdown')).toBeNull();
+  });
+
+  it('it closes once the name is finished and the arguments have started', async () => {
+    const { container, box } = composer();
+    await type(box, 'please /delegate the log');
+    expect(container.querySelector('.slash-dropdown')).toBeNull();
+  });
+
+  it('EXECUTION is unchanged: Enter still sends the message, which runs the command', async () => {
+    const onSend = vi.fn();
+    const { box } = composer(onSend);
+    await type(box, 'summarise this and then /delegate');
+    await fireEvent.keyDown(box, { key: 'Enter' });
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0]))
+      .toContainEqual({ type: 'slashCommand', command: 'delegate', args: 'summarise this and then' });
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

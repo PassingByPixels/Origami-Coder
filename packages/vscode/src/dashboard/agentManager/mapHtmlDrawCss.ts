@@ -1,17 +1,8 @@
-// The static map.html DRAWING sheet: the stage, the solids, the connectors, the
-// labels and the hover card. Split from mapHtmlCss.ts (the page around it) when
-// the artifact became the flow-spine picture — the page changes when a control
-// moves, the drawing changes when the visual language does, and neither should
-// force the other's file past its cap.
-//
-// FACE COLOURS ARE NOT HERE. A box is coloured by its `kind` and shaded per face,
-// so the three fills are computed per node in mapHtmlSvg.ts from mapPalette.ts
-// and written inline. Only the things that are the same for every solid — stroke
-// joins, the badge, the caption's halo — live in this sheet.
-//
-// `paint-order: stroke` on every label is what makes a caption readable over a
-// solid: the text is stroked in the ground colour FIRST and filled second, so it
-// carries its own halo instead of needing a rectangle behind it.
+// The static map.html drawing sheet: stage, solids, connectors, labels, hover card. Split
+// from mapHtmlCss.ts since the page changes for different reasons than the drawing. Face
+// colours aren't here — they're computed per node inline from mapPalette.ts. `paint-order:
+// stroke` on labels strokes text in the ground colour first so a caption reads over a solid
+// without a backing rectangle.
 
 export const MAP_DRAW_CSS = `
   .stage-wrap { position: relative; overflow: hidden; flex: 1; min-width: 0;

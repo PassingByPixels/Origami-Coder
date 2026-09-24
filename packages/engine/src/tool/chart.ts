@@ -1,20 +1,17 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 
-// Terse inline description, like the browser and board tools: the small local
-// models that run fold sessions pay for every line of it out of their task
-// context.
+// Terse inline description: fold sessions run small local models that pay for
+// every line of it out of their task context.
 
 const types = ["bar", "line", "pie"] as const
 
 type ChartType = (typeof types)[number]
 
 /**
- * FLAT on purpose, not a discriminated union. The data really is a union keyed
- * on `type`, but a oneOf/anyOf schema is the shape models mis-emit most often -
- * they send the wrapper, or collapse it to the first branch - and the failure
- * is silent. One flat struct always round-trips; `execute` enforces which
- * fields the chosen type actually needs, and says so when they are missing.
+ * Flat on purpose, not a discriminated union: a oneOf/anyOf schema is the shape
+ * models mis-emit most often, and the failure is silent. One flat struct always
+ * round-trips; `execute` enforces which fields the chosen type needs.
  */
 export const Parameters = Schema.Struct({
   type: Schema.Literals(types).annotate({ description: "bar, line or pie." }),
@@ -47,11 +44,8 @@ const DESCRIPTION = [
   'pie needs slices, e.g. {"type":"pie","slices":[{"label":"Chrome","value":62}]}.',
 ].join(" ")
 
-/**
- * `ok` is the ONE status a client may trust, the browser tool's precedent: a
- * chart the engine could not draw still COMPLETES the tool call, so neither the
- * ACP status nor the title separates it from one that drew.
- */
+/** `ok` is the one status a client may trust: a chart the engine could not draw
+ *  still completes the tool call, so the ACP status cannot separate them. */
 type ChartMetadata = {
   ok: boolean
   type: ChartType
@@ -68,25 +62,20 @@ export const ChartTool = Tool.define(
   "chart",
   Effect.succeed({
     description: DESCRIPTION,
-    // Every field but `type` is optional, which is exactly what makes a
-    // misspelled key silent here: the decoder drops it, decode SUCCEEDS, and a
-    // chart draws with the labels — or a whole series — quietly missing under a
-    // green tick. A refused call the model can retry is strictly better than a
-    // wrong picture that reads as a right one, so a key normalisation could not
-    // place is refused rather than dropped. Opt-in per tool, not a new rule for
-    // the other tools: see Tool.Def.rejectUnknownKeys.
+    // Every field but `type` is optional, so a misspelled key is dropped, decode
+    // succeeds, and a chart draws with labels or a series missing under a green
+    // tick. A refused call the model can retry beats a wrong picture.
     rejectUnknownKeys: true,
     parameters: Parameters,
+    deferrable: true,
     execute: (params: Schema.Schema.Type<typeof Parameters>) => Effect.succeed(draw(params)),
   }),
 )
 
 /**
- * The rules below are the RENDERER's rules (webview/shared/chartBlock.ts
- * parseSpec), restated where the model can be told about them. They have to
- * agree: a call answered ok that the renderer then drops is the silent failure
- * this tool exists to end, so every shape parseSpec rejects is refused here
- * with the field named.
+ * The rules below are the renderer's (webview/shared/chartBlock.ts parseSpec)
+ * and must agree with it: every shape parseSpec rejects is refused here with the
+ * field named, or a call answered ok gets silently dropped downstream.
  */
 function draw(params: Schema.Schema.Type<typeof Parameters>): Tool.ExecuteResult<ChartMetadata> {
   if (params.type === "pie") {
@@ -114,11 +103,8 @@ function draw(params: Schema.Schema.Type<typeof Parameters>): Tool.ExecuteResult
   })
 }
 
-/**
- * The output IS the spec: the chat card feeds it straight back through the
- * shared renderer (ChartCard.svelte), so it has to stay exactly the shape
- * chartBlock.ts accepts. JSON.stringify drops the undefined optional fields.
- */
+/** The output is the spec: the chat card feeds it straight back through the
+ *  shared renderer, so it must stay the shape chartBlock.ts accepts. */
 function drawn(type: ChartType, title: string | undefined, spec: object): Tool.ExecuteResult<ChartMetadata> {
   return {
     title: `chart ${type}${title ? `: ${title}` : ""}`,
@@ -127,8 +113,7 @@ function drawn(type: ChartType, title: string | undefined, spec: object): Tool.E
   }
 }
 
-/** A refusal the model can act on alone: the field that is wrong, then one
- *  valid call of the type it asked for. */
+/** A refusal the model can act on alone: the wrong field, then one valid call. */
 function refused(type: ChartType, reason: string): Tool.ExecuteResult<ChartMetadata> {
   return {
     title: `chart ${type}: refused`,

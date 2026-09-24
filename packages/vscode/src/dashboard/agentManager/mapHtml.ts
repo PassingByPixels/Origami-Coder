@@ -1,23 +1,9 @@
-// Agent Manager - mapHtml.ts (S15): render a validated RepoMap to a SELF-CONTAINED
-// static HTML artifact (.origami/map/map.html), written on a successful map run so
-// the human view survives outside VS Code — open the file in any browser, offline,
-// forever. Inline CSS + the map JSON embedded + one inline script. NO external
-// asset of any kind: no font, no stylesheet, no image, no script file, and no
-// `http`/`https` string anywhere in the document (the guard test asserts that
-// literally, over the whole file).
-//
-// The artifact is the FLOW-SPINE isometric drawing (Passing's pick of the
-// cartographer mockups): a slim header, a filter rail on the left, the picture in
-// the middle, and a rail on the right carrying the repository summary, the flows
-// and whatever is selected. Both rails drag to resize and fold away entirely, so
-// the map can have the whole window.
-//
-// THIS FILE ONLY ASSEMBLES. The geometry is isoLayout.ts's (shared verbatim with
-// the in-editor screen, so the two pictures cannot drift), the picture is
-// mapHtmlSvg.ts + mapHtmlWires.ts's, the sheets are mapHtmlCss.ts +
-// mapHtmlDrawCss.ts's and the behaviour is mapHtmlScript.ts + mapHtmlRails.ts's.
-// Splitting them is what let the assembler stay inside its original cap while the
-// artifact grew rails. Pure + vscode-free, so it unit-tests as string in, string out.
+// Renders a validated RepoMap to a self-contained static HTML artifact
+// (.origami/map/map.html), written on a successful map run so the human view survives
+// outside VS Code — no external asset, font, script, or `http(s)` string anywhere (a guard
+// test asserts this over the whole file). This file only assembles: geometry from
+// isoLayout.ts (shared with the in-editor screen so the two pictures can't drift), the
+// picture/sheets/behaviour split across mapHtmlSvg/Wires/Css/DrawCss/Script/Rails.ts.
 
 import type { IsoLayout } from './isoLayout';
 import { layoutMap } from './isoLayout';
@@ -28,10 +14,8 @@ import { esc, isoSvg, pillarName } from './mapHtmlSvg';
 import { colourOf, FLOW_COLOR, KIND_COLOR, kindsIn, PILLAR_COLOR } from './mapPalette';
 import { PILLARS, type RepoMap } from './mapSchema';
 
-/** The kind legend: a swatch, the kind, and how many components carry it. Built
- *  from the kinds the map ACTUALLY uses, not from the palette's own list — `kind`
- *  is a free string in the schema, so a map may name one this table never heard
- *  of, and a legend that omitted it would under-count the picture it labels. */
+/** The kind legend, built from the kinds the map actually uses (not the palette's own list)
+ *  since `kind` is a free string in the schema. */
 function legendHtml(map: RepoMap): string {
   const counts = new Map<string, number>();
   for (const n of map.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
@@ -56,9 +40,8 @@ function flowsHtml(map: RepoMap): string {
     + `<span class="fid">${esc(f.id)}</span>${esc(f.name)}</button>`).join('');
 }
 
-/** The header: what this is, how big it is, and the view controls. NO thesis and
- *  no schema note — the mockup carried both to explain itself to a reviewer, and
- *  a shipped artifact explains the REPOSITORY, not the drawing. */
+/** The header: what this is, how big, view controls — no thesis or schema note, since a
+ *  shipped artifact explains the repository, not the drawing. */
 function headHtml(map: RepoMap, layout: IsoLayout): string {
   const built = map.builtAt
     ? `${esc(map.builtAt.branch)} @ ${esc(map.builtAt.sha.slice(0, 7))} · ${new Date(map.builtAt.at).toISOString().slice(0, 10)}`
@@ -75,10 +58,9 @@ function headHtml(map: RepoMap, layout: IsoLayout): string {
     + `</div></header>`;
 }
 
-/** The payload the inline script reads. Only the fields the panels show — the
- *  geometry is already in the server-rendered SVG, so re-sending it would double
- *  the file for nothing. Every `<` becomes \\u003c, which is what makes a
- *  `</script>` inside a node name unable to close the tag it sits in. */
+/** The payload the inline script reads: only the fields the panels show, since the geometry
+ *  is already in the server-rendered SVG. Every `<` is escaped so a `</script>` can't close
+ *  inside a node name. */
 function payload(map: RepoMap, layout: IsoLayout): string {
   const pillars: Record<number, string> = {};
   for (const p of PILLARS) pillars[p.number] = pillarName(p.number);

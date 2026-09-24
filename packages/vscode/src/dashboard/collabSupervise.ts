@@ -1,29 +1,10 @@
-// The SUPERVISION half of the collab wire (W3 wave 3, report 2.4 / 2.5) — the
-// four per-member ext-methods wave 1 added to the engine, plus their dispatch.
+// The supervision half of the collab wire: the four per-member ext-methods plus their dispatch.
 //
-// ITS OWN MODULE, AND ITS OWN DISPATCHER. collabData.ts (250) and
-// collabManager.ts (300) were both within single figures of their caps when
-// these four arrived, and the ratchet's remedy is a new module, never a raised
-// number. collabManager keeps ONE line — it folds SUPERVISE_MESSAGE_TYPES into
-// its own set and falls through to `handleSuperviseMessage` — so the panel's
-// routing is unchanged and there is still exactly one collab dispatch entry.
-//
-// The leaves follow collabData.ts's shape exactly: a no-engine guard first, a
-// throw turned into an `error` FIELD rather than a rejected promise, and a
-// defensive read of a reply that crossed a JSON-RPC wire.
-//
-// ONE OF THEM IS DIFFERENT, DELIBERATELY. `collabPreview` answers a failure
-// with SILENCE — an empty wake set and no error at all. Every other call here
-// is a thing the user asked for and must hear about; a preview is a thing the
-// user is only typing, and painting a red line under a half-written draft
-// because the engine blinked would be worse than not previewing at all.
-//
-// No `vscode` import, so every decision below is exercised without an extension
-// host.
+// collabPreview alone answers a failure with silence (empty wake set, no error): it previews a
+// draft the user is only typing, so a blinking engine must not paint a red error line under it.
 import type { CollabPostResult, TaskEntry } from '../acpExtTypes';
-// `message` is collabData.ts's own — shared rather than re-duplicated, so a
-// refusal reads honestly here too instead of drifting back to "Internal
-// error: <reason>" the next time only one of the two copies gets fixed.
+// `message` is collabData.ts's own — shared rather than re-duplicated, so a refusal reads honestly
+// here too instead of drifting apart when only one copy is fixed.
 import { message, type CollabSource } from './collabData';
 
 const NO_SESSION = 'Open a chat first — this needs a live engine connection.';
@@ -38,9 +19,8 @@ export interface SuperviseHost {
   collabClient(): CollabSource | undefined;
 }
 
-/** Mirrors `CollabRunner.StopAgentResult`. NEVER a bare ok: an agent can have a
- *  turn in flight, a turn waiting behind it, both, or neither, and "neither" is
- *  a real answer the surface has to be able to report as already-idle. */
+/** Mirrors `CollabRunner.StopAgentResult`. NEVER a bare ok: an agent can have a turn in
+ *  flight, one waiting behind it, both, or neither — and "neither" is a real answer. */
 export interface CollabStopAgentPayload {
   collabId: string;
   agentSlug: string;
@@ -49,9 +29,8 @@ export interface CollabStopAgentPayload {
   error?: string;
 }
 
-/** Stop ONE agent: its turn in flight is interrupted and its child session
- *  cancelled, its slug alone leaves the queue, and the hop budget is untouched.
- *  Everything `collab_stop` does to the room, narrowed to one member. */
+/** Stop ONE agent: its in-flight turn is interrupted and its child session cancelled, its slug
+ *  leaves the queue, and the hop budget is untouched. */
 export async function collabStopAgent(
   client: CollabSource | null | undefined,
   collabId: string,
@@ -105,10 +84,9 @@ export interface CollabReviewPayload {
   error?: string;
 }
 
-/** The human's verdict on a task an agent completed. `approve` accepts it;
- *  `reject` sends it back to its owner WITH the reason, which the room row then
- *  carries. An empty note is OMITTED rather than sent blank, so the engine's own
- *  "a reject needs a reason" refusal is what reaches the user. */
+/** The human's verdict on a task an agent completed. `approve` accepts it; `reject` sends it back
+ *  to its owner WITH the reason. An empty note is OMITTED rather than sent blank, so the engine's
+ *  own "a reject needs a reason" refusal reaches the user. */
 export async function collabReview(
   client: CollabSource | null | undefined,
   collabId: string,

@@ -5,8 +5,53 @@ import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
 import type { CompactionThresholdOverride } from "./session"
+import { SessionPromptCapture } from "./prompt-capture"
 
 const COMPACTION_BUFFER = 20_000
+
+/**
+ * The least removable history that makes a compaction worth running. Compaction
+ * only deletes conversation, and the fixed block (system prompt plus tool schemas)
+ * can dominate the window, so on a small conversation a summary costs a whole
+ * generation and can even grow the context. Hence a two-part trigger: the window
+ * must be full (`usable()`) and enough history must sit under the floor.
+ */
+export const MIN_COMPACTABLE_HISTORY = 8_000
+
+const MIN_PRESERVE_RECENT_TOKENS = 2_000
+const MAX_PRESERVE_RECENT_TOKENS = 8_000
+
+/**
+ * How many tokens of the newest turns compaction keeps verbatim. Lives here
+ * because the trigger needs it too: a compaction preserving a tail of B tokens
+ * cannot remove less than that again, so history under 2xB is not worth it.
+ */
+export function preserveRecentBudget(input: {
+  cfg: ConfigV1.Info
+  model: Provider.Model
+  outputTokenMax?: number
+  thresholdOverride?: CompactionThresholdOverride
+}) {
+  return (
+    input.cfg.compaction?.preserve_recent_tokens ??
+    Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable(input) * 0.25)))
+  )
+}
+
+/**
+ * The session's fixed block in tokens — what compaction can never remove. Read
+ * from the engine's own prompt capture, not re-derived: a re-derivation reports
+ * what the engine intended to send, which a plugin transform can make false. Zero
+ * before the first turn, degrading the gate to "is there 8k of anything to remove".
+ */
+export function fixedFloor(sessionID: string | undefined): number {
+  if (!sessionID) return 0
+  const capture = SessionPromptCapture.get(sessionID)
+  if (!capture) return 0
+  const system = capture.finalSystem.reduce((sum, item) => sum + item.tokensApprox, 0)
+  const toolChars = capture.tools.reduce((sum, item) => sum + item.descriptionChars + item.schemaBytes, 0)
+  return system + SessionPromptCapture.estimateTokens(toolChars)
+}
 
 /** An UNKNOWN output limit may claim at most this fraction (1/N) of the window. */
 const UNKNOWN_OUTPUT_RESERVE_DIVISOR = 4
@@ -14,23 +59,14 @@ const UNKNOWN_OUTPUT_RESERVE_DIVISOR = 4
 /**
  * How much of the window to hold back for the model's next reply.
  *
- * `ProviderTransform.maxOutputTokens` answers a different question — "how many
- * tokens may this REQUEST emit" — and for a model that declares no output limit
- * it answers with the flat 32k default (`Math.min(0, 32000) || 32000`). That is
- * the right answer for the request and the wrong one for a RESERVATION: on a
- * 36096-token window it holds back 89% of the context, so `isOverflow` fired at
- * 4096 tokens, on every turn, and again on the summary the compaction had just
- * written. Eleven compaction streams in four minutes on one local model.
- *
- * So: a DECLARED output limit is still honoured verbatim — the model really can
- * emit that much, and under-reserving would overflow mid-generation. A missing
- * one (0, or negative — `Schema.Finite` permits both, and the config schema
- * makes `output` a required sibling of `context`, so every probed local model
- * is written as `output: 0`) is treated as unknown and capped proportionally.
- *
- * The cap only bites below `OUTPUT_TOKEN_MAX * UNKNOWN_OUTPUT_RESERVE_DIVISOR`
- * (128k): at or above that window `floor(context / 4) >= 32000`, so the result
- * is identical to before for every large model, declared limit or not.
+ * `ProviderTransform.maxOutputTokens` answers a different question — how many
+ * tokens this request may emit — and falls back to a flat 32k when a model
+ * declares no output limit, which as a reservation can hold back most of a small
+ * window and make `isOverflow` fire every turn. So a declared limit is honoured
+ * verbatim (under-reserving would overflow mid-generation) and a missing one
+ * (0 or negative; every probed local model is written `output: 0`) is capped
+ * proportionally. The cap only bites below 128k, since above it
+ * `floor(context / 4) >= 32000` anyway.
  */
 function outputReserve(model: Provider.Model, outputTokenMax?: number) {
   if (model.limit.output > 0) return ProviderTransform.maxOutputTokens(model, outputTokenMax)
@@ -42,9 +78,8 @@ export function usable(input: {
   cfg: ConfigV1.Info
   model: Provider.Model
   outputTokenMax?: number
-  /** A per-session auto-compaction threshold (t-kgsdsw), authoritative over
-   *  the cfg-derived reserve when present — see session.ts's own comment on
-   *  `CompactionThresholdOverride` for why it carries a `kind`. */
+  /** A per-session auto-compaction threshold, authoritative over the cfg-derived
+   *  reserve when present. */
   thresholdOverride?: CompactionThresholdOverride
 }) {
   const context = input.model.limit.context
@@ -65,17 +100,53 @@ export function usable(input: {
     : Math.max(0, context - outputReserve(input.model, input.outputTokenMax))
 }
 
-export function isOverflow(input: {
+export type OverflowCheck = {
+  /** Whether auto-compaction should fire. */
+  readonly overflow: boolean
+  /** True when the window is full but the history gate held compaction back. */
+  readonly gated: boolean
+  readonly count: number
+  readonly floor: number
+  readonly history: number
+  readonly usable: number
+  /** The history the gate demanded — `max(MIN_COMPACTABLE_HISTORY, 2 x tail)`. */
+  readonly required: number
+}
+
+export type OverflowInput = {
   cfg: ConfigV1.Info
   tokens: SessionV1.Assistant["tokens"]
   model: Provider.Model
   outputTokenMax?: number
   thresholdOverride?: CompactionThresholdOverride
-}) {
-  if (input.cfg.compaction?.auto === false) return false
-  if (input.model.limit.context === 0) return false
+  /**
+   * The session's fixed block, from `fixedFloor`. Zero when a caller has none: the
+   * gate then measures the whole count as history, which can only let a compaction
+   * through, never hold one back on a floor it did not measure.
+   */
+  floor?: number
+}
 
+/**
+ * The full trigger decision, numbers included, so a caller can log why a full
+ * window did not compact. `isOverflow` narrows this to its boolean.
+ */
+export function overflowCheck(input: OverflowInput): OverflowCheck {
   const count =
     input.tokens.total || input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write
-  return count >= usable(input)
+  const limit = usable(input)
+  const floor = Math.min(Math.max(0, input.floor ?? 0), count)
+  const history = count - floor
+  const required = Math.max(MIN_COMPACTABLE_HISTORY, 2 * preserveRecentBudget(input))
+  const empty = { overflow: false, gated: false, count, floor, history, usable: limit, required }
+
+  if (input.cfg.compaction?.auto === false) return empty
+  if (input.model.limit.context === 0) return empty
+  if (count < limit) return empty
+  if (history < required) return { ...empty, gated: true }
+  return { ...empty, overflow: true }
+}
+
+export function isOverflow(input: OverflowInput) {
+  return overflowCheck(input).overflow
 }

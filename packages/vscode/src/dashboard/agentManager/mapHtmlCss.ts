@@ -1,20 +1,8 @@
-// The static map.html PAGE sheet: the header strip, the two rails, their grips,
-// and the controls inside them. The picture's own sheet is mapHtmlDrawCss.ts —
-// same split as mapHtmlSvg.ts beside this file, for the same reason (the page and
-// the drawing change for completely different causes).
-//
-// ONE DELIBERATE PALETTE, and it is NOT the editor theme. map.html is opened in
-// a browser, off a file:// URL, where no --og-* variable exists and nothing can
-// resolve one; the Labyrinth exporter solves that by reading the running document
-// at export time, but a map is written by a background run with no document to
-// read. So the artifact commits to the cartographer mockup's own palette — the
-// dark slate ground the flow-spine plan was designed and picked on — and the
-// drawing reads the same on every machine that opens it. The IN-EDITOR screen is
-// the surface that follows the user's theme; this one does not, which is why this
-// file is not in the theme-discipline guard's list.
-//
-// Type is system stack only. A webfont would be a network fetch, and
-// self-contained is the artifact's whole contract.
+// The static map.html page sheet: header, rails, grips and controls. map.html is opened off
+// a file:// URL with no --og-* theme variable to resolve, so it commits to the cartographer
+// mockup's own dark-slate palette rather than the editor theme — the in-editor screen
+// follows the theme; this artifact does not. Type is system-stack only, since a webfont
+// would be a network fetch.
 
 export const MAP_CSS = `
   :root {

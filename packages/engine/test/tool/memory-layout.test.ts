@@ -14,6 +14,7 @@ import {
   indexPath,
   indexedTopics,
   INBOX_HOOK,
+  INDEX_FILE,
   INDEX_HEADER,
   INDEX_SECTION,
   isIndexPath,
@@ -75,9 +76,42 @@ describe("memory layout paths", () => {
 
   test("the served footer names the read tool and the directory", () => {
     const footer = indexFooter("/home/me/.origami/memory")
-    expect(footer).toContain("Read the topic file with the read tool for detail before acting on a hook.")
+    expect(footer).toContain("The detail behind each hook is in that topic's own file, which the read tool loads on demand.")
     expect(footer).toContain("/home/me/.origami/memory")
   })
+
+  test("the served footer says the index is already in context, without telling the model what to do", () => {
+    // WORDING, NOT INFORMATION. The footer used to open on "Do not read
+    // MEMORY.md again with the read tool." and follow with "Read the topic file
+    // ...": two orders addressed to the model, riding the TRAILING USER
+    // message. Chatty models answer an order instead of acting on it - the
+    // owner saw turns end on "Understood. I'll continue using the existing
+    // memory index unchanged." - and an order gives no reason, so a model that
+    // wants the index re-reads it anyway. Both lines are statements of fact
+    // now: one says the re-read returns nothing new, the other says where the
+    // detail lives. Same information, nothing to reply to.
+    const footer = indexFooter("/home/me/.origami/memory")
+    expect(footer).toContain("already in context")
+    expect(footer).toContain("returns only what is already here")
+    expect(footer).not.toContain("Do not read")
+    for (const line of footer.split("\n").map((entry) => entry.trim()).filter(Boolean)) {
+      expect(line).not.toMatch(/^(Do|Don't|Read|Use|Keep|Continue|Remember|Note|Please|Ignore)\b/)
+    }
+  })
+
+  test("the file name the footer states is the only one that can ever carry it", () => {
+    // The footer says MEMORY.md in prose, and that is a claim about the whole
+    // system, not about this string: `session/instruction.ts` appends it only
+    // where `isIndexPath` holds, and that demands the basename be exactly
+    // INDEX_FILE inside a `memory` directory. Interpolating the constant is
+    // what keeps the sentence true if the constant ever moves; this pins the
+    // other half, that no differently-named file can be served as the index.
+    expect(indexFooter("/m")).toContain(INDEX_FILE)
+    expect(isIndexPath(`/home/me/.origami/memory/${INDEX_FILE}`)).toBe(true)
+    expect(isIndexPath("/home/me/.origami/memory/memory.md")).toBe(false)
+    expect(isIndexPath("/home/me/.origami/MEMORY.md")).toBe(false)
+  })
+
 })
 
 describe("memory index entries", () => {

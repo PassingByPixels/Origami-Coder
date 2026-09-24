@@ -23,6 +23,7 @@ import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
+import { SubagentDepth } from "./subagent-depth"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
@@ -52,11 +53,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   /**
-   * Tools this ONE turn adds, outside the registry: the collab flock tools,
-   * injected only when the turn is a collab turn. They go through the same
-   * wrapper as every registry tool, so they get argument decoding, output
-   * truncation, the abort signal and the plugin hooks for free - a
-   * hand-rolled `tool()` here would quietly have none of that.
+   * Tools this one turn adds, outside the registry: the collab flock tools,
+   * injected only on a collab turn. They go through the same wrapper as every
+   * registry tool, so they get argument decoding, output truncation, the abort
+   * signal and the plugin hooks; a hand-rolled `tool()` here would have none.
    */
   extraTools?: readonly Tool.Def[]
 }) {
@@ -71,6 +71,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const search = yield* ToolSearch.Service
   const config = yield* Config.Service
+
+  /** How many parents this session has, walked the way `tool/task.ts` walks it
+   *  rather than read off a stored number - two answers here would be worse
+   *  than one walk. A parent row that cannot be read ends the walk: the count
+   *  so far is already >= 1 for any child, which is the cap in the default
+   *  configuration, so the conservative answer is the one it gives. */
+  const depthOf = (session: Session.Info) =>
+    Effect.gen(function* () {
+      let current = session
+      let depth = 0
+      while (current.parentID) {
+        depth++
+        const parent = yield* sessions.get(current.parentID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (!parent) break
+        current = parent
+      }
+      return depth
+    })
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -96,20 +114,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       }),
     ask: (req) =>
       Effect.gen(function* () {
-        // The session ruleset is read HERE, per tool call, not from the snapshot
-        // the turn started with. Approve/YOLO writes land on the session store
-        // mid-turn (acp setPermissionMode writes the preset rules onto the row
-        // itself; an ordinary prompt's `tools` map rewrites them), and a turn
-        // that closed over its opening ruleset kept prompting for the rest of
-        // the turn - the button visibly did nothing until the user sent another
-        // message. One row read per ask.
+        // The session ruleset is read here, per tool call, not from the snapshot
+        // the turn started with: approve/YOLO writes land on the session store
+        // mid-turn, and a turn that closed over its opening ruleset would keep
+        // prompting until the user sent another message. One row read per ask.
         const live = yield* sessions.get(input.session.id).pipe(Effect.orDie)
         return yield* permission.ask({
           ...req,
           sessionID: input.session.id,
-          // Read off the LIVE row, like the ruleset above. Its presence is what
-          // tells the permission service this ask has no window of its own and
-          // must not wait forever - see `Permission.ask`.
+          // Read off the live row, like the ruleset above. Its presence tells the
+          // permission service this ask has no window of its own and must not
+          // wait forever — see `Permission.ask`.
           parentSessionID: live.parentID,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(input.agent.permission, live.permission ?? []),
@@ -122,43 +137,86 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     providerID: input.model.providerID,
     agent: input.agent,
     permission: input.session.permission,
-    // The chat's OWN vision profile, read off the session row rather than off
-    // the turn's arming gate: the roster question is "may the model delegate to
-    // this profile", which is answered by the user having picked one, not by
-    // whether this particular turn also carries a picture.
+    // The chat's own vision profile, read off the session row rather than the
+    // turn's arming gate: the roster question is "may the model delegate to this
+    // profile", answered by the user having picked one, not by whether this
+    // particular turn also carries a picture.
     visionProfile: Session.visionProfile(input.session),
   })
 
-  // Deferred tool catalog (t-kgtaac). A deferred tool is left OUT of the map
-  // built below and advertised as one line on `tool_search` instead, so its
-  // schema costs nothing until the model asks for it. Two facts make that
-  // safe: this resolve runs once per STEP of the agent loop (session/prompt.ts
-  // calls it inside `while (true)`), so a tool found on step N is callable on
-  // step N+1 of the same turn; and the loaded ids are session state, so it
-  // stays callable for every later turn without searching again.
+  // Deferred tool catalog. A deferred tool is left out of the map built below and
+  // advertised as one line on `tool_search` instead, so its schema costs nothing
+  // until the model asks for it. Two facts make that safe: this resolve runs once
+  // per step of the agent loop, so a tool found on step N is callable on step N+1
+  // of the same turn; and the loaded ids are session state, so it stays callable
+  // for every later turn without searching again.
   //
-  // Code mode replaces the whole MCP tool list with one `execute` tool, so
-  // there is nothing left to defer there — the empty record below is what
-  // keeps the two features from fighting over the same tools.
+  // Code mode replaces the whole MCP tool list with one `execute` tool, so there
+  // is nothing left to defer there — the empty record below keeps the two
+  // features from fighting over the same tools.
   const mcpEntries = flags.experimentalCodeMode ? {} : yield* mcp.tools()
 
-  // OFF (`tools: { <id>: false }`) is applied HERE, before the deferral
-  // decision, and that order is the whole point: a switched-off tool must not
-  // become a `tool_search` catalog line either, or "off" would mean "one line
-  // cheaper and still callable". Off is absence.
+  // Off (`tools: { <id>: false }`) is applied before the deferral decision, and
+  // that order is the point: a switched-off tool must not become a `tool_search`
+  // catalog line either, or "off" would mean "one line cheaper and still
+  // callable". Off is absence.
   //
-  // Registry tools and MCP tools both go through it — those are the two
-  // populations a user can name. `input.extraTools` deliberately does NOT:
-  // the collab flock tools are injected for the duration of one collab turn
-  // and never appear in any catalog, so the only thing a pattern could do
-  // there is break a running flock from a config file that never listed them.
-  const off = ToolEnabled.offPatterns(yield* config.get())
-  const offered = ToolEnabled.keepEnabled(resolved, off)
-  const mcpOffered = Object.fromEntries(
+  // Registry tools and MCP tools both go through it — the two populations a user
+  // can name. `input.extraTools` deliberately does not: the collab flock tools
+  // last one turn and never appear in any catalog, so a pattern there could only
+  // break a running flock.
+  const cfg = yield* config.get()
+  const off = ToolEnabled.offPatterns(cfg)
+  // t-h8s3xg. A session already at `subagent_depth` cannot spawn, so it is not
+  // offered the tools that spawn. Applied HERE, beside `off`, and for the same
+  // reason: absence is the only state a config line cannot lift. The owner's
+  // `agent.general.permission.task: allow` plus `tool_search.always: [task]`
+  // used to put `task` in a child's list, and the model then read a depth error
+  // it could do nothing about. `tool/task.ts` keeps the runtime check as the
+  // backstop. No parent, no walk: an ordinary chat pays nothing for this.
+  const nested = input.session.parentID ? SubagentDepth.atCap(yield* depthOf(input.session), cfg.subagent_depth) : false
+  const spawnable = nested ? resolved.filter((item) => !SubagentDepth.NESTED_TASK_TOOLS.includes(item.id)) : resolved
+  const enabled = ToolEnabled.keepEnabled(spawnable, off)
+  const mcpEnabled = Object.fromEntries(
     Object.entries(mcpEntries).filter(([id]) => !ToolEnabled.isOff(id, off)),
   ) as typeof mcpEntries
 
-  const searchSettings = yield* search.settings()
+  // The agent's cage, applied to the prompt and not only to execution.
+  //
+  // `session/llm/request.ts` resolveTools already drops a tool the ruleset denies
+  // before the call goes out, but the catalog line is decided here: without this
+  // a caged agent is advertised a `tool_search` catalog naming tools it can never
+  // execute, and a search that "loads" one produces a tool the next request drops
+  // again. Deciding it here means a denied tool is neither declared nor listed.
+  // The ruleset is the same one the request layer merges (agent + session row),
+  // so the two cannot disagree.
+  const cage = Permission.merge(input.agent.permission, input.session.permission ?? [])
+  const caged = Permission.disabled([...enabled.map((item) => item.id), ...Object.keys(mcpEnabled)], cage)
+  const offered = enabled.filter((item) => !caged.has(item.id))
+  const mcpOffered = Object.fromEntries(
+    Object.entries(mcpEnabled).filter(([id]) => !caged.has(id)),
+  ) as typeof mcpEntries
+
+  // t-di2u7z. The deferral lists AS THIS AGENT SEES THEM: the workspace lists
+  // with the agent's own `tool_search` block overlaid. Read off the config by
+  // name rather than through Agent.Info, because `config.get().agent` is already
+  // the union of the JSON `agent` blocks and the markdown definition files - the
+  // two populations the Tools tab's sub-agent rows come from - and nothing about
+  // the ToolSearch service becomes per-session.
+  //
+  // t-f39xs2 adds the layer UNDER that: the archetype's own
+  // `Agent.Info.tool_search`, so a native ships a default deferred list with no
+  // config present. The config block still wins on the tools it names.
+  const searchSettings = ToolSearch.forSpawn(
+    yield* search.settings(),
+    input.agent.tool_search,
+    cfg.agent?.[input.agent.name]?.tool_search,
+  )
+  // t-fdveov: `task_list` / `task_stop` never end up on the catalog while
+  // `task` is in `offered` - see the comment on `ToolSearch.deferred`. When
+  // that overrides a `defer` entry or the tools' own `deferrable: true`, log
+  // it once so a config author can see why the tool stayed loaded.
+  let taskCompanionOverride: readonly string[] = []
   const hidden = new Set(
     ToolSearch.deferred(
       [
@@ -171,8 +229,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       ],
       searchSettings,
       yield* search.loaded(input.session.id),
+      (ids) => {
+        taskCompanionOverride = ids
+      },
     ),
   )
+  if (taskCompanionOverride.length > 0) {
+    yield* Effect.logInfo("tool_search: kept task's companions loaded", {
+      agent: input.agent.name,
+      tools: taskCompanionOverride,
+    })
+  }
   const catalog: { candidate: ToolSearch.Candidate; schema: JSONSchema7 }[] = []
 
   for (const item of [...offered, ...(input.extraTools ?? [])]) {
@@ -621,9 +688,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { args },
             )
             const matched = ToolSearch.rank(candidates, parsed.query, parsed.limit)
-            // Written BEFORE the reply is rendered: the next step re-runs this
-            // whole resolve, and it is the session state - not this output -
-            // that decides whether the tool is in the map by then.
+            // Written before the reply is rendered: the next step re-runs this
+            // whole resolve, and it is the session state — not this output — that
+            // decides whether the tool is in the map by then.
             yield* search.load(
               input.session.id,
               matched.map((entry) => entry.id),
@@ -671,18 +738,16 @@ type Ask = Parameters<Tool.Context["ask"]>[0]
 /**
  * Permission shape for an MCP tool that an agent-plugins.org plugin supplied.
  *
- * The plain MCP gate is `mcpAsk` below: `permission` is the flattened tool key
- * and the pattern is `*`, so a rule can name one exact tool or every tool and
- * nothing in between. A plugin needs the middle - one decision covering the
- * whole package. So plugin tools follow the convention the MCP RESOURCE tools
- * already use in this file (`permission: "read"`, `patterns: ["mcp:<server>:*"]`):
- * the permission names the CATEGORY, the pattern names the TARGET. That is what
- * lets `permission: { plugin: { "plugin:qwen-mm-plugins-blender:*": "allow" } }`
- * mean "trust this plugin" without also meaning "trust every plugin".
+ * The plain MCP gate (`mcpAsk` below) keys `permission` on the flattened tool key
+ * with pattern `*`, so a rule can name one exact tool or every tool and nothing
+ * in between. A plugin needs the middle — one decision covering the package — so
+ * plugin tools follow the convention the MCP resource tools use here: the
+ * permission names the category, the pattern names the target. That is what lets
+ * `permission: { plugin: { "plugin:<name>:*": "allow" } }` mean "trust this
+ * plugin" without also meaning "trust every plugin".
  *
- * `always` widens to the whole plugin on purpose. Approving one Blender tool and
- * then being asked again for each of the other twenty-one is the behaviour users
- * report as the prompt being broken.
+ * `always` widens to the whole plugin on purpose: approving one tool and then
+ * being asked again for each of its siblings reads as a broken prompt.
  */
 function pluginAsk(plugin: string | undefined, tool: string): Ask | undefined {
   if (!plugin) return undefined

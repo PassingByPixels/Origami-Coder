@@ -25,7 +25,7 @@ import {
   BoardUpdateTool,
   BoardWorktreesTool,
 } from "../../src/tool/board"
-import { fmSet, mergeReposText, newTicketFile, parseRepos } from "../../src/tool/board-store"
+import { fmSet, mergeReposText, newTicketFile, parseRepos, registryTextForWrite, RegistryReadFailedError, writeRepos } from "../../src/tool/board-store"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -368,7 +368,65 @@ describe("mergeReposText (the registry merge rule)", () => {
   )
 })
 
+describe("registryTextForWrite (finding 17: never merge {} over a file that failed to read)", () => {
+  it.effect(
+    "refuses when the file exists but the read came back empty",
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(registryTextForWrite("repos.json", true, undefined))
+      expect(failure).toBeInstanceOf(RegistryReadFailedError)
+      expect(failure.message).toContain("repos.json")
+    }),
+  )
+
+  it.effect(
+    "proceeds with undefined when the file never existed (first write)",
+    Effect.gen(function* () {
+      const text = yield* registryTextForWrite("repos.json", false, undefined)
+      expect(text).toBeUndefined()
+    }),
+  )
+
+  it.effect(
+    "proceeds with the read text when the file existed and was read",
+    Effect.gen(function* () {
+      const text = yield* registryTextForWrite("repos.json", true, '{"version":1}')
+      expect(text).toBe('{"version":1}')
+    }),
+  )
+})
+
 describe("board tools", () => {
+  it.instance(
+    "writeRepos refuses to overwrite repos.json when it exists but cannot be read as a file",
+    () =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        const home = yield* useHome(directory)
+        const file = yield* Effect.promise(() => registerRepo(home, "demo", directory))
+
+        // Corrupt the registry to something that EXISTS but cannot be read as a
+        // file (EISDIR, not "not found") -- the same shape as a Windows
+        // EBUSY/EPERM read failure: existsSafe is true, readFileStringSafe still
+        // comes back undefined. Before the fix, writeRepos treated that the same
+        // as "no file yet" and replaced it with `{ repos: [only the patch] }`.
+        yield* Effect.promise(async () => {
+          await fsp.rm(file, { force: true })
+          await fsp.mkdir(file)
+        })
+
+        const fs = yield* FSUtil.Service
+        const failure = yield* Effect.flip(
+          writeRepos(fs, [{ root: "/somewhere/else", name: "other", workspace: false, addedAt: 1 }]),
+        )
+
+        expect(failure).toBeInstanceOf(RegistryReadFailedError)
+        // Refused before ever writing: the corrupted path is still a directory,
+        // never replaced by a fresh, wiped repos.json.
+        const stat = yield* Effect.promise(() => fsp.stat(file))
+        expect(stat.isDirectory()).toBe(true)
+      }),
+    { git: true },
+  )
   it.instance(
     "a missing repos.json reads as an empty board, and reads never ask permission",
     () =>

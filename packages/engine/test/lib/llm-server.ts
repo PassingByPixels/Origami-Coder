@@ -4,7 +4,10 @@ import { Deferred, Effect, Layer, Context, Stream } from "effect"
 import * as HttpServer from "effect/unstable/http/HttpServer"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 
-export type Usage = { input: number; output: number }
+/** `cached` is the OpenAI `prompt_tokens_details.cached_tokens` subset of
+ *  `input`. Omitted means the provider reported NO cache field at all, which is
+ *  what a cache-blind lane (LM Studio, sglang, most vLLM builds) really sends. */
+export type Usage = { input: number; output: number; cached?: number }
 
 type Line = Record<string, unknown>
 
@@ -18,6 +21,8 @@ type Flow =
 type Hit = {
   url: URL
   body: Record<string, unknown>
+  /** The request body exactly as it arrived, for tests that compare bytes. */
+  raw: string
 }
 
 type Match = (hit: Hit) => boolean
@@ -63,6 +68,7 @@ function tokens(input?: Usage) {
     prompt_tokens: input.input,
     completion_tokens: input.output,
     total_tokens: input.input + input.output,
+    ...(input.cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: input.cached } }),
   }
 }
 
@@ -597,10 +603,19 @@ function item(input: Item | Reply) {
   return input instanceof Reply ? input.item() : input
 }
 
-function hit(url: string, body: unknown) {
+function parseBody(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return {}
+  }
+}
+
+function hit(url: string, body: unknown, raw = "") {
   return {
     url: new URL(url, "http://localhost"),
     body: body && typeof body === "object" ? (body as Record<string, unknown>) : {},
+    raw,
   } satisfies Hit
 }
 
@@ -685,8 +700,9 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
 
       const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses") {
         const req = yield* HttpServerRequest.HttpServerRequest
-        const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
-        const current = hit(req.originalUrl, body)
+        const raw = yield* req.text.pipe(Effect.orElseSucceed(() => ""))
+        const body = parseBody(raw)
+        const current = hit(req.originalUrl, body, raw)
         if (isTitleRequest(body)) {
           hits = [...hits, current]
           yield* notify()

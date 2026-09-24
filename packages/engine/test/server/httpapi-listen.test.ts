@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url"
 import { Flag } from "@origami/core/flag/flag"
 import { Server } from "../../src/server/server"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
+import { GlobalPaths } from "../../src/server/routes/instance/httpapi/groups/global"
 import { withTimeout } from "../../src/util/timeout"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
@@ -293,7 +294,20 @@ describe("HttpApi Server.listen", () => {
       return true
     }) as typeof process.stderr.write
     try {
-      const response = await Server.Default().app.request("/status")
+      // /global/health, not "/status": this fork's routes are group-prefixed
+      // (GlobalPaths.health, groups/global.ts:66) and no bare /status exists,
+      // so the old path 404'd before the handler could log anything and the
+      // stderr assertion below passed for the wrong reason.
+      //
+      // Send credentials unconditionally. `Server.Default` is `lazy()` over a
+      // process-wide memoized `HttpApiApp.context` (server.ts:57), so the auth
+      // config is resolved by whichever test in this file touches the server
+      // first and afterEach cannot walk it back - an unauthenticated request
+      // here is 200 or 401 depending on test order. The subject of this test is
+      // the stderr assertion, not the auth state, so pin the request to 200.
+      const response = await Server.Default().app.request(GlobalPaths.health, {
+        headers: { authorization: authorization() },
+      })
       expect(response.status).toBe(200)
     } finally {
       process.stderr.write = original

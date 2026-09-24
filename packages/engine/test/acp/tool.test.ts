@@ -168,6 +168,13 @@ describe("acp tool conversion", () => {
           newText: "after",
         },
       ],
+      // t-q90p6v: the completed frame carries the input too, so a client that persists the stream
+      // can still derive the card's title and shell fields from it.
+      rawInput: {
+        filePath: "/tmp/file.ts",
+        oldString: "before",
+        newString: "after",
+      },
       rawOutput: {
         output: "Edit applied successfully.",
       },
@@ -577,5 +584,35 @@ describe("acp tool conversion", () => {
         state: { status: "completed", input: { filePath: "/tmp/a.ts" }, output: "ok", title: "a.ts" },
       }).title,
     ).toBe("a.ts")
+  })
+
+  // t-q90p6v. A client that persists the stream rebuilds a card's shell fields and its title from
+  // `rawInput`. `read`, `glob` and `grep` finish without ever emitting a RUNNING frame, and a bash
+  // call's PENDING frame carries only `{cwd}` (its arguments are still streaming), so before this
+  // the completed frame left such a client with no input at all — the defect behind `bash` and
+  // `read` headers in a reopened session.
+  test("the completed update carries the call input, so a stored frame is self-describing", () => {
+    const update = completedToolUpdate({
+      toolCallId: "p9",
+      toolName: "bash",
+      state: {
+        status: "completed",
+        input: { command: "git status", explanation: "check the tree", cwd: "/repo" },
+        output: "clean",
+        title: "check the tree",
+      },
+    })
+
+    expect(update.rawInput).toEqual({ command: "git status", explanation: "check the tree", cwd: "/repo" })
+    // A shell card reads its working directory off the same field, filled in from the session cwd
+    // exactly as the running frame fills it.
+    expect(
+      completedToolUpdate({
+        toolCallId: "p10",
+        toolName: "bash",
+        state: { status: "completed", input: { command: "ls" }, output: "", title: "ls" },
+        cwd: "/repo",
+      }).rawInput,
+    ).toEqual({ command: "ls", cwd: "/repo" })
   })
 })

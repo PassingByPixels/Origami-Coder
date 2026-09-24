@@ -15,7 +15,7 @@ import BoardShell from '../panes/BoardShell.svelte';
 
 const railButtons = (c: HTMLElement) => Array.from(c.querySelectorAll('.nav-btn')) as HTMLButtonElement[];
 const railButton = (c: HTMLElement, titlePrefix: string): HTMLButtonElement =>
-  railButtons(c).find((b) => (b.getAttribute('title') ?? '').startsWith(titlePrefix))!;
+  railButtons(c).find((b) => (b.getAttribute('aria-label') ?? '').startsWith(titlePrefix))!;
 
 beforeEach(() => {
   globalThis.__vscodeApiMock.postMessage.mockClear();
@@ -31,7 +31,7 @@ describe('BoardShell — Folds is the default view', () => {
     await tick();
     expect(container.querySelector('.am-root')).not.toBeNull();
     expect(container.querySelector('.skills-pane')).toBeNull();
-    expect(container.querySelector('.loops-pane')).toBeNull();
+    expect(container.querySelector('.sch-pane')).toBeNull();
     expect(container.querySelector('.lab-pane')).toBeNull();
     expect(container.querySelector('.ins-pane')).toBeNull();
     expect(railButton(container, 'Folds').classList.contains('active')).toBe(true);
@@ -39,18 +39,49 @@ describe('BoardShell — Folds is the default view', () => {
 
   // The rail order is the OWNER's, so it is asserted exactly rather than as a
   // set: a view drifting back to build order is the regression, and a
-  // set-comparison would pass straight through it.
-  it('exposes the ten views in the owner order, then the spacer, then Docs alone at the foot', async () => {
+  // set-comparison would pass straight through it. Remote is on the rail
+  // whatever the setting says — the row is visible, the SETTING is what gates
+  // the socket. Pinned both ways: with the prop on here, off below.
+  it('exposes the thirteen top views in the owner order, then the spacer, then Settings and Docs at the foot, with Remote on', async () => {
+    const { container } = render(BoardShell, { props: { remoteEnabled: true } });
+    await tick();
+    const titles = railButtons(container).map((b) => (b.getAttribute('aria-label') ?? '').split(' — ')[0]);
+    expect(titles).toEqual([
+      // t-ru1qsp: Loops and Crons folded into one Schedules row.
+      'Folds', 'Bots', 'Schedules', 'Skills', 'Labyrinth', 'Insights', 'Tools', 'Plugins', 'MCP',
+      // Remote and Flock are LAST and adjacent (owner ruling: "a new Icon below
+      // MCP that was Rem and Flo"). Everything above them is about this editor.
+      // t-rz4555: Artifacts joins that off-machine group — an artifact is one
+      // object in the device group, beside the phone and the friend's Origami.
+      // t-s9jr6u: Nests directly after Remote (both reach other devices).
+      'Artifacts', 'Remote', 'Nests', 'Flock',
+      // t-s9jr6u: Settings at the FOOT, directly above Docs.
+      'Settings', 'Docs',
+    ]);
+    // Docs is a LINK, not a view (owner ruling), at the very foot; Settings is
+    // the one VIEW below the flex spacer, directly above it.
+    const docs = railButtons(container).at(-1)!;
+    const settings = railButtons(container).at(-2)!;
+    expect(docs.previousElementSibling).toBe(settings);
+    expect(settings.previousElementSibling?.classList.contains('nav-spacer')).toBe(true);
+  });
+
+  // THE HIDE IS REVERSED (remote-device-key lane). The iOS app makes Remote a
+  // shipping feature and a row nobody can see is a feature nobody turns on, so
+  // the rail draws it with the setting OFF (no `remoteEnabled` prop) exactly as
+  // it does with it on. What the setting still gates is every line that costs
+  // something — no socket, no timer, no secret read.
+  it('keeps Remote on the rail when origamicoder.remote.enabled is off (the default)', async () => {
     const { container } = render(BoardShell);
     await tick();
-    const titles = railButtons(container).map((b) => (b.getAttribute('title') ?? '').split(' — ')[0]);
+    const titles = railButtons(container).map((b) => (b.getAttribute('aria-label') ?? '').split(' — ')[0]);
     expect(titles).toEqual([
-      'Folds', 'Bots', 'Loops', 'Crons', 'Skills', 'Labyrinth', 'Insights', 'Tools', 'Plugins', 'MCP', 'Docs',
+      'Folds', 'Bots', 'Schedules', 'Skills', 'Labyrinth', 'Insights', 'Tools', 'Plugins', 'MCP',
+      // t-rz4555: Artifacts joins that off-machine group — an artifact is one
+      // object in the device group, beside the phone and the friend's Origami.
+      'Artifacts', 'Remote', 'Nests', 'Flock',
+      'Settings', 'Docs',
     ]);
-    // Docs is a LINK, not a view (owner ruling): it sits after the flex spacer
-    // — physically separated from the view stack — and never joins VIEWS.
-    const docs = railButtons(container).at(-1)!;
-    expect(docs.previousElementSibling?.classList.contains('nav-spacer')).toBe(true);
   });
 
   // Owner ruling: the rail's three-letter captions should name what each view
@@ -73,7 +104,7 @@ describe('BoardShell — Folds is the default view', () => {
   it('has no Collabs rail entry', async () => {
     const { container } = render(BoardShell);
     await tick();
-    expect(railButtons(container).map((b) => b.getAttribute('title')).some((t) => (t ?? '').startsWith('Collabs'))).toBe(false);
+    expect(railButtons(container).map((b) => b.getAttribute('aria-label')).some((t) => (t ?? '').startsWith('Collabs'))).toBe(false);
   });
 
   // A user who had the deleted view open still carries `origami.board.view:
@@ -94,13 +125,70 @@ describe('BoardShell — Folds is the default view', () => {
   it('the Instructions view is captioned Insights but still persists under its old id', async () => {
     const { container } = render(BoardShell);
     await tick();
-    expect(railButtons(container).map((b) => b.getAttribute('title'))
+    expect(railButtons(container).map((b) => b.getAttribute('aria-label'))
       .some((t) => (t ?? '').startsWith('Instructions'))).toBe(false);
     await fireEvent.click(railButton(container, 'Insights'));
     await tick();
     expect(container.querySelector('.ins-pane')).not.toBeNull();
     expect(globalThis.__vscodeApiMock.setState.mock.calls.at(-1)?.[0])
       .toMatchObject({ 'origami.board.view': 'instructions' });
+  });
+
+  // The two views added below MCP (owner: "Origami Remote and Flock i dont see in
+  // the Agent Managers Side bar"). Same routing assertion the Bots row gets, per
+  // pane, because the regression a new rail row invites is mounting the WRONG
+  // component under the new id — which looks fine until you notice the body
+  // never changed.
+  it('Remote: mounts the Remote pane, unmounts Folds, marks itself active only', async () => {
+    const { container } = render(BoardShell, { props: { remoteEnabled: true } });
+    await tick();
+    const btn = railButton(container, 'Remote');
+    await fireEvent.click(btn);
+    await tick();
+    expect(container.querySelector('.remote-pane')).not.toBeNull();
+    expect(container.querySelector('.am-root')).toBeNull();
+    expect(btn.classList.contains('active')).toBe(true);
+    expect(globalThis.__vscodeApiMock.setState.mock.calls.at(-1)?.[0])
+      .toMatchObject({ 'origami.board.view': 'remote' });
+  });
+
+  // The hide is reversed: a saved `remote` view id is restored whether or not
+  // the setting is on, because the ROW is drawn either way now. What the
+  // setting gates is the socket, and the pane says so itself when it is off.
+  it('a saved `remote` view id is restored when Remote is off (the default) too', async () => {
+    globalThis.__vscodeApiMock.getState.mockReturnValue({ 'origami.board.view': 'remote' });
+    const { container } = render(BoardShell);
+    await tick();
+    expect(container.querySelector('.remote-pane')).not.toBeNull();
+    expect(railButton(container, 'Remote').classList.contains('active')).toBe(true);
+  });
+
+  it('a saved `remote` view id is restored when Remote is on', async () => {
+    globalThis.__vscodeApiMock.getState.mockReturnValue({ 'origami.board.view': 'remote' });
+    const { container } = render(BoardShell, { props: { remoteEnabled: true } });
+    await tick();
+    expect(container.querySelector('.remote-pane')).not.toBeNull();
+    expect(railButton(container, 'Remote').classList.contains('active')).toBe(true);
+  });
+
+  // The persisted id is `friends`, NOT `flock`: that word is already the Folds
+  // view's id, and taking it would silently move every user who had Folds open.
+  it('Flock: mounts the Flock pane and persists under `friends`, leaving Folds on `flock`', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    const btn = railButton(container, 'Flock');
+    await fireEvent.click(btn);
+    await tick();
+    expect(container.querySelector('.flock-pane')).not.toBeNull();
+    expect(container.querySelector('.am-root')).toBeNull();
+    expect(globalThis.__vscodeApiMock.setState.mock.calls.at(-1)?.[0])
+      .toMatchObject({ 'origami.board.view': 'friends' });
+
+    await fireEvent.click(railButton(container, 'Folds'));
+    await tick();
+    expect(container.querySelector('.am-root')).not.toBeNull();
+    expect(globalThis.__vscodeApiMock.setState.mock.calls.at(-1)?.[0])
+      .toMatchObject({ 'origami.board.view': 'flock' });
   });
 
   // The regression this catches is the one a new rail row invites: routing the
@@ -124,7 +212,7 @@ describe('BoardShell — Folds is the default view', () => {
   it('the Bots view is captioned Bots but still persists under its old collabagents id', async () => {
     const { container } = render(BoardShell);
     await tick();
-    expect(railButtons(container).map((b) => b.getAttribute('title'))
+    expect(railButtons(container).map((b) => b.getAttribute('aria-label'))
       .some((t) => (t ?? '').startsWith('Collab agents'))).toBe(false);
     await fireEvent.click(railButton(container, 'Bots'));
     await tick();
@@ -143,13 +231,15 @@ describe('BoardShell — Folds is the default view', () => {
     expect(container.querySelector('.ca-notice')!.textContent).toMatch(/restart/i);
   });
 
-  it('Crons and Loops are described as DIFFERENT things — the distinction users get wrong', async () => {
-    // A loop dies with the window; a cron is an OS task that fires with VS Code
-    // closed. A rail that blurs the two sends people to the wrong view.
+  // t-ru1qsp: Crons and Loops are now ONE rail item, but the rail's own hover
+  // title still names both halves of what it opens — the distinction itself
+  // moved to the tab titles inside SchedulesPane (schedulesPane.test.ts).
+  it('the Schedules rail entry names both crons (fires closed) and loops (repeats while open) in its title', async () => {
     const { container } = render(BoardShell);
     await tick();
-    expect(railButton(container, 'Crons').getAttribute('title')).toContain('closed');
-    expect(railButton(container, 'Loops').getAttribute('title')).not.toContain('closed');
+    const title = railButton(container, 'Schedules').getAttribute('aria-label') ?? '';
+    expect(title).toContain('closed');
+    expect(title.toLowerCase()).toContain('loop');
   });
 });
 
@@ -241,41 +331,32 @@ describe('BoardShell — clicking a rail entry swaps the view and marks it activ
     expect(railButton(container, 'Folds').classList.contains('active')).toBe(false);
   });
 
-  it('Loops: mounts LoopsPane, marks Loops active only', async () => {
+  // t-ru1qsp: one Schedules row now routes to SchedulesPane, which opens on
+  // Crons by default (schedulesPane.test.ts covers its own tab switching and
+  // the Crons-vs-Loops distinction in depth). This only pins the rail's own
+  // wiring: the right pane mounts, the right button goes active.
+  it('Schedules: mounts SchedulesPane (defaulting to its Crons tab), marks Schedules active only', async () => {
     const { container } = render(BoardShell);
     await tick();
-    const loops = railButton(container, 'Loops');
-    await fireEvent.click(loops);
+    const sch = railButton(container, 'Schedules');
+    await fireEvent.click(sch);
     await tick();
-    expect(container.querySelector('.loops-pane')).not.toBeNull();
-    expect(container.querySelector('.am-root')).toBeNull();
-    expect(loops.classList.contains('active')).toBe(true);
-    expect(railButton(container, 'Folds').classList.contains('active')).toBe(false);
-  });
-
-  it('Crons: mounts CronsPane (not LoopsPane), marks Crons active only', async () => {
-    const { container } = render(BoardShell);
-    await tick();
-    const crons = railButton(container, 'Crons');
-    await fireEvent.click(crons);
-    await tick();
+    expect(container.querySelector('.sch-pane')).not.toBeNull();
     expect(container.querySelector('.crons-pane')).not.toBeNull();
-    // The wiring regression that matters: routing Crons at the Loops pane.
-    expect(container.querySelector('.loops-pane')).toBeNull();
     expect(container.querySelector('.am-root')).toBeNull();
-    expect(crons.classList.contains('active')).toBe(true);
+    expect(sch.classList.contains('active')).toBe(true);
   });
 
   it('clicking back to Folds restores AgentManagerPane and its active state', async () => {
     const { container } = render(BoardShell);
     await tick();
-    await fireEvent.click(railButton(container, 'Crons'));
+    await fireEvent.click(railButton(container, 'Schedules'));
     await tick();
     const folds = railButton(container, 'Folds');
     await fireEvent.click(folds);
     await tick();
     expect(container.querySelector('.am-root')).not.toBeNull();
-    expect(container.querySelector('.crons-pane')).toBeNull();
+    expect(container.querySelector('.sch-pane')).toBeNull();
     expect(folds.classList.contains('active')).toBe(true);
   });
 });
@@ -342,6 +423,93 @@ describe('BoardShell — a section request from another webview', () => {
     expect(container.querySelector('.am-root')).not.toBeNull();
     expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0]?.type)).toContain('boardSectionShown');
   });
+
+  // t-ru1qsp acceptance: "opening view id crons or loops selects the matching
+  // tab". These are legacy section words from before the Schedules fold —
+  // viewForSection (boardViews.ts) still maps both onto the one rail item,
+  // and remembers WHICH one so SchedulesPane opens on that tab, not always Crons.
+  it('a `loops` request opens Schedules on its Loops tab', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    await showSection('loops');
+    expect(container.querySelector('.sch-pane')).not.toBeNull();
+    expect(container.querySelector('.loops-pane')).not.toBeNull();
+    expect(container.querySelector('.crons-pane')).toBeNull();
+    expect(railButton(container, 'Schedules').classList.contains('active')).toBe(true);
+  });
+
+  it('a `crons` request opens Schedules on its Crons tab', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    await showSection('crons');
+    expect(container.querySelector('.sch-pane')).not.toBeNull();
+    expect(container.querySelector('.crons-pane')).not.toBeNull();
+    expect(container.querySelector('.loops-pane')).toBeNull();
+    expect(railButton(container, 'Schedules').classList.contains('active')).toBe(true);
+  });
+});
+
+// t-qn09vr: the rail expands on pointer/focus to full names, collapses to
+// icons otherwise. Ported as JS-driven state (a `.rail-expanded` class, not a
+// bare `:hover` CSS rule) precisely so it is provable here — jsdom has no
+// layout engine, so a width transition cannot be read back through
+// getComputedStyle, but a class toggle can.
+describe('BoardShell — the rail expands on hover/focus to full names', () => {
+  it('is collapsed at rest and gains .rail-expanded on pointerenter, loses it on pointerleave', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    const nav = container.querySelector('.board-nav')!;
+    expect(nav.classList.contains('rail-expanded')).toBe(false);
+    await fireEvent.pointerEnter(nav);
+    expect(nav.classList.contains('rail-expanded')).toBe(true);
+    await fireEvent.pointerLeave(nav);
+    expect(nav.classList.contains('rail-expanded')).toBe(false);
+  });
+
+  it('also expands on focus (keyboard use), not only pointer hover', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    const nav = container.querySelector('.board-nav')!;
+    await fireEvent.focusIn(nav);
+    expect(nav.classList.contains('rail-expanded')).toBe(true);
+    await fireEvent.focusOut(nav);
+    expect(nav.classList.contains('rail-expanded')).toBe(false);
+  });
+
+  // CHANGES.md change 33: "the names are restored from each button's own
+  // `title`" — here, the ViewDef's own `name` field, not the 3-letter `label`
+  // caption every entry always shows collapsed.
+  it('swaps the 3-letter caption for the full name while expanded, and back on collapse', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    const nav = container.querySelector('.board-nav')!;
+    const folds = railButton(container, 'Folds');
+    expect(folds.querySelector('.nav-label')!.textContent).toBe('Git');
+    await fireEvent.pointerEnter(nav);
+    expect(folds.querySelector('.nav-label')!.textContent).toBe('Folds');
+    await fireEvent.pointerLeave(nav);
+    expect(folds.querySelector('.nav-label')!.textContent).toBe('Git');
+  });
+
+  // The porting trap named in the ticket: the rail used to carry no view id in
+  // the DOM at all (round-3 change 49 matched on the `title` prefix instead).
+  // t-ru1qsp folded Crons and Loops into one row: this now pins the SINGLE
+  // `schedules` id, and that no separate `crons`/`loops` rail button exists —
+  // the acceptance item's "same single word" check, expanded and collapsed both.
+  it('stamps the Schedules button with data-view-id="schedules", with no separate Crons/Loops button', async () => {
+    const { container } = render(BoardShell);
+    await tick();
+    expect(railButton(container, 'Folds').getAttribute('data-view-id')).toBe('flock');
+    expect(railButton(container, 'Schedules').getAttribute('data-view-id')).toBe('schedules');
+    const labels = railButtons(container).map((b) => (b.getAttribute('aria-label') ?? '').split(' — ')[0]);
+    expect(labels.filter((l) => l === 'Schedules')).toHaveLength(1);
+    expect(labels).not.toContain('Crons');
+    expect(labels).not.toContain('Loops');
+
+    const nav = container.querySelector('.board-nav')!;
+    await fireEvent.pointerEnter(nav);
+    expect(railButton(container, 'Schedules').querySelector('.nav-label')!.textContent).toBe('Schedules');
+  });
 });
 
 describe('BoardShell — the host brand bar is told which view is on screen', () => {
@@ -355,13 +523,9 @@ describe('BoardShell — the host brand bar is told which view is on screen', ()
     await tick();
     expect(seen.at(-1)).toBe('Folds');
 
-    await fireEvent.click(railButton(container, 'Loops'));
+    await fireEvent.click(railButton(container, 'Schedules'));
     await tick();
-    expect(seen.at(-1)).toBe('Loops');
-
-    await fireEvent.click(railButton(container, 'Crons'));
-    await tick();
-    expect(seen.at(-1)).toBe('Crons');
+    expect(seen.at(-1)).toBe('Schedules');
   });
 
   // The Routings view was DELETED, but a user who had it open still carries

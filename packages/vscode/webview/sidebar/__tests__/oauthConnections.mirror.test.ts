@@ -84,11 +84,29 @@ describe('the OAuth catalog rows and the host provider specs agree', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('the OAuth rows do not collide with the API-key rows they sit beside', () => {
+  it('no OAuth row takes its own provider id — that is the keyed-{#each} rule', () => {
+    // The catalog id MUST differ from `authProvider`, because the API-key row
+    // (where one exists) already holds that id and a duplicate key is a Svelte
+    // runtime error. True of every OAuth row, twin or no twin.
     for (const row of entries.filter((e) => e.kind === 'oauth')) {
       expect(row.id).not.toBe(row.authProvider);
-      expect(entries.some((e) => e.id === row.authProvider), `${row.authProvider} API-key entry must survive`).toBe(true);
     }
+  });
+
+  it('the labs that DO have an API-key twin keep it beside their OAuth row', () => {
+    // Narrowed from "every oauth row has a twin" when GitHub Copilot landed.
+    // GitHub issues no per-user Copilot API key — the device-code sign-in is
+    // the only door — so `github-copilot` has one row, not a pair, and the old
+    // assertion was recording a coincidence of the two-provider era rather than
+    // a rule. The rule that survives is: removing openai/xai's API-key entry
+    // must not be possible without noticing, because the OAuth hints both point
+    // the user at it as the fallback.
+    for (const id of ['openai', 'xai']) {
+      const oauthRow = entries.find((e) => e.kind === 'oauth' && e.authProvider === id);
+      expect(oauthRow, `${id} must still have an OAuth row`).toBeDefined();
+      expect(entries.some((e) => e.id === id), `${id} API-key entry must survive`).toBe(true);
+    }
+    expect(entries.some((e) => e.id === 'github-copilot'), 'Copilot has no API-key entry to add').toBe(false);
   });
 
   it('an oauth row ships no model id — the host writes the whole catalog instead', () => {

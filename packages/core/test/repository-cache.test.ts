@@ -66,6 +66,31 @@ describe("RepositoryCache", () => {
     ),
   )
 
+  it.live("re-clones a checkout with no resolvable HEAD instead of reusing it (finding 12)", () =>
+    withRemote((fixture) =>
+      Effect.gen(function* () {
+        const cache = yield* RepositoryCache.Service
+        const localPath = Repository.cachePath(path.join(fixture.root, "repos"), fixture.reference)
+
+        // Simulate an interrupted clone: `.git` exists and `origin` is set (so
+        // the old reuse check, which never looked past that, said "reuse"), but
+        // there is no commit yet -- the exact evidence from the report: the repo
+        // folder holds only `.git`, and `git rev-parse --verify HEAD` prints
+        // nothing.
+        yield* Effect.promise(async () => {
+          await fs.mkdir(localPath, { recursive: true })
+          await git(localPath, "init")
+          await git(localPath, "remote", "add", "origin", fixture.remote)
+        })
+
+        const result = yield* cache.ensure({ reference: fixture.reference })
+
+        expect(result.status).toBe("cloned")
+        expect(yield* read(path.join(result.localPath, "README.md"))).toBe("one\n")
+      }).pipe(Effect.provide(cacheLayer(fixture.root))),
+    ),
+  )
+
   it.live("returns typed validation and clone failures", () =>
     withRemote((fixture) =>
       Effect.gen(function* () {

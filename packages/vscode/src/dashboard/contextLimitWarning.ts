@@ -1,21 +1,12 @@
-// The user-visible half of connections review finding 9.
+// The user-visible half of a context-limit finding: writeModelContextLimit (firstFold.ts) bridges a
+// PROBED context window to the engine, and its failure used to be silent both in the writer and at
+// the two call sites that discarded its boolean.
 //
-// `writeModelContextLimit` (firstFold.ts) is the bridge that hands a PROBED
-// context window to the engine. Its failure was silent in both directions: a
-// blanket `catch { return false }`, and two call sites in DashboardPanel.ts
-// that discard the boolean. That is not cosmetic. The engine resolves
-// `model.limit?.context ?? 0`, and packages/engine/src/session/overflow.ts
-// hard-returns false from `isOverflow()` at context 0 — so a probe that
-// correctly measured a 262144-token window, then failed to persist it, leaves
-// AUTO-COMPACTION OFF for that model. The session runs into a provider-side
-// overflow instead of compacting, and nothing anywhere ever said why.
+// The engine resolves `model.limit?.context ?? 0`, and overflow.ts hard-returns false from
+// isOverflow() at context 0 — so a probe that measured the window correctly but failed to persist
+// it leaves auto-compaction OFF for that model, with nothing anywhere saying why.
 //
-// The warn itself (path + error) goes to the console inside the writer. This
-// leaf owns the once-per-model user line, so the panel does not repeat it on
-// every probe tick.
-//
-// Lives in its own file because DashboardPanel.ts is at its architecture cap
-// with two lines of slack — extraction first, as the house rule requires.
+// This leaf owns the once-per-model user line so the panel doesn't repeat it on every probe tick.
 
 /** Post a webview message. Matches DashboardPanel's `post(msg: object)`. */
 export type PostFn = (m: object) => void;

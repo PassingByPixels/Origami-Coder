@@ -1,27 +1,11 @@
-// The ONE place a chat's ENGINE session id is resolved for a message that
-// crosses the ACP wire. Every session-scoped ext-method — interject,
-// shell_stop, plan_action — is looked up in the ENGINE's own session map, and
-// the id the webview holds is not in it.
+// Resolves the ENGINE's session id for any session-scoped ext-method (interject, shell_stop,
+// plan_action) — the webview's own local id (session-1, session-2, …) is never in the engine's
+// session map.
 //
-// The failure this leaf makes unrepresentable shipped in 0.4.12, and a user's
-// exported transcript ends on it:
-//
-//     [!ERROR] Interject failed: Invalid params: session not found: session-3
-//
-// The webview names its chats session-1, session-2, … (DashboardPanel.ts mints
-// them, `const sessionId = ...`), while the engine names its own sessions.
-// 0.4.14 fixed interject/shell_stop by reading AcpClient.currentSessionId; this
-// states the same rule once, for every wire-bound control message, and deletes
-// the fallback that survived it (`currentSessionId ?? sid`, on plan_action).
-//
-// There is deliberately NO fallback. When the engine id is missing, the local
-// id is not a weaker answer, it is a WRONG one: it produces the raw engine
-// error above instead of a sentence the caller can turn into a reason. A null
-// return is the caller's cue to say so.
-//
-// It takes the CLIENT the caller already looked up in DashboardPanel.sessions
-// (local id -> Session -> client) rather than keeping a second local-to-engine
-// map of its own: a second copy of that pairing is a second thing to drift.
+// Deliberately NO fallback: a missing engine id is a wrong answer to guess at, not a weaker one —
+// it produces a raw engine error instead of a message the caller can turn into a reason. Takes the
+// client the caller already resolved rather than keeping a second local-to-engine map, so there is
+// only one place this pairing can drift.
 
 /** The identity half of AcpClient, declared structurally: acpClient.ts is at
  *  its own cap, and every other leaf here (promptCapture, cacheStats,
@@ -42,14 +26,10 @@ export function isLocalSessionId(id: string): boolean {
 }
 
 /**
- * The engine id to put on the wire for the chat the webview named, or null when
- * there is none to send.
- *
- * `localId` is passed only so it can be REFUSED: an engine id that equals the
- * webview's own id did not come from the engine. That is not hypothetical —
- * `AcpClient.start()` assigns `this.sessionId = loadSessionId` verbatim, so a
- * recall path that ever passed a local id would smuggle one into
- * `currentSessionId`, and this boundary is where it stops.
+ * The engine id to put on the wire for the chat the webview named, or null when there is none to
+ *  send.
+ * `localId` is passed only so it can be refused: an id equal to the webview's own local id did not
+ *  come from the engine, and letting one through would smuggle a local id into `currentSessionId`.
  */
 export function engineSessionId(
   client: EngineSessionSource | null | undefined,

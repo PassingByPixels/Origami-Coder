@@ -171,7 +171,7 @@ describe("OpenAI-compatible Chat route", () => {
           { role: "user", content: "What is the weather?" },
           {
             role: "assistant",
-            content: null,
+            content: "",
             tool_calls: [
               {
                 id: "call_1",
@@ -233,6 +233,60 @@ describe("OpenAI-compatible Chat route", () => {
       expect(response.text).toBe("Hello!")
       expect(response.usage).toMatchObject({ inputTokens: 5, outputTokens: 2, totalTokens: 7 })
       expect(response.events.at(-1)).toMatchObject({ type: "finish", reason: "stop" })
+    }),
+  )
+
+  it.effect("replays stored out-of-band reasoning under its own field and passes every effort tier", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model,
+          messages: [
+            Message.user("hi"),
+            Message.make({
+              role: "assistant",
+              content: [{ type: "text", text: "ok" }],
+              native: { openaiCompatible: { reasoning_content: "deepseek style" } },
+            }),
+            Message.user("and?"),
+            Message.make({
+              role: "assistant",
+              content: [{ type: "text", text: "sure" }],
+              native: { openaiCompatible: { reasoning: "gpt-oss style" } },
+            }),
+          ],
+          providerOptions: { openai: { reasoningEffort: "max" } },
+        }),
+      )
+      expect(prepared.body).toMatchObject({
+        reasoning_effort: "max",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "ok", reasoning_content: "deepseek style" },
+          { role: "user", content: "and?" },
+          { role: "assistant", content: "sure", reasoning: "gpt-oss style" },
+        ],
+      })
+    }),
+  )
+
+  it.effect("sends a text document as text, not as a file part", () =>
+    Effect.gen(function* () {
+      const markdown = Buffer.from("# README\nhello", "utf8").toString("base64")
+      const prepared = yield* LLMClient.prepare(
+        LLM.request({
+          model,
+          messages: [
+            Message.user([
+              { type: "text", text: "Use this linked file." },
+              { type: "media", mediaType: "text/markdown", data: `data:text/markdown;base64,${markdown}` },
+            ]),
+          ],
+        }),
+      )
+      expect(prepared.body).toMatchObject({
+        messages: [{ role: "user", content: "Use this linked file.# README\nhello" }],
+      })
     }),
   )
 })

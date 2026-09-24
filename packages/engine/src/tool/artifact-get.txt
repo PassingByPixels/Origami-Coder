@@ -1,0 +1,7 @@
+Read one version of an artifact: its title, version number, manifest digest and the list of files it contains (path, size, media type).
+
+Text files under 64 KiB come back with their content, so you can read what you or the user published and edit it into a new version. Larger files and binary files report their size and media type only - their bytes are not printed.
+
+`version` defaults to the latest. The version number in the result is the one to pass as `baseVersion` when you publish a new version with artifact_publish.
+
+The result has a `Link:` line for the version it read. Put it in your reply, as written, when you point the user at the artifact: the chat shows it as a card with an Open button.

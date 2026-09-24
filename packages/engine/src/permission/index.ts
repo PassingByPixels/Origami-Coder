@@ -3,7 +3,7 @@ import { ConfigPermissionV1 } from "@origami/core/v1/config/permission"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { Wildcard } from "@origami/core/util/wildcard"
-import { Deferred, Effect, Layer, Context } from "effect"
+import { Clock, Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@origami/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -14,8 +14,27 @@ export const Event = PermissionV1.Event
  * How long a SUB-AGENT's unanswered permission request waits before it is
  * refused, in seconds. Overridable per install with
  * `experimental.subagent_permission_timeout_seconds`; 0 turns it off.
+ *
+ * t-dcl8fe. FOUR HOURS, not the five minutes this shipped with. The timeout
+ * exists for the ask nobody can ever answer - a client that never wired
+ * `requestPermission` - and five minutes is well inside the time a human takes
+ * to come back to a question they CAN see. When it fired the child's whole
+ * context died with it, so the cheap case (nobody watching) was paid for by the
+ * expensive one (somebody watching, at lunch). It lives HERE, in code, so the
+ * next engine build carries it to every existing install without a config
+ * migration.
+ *
+ * t-fijy8a F5. The number equals the sub-agent job ceiling in tool/task.ts, but
+ * NOT because two deadlines race and this one is made to win. While a session
+ * is blocked on an ask, the ceiling cannot fire at all: the registry's watchdog
+ * reads `Permission.blockedMs` and pushes the job's deadline out by the blocked
+ * time on every pass (packages/core/src/background-job.ts, `watchdog`), so a
+ * child parked on a question nobody answers is never counted as a runaway. THIS
+ * timeout is therefore the only deadline a blocked child has, and the value is
+ * how long a question may go unanswered — not a tie-break. The two are equal by
+ * choice, and changing either does not change the other's meaning.
  */
-export const DEFAULT_SUBAGENT_ASK_TIMEOUT_SECONDS = 300
+export const DEFAULT_SUBAGENT_ASK_TIMEOUT_SECONDS = 14_400
 
 /**
  * `AskInput`, plus the one fact the timeout below needs and the wire schema
@@ -35,7 +54,78 @@ export type AskInput = PermissionV1.AskInput & {
 export interface Interface {
   readonly ask: (input: AskInput) => Effect.Effect<void, PermissionV1.Error>
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
+  /** Re-run the pending asks of one session against a ruleset that has just
+   *  changed, and release the ones it now allows. See the implementation. */
+  readonly refresh: (input: { sessionID: string; ruleset: PermissionV1.Ruleset }) => Effect.Effect<void>
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
+  /**
+   * t-d935qk. Total ms this session's SUBTREE has spent with at least one
+   * unanswered ask on it, INCLUDING an ask still open right now.
+   *
+   * It exists for the background-job ceiling: a sub-agent parked on a question
+   * nobody has answered is not a runaway, and the registry must not count that
+   * wait against the job's time limit (see BackgroundJob.StartInput.blockedMs).
+   * Overlapping asks on ONE session are one block - the clock runs from the
+   * first waiter to the last - so two questions asked at once do not double the
+   * credit.
+   *
+   * t-dcl8fe: the subtree, not the session alone. A grandchild parked on an ask
+   * blocks its parent just as completely as the parent's own ask would - the
+   * parent is inside the `task` call that is waiting for it - and crediting
+   * only the session that literally asked meant the intermediate child's
+   * ceiling ran the whole time. Sessions are joined by {@link Interface.link}.
+   * Two sessions in one subtree blocked at the same moment DO count twice; the
+   * ceiling is a bound on a wedged child, not an accounting figure, and
+   * over-crediting only ever spares a child that is waiting on a human.
+   */
+  readonly blockedMs: (sessionID: string) => Effect.Effect<number>
+  /**
+   * t-dcl8fe. Record that `sessionID` is a child of `parentSessionID`, so
+   * {@link Interface.blockedMs} can walk the subtree.
+   *
+   * The link is pushed in rather than read out of the session store because
+   * this service must not depend on it (Session is built ON TOP of Permission).
+   * tool/task.ts calls it for every sub-agent session it launches or resumes,
+   * which is the only way a session acquires a parent.
+   */
+  readonly link: (input: { sessionID: string; parentSessionID: string }) => Effect.Effect<void>
+  /**
+   * t-po041k. Run `effect` inside this session's blocked window, so a wait that
+   * is NOT a permission ask still credits {@link Interface.blockedMs} and the
+   * background-job watchdog still pushes the 4 h sub-agent ceiling out by it.
+   *
+   * It exists for a sub-agent's QUESTION, which parks on its own Deferred in
+   * `question/index.ts` with no timeout at all. Without this the child would be
+   * counted as running the whole time it sat waiting for its parent, and the
+   * ceiling — the one deadline it has left — would kill a child that was doing
+   * exactly what it was told. The window is the same one asks use, shared
+   * through `waiters`, so a child blocked on both counts once.
+   */
+  readonly blockWhile: <A, E, R>(sessionID: string, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+  /**
+   * t-fijy8a F11. Drop everything this service remembers about a session that
+   * is gone: its blocked-time row and its link to its parent, plus the links
+   * of any children that named it.
+   *
+   * Nothing pruned these. `blockedMs` walks EVERY blocked row and, for each,
+   * walks `parents` upward, so both maps grew for the life of the engine and
+   * the background-job watchdog paid for every session it had ever seen on
+   * every tick. Called from `Session.remove`, beside `TaskResult.forget`,
+   * which recurses into the children first — so a removed tree leaves nothing.
+   *
+   * A row is NOT dropped when its last waiter leaves: `total` is the answer
+   * `blockedMs` owes a job that is still running. The session going away is
+   * what makes it garbage.
+   */
+  readonly forget: (sessionID: string) => Effect.Effect<void>
+}
+
+/** One session's unanswered-ask accounting. `since` is meaningful only while
+ *  `waiters` is above zero. */
+interface BlockedEntry {
+  waiters: number
+  since: number
+  total: number
 }
 
 interface PendingEntry {
@@ -80,6 +170,18 @@ function awaitEntry(pending: Map<PermissionV1.ID, PendingEntry>, entry: PendingE
 interface State {
   pending: Map<PermissionV1.ID, PendingEntry>
   approved: PermissionV1.Rule[]
+  /** The ruleset each session's last `refresh` call carried. `ask` rereads
+   *  this right before parking (see `ask`) — a defensive check that closes
+   *  the window a `refresh` triggered by a bypass/approve write can land in
+   *  between an ask's own evaluate pass and it reaching `pending`, missing
+   *  an entry that was not there yet to release. */
+  latestRuleset: Map<string, PermissionV1.Ruleset>
+  /** Per session, how long it has been parked on unanswered asks. See
+   *  {@link Interface.blockedMs}. */
+  blocked: Map<string, BlockedEntry>
+  /** Child session id -> parent session id, as {@link Interface.link} reports
+   *  it. Read only by `blockedMs`, walking UP from each blocked session. */
+  parents: Map<string, string>
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -107,6 +209,9 @@ const layer = Layer.effect(
         const state = {
           pending: new Map<PermissionV1.ID, PendingEntry>(),
           approved: [],
+          latestRuleset: new Map<string, PermissionV1.Ruleset>(),
+          blocked: new Map<string, BlockedEntry>(),
+          parents: new Map<string, string>(),
         }
 
         yield* Effect.addFinalizer(() =>
@@ -121,6 +226,44 @@ const layer = Layer.effect(
         return state
       }),
     )
+
+    /**
+     * ONE SESSION'S BLOCKED WINDOW — acquire/use/release, never a try block, so
+     * an INTERRUPTED waiter (the parent cancelled, the session closed) still
+     * closes its window and cannot leave the session looking permanently
+     * blocked. Nested waits on one session share the window through `waiters`.
+     *
+     * Shared by the permission ask and by {@link Interface.blockWhile}, because
+     * the credit has to mean the same thing however the child came to be
+     * waiting.
+     */
+    const blockedWindow = <A, E, R>(sessionID: string, use: () => Effect.Effect<A, E, R>) =>
+      Effect.acquireUseRelease(
+        Effect.gen(function* () {
+          const blocked = (yield* InstanceState.get(state)).blocked
+          const entry = blocked.get(sessionID)
+          const now = yield* Clock.currentTimeMillis
+          blocked.set(sessionID, {
+            waiters: (entry?.waiters ?? 0) + 1,
+            since: entry && entry.waiters > 0 ? entry.since : now,
+            total: entry?.total ?? 0,
+          })
+        }),
+        use,
+        () =>
+          Effect.gen(function* () {
+            const blocked = (yield* InstanceState.get(state)).blocked
+            const entry = blocked.get(sessionID)
+            if (!entry) return
+            const waiters = entry.waiters - 1
+            const now = yield* Clock.currentTimeMillis
+            blocked.set(sessionID, {
+              waiters,
+              since: entry.since,
+              total: waiters > 0 ? entry.total : entry.total + (now - entry.since),
+            })
+          }),
+      )
 
     /**
      * Wait for an answer — with a deadline when nobody is watching.
@@ -141,28 +284,32 @@ const layer = Layer.effect(
      */
     const awaitAnswer = (
       effect: Effect.Effect<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>,
-      input: { parentSessionID?: string | undefined; permission: string },
+      input: { sessionID: string; parentSessionID?: string | undefined; permission: string },
     ) =>
-      Effect.gen(function* () {
-        if (!input.parentSessionID) return yield* effect
-        const configured = (yield* config.get()).experimental?.subagent_permission_timeout_seconds
-        const seconds = configured ?? DEFAULT_SUBAGENT_ASK_TIMEOUT_SECONDS
-        if (seconds <= 0) return yield* effect
-        return yield* effect.pipe(
-          Effect.timeoutOrElse({
-            duration: `${seconds * 1000} millis`,
-            orElse: () =>
-              Effect.fail(
-                new PermissionV1.RejectedError({
-                  reason: `no answer for "${input.permission}" after ${seconds}s — nobody was watching this sub-agent's session`,
-                }),
-              ),
+      // t-d935qk. The whole wait, TIMEOUT INCLUDED, happens inside the blocked
+      // window, so a session that timed out is not still counted as blocked.
+      blockedWindow(input.sessionID, () =>
+        Effect.gen(function* () {
+            if (!input.parentSessionID) return yield* effect
+            const configured = (yield* config.get()).experimental?.subagent_permission_timeout_seconds
+            const seconds = configured ?? DEFAULT_SUBAGENT_ASK_TIMEOUT_SECONDS
+            if (seconds <= 0) return yield* effect
+            return yield* effect.pipe(
+              Effect.timeoutOrElse({
+                duration: `${seconds * 1000} millis`,
+                orElse: () =>
+                  Effect.fail(
+                    new PermissionV1.RejectedError({
+                      reason: `no answer for "${input.permission}" after ${seconds}s — nobody was watching this sub-agent's session`,
+                    }),
+                  ),
+              }),
+            )
           }),
-        )
-      })
+      )
 
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
-      const { approved, pending } = yield* InstanceState.get(state)
+      const { approved, pending, latestRuleset } = yield* InstanceState.get(state)
       const { ruleset, parentSessionID, ...request } = input
       let needsAsk = false
 
@@ -192,6 +339,7 @@ const layer = Layer.effect(
         const identical = findIdentical(pending, request)
         if (identical)
           return yield* awaitAnswer(awaitEntry(pending, identical), {
+            sessionID: request.sessionID,
             parentSessionID,
             permission: request.permission,
           })
@@ -207,13 +355,31 @@ const layer = Layer.effect(
         always: request.always,
         tool: request.tool,
       }
+      // A `refresh` (a bypass/approve write's release pass) can run to completion
+      // in the window between the evaluate loop above and here — this ask started
+      // on the ruleset from before that write, and `refresh` iterates `pending`
+      // ONCE, so it finds nothing to release: this entry is not in `pending` yet.
+      // Re-run exactly what `refresh` itself checks (`input.ruleset` alone, no
+      // `approved` — see `refresh` below) against whichever ruleset the LAST
+      // refresh for this session actually carried, so a request that ruleset
+      // already means to release never parks with nobody left to release it. A
+      // session `refresh` has never touched skips this (nothing stored here yet).
+      const justRefreshed = latestRuleset.get(request.sessionID)
+      if (justRefreshed && request.patterns.every((pattern) => evaluate(request.permission, pattern, justRefreshed).action === "allow")) {
+        return
+      }
+
       yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
 
       const deferred = yield* Deferred.make<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>()
       const entry: PendingEntry = { info, deferred, waiters: 0 }
       pending.set(id, entry)
       yield* events.publish(Event.Asked, info)
-      return yield* awaitAnswer(awaitEntry(pending, entry), { parentSessionID, permission: request.permission })
+      return yield* awaitAnswer(awaitEntry(pending, entry), {
+        sessionID: request.sessionID,
+        parentSessionID,
+        permission: request.permission,
+      })
     })
 
     const reply = Effect.fn("Permission.reply")(function* (input: PermissionV1.ReplyInput) {
@@ -276,14 +442,99 @@ const layer = Layer.effect(
       }
     })
 
+    /**
+     * The asks that were ALREADY on screen when the user changed the chat's
+     * auto-approve preset.
+     *
+     * `ask` evaluates once and then parks on a deferred, so pressing YOLO left
+     * every request that was already waiting still waiting - the user had to
+     * answer, by hand, the very prompts they had just said to stop showing them.
+     * The session ruleset is written by `Session.setPermission`, which calls
+     * this for each row it wrote (the chat and, since the preset cascades, every
+     * live sub-agent under it).
+     *
+     * Only ALLOW releases a request. The ruleset handed in is the SESSION half,
+     * which sits LAST in the merge session/tools.ts builds
+     * (`merge(agent.permission, session.permission)`), so a rule that matches
+     * here is the rule the full evaluation would have taken. Nothing matching
+     * means "no opinion", and the request stays up for a human - a deny is not
+     * turned into a refusal from here, because the user pressing a button is not
+     * them answering this particular question.
+     */
+    const refresh = Effect.fn("Permission.refresh")(function* (input: {
+      sessionID: string
+      ruleset: PermissionV1.Ruleset
+    }) {
+      const { pending, latestRuleset } = yield* InstanceState.get(state)
+      latestRuleset.set(input.sessionID, input.ruleset)
+      for (const [id, item] of pending.entries()) {
+        if (item.info.sessionID !== input.sessionID) continue
+        const allowed = item.info.patterns.every(
+          (pattern) => evaluate(item.info.permission, pattern, input.ruleset).action === "allow",
+        )
+        if (!allowed) continue
+        pending.delete(id)
+        yield* Effect.logInfo("released by ruleset", { id, permission: item.info.permission })
+        yield* events.publish(Event.Replied, {
+          sessionID: item.info.sessionID,
+          requestID: item.info.id,
+          reply: "always",
+        })
+        yield* Deferred.succeed(item.deferred, undefined)
+      }
+    })
+
     const list = Effect.fn("Permission.list")(function* () {
       const pending = (yield* InstanceState.get(state)).pending
       return Array.from(pending.values(), (item) => item.info)
     })
 
-    return Service.of({ ask, reply, list })
+    const link = Effect.fn("Permission.link")(function* (input: { sessionID: string; parentSessionID: string }) {
+      if (input.sessionID === input.parentSessionID) return
+      ;(yield* InstanceState.get(state)).parents.set(input.sessionID, input.parentSessionID)
+    })
+
+    const blockedMs = Effect.fn("Permission.blockedMs")(function* (sessionID: string) {
+      const { blocked, parents } = yield* InstanceState.get(state)
+      const now = yield* Clock.currentTimeMillis
+      let total = 0
+      for (const [id, entry] of blocked) {
+        if (id !== sessionID && !descends(parents, id, sessionID)) continue
+        total += entry.waiters === 0 ? entry.total : entry.total + (now - entry.since)
+      }
+      return total
+    })
+
+    const forget = Effect.fn("Permission.forget")(function* (sessionID: string) {
+      const { blocked, parents } = yield* InstanceState.get(state)
+      blocked.delete(sessionID)
+      parents.delete(sessionID)
+      for (const [child, parent] of parents) {
+        if (parent === sessionID) parents.delete(child)
+      }
+    })
+
+    const blockWhile = <A, E, R>(sessionID: string, effect: Effect.Effect<A, E, R>) =>
+      blockedWindow(sessionID, () => effect)
+
+    return Service.of({ ask, reply, refresh, list, blockedMs, link, forget, blockWhile })
   }),
 )
+
+/** Is `sessionID` somewhere under `ancestorID`? Walks UP the recorded links,
+ *  with a seen-set so a malformed pair (a cycle) cannot hang the watchdog that
+ *  calls this. */
+function descends(parents: Map<string, string>, sessionID: string, ancestorID: string): boolean {
+  const seen = new Set<string>([sessionID])
+  let current = parents.get(sessionID)
+  while (current !== undefined) {
+    if (current === ancestorID) return true
+    if (seen.has(current)) return false
+    seen.add(current)
+    current = parents.get(current)
+  }
+  return false
+}
 
 function expand(pattern: string): string {
   if (pattern.startsWith("~/")) return os.homedir() + pattern.slice(1)

@@ -16,6 +16,28 @@ const TODOS = [
 ];
 
 describe('TodoStrip — collapsible side drawer', () => {
+  // A Main tab with no list of its own while a child's tab keeps the panel up
+  // (owner, 2026-09-17): the empty branch had no pull-tab, so the drawer could
+  // not be closed from that tab. Same handle, same collapse, in both branches.
+  it('empty list in drawer mode still offers the pull-tab and collapses', async () => {
+    const onToggleCollapse = vi.fn();
+    const { container, rerender } = render(TodoStrip, {
+      props: { todos: [], source: 'model_write', collapsible: true, collapsed: false, onToggleCollapse },
+    });
+    expect(screen.getByText('Todos: none yet')).toBeInTheDocument();
+    const strip = container.querySelector('.todo-strip')!;
+    expect(strip.classList.contains('drawer')).toBe(true);
+    const tab = screen.getByRole('button', { name: /hide task list/i });
+    await fireEvent.click(tab);
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1);
+    await rerender({ todos: [], source: 'model_write', collapsible: true, collapsed: true, onToggleCollapse });
+    expect(container.querySelector('.todo-strip')!.classList.contains('collapsed')).toBe(true);
+    expect(screen.getByRole('button', { name: /show task list/i })).toBeInTheDocument();
+  });
+  it('empty list outside drawer mode has no pull-tab', () => {
+    render(TodoStrip, { props: { todos: [], source: 'model_write' } });
+    expect(screen.queryByRole('button', { name: /task list/i })).toBeNull();
+  });
   it('expanded: items shown, strip NOT collapsed, tab reports aria-expanded=true', () => {
     const { container } = render(TodoStrip, {
       props: { todos: TODOS, source: 'model_write', collapsible: true, collapsed: false },

@@ -50,7 +50,11 @@ const TOP_LEVEL = [
   "debug",
   "providers", // aliased to `auth`
   "agent",
-  "upgrade",
+  // FORK STRIP: no "upgrade" and no "github". src/cli/cmd/ has no upgrade.ts
+  // or github.ts and src/index.ts registers neither, because this fork removed
+  // the upgrade machinery (src/cli/upgrade.ts:1, src/installation/index.ts:89)
+  // and the GitHub agent. yargs answers `--help` for an unregistered command
+  // with TOP-LEVEL help, so listing them here snapshotted the wrong text.
   "uninstall",
   "serve",
   "web",
@@ -58,7 +62,6 @@ const TOP_LEVEL = [
   "stats",
   "export",
   "import",
-  "github",
   "pr",
   "session",
   "plugin",
@@ -80,8 +83,7 @@ const SUBCOMMANDS = [
   ["agent", "list"],
   ["session", "list"],
   ["session", "delete"],
-  ["github", "install"],
-  ["github", "run"],
+  // FORK STRIP: github install/run - see the TOP_LEVEL note above.
   ["db", "path"],
 ] as const
 

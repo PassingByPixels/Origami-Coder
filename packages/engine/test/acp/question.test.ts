@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import type { AgentSideConnection, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk"
 import type { Event, OrigamiClient } from "@origami/sdk/v2"
 import { LayerNode } from "@origami/core/effect/layer-node"
@@ -448,5 +448,64 @@ describe("acp questions", () => {
       await pollUntil(() => harness.rejects.length === 1, `unusable batch entry ${JSON.stringify(bad)} was not rejected`)
       expect(harness.replies).toHaveLength(0)
     }
+  })
+})
+
+// t-tc2es2. The queue's `.catch(() => {})` ate every throw, an unregistered
+// session returned early, and a reply the engine refused was ignored: in each
+// case the question stayed pending and the turn hung with no bar.
+describe("a handler failure never leaves the question unanswered", () => {
+  const logged: string[] = []
+  let restore: (() => void) | undefined
+  beforeEach(() => {
+    logged.length = 0
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "))
+    })
+    restore = () => spy.mockRestore()
+  })
+  afterEach(() => restore?.())
+  const loggedAbout = (askID: string, cause: string) =>
+    logged.some((line) => line.includes(askID) && line.includes(cause))
+
+  it("a question from a session this connection does not know is rejected, not dropped", async () => {
+    const harness = createHarness()
+
+    harness.subscription.handle(planExit("ses_unknown", "que_orphan"))
+
+    await pollUntil(() => harness.rejects.length === 1, "an orphan question was dropped")
+    expect(harness.rejects[0]).toMatchObject({ requestID: "que_orphan" })
+    expect(harness.requests).toHaveLength(0)
+    expect(loggedAbout("que_orphan", "ses_unknown")).toBe(true)
+  })
+
+  it("a client that THROWS instead of rejecting gets the question rejected, with a log line", async () => {
+    const harness = createHarness(() => {
+      throw new Error("prompt renderer crashed")
+    })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(planExit("ses_a", "que_throw"))
+
+    await pollUntil(() => harness.rejects.length === 1, "a throwing client left the question unanswered")
+    expect(harness.rejects[0]).toMatchObject({ requestID: "que_throw", directory: "/workspace" })
+    expect(loggedAbout("que_throw", "prompt renderer crashed")).toBe(true)
+  })
+
+  it("an answer the engine refuses to take is followed by a rejection, not silence", async () => {
+    // The generated SDK RETURNS `{ error }` on a non-2xx; it does not throw.
+    const harness = createHarness()
+    await createSession(harness.session, "ses_a")
+    ;(harness.sdk.question as { reply: unknown }).reply = (params: QuestionReplyParams) => {
+      harness.replies.push(params)
+      return Promise.resolve({ error: { name: "UnknownError", data: { message: "store busy" } } })
+    }
+
+    harness.subscription.handle(planExit("ses_a", "que_reply_error"))
+
+    await pollUntil(() => harness.rejects.length === 1, "a refused answer was not followed by a rejection")
+    expect(harness.replies[0]).toMatchObject({ requestID: "que_reply_error", answers: [["Yes"]] })
+    expect(harness.rejects[0]).toMatchObject({ requestID: "que_reply_error", directory: "/workspace" })
+    expect(loggedAbout("que_reply_error", "store busy")).toBe(true)
   })
 })

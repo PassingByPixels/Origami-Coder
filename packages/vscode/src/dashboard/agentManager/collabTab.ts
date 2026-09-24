@@ -1,18 +1,13 @@
-// Collabs M1 - collabTab.ts: a collab's stream SCREEN in its own editor tab,
-// mirroring mapTab.ts (which mirrors compareTab.ts) exactly. Clicking a collab
-// in the sidebar opens the same createWebviewPanel + dashboard-bundle mount the
-// board, the race Compare tab and the repo map already use, with a new
-// __ORIGAMI_COLLAB__ payload. ONE tab per collab id, revealed/reused on
-// re-click. Kept OUT of DashboardPanel behind a thin dispatch.
+// Collab stream screen in its own editor tab, mirroring mapTab.ts/compareTab.ts: same
+// createWebviewPanel + dashboard-bundle mount, with a __ORIGAMI_COLLAB__ payload. One tab per
+// collab id, revealed/reused on re-click.
 
 import * as vscode from 'vscode';
 import type { WebviewHost } from '../DashboardPanel';
 import { waitingTitleFor } from '../tabIcon';
 
-/** The collab identity injected into the webview (window.__ORIGAMI_COLLAB__).
- *  Deliberately just the identity, never a state snapshot: the pane polls
- *  `collab_state` for everything else, so a tab left open for an hour cannot be
- *  showing an hour-old roster it was seeded with. */
+/** The collab identity injected into the webview. Deliberately just the identity — the pane
+ *  polls collab_state for everything else, so a tab left open can't show a stale roster. */
 export interface CollabTabParams {
   id: string;
   title: string;
@@ -69,18 +64,9 @@ export function openCollabTab(
   host.attachView(wvHost, 'chat', undefined, false, false, undefined, undefined, params);
 }
 
-/**
- * Badge (or un-badge) a collab's tab — report F12 / 1.13.
- *
- * `waitingTitleFor` is the CHAT tab's printer, reused rather than copied, so one
- * idiom means "this needs you" on every editor tab and the prefix can never
- * stack or drift. WHETHER a room needs the user is collabAttention.ts's rule;
- * this function only knows which panel to write it on, because the map above is
- * the only place that knows.
- *
- * A collab with no open tab is a NO-OP: a background room's ring is the sidebar's
- * job, and there is no title to badge.
- */
+/** Badge (or un-badge) a collab's tab. Reuses the chat tab's waitingTitleFor printer so one
+ *  idiom means "needs you" across every editor tab type. A collab with no open tab is a
+ *  no-op — a background room's ring is the sidebar's job. */
 export function setCollabTabWaiting(collabId: string, waiting: boolean): void {
   const panel = tabs.get(collabId);
   if (!panel) return;

@@ -23,6 +23,9 @@ export const OUTPUT_TOKEN_MAX = 32_000
 const INCLUDE_ENCRYPTED_REASONING = ["reasoning.encrypted_content"] as const
 
 export function sanitizeSurrogates(content: string) {
+  // t-u54x6w: nearly every string is well formed, and this native check is
+  // far cheaper than the regex scan below over every text of every request.
+  if (content.isWellFormed()) return content
   return content.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD")
 }
 
@@ -95,37 +98,22 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
-// OpenAI Responses added a hosted `tool_search` tool, and @ai-sdk/openai's
-// Responses converter (imported unchanged by @ai-sdk/azure and
-// @ai-sdk/amazon-bedrock/mantle — both `require("@ai-sdk/openai/internal")`)
-// special-cases that exact tool NAME on replay, by string only, not
-// provenance: `if (resolvedToolName === "tool_search") { ... arguments:
-// parsedInput.arguments }` (convertToOpenAIResponsesInput, vendored at
-// node_modules/@ai-sdk+openai@3.0.84/dist/internal/index.js:3092-3115).
+// Name collision with OpenAI Responses' hosted `tool_search` tool. On replay,
+// @ai-sdk/openai's Responses converter (imported unchanged by @ai-sdk/azure and
+// @ai-sdk/amazon-bedrock/mantle) special-cases that tool NAME by string, not by
+// provenance. Origami's own deferred-tool-catalog tool (tool/tool-search.ts) is
+// also named "tool_search", so the vendor parses our `{query, limit}` input
+// against OpenAI's hosted-tool schema; zod drops the unrecognized keys, leaves
+// `arguments: undefined`, and this branch skips the guard that would default it
+// to "{}". `JSON.stringify` then omits the key, the replayed item reaches the
+// wire with no `arguments` field, and the backend 400s the next turn with
+// "Missing required parameter: 'input[N].arguments'".
 //
-// Origami's own deferred-tool-catalog tool (tool/tool-search.ts,
-// TOOL_SEARCH_TOOL) is ALSO named "tool_search" — a pure name collision, not
-// a real call to OpenAI's hosted tool. The vendor parses OUR tool's actual
-// input (`{query, limit}`, session/tools.ts) against OPENAI'S OWN hosted-tool
-// schema (`{arguments?: unknown, call_id?: string|null}`); zod silently
-// drops the unrecognized keys and leaves `arguments: undefined`, which the
-// vendor then assigns with a bare object-literal — unlike every generic
-// function-call branch, this one skips the `serializeToolCallArguments2`
-// guard that defaults undefined to "{}". `JSON.stringify` omits an
-// `undefined`-valued key entirely, so the replayed item reaches the wire
-// with NO `arguments` field. ChatGPT (and any OpenAI/Azure Responses
-// backend) then 400s the next turn: "Missing required parameter:
-// 'input[N].arguments'" — reproduced against the owner's two ChatGPT-OAuth
-// session exports (Origami Coder 0.3.86, 2026-08-15: both failed one turn
-// after `tool_search` ran) and confirmed directly against the vendored zod
-// schema plus Origami's real tool_search input shape.
-//
-// Fix: alias OUR tool's wire name for the affected npm packages, both where
-// it is declared (request.ts's tools map, via `renameCollidingTool`) and
-// wherever a past call is replayed (below). The alias never reaches config,
-// the prompt, or the UI — it exists only to keep the string off the
-// vendor's literal check, and stays identical across a conversation so the
-// model never sees the name it called change mid-session.
+// Fix: alias OUR tool's wire name for the affected npm packages, both where it
+// is declared (request.ts's tools map, via `renameCollidingTool`) and wherever a
+// past call is replayed (below). The alias never reaches config, the prompt or
+// the UI, and stays identical across a conversation so the model never sees the
+// name it called change mid-session.
 const TOOL_SEARCH_WIRE_NAME = "tool_search"
 export const TOOL_SEARCH_WIRE_ALIAS = "origami_tool_search"
 const OPENAI_TOOL_SEARCH_COLLISION_NPM = new Set(["@ai-sdk/openai", "@ai-sdk/azure", "@ai-sdk/amazon-bedrock/mantle"])
@@ -137,10 +125,9 @@ function aliasesCollidingToolName(model: Provider.Model): boolean {
 function renameToolSearchCalls(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
   if (!aliasesCollidingToolName(model)) return msgs
   return msgs.map((msg) => {
-    // Only assistant (tool-call, tool-result) and tool (tool-result) content
-    // can carry a `toolName` — narrowing by role, not just `Array.isArray`,
-    // keeps each branch's content union the same shape it started as, the
-    // same discipline the Claude/Mistral toolCallId scrubs below use.
+    // Only assistant and tool content can carry a `toolName`. Narrowing by role,
+    // not just `Array.isArray`, keeps each branch's content union the shape it
+    // started as — the same discipline as the toolCallId scrubs below.
     if (msg.role === "assistant" && Array.isArray(msg.content)) {
       return {
         ...msg,
@@ -167,10 +154,8 @@ function renameToolSearchCalls(msgs: ModelMessage[], model: Provider.Model): Mod
 
 /**
  * Rename the `tool_search` key of a live tools map to the same wire alias
- * `renameToolSearchCalls` uses for replayed history, for the same npm
- * packages. Called once by `request.ts` when the tools map is assembled, so
- * the declared tool and every replayed call carry the identical name for a
- * given model.
+ * `renameToolSearchCalls` uses for replayed history, so the declared tool and
+ * every replayed call carry the identical name for a given model.
  */
 export function renameCollidingTool<T>(tools: Record<string, T>, model: Provider.Model): Record<string, T> {
   if (!aliasesCollidingToolName(model)) return tools
@@ -247,8 +232,7 @@ function normalizeMessages(
     }
   })
 
-  // Anthropic rejects messages with empty content - filter out empty string messages
-  // and remove empty text/reasoning parts from array content
+  // Anthropic rejects messages with empty content.
   if (model.api.npm === "@ai-sdk/anthropic") {
     msgs = msgs
       .map((msg) => {
@@ -276,7 +260,6 @@ function normalizeMessages(
       .filter((msg): msg is ModelMessage => msg !== undefined && msg.content !== "")
   }
 
-  // Bedrock specific transforms
   if (model.api.npm === "@ai-sdk/amazon-bedrock") {
     msgs = msgs
       .map((msg) => {
@@ -412,10 +395,8 @@ function normalizeMessages(
         const reasoningParts = msg.content.filter((part: any) => part.type === "reasoning")
         const reasoningText = reasoningParts.map((part: any) => part.text).join("")
 
-        // Filter out reasoning parts from content
         const filteredContent = msg.content.filter((part: any) => part.type !== "reasoning")
 
-        // Include reasoning_content | reasoning_details directly on the message for all assistant messages.
         // Always set the field even when empty — some providers (e.g. DeepSeek) may return empty
         // reasoning_content which still needs to be sent back in subsequent requests.
         return {
@@ -496,7 +477,6 @@ function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMes
     const filtered = msg.content.map((part) => {
       if (part.type !== "file" && part.type !== "image") return part
 
-      // Check for empty base64 image data
       if (part.type === "image") {
         const imageStr = String(part.image)
         if (imageStr.startsWith("data:")) {
@@ -527,6 +507,116 @@ function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMes
   })
 }
 
+/**
+ * The rolling image window — a ceiling on how many pictures ride one request.
+ *
+ * A session accumulates pictures (every `read` of a .png, every screenshot,
+ * every MCP image resource) and re-sends them on every later turn, so an
+ * endpoint with a per-prompt image limit refuses that turn and every turn after
+ * it. Uncapped, that is a softlock nothing degrades out of.
+ *
+ * The newest `limit` images ride; older ones become a short text note in the
+ * exact position the picture held. A note rather than a deletion, because a
+ * silently shorter history reads as a model that forgot, and an assistant turn
+ * referring to "the first screenshot" would be talking about nothing.
+ *
+ * A COUNT window on models that CAN see — not the capability gate.
+ */
+export const IMAGE_WINDOW_DEFAULT = 8
+
+/** What replaces a picture that fell out of the window. */
+export const IMAGE_OMITTED = "[image omitted — outside the recent-image window]"
+
+/**
+ * How many pictures this model's endpoint is given at once.
+ *
+ * `limit.images` is a declared per-model override (config `provider.<id>.models.
+ * <id>.limit.images`), for an operator who knows their own server's
+ * `--limit-mm-per-prompt`. models.dev never publishes it, so hosted models take
+ * the default — a ceiling that bounds growth, not a vendor limit.
+ */
+function imageLimit(model: Provider.Model): number {
+  // `?.` because a caller may hand in a partial model with no `limit` at all.
+  const declared = model.limit?.images
+  if (typeof declared === "number" && Number.isFinite(declared) && declared >= 0) return Math.floor(declared)
+  return IMAGE_WINDOW_DEFAULT
+}
+
+/** True for a part that carries picture BYTES rather than a note about one. */
+function isImageContent(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false
+  const candidate = part as { type?: unknown; mediaType?: unknown }
+  // `image` parts carry no mediaType of their own — the mime lives in the data
+  // URL — so the type alone is the answer.
+  if (candidate.type === "image") return true
+  if (candidate.type !== "file" && candidate.type !== "media") return false
+  return typeof candidate.mediaType === "string" && candidate.mediaType.startsWith("image/")
+}
+
+/**
+ * Every image on the wire, oldest first, addressed so it can be replaced where
+ * it stands.
+ *
+ * Two homes, because one provider's tool result is another's user message:
+ * `session/message-v2.ts` keeps media inside the tool result for the SDKs that
+ * accept it there and re-injects it as a synthetic user message for the ones
+ * that do not (every `@ai-sdk/openai-compatible` endpoint). Counting only one of
+ * the two would leave the window blind on half the providers.
+ */
+function imageSlots(msgs: ModelMessage[]): string[] {
+  const slots: string[] = []
+  msgs.forEach((msg, m) => {
+    if (!Array.isArray(msg.content)) return
+    msg.content.forEach((part, p) => {
+      if (msg.role === "user") {
+        if (isImageContent(part)) slots.push(`${m}:${p}`)
+        return
+      }
+      if (msg.role !== "tool") return
+      const output = (part as ToolResultPart).output
+      if (output?.type !== "content" || !Array.isArray(output.value)) return
+      output.value.forEach((item, i) => {
+        if (isImageContent(item)) slots.push(`${m}:${p}:${i}`)
+      })
+    })
+  })
+  return slots
+}
+
+function imageWindow(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  const slots = imageSlots(msgs)
+  // The common turn carries no picture and must not pay for this.
+  if (slots.length === 0) return msgs
+  const limit = imageLimit(model)
+  if (slots.length <= limit) return msgs
+  const drop = new Set(slots.slice(0, slots.length - limit))
+
+  return msgs.map((msg, m) => {
+    if (!Array.isArray(msg.content)) return msg
+    let changed = false
+    const content = msg.content.map((part, p) => {
+      if (msg.role === "user") {
+        if (!drop.has(`${m}:${p}`)) return part
+        changed = true
+        return { type: "text" as const, text: IMAGE_OMITTED }
+      }
+      if (msg.role !== "tool") return part
+      const output = (part as ToolResultPart).output
+      if (output?.type !== "content" || !Array.isArray(output.value)) return part
+      let inner = false
+      const value = output.value.map((item, i) => {
+        if (!drop.has(`${m}:${p}:${i}`)) return item
+        inner = true
+        return { type: "text" as const, text: IMAGE_OMITTED }
+      })
+      if (!inner) return part
+      changed = true
+      return { ...part, output: { ...output, value } }
+    })
+    return changed ? ({ ...msg, content } as ModelMessage) : msg
+  })
+}
+
 function mapProviderOptions(
   msgs: ModelMessage[],
   transform: (options: Record<string, any> | undefined) => Record<string, any> | undefined,
@@ -545,14 +635,84 @@ function mapProviderOptions(
   })
 }
 
-export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
-  msgs = unsupportedParts(msgs, model)
-  msgs = renameToolSearchCalls(msgs, model)
-  msgs = normalizeMessages(msgs, model, options)
-  const usesAnthropicAutomaticCaching =
+/**
+ * Does this request get INLINE cache breakpoints stamped on it by
+ * `applyCaching`? Extracted from `message` so cache warming can ask the same
+ * question (session/cache-warm.ts) instead of re-deriving the model list — two
+ * copies of this would drift and a session would be warmed whose prefix carries
+ * no breakpoint at all.
+ *
+ * `usesAnthropicAutomaticCaching`: the SDK places its own breakpoints when the
+ * caller set `cacheControl` on an Anthropic-family package, so the engine keeps
+ * its hands off.
+ */
+export function automaticAnthropicCaching(model: Provider.Model, options: Record<string, unknown>): boolean {
+  return (
     options.cacheControl !== undefined &&
     (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic")
-  if (
+  )
+}
+
+/**
+ * OpenAI's prefix cache is IMPLICIT - no breakpoint is stamped on the request,
+ * so `appliesInlineCaching` is false and the old cache warmer never armed. What
+ * identifies the prefix instead is `prompt_cache_key` (set in `options` below),
+ * and what decides how long it survives is the model family (t-rz0amv):
+ *
+ *   - GPT-5.6 and later: "A cached prefix remains eligible for reuse for 30
+ *     minutes after its most recent write or reuse." No option to set.
+ *   - The families below, with `prompt_cache_retention: "24h"`: "Extended
+ *     retention typically keeps entries available for around 30 minutes and can
+ *     retain them for up to 24 hours."
+ *   - Everything else (`in_memory`, the default): "Entries typically remain
+ *     active for around 5 to 10 minutes of inactivity, up to one hour."
+ *
+ * https://developers.openai.com/api/docs/guides/prompt-caching
+ *
+ * The FAMILY is matched, not the exact id, because the doc lists dated and
+ * suffixed members (`gpt-5.1-codex-max`, `gpt-5.1-chat-latest`) of the same
+ * families. A sibling in a listed family that does not accept the option is the
+ * residual risk; `SessionDegrade` drops the knob on the endpoint's first
+ * refusal and keeps it off for the session.
+ */
+const RETENTION_24H_FAMILIES = new Set(["gpt-4.1", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4", "gpt-5.5"])
+
+/** The OpenAI Responses family of a model id, e.g. `gpt-5.1-codex-max` -> `gpt-5.1`. */
+const openaiFamily = (modelID: string) => modelID.toLowerCase().match(/gpt-\d+(?:\.\d+)?/)?.[0]
+
+/** Is this an OpenAI Responses endpoint at all? Azure speaks the same API. */
+const openaiResponses = (model: Provider.Model) =>
+  model.api.npm === "@ai-sdk/openai" || model.api.npm === "@ai-sdk/azure"
+
+/** `"24h"` on the models the guide lists for extended retention, else undefined. */
+export function promptCacheRetention(model: Provider.Model): "24h" | undefined {
+  if (!openaiResponses(model)) return undefined
+  const family = openaiFamily(model.api.id)
+  return family !== undefined && RETENTION_24H_FAMILIES.has(family) ? "24h" : undefined
+}
+
+/**
+ * The documented idle window of OpenAI's implicit prefix cache for one model id,
+ * in seconds, or undefined for an id of no OpenAI family. The LOWER end of every
+ * published range, so a warm fires before the earliest moment the prefix can be
+ * gone. `session/cache-policy.ts` reads this for its OpenAI/Azure window; the
+ * table lives here because the families are model-shape knowledge.
+ */
+export function openaiCacheWindowSeconds(modelID: string): number | undefined {
+  const family = openaiFamily(modelID)
+  if (family === undefined) return undefined
+  if (RETENTION_24H_FAMILIES.has(family)) return 1800
+  return Number.parseFloat(family.slice("gpt-".length)) >= 5.6 ? 1800 : 300
+}
+
+/** The same window for a resolved model, and only on an OpenAI Responses endpoint. */
+export function openaiCacheSeconds(model: Provider.Model): number | undefined {
+  return openaiResponses(model) ? openaiCacheWindowSeconds(model.api.id) : undefined
+}
+
+export function appliesInlineCaching(model: Provider.Model, options: Record<string, unknown>): boolean {
+  const usesAnthropicAutomaticCaching = automaticAnthropicCaching(model, options)
+  return (
     (model.providerID === "anthropic" ||
       model.providerID === "google-vertex-anthropic" ||
       model.api.id.includes("anthropic") ||
@@ -563,7 +723,17 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
       model.api.npm === "@ai-sdk/alibaba") &&
     model.api.npm !== "@ai-sdk/gateway" &&
     !usesAnthropicAutomaticCaching
-  ) {
+  )
+}
+
+export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
+  msgs = unsupportedParts(msgs, model)
+  // AFTER the capability gate, never before: on an image-blind model every
+  // picture is already an ERROR line here, so the window counts zero.
+  msgs = imageWindow(msgs, model)
+  msgs = renameToolSearchCalls(msgs, model)
+  msgs = normalizeMessages(msgs, model, options)
+  if (appliesInlineCaching(model, options)) {
     msgs = applyCaching(msgs, model)
   }
 
@@ -639,29 +809,42 @@ export function topK(model: Provider.Model) {
   return undefined
 }
 
-// Frequency penalty defaults to 0 (off). It was briefly defaulted to 0.3 for
-// local models to discourage repetition loops (backlog #1), but a frequency
-// penalty accumulates with token count: on a long single generation - e.g.
-// writing a large file as one tool-call argument - it strangles the common
-// tokens the output needs and pushes the model to stop early, truncating the
-// tool call so the provider hands back arguments with the value dropped
-// (surfaces as "Missing key at [content]") or leaks the whole tool call into
-// the text channel as unparsed XML. Repetition loops are instead handled
-// deterministically by the turn-loop hard-stop. Users can still opt in per-chat
-// via the Rep control when a model is actually stuck repeating itself.
+// Frequency penalty defaults to 0 (off), and must not be defaulted on: it
+// accumulates with token count, so on a long single generation - e.g. writing a
+// large file as one tool-call argument - it strangles the tokens the output
+// needs and stops the model early, truncating the tool call ("Missing key at
+// [content]") or leaking it into the text channel as unparsed XML. Repetition
+// loops are handled by the turn-loop hard-stop instead; users can still opt in
+// per-chat via the Rep control.
 export function frequencyPenalty(_model: Provider.Model): number | undefined {
   return 0
 }
 
 const WIDELY_SUPPORTED_EFFORTS = ["low", "medium", "high"]
-const OPENAI_EFFORTS = ["none", "minimal", ...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
-const OPENAI_GPT5_1_EFFORTS = ["none", ...WIDELY_SUPPORTED_EFFORTS]
+
+// origami_change-start (t-46a74d): NO `none`, and no `minimal`, for OpenAI.
+//
+// The API accepts both, but ChatGPT offers neither - its ladder is low / medium
+// / high. `none` was an API artefact sitting FIRST in the list, which is the
+// engine default (`acp/service.ts` selectVariant takes `variants[0]`), so a
+// reasoning model could land on "reasoning off" for agentic work by accident.
+// `minimal` is the GPT-5.0 spelling of the same thing and goes with it.
+//
+// A stored choice of either is not an error and is not dropped:
+// `session/llm/request.ts` remaps it to `low` and says so once in the log.
+const OPENAI_EFFORTS = [...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
+const OPENAI_GPT5_1_EFFORTS = [...WIDELY_SUPPORTED_EFFORTS]
 const OPENAI_GPT5_2_PLUS_EFFORTS = [...OPENAI_GPT5_1_EFFORTS, "xhigh"]
+/** The tier a retired one becomes. */
+export const OPENAI_EFFORT_FLOOR = "low"
+/** The tiers OpenAI accepts but this engine no longer offers. */
+export const OPENAI_RETIRED_EFFORTS = ["none", "minimal"] as const
+// origami_change-end
 const OPENAI_GPT5_PRO_EFFORTS = ["high"]
 const OPENAI_GPT5_PRO_2_PLUS_EFFORTS = ["medium", "high", "xhigh"]
 const OPENAI_GPT5_CHAT_EFFORTS = ["medium"]
 const OPENAI_GPT5_CODEX_XHIGH_EFFORTS = [...WIDELY_SUPPORTED_EFFORTS, "xhigh"]
-const OPENAI_GPT5_CODEX_3_PLUS_EFFORTS = ["none", ...OPENAI_GPT5_CODEX_XHIGH_EFFORTS]
+const OPENAI_GPT5_CODEX_3_PLUS_EFFORTS = [...OPENAI_GPT5_CODEX_XHIGH_EFFORTS] // origami_change (t-46a74d): no `none`
 
 // OpenAI rolled out the `none` reasoning_effort tier on this date (Responses API).
 // Models released before it 400 on `reasoning_effort: "none"`, so we only expose
@@ -720,10 +903,36 @@ function openaiReasoningEfforts(apiId: string, releaseDate: string) {
   // additionally accepts `xhigh`. Model pages list the supported subset.
   if (versionedEfforts) return versionedEfforts
   const efforts = [...WIDELY_SUPPORTED_EFFORTS]
-  if (GPT5_FAMILY_RE.test(id)) efforts.unshift("minimal")
-  if (releaseDate >= OPENAI_NONE_EFFORT_RELEASE_DATE) efforts.unshift("none")
+  // origami_change (t-46a74d): `minimal` and `none` are no longer offered, so
+  // the two unshifts that put them at the FRONT - and therefore made one of
+  // them the default - are gone with them. `low` leads every OpenAI ladder.
   if (releaseDate >= OPENAI_XHIGH_EFFORT_RELEASE_DATE) efforts.push("xhigh")
   return efforts
+}
+
+/**
+ * Whether this OpenAI model ACCEPTS `reasoning_effort: "none"`.
+ *
+ * origami_change (t-46a74d). Deliberately separate from what the picker OFFERS:
+ * `none` is no longer a tier a user can choose, but it is still the right
+ * request for the engine's own small calls (title generation), which want the
+ * cheapest reply and are never read as reasoning. Without it, `smallOptions`
+ * takes the first variant and silently upgrades every title call to `low`.
+ *
+ * The conditions are the ones that used to put `none` in the ladder: a versioned
+ * gpt-5.1+, a codex 3+, or a model released on or after the tier shipped. Older
+ * models 400 on it.
+ */
+function openaiAcceptsNoneEffort(apiId: string, releaseDate: string) {
+  const id = apiId.toLowerCase()
+  if (id.includes("deep-research")) return false
+  if (gpt5ChatReasoningEfforts(id)) return false
+  if (GPT5_PRO_RE.test(id)) return false
+  const codexVersion = gpt5CodexReasoningEfforts(id) ? gpt5Version(id) : undefined
+  if (codexVersion !== undefined) return codexVersion >= 3
+  const version = gpt5Version(id)
+  if (version !== undefined) return version >= 1
+  return releaseDate >= OPENAI_NONE_EFFORT_RELEASE_DATE
 }
 
 function openaiCompatibleReasoningEfforts(id: string) {
@@ -816,19 +1025,15 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   )
   // origami_change: GLM ids NEWER than 5.2 are not excluded below.
   //
-  // The blanket `glm` entry in the exclusion list is inherited from upstream,
-  // where it means "this family's endpoints reject reasoning_effort" - true of
-  // GLM 4.x and of the 5.0/5.1 endpoints. 5.2 was already carved out by hand
-  // (upstream "expose High/Max thinking variants for GLM-5.2"); GLM 5.3 and
-  // later, including self-hosted vLLM builds, accept the OpenAI-compatible
-  // knob. Being optimistic is now recoverable as well: SessionDegrade strips
-  // `reasoningEffort`/`reasoning_effort` and retries when an endpoint refuses
-  // it, and remembers the refusal for the rest of the session.
+  // The blanket `glm` entry in the exclusion list means "this family's endpoints
+  // reject reasoning_effort" - true of GLM 4.x and 5.0/5.1, but 5.3 and later
+  // (including self-hosted vLLM builds) accept the OpenAI-compatible knob. Being
+  // optimistic is recoverable: SessionDegrade strips `reasoningEffort` and
+  // retries when an endpoint refuses it.
   //
-  // The major version is read as a SINGLE digit on purpose, so `glm-130b`
-  // parses as major 1 and stays excluded. That also means a hypothetical
-  // `glm-10` would stay excluded - the safe direction, and the boundary can
-  // move again when such an id exists.
+  // The major version is read as a SINGLE digit on purpose, so `glm-130b` parses
+  // as major 1 and stays excluded. A hypothetical `glm-10` would stay excluded
+  // too - the safe direction, and the boundary can move when such an id exists.
   const glmNewerThan52 = [id, model.api.id.toLowerCase()].some((value) =>
     Array.from(value.matchAll(/glm-?(\d)(?:[.\-p](\d+))?/g)).some(([, major, minor]) => {
       const version = Number(major)
@@ -1259,16 +1464,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
 /**
  * The reasoning effort this engine sends for a gpt-5 model that accepts one.
  *
- * A DEFAULT, not a fixed value. `LLMRequestPrep.prepare` merges the model's
- * configured `options`, the agent's `options` and the selected variant body
- * over everything `options()` returns (session/llm/request.ts), so any of the
- * three replaces this without the engine having to be rebuilt.
+ * A default, not a fixed value: `LLMRequestPrep.prepare` merges the model's
+ * `options`, the agent's `options` and the selected variant body over everything
+ * `options()` returns (session/llm/request.ts).
  *
- * It is written explicitly, rather than left to the endpoint, because the
- * endpoint default moved: from gpt-5.1 on it is `none`, the mode that answers
- * in one shot with no tool call. A turn that ran that way announced the change
- * it was about to make and then stopped, which reads as the model refusing to
- * work rather than as a request option being wrong.
+ * Written explicitly rather than left to the endpoint, because from gpt-5.1 on
+ * the endpoint default is `none` - the mode that answers in one shot with no
+ * tool call, which reads as the model refusing to work.
  */
 export const GPT5_REASONING_EFFORT_DEFAULT = "medium"
 
@@ -1319,14 +1521,12 @@ export function options(input: {
       result["reasoning"] = { effort: "high" }
     }
     // A gateway carrying a gpt-5 model needs the effort in the GATEWAY's own
-    // shape. `reasoningEffort` — set for every gpt-5 id further down — is the
-    // OpenAI SDK spelling, and these two providers spread the options record
-    // into the request body verbatim (@openrouter/ai-sdk-provider's doGenerate
-    // and doStream both do `{ ...getArgs(options), ...providerOptions.openrouter }`),
-    // so that key arrives as an unknown body field and the model falls back to
-    // its own default. `reasoning: { effort }` is the shape this file already
-    // emits for an openrouter effort variant (see `reasoningEffort` below), so
-    // a variant, an agent option or a model option merges cleanly over this.
+    // shape. `reasoningEffort` is the OpenAI SDK spelling, and these two
+    // providers spread the options record into the request body verbatim, so
+    // that key arrives as an unknown field and the model falls back to its own
+    // default. `reasoning: { effort }` is the shape this file already emits for
+    // an openrouter effort variant, so a variant, an agent option or a model
+    // option merges cleanly over it.
     if (gpt5AcceptsReasoningEffort(input.model.api.id)) {
       result["reasoning"] = { effort: GPT5_REASONING_EFFORT_DEFAULT }
     }
@@ -1410,6 +1610,11 @@ export function options(input: {
     ) {
       result["promptCacheKey"] = input.sessionID
     }
+    // Same switch as the key: `setCacheKey: false` means "do not identify this
+    // session's prefix to this provider", and retention is the other half of
+    // that identity. Only the families the guide lists (t-rz0amv).
+    const retention = promptCacheRetention(input.model)
+    if (retention) result["promptCacheRetention"] = retention
   }
 
   if (input.model.api.npm === "@ai-sdk/gateway") {
@@ -1437,8 +1642,7 @@ export function options(input: {
       }
     }
 
-    // Only set textVerbosity for non-chat gpt-5.x models
-    // Chat models (e.g. gpt-5.2-chat-latest) only support "medium" verbosity
+    // Chat models (e.g. gpt-5.2-chat-latest) only support "medium" verbosity.
     if (
       input.model.api.id.includes("gpt-5.") &&
       !input.model.api.id.includes("codex") &&
@@ -1466,8 +1670,16 @@ export function smallOptions(model: Provider.Model) {
     model.api.npm === "@ai-sdk/github-copilot" ||
     model.api.npm === "@ai-sdk/xai"
   ) {
+    // origami_change (t-46a74d): the cheapest tier the endpoint accepts, asked
+    // for explicitly rather than inherited from `variants[0]`. The picker no
+    // longer offers `none`; the engine's own small calls still want it.
+    const cheapest =
+      (model.providerID === "openai" || model.api.npm === "@ai-sdk/openai") &&
+      openaiAcceptsNoneEffort(model.api.id, model.release_date)
+        ? { reasoningEffort: "none" }
+        : {}
     const base = { store: false }
-    return mergeDeep(base, small)
+    return mergeDeep(mergeDeep(base, small), cheapest)
   }
   if (model.providerID === "openrouter" || model.providerID === "llmgateway") {
     if (Object.keys(small).length === 0 && model.api.id.includes("google")) {
@@ -1518,7 +1730,6 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
 
     if (has) {
       if (slug) {
-        // Route model-specific options under the provider slug
         result[slug] = rest
       } else if (gateway && typeof gateway === "object" && !Array.isArray(gateway)) {
         result.gateway = { ...gateway, ...rest }
@@ -1644,24 +1855,6 @@ function sanitizeOpenAISchema(value: unknown): unknown {
 }
 
 export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 {
-  /*
-  if (["openai", "azure"].includes(providerID)) {
-    if (schema.type === "object" && schema.properties) {
-      for (const [key, value] of Object.entries(schema.properties)) {
-        if (schema.required?.includes(key)) continue
-        schema.properties[key] = {
-          anyOf: [
-            value as JSONSchema.JSONSchema,
-            {
-              type: "null",
-            },
-          ],
-        }
-      }
-    }
-  }
-  */
-
   if (model.api.npm === "@ai-sdk/openai" || model.api.npm === "@ai-sdk/azure") {
     schema = sanitizeOpenAISchema(schema) as JSONSchema7
     // Codex also applies lossy compaction above 4 KB; defer that until Origami needs the same schema budget.
@@ -1724,9 +1917,7 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
       const result: any = {}
       for (const [key, value] of Object.entries(obj)) {
         if (key === "enum" && Array.isArray(value)) {
-          // Convert all enum values to strings
           result[key] = value.map((v) => String(v))
-          // If we have integer type with enum, change type to string
           if (result.type === "integer" || result.type === "number") {
             result.type = "string"
           }
@@ -1755,7 +1946,6 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
         }
       }
 
-      // Filter required array to only include fields that exist in properties
       if (result.type === "object" && result.properties && Array.isArray(result.required)) {
         result.required = result.required.filter((field: any) => field in result.properties)
       }
@@ -1794,9 +1984,8 @@ export function reasoningVariants(model: ModelsDev.Model, target: Provider.Model
  * from.
  *
  * origami_change: split out of `reasoningVariants` so a config model can carry
- * the same `reasoning_options` shape models.dev publishes. `variants` below is
- * a name-regex heuristic over a catalog it knows; it cannot know what a
- * self-hosted endpoint accepts, so an operator has to be able to say it.
+ * the same `reasoning_options` shape models.dev publishes - the name-regex
+ * heuristic below cannot know what a self-hosted endpoint accepts.
  *
  * `undefined` means "nothing was declared" - the caller falls back to the
  * heuristic. `{}` means "declared, and it produces no variants".

@@ -1,21 +1,16 @@
-// sessionChanges.ts — what THIS chat has changed on disk, rolled up from the
-// transcript the pane already holds.
+// sessionChanges.ts — what this chat has changed on disk, rolled up from
+// the transcript the pane already holds.
 //
-// DERIVED, never subscribed. The counts are a pure function of the messages,
-// so a webview reload rebuilds them from the restored transcript. A running
-// total kept in a live event subscription would silently reset to zero on
-// every reload while the chat above it still showed the edits it counted.
-//
-// A .ts leaf under webview/ deliberately: it may not import from src/ (TS6059,
-// rootDir: "webview") and it does not — `Message` is chatMessage.ts's own
-// webview-side declaration, not a host type.
+// Derived, never subscribed: counts are a pure function of the messages, so
+// a reload rebuilds from the restored transcript instead of a live-subscribed
+// total silently resetting to zero. A .ts leaf under webview/ cannot import
+// from src/ (TS6059), so `Message` is chatMessage.ts's own webview type.
 
 import type { Message } from './chatMessage';
 
 export interface FileChange {
-  /** The path exactly as the wire gave it (ACP `locations[0].path`) — the same
-   *  string ToolCard hands `openAbsoluteFile`, so a click here opens what a
-   *  click on the tool card opens. */
+  /** The path exactly as the wire gave it (ACP `locations[0].path`) — the
+   *  same string ToolCard hands `openAbsoluteFile`. */
   path: string;
   adds: number;
   dels: number;
@@ -30,13 +25,14 @@ export interface SessionChanges {
   dels: number;
   /** One row per path, in first-touched order. */
   files: FileChange[];
+  /** t-ucnp7t (plan F12): older pages of the chat are not loaded, so these counts cover the
+   *  loaded part only. The pill says so rather than showing a silently low figure. */
+  partial?: boolean;
 }
 
-/** Above this many LCS cells (after the head/tail trim below) the table is
- *  skipped and the middles are reported as wholly replaced. Only a diff whose
- *  changed REGION is thousands of lines on both sides can reach it, and a
- *  quadratic table on the composer's render path is a worse answer than a
- *  slightly pessimistic one. */
+/** Above this many LCS cells the table is skipped and the middles are
+ *  reported as wholly replaced — only reachable by a diff whose changed
+ *  region is thousands of lines both sides; a quadratic table would be worse. */
 const LCS_CELL_CAP = 2_000_000;
 
 function lcsLength(a: string[], b: string[]): number {
@@ -52,14 +48,10 @@ function lcsLength(a: string[], b: string[]): number {
 }
 
 /**
- * Real line adds/dels for one before/after pair.
- *
- * NOT `newLines - oldLines`: replacing two lines with two others is `+2 −2`,
- * and the subtraction calls it `+0 −0` — the single most misleading number
- * this row could show. Common head and tail lines are trimmed first (cheap,
- * and it is what keeps a one-line edit in a 4000-line file cheap), then the
- * remaining middles go through an LCS table, which is what makes a pure
- * insertion cost adds only.
+ * Real line adds/dels for one before/after pair. Not `newLines - oldLines`:
+ * replacing two lines with two others is `+2 -2`, not the misleading `+0 -0`
+ * a subtraction would show. Head and tail lines common to both are trimmed
+ * first, then the remaining middle goes through an LCS table.
  */
 export function countDiffLines(oldText: string, newText: string): { adds: number; dels: number } {
   const a = oldText.length ? oldText.split('\n') : [];
@@ -79,39 +71,53 @@ export function countDiffLines(oldText: string, newText: string): { adds: number
   return { adds: midB.length - common, dels: midA.length - common };
 }
 
+/** One raw before/after pair, path-first — the shape a SUB-AGENT's edits
+ *  arrive in (subagentChanges.ts's `RawFileDiff`, posted per child since a
+ *  child's own tool calls never land in this chat's own `messages`). */
+export interface RawFileDiff { path: string; oldText: string; newText: string }
+
+function foldDiff(byPath: Map<string, FileChange>, path: string, oldText: string, newText: string): void {
+  const { adds, dels } = countDiffLines(oldText, newText);
+  const created = oldText.length === 0;
+  const seen = byPath.get(path);
+  if (seen) {
+    seen.adds += adds;
+    seen.dels += dels;
+    seen.created = seen.created || created;
+  } else {
+    byPath.set(path, { path, adds, dels, created });
+  }
+}
+
 /**
- * Roll a transcript up into the composer's running changes row.
+ * Roll a transcript into the composer's running changes row. Counting is
+ * churn, not net: two edits to one file sum, so added-then-removed lines
+ * read as `+1 -1` — the only reading available from per-call diffs.
  *
- * Counting is CHURN, not net: two edits to one file sum, so a line added and
- * then removed again reads as `+1 −1`. That is the honest reading of "what
- * this session did", and the only one available from per-call diffs — the
- * webview never sees the file's original state, only each edit's own region.
+ * t-j3qxbp — `subagentFiles` folds in every SUB-AGENT's own edits too (one
+ * array per child, keyed by whatever the caller likes — only the values are
+ * read), so the pill counts what the whole turn touched, not just the calls
+ * this chat's own transcript happened to carry.
  */
-export function aggregateSessionChanges(messages: readonly Message[]): SessionChanges {
+export function aggregateSessionChanges(
+  messages: readonly Message[],
+  subagentFiles?: Readonly<Record<string, readonly RawFileDiff[]>>,
+): SessionChanges {
   const byPath = new Map<string, FileChange>();
   for (const m of messages) {
     const diff = m.toolDiff;
-    // A tool that only LOOKED at a file (read, grep, list) carries a path and
-    // no diff — it changed nothing and must not appear here. Nor did a call
-    // the engine reported `failed`, whatever content came back with it.
+    // A tool that only looked at a file (read, grep, list) carries a path but
+    // no diff, and a `failed` call changed nothing either — skip both.
     if (!diff || m.toolStatus === 'failed') continue;
     const path = m.toolPath || diff.path;
     if (!path) continue;
-    const { adds, dels } = countDiffLines(diff.oldText, diff.newText);
-    const created = diff.oldText.length === 0;
-    const seen = byPath.get(path);
-    if (seen) {
-      seen.adds += adds;
-      seen.dels += dels;
-      seen.created = seen.created || created;
-    } else {
-      byPath.set(path, { path, adds, dels, created });
-    }
+    foldDiff(byPath, path, diff.oldText, diff.newText);
   }
-  // A no-op edit (oldText === newText) moved no lines, and a row reading
-  // "1 file +0 −0" is a bug report waiting to happen. Drop it — which is also
-  // what makes "nothing changed" resolve to fileCount 0 rather than to a pill
-  // with nothing in it.
+  for (const files of Object.values(subagentFiles ?? {})) {
+    for (const f of files) { if (f.path) foldDiff(byPath, f.path, f.oldText, f.newText); }
+  }
+  // A no-op edit (oldText === newText) moved no lines; drop it so "nothing
+  // changed" resolves to fileCount 0 rather than a pill reading "+0 -0".
   const files = [...byPath.values()].filter((f) => f.adds > 0 || f.dels > 0);
   let adds = 0;
   let dels = 0;

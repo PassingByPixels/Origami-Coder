@@ -11,6 +11,22 @@
 **/esbuild.js
 **/knip.ts
 **/src/
-**/webview/**/*.test.ts
-**/webview/**/__tests__/
+
+# The webview SOURCE tree. Everything that runs is bundled into out/ by
+# esbuild, and package.json's main is ./out/extension.js — nothing loads a
+# .ts or .svelte from here at runtime. Shipping it published 476 original
+# source files, the phone shell's wire crypto among them (2026-09-12).
+# NOTE: this is anchored at the package root on purpose. A leading **/ would
+# also match out/webview/, which IS the runtime bundle.
+webview/**
+
+# Source maps rebuild the original source from the shipped bundle, so they
+# leak exactly what the line above stops. extension.js.map alone was 3.5 MB
+# of extension-host source.
+**/*.map
+
+# The README screenshot harness (scripts/readme-shots): a release tool, not
+# part of the extension.
+scripts/**
+
 !.vscodeignore

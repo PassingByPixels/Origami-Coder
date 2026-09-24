@@ -45,6 +45,7 @@ export const GitDiffTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context

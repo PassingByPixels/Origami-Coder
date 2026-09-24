@@ -1,45 +1,23 @@
 // browserPage.ts — which page a verb acts on, and whether it is ON SCREEN.
+// browserBridge.ts decides which TOOL a verb means; this one decides which PAGE it
+// runs against and whether that page can be acted on at all.
 //
-// Extracted from browserBridge.ts (357/360, no room) rather than folded in,
-// and along a line that file already had: it decides which TOOL a verb means,
-// this one decides which PAGE that tool runs against and whether that page can
-// be acted on at all. `lookupPage` moved here whole; the reveal is new.
-//
-// Why a reveal exists at all. Two rounds of live UAT ended the same way: the
-// locator RESOLVED ("locator resolved to <input checked>") and then the element
-// never became "visible, enabled and stable", so the click timed out at
-// 10000ms. Round 2 retried it as `>> visible=true` — the hidden-TWIN theory —
-// and that matched nothing, which ruled the twin out and left the container:
-// the browser page itself was not rendered while the agent clicked.
-//
-// VS Code says so in its own answer. `list_browser_pages` prints one line per
-// shared page ending in a state, and the bundle computes it (`Lcn`) as
-//
-//   let t = editorService.activeEditor, i = new Set(editorService.visibleEditors);
-//   … a === t ? " (active)" : i.has(a) ? " (visible)" : " (not visible)"
-//
-// so the three states ARE the editor's render state, from the same service a
-// reveal would move. "not visible" is a background tab in an editor group: no
-// layout, no bounding box, and nothing Playwright's actionability check can
-// ever pass. That is the whole failure, and the state was already on the wire.
-//
-// The reveal itself is `vscode.open` on the page's editor resource — see
-// browserVsCode.revealPage for why that reveals rather than duplicates.
-//
-// NOT vscode.window.tabGroups, which the round-3 brief offered as the lead. Two
-// things kill it on 1.132.0, both read off the shipped bundle and the shipped
-// types: (1) `MainThreadEditorTabs._editorInputToDto` has no branch for the
-// browser editor input, so it falls through to `{kind:0}` (UnknownInput) and
-// `Tab.input` arrives at an extension as `undefined` — a browser tab carries no
-// resource, no scheme and no page id to match on; (2) `TabGroups` publishes
-// `close()` and nothing else — there is no reveal, no focus and no activate on
-// that API at all. Enumerating tabs could therefore neither FIND the page nor
-// SHOW it, while the page list answers both.
+// Why a reveal exists. Two rounds of live UAT ended the same way: the locator
+// RESOLVED and the element never became "visible, enabled and stable", so the click
+// timed out. `list_browser_pages` ends each line with active / visible / not
+// visible, and those states ARE the editor's render state, from the same service a
+// reveal would move: "not visible" is a background tab with no layout and no
+// bounding box, which Playwright's actionability check can never pass. NOT
+// vscode.window.tabGroups — a browser tab's `Tab.input` arrives `undefined`, and
+// `TabGroups` publishes `close()` and nothing else.
 
 import { check, choosePageId, chosenPageNote, parsePageList, unsharedPages } from './browserResult';
 import type { ListedPage, PageState } from './browserResult';
 import { LIST_TOOL } from './browserTools';
 import { invoke, revealPage } from './browserVsCode';
+// WHETHER a reveal is allowed at all is the user's policy, not this file's —
+// browserReveal.ts owns it, and owns why "never" cannot cover the first open.
+import { REVEAL_SETTING, markRevealed, mayReveal, readRevealPolicy, type RevealPolicy } from './browserReveal';
 
 export interface Found {
   pageId?: string;
@@ -56,17 +34,19 @@ export interface Found {
 /** `rendered` needs nothing done; `reveal` is the failing case; `unlisted` is
  *  the guard — a reveal on an id VS Code did not list would OPEN A BLANK PAGE
  *  (`getOrCreateLazy`), so an unknown id is reported, never shown. */
-export type RevealPlan = { act: 'rendered'; state: PageState } | { act: 'reveal' } | { act: 'unlisted' };
+export type RevealPlan =
+  | { act: 'rendered'; state: PageState }
+  | { act: 'reveal' }
+  | { act: 'unlisted' }
+  /** The page IS hidden and a reveal would have helped, but the user's reveal
+   *  policy says leave it where it is. A separate act, not a silent skip: the
+   *  sentence it produces is the one a failed click needs. */
+  | { act: 'withheld'; policy: RevealPolicy };
 
-/**
- * Whether the page has to be brought to the front before a verb runs.
- *
- * "visible" is deliberately left alone. It means the page IS in
- * `editorService.visibleEditors` — the active editor of some other group — so
- * it is laid out and painted, and Playwright needs layout, not focus. Revealing
- * it anyway would take the user's cursor off whatever they are typing in, every
- * time, to fix nothing.
- */
+/** Whether the page has to be brought to the front before a verb runs. "visible" is
+ *  deliberately left alone: it means the page IS in `editorService.visibleEditors`,
+ *  so it is laid out and painted, and Playwright needs layout, not focus. Revealing
+ *  it anyway would take the user's cursor off whatever they are typing in. */
 export function planReveal(pages: readonly ListedPage[], pageId: string): RevealPlan {
   const state = pages.find((page) => page.id === pageId)?.state;
   if (!state) return { act: 'unlisted' };
@@ -78,6 +58,14 @@ export function planReveal(pages: readonly ListedPage[], pageId: string): Reveal
 export function screenNote(plan: RevealPlan, pageId: string, failure?: unknown): string {
   if (plan.act === 'unlisted') {
     return `Page ${pageId} was not in VS Code's list of shared pages, so it was not brought to the front first.`;
+  }
+  if (plan.act === 'withheld') {
+    return (
+      `The browser page was listed as "not visible" and was LEFT where it is: "${REVEAL_SETTING}" is ` +
+      `"${plan.policy}", so the agent does not bring its tab to the front${plan.policy === 'first' ? ' again' : ''}. ` +
+      'A background editor tab is not laid out, so an element check can fail for that reason alone; the Insights ' +
+      'Browser card has the setting.'
+    );
   }
   if (plan.act === 'rendered') {
     return `The browser page was already on screen (VS Code listed it as "${plan.state}"), so a hidden tab is not the cause.`;
@@ -97,22 +85,24 @@ export function screenNote(plan: RevealPlan, pageId: string, failure?: unknown):
 async function reveal(pages: readonly ListedPage[], pageId: string): Promise<string> {
   const plan = planReveal(pages, pageId);
   if (plan.act !== 'reveal') return screenNote(plan, pageId);
+  // The policy gate, between the decision and the call, so nothing above it had
+  // to learn about settings and nothing below it can reveal past the rule.
+  if (!mayReveal(pageId)) return screenNote({ act: 'withheld', policy: readRevealPolicy() }, pageId);
   try {
     await revealPage(pageId);
   } catch (error) {
     return screenNote(plan, pageId, error);
   }
+  // Marked only on a reveal that actually ran: under "first" a reveal that threw
+  // has not shown the page, so the next verb is still allowed to try.
+  markRevealed(pageId);
   return screenNote(plan, pageId);
 }
 
-/**
- * Which page the verbs act on. Resolved fresh on every call rather than cached
- * from the last open: a cached id outlives the tab the user closed, and VS Code
- * answers a dead id with "No browser page found with ID …", which reads as a
- * broken tool rather than a closed page. One extra in-process call is the
- * cheaper half of that trade — and it is also what carries the render state,
- * so the reveal costs no round trip of its own.
- */
+/** Which page the verbs act on. Resolved fresh on every call rather than cached: a
+ *  cached id outlives the tab the user closed, and VS Code answers a dead id with
+ *  "No browser page found with ID …", which reads as a broken tool. The extra
+ *  in-process call also carries the render state the reveal needs. */
 export async function lookupPage(tools: readonly string[]): Promise<Found> {
   if (!tools.includes(LIST_TOOL)) return { unshared: 0 };
   // Through the gate too: read without it, a FAILED list came back spliced

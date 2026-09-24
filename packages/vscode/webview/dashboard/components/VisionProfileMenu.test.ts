@@ -88,21 +88,32 @@ describe('Vision button — one control, three states', () => {
 });
 
 describe('Vision button — what a click opens', () => {
-  it('a blind model opens the PICKER: Off plus every profile', () => {
+  // The list is one ANSWER of the triad now, not a second menu below it — the
+  // two lit rows are what the owner read as a control contradicting itself. So
+  // it opens behind the Profile choice, and its null row is "None": "Off" said
+  // the same word the pin used to, for a different subject.
+  const profileChoice = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('.pin-btn')).find((b) => b.querySelector('.pin-name')?.textContent?.trim() === 'Profile')!;
+
+  it('a blind model reaches the profile list through the Profile choice', async () => {
     const { container } = mount({ open: true });
-    expect(items(container)).toEqual(['Off', '@vision-eye', '@vision-owl']);
+    expect(items(container)).toEqual([]);
+    await fireEvent.click(profileChoice(container));
+    expect(items(container)).toEqual(['None', '@vision-eye', '@vision-owl']);
   });
 
-  it('picking a profile reports the slug; Off reports the empty string', async () => {
+  it('picking a profile reports the slug; None reports the empty string', async () => {
     const { container, onSelect } = mount({ open: true, profile: 'vision-eye' });
+    // A profile is already armed, so the list is open on arrival — the point of
+    // reopening the popover is to see WHICH one.
     const owl = Array.from(container.querySelectorAll('.vision-item')).find((b) =>
       b.textContent?.includes('vision-owl'),
     )!;
     await fireEvent.click(owl);
     expect(onSelect).toHaveBeenCalledWith('vision-owl');
 
-    const off = Array.from(container.querySelectorAll('.vision-item')).find((b) => b.textContent?.trim() === 'Off')!;
-    await fireEvent.click(off);
+    const none = Array.from(container.querySelectorAll('.vision-item')).find((b) => b.textContent?.trim() === 'None')!;
+    await fireEvent.click(none);
     // '' is the engine's clear-word (acp/service.ts); "off" would arm a profile
     // by that name, or be refused.
     expect(onSelect).toHaveBeenCalledWith('');

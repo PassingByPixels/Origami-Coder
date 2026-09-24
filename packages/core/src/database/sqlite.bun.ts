@@ -6,6 +6,7 @@ import * as Fiber from "effect/Fiber"
 import { identity } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Scope from "effect/Scope"
+import * as Schedule from "effect/Schedule"
 import * as Semaphore from "effect/Semaphore"
 import * as Stream from "effect/Stream"
 import * as Reactivity from "effect/unstable/reactivity/Reactivity"
@@ -151,6 +152,14 @@ const make = (options: Config) =>
     return client
   })
 
+/** The failures of the WAL switch that another process opening the same new
+ *  file at the same moment causes, and that a retry clears. SQLITE_IOERR_TRUNCATE
+ *  is the Windows form: a file another process has open cannot be truncated. */
+const isOpenRace = (cause: unknown) => {
+  const code = typeof cause === "object" && cause !== null ? String((cause as { code?: unknown }).code) : ""
+  return code.startsWith("SQLITE_BUSY") || code === "SQLITE_IOERR_TRUNCATE"
+}
+
 const nativeLayer = (config: Config) =>
   Layer.effect(
     Sqlite.Native,
@@ -161,7 +170,21 @@ const nativeLayer = (config: Config) =>
         create: config.create ?? true,
       })
       yield* Effect.addFinalizer(() => Effect.sync(() => native.close()))
-      if (config.disableWAL !== true) native.run("PRAGMA journal_mode = WAL;")
+      // t-tc2193: the busy handler FIRST. Switching to WAL (and the WAL
+      // recovery another opener may be running) takes a lock; with SQLite's
+      // default timeout of 0 the second of two engines starting together fails
+      // here at once with SQLITE_BUSY / SQLITE_BUSY_RECOVERY.
+      native.run("PRAGMA busy_timeout = 5000;")
+      // The switch of a NEW file to WAL can still fail at once while other
+      // engines open it: SQLite skips the busy handler when waiting could
+      // deadlock (this connection holds a shared lock and wants an exclusive
+      // one), and on Windows a truncate of a file another process holds fails.
+      // Retry it, bounded to the same 5 s.
+      if (config.disableWAL !== true)
+        yield* Effect.try({ try: () => native.run("PRAGMA journal_mode = WAL;"), catch: (cause) => cause }).pipe(
+          Effect.retry({ while: isOpenRace, times: 250, schedule: Schedule.spaced("20 millis") }),
+          Effect.orDie,
+        )
       return native
     }),
   )

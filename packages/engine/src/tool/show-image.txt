@@ -1,0 +1,7 @@
+Show an image file to the user in the chat, as a picture rather than a file path.
+Use it after you render, generate, download or find an image the user should LOOK at: a screenshot, a chart, a generated asset, a design mock.
+`path` is workspace-relative or absolute. `caption` is one short line shown as the card title; without it the card shows the file name.
+Allowed types are PNG, JPEG, GIF and WebP, decided by the file's own bytes, not by its extension. A file up to 8 MB is shown; a larger one is refused - say so and point at the path instead.
+A path outside the workspace and outside the user's home directory is refused.
+This is a read-only tool: it never writes, moves or converts the file.
+Do not call it to READ an image yourself - that is the `read` tool. Call it when the USER should see the picture.

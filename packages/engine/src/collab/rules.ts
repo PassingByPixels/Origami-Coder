@@ -3,20 +3,11 @@ import type { CollabStore } from "./store"
 /**
  * Whether one roster agent replies to one Collab message.
  *
- * v2 is MECHANICAL: every decision reads the message's KIND and its structured
- * `mentions` list, never its prose. A model that writes "@crane" in a sentence
- * is referring to a colleague, not summoning one - under v1 that reference woke
- * crane, so two agents discussing a third could keep the room awake forever
- * without anyone asking for anything.
- *
- * The policy stays an ORDERED first-match rule list: a new behaviour is a new
- * rule at the right POSITION, and the position is the whole policy.
- *
- * Evaluation is FAIL-CLOSED. A rule that throws ends the whole evaluation at
- * "skip"; it never falls through to a later rule. A broken rule that let
- * messages fall through to a permissive one would make agents answer things the
- * policy meant to filter, and in a room that bills per turn that is the
- * expensive direction to be wrong in.
+ * MECHANICAL: every decision reads the message's KIND and its structured
+ * `mentions` list, never its prose. The policy is an ORDERED first-match rule
+ * list, and a rule's position is the whole policy. Evaluation is FAIL-CLOSED:
+ * a rule that throws ends the evaluation at "skip", never falling through to a
+ * later, more permissive rule.
  */
 
 export type Decision = "reply" | "skip"
@@ -46,26 +37,18 @@ export type Task = {
 export type Input = {
   readonly subject: Subject
   readonly message: Message
-  /**
-   * The ACTIVE roster at decision time, `subject` included. Absent means
-   * "roster unknown", which the addressing rule treats as "take the list as
-   * given" rather than guessing.
-   */
+  /** The ACTIVE roster at decision time, `subject` included. Absent means
+   *  "roster unknown", which the addressing rule treats as "take the list as
+   *  given" rather than guessing. */
   readonly roster?: readonly Subject[]
   /** The agent an unaddressed human message reaches. null = nobody. */
   readonly lead?: string | null
   /** The task `message.taskId` names, when the caller loaded one. */
   readonly task?: Task
   /**
-   * What KIND of room this is. Absent = `discuss`, which is every room that
-   * shipped before council mode and the reading of any stored value this build
-   * does not recognise (`CollabCouncil.flavorOf`).
-   *
-   * It is a ROUTING fact, so it belongs here and not only in the runner: a
-   * council sends an unaddressed question to the whole room instead of to the
-   * lead, and the composer preview is this same stack. A preview that named the
-   * lead where the room would wake five agents would teach a rule the room does
-   * not have.
+   * What KIND of room this is. Absent = `discuss`. A ROUTING fact, so it lives
+   * here and not only in the runner: a council sends an unaddressed question to
+   * the whole room instead of the lead, and the composer preview runs this stack.
    */
   readonly flavor?: "discuss" | "council"
 }
@@ -90,23 +73,15 @@ export const SELF: Rule = {
 
 /**
  * Whether this is something a participant SAID, as opposed to a row the board
- * left behind.
- *
- * The human rules below route conversation. A human moving a task writes a
- * `task_*` row with the human's name on it, and treating that as a question for
- * the lead would spend a turn on every checkbox - while ALSO shadowing the
- * board rule that knows who actually has to act on it.
+ * left behind. A human moving a task writes a `task_*` row with the human's
+ * name on it; routing that to the lead would spend a turn on every checkbox.
  */
 const isChat = (message: Message) => message.kind === "say"
 
 /**
  * A human message that names agents is a question for exactly those agents.
- *
  * The names come from the structured `mentions` list `collab_post` validated
- * against the active roster, so an unknown slug was refused before anything was
- * written. A named agent that LEFT afterwards simply is not reached: v1 fanned
- * such a message out to the whole room "so it reaches someone", which turned a
- * question for one departed agent into a turn from every remaining one.
+ * against the active roster. A named agent that LEFT is simply not reached.
  */
 export const HUMAN_MENTION: Rule = {
   name: "human-mention",
@@ -118,22 +93,14 @@ export const HUMAN_MENTION: Rule = {
 }
 
 /**
- * IN A COUNCIL, an unaddressed question goes to EVERYONE - and so does the
+ * IN A COUNCIL an unaddressed question goes to EVERYONE, and so does the
  * synthesizer's follow-up.
  *
  * Positioned deliberately BETWEEN {@link HUMAN_MENTION} and {@link HUMAN_LEAD}:
- * the position is the policy.
- *
- *  - AFTER the mention rule, so `@crane what do you think` still asks crane
- *    alone. Naming members is how a human narrows a council for one question,
- *    and a mode that swallowed the address list would take that away.
- *  - BEFORE the lead rule, so an UNADDRESSED question reaches the whole room
- *    rather than one seat. That is the mode: a council's value is independent
- *    first opinions, and there is nothing independent about one answer.
- *
- * A `council_question` reaches everyone regardless of address, because it is
- * the synthesizer asking its own council. {@link SELF} has already taken the
- * asker out, so it is never woken by its own follow-up.
+ * after the mention rule, so `@crane what do you think` still asks crane alone;
+ * before the lead rule, so an UNADDRESSED question reaches the whole room. A
+ * `council_question` reaches everyone regardless of address; {@link SELF} keeps
+ * the asker out of its own follow-up.
  */
 export const COUNCIL: Rule = {
   name: "council",
@@ -146,12 +113,9 @@ export const COUNCIL: Rule = {
 }
 
 /**
- * An unaddressed human message goes to the LEAD alone.
- *
- * v1 woke the whole room, which spent a turn from every agent on one question
- * and made three-agent rooms answer in triplicate. With no lead nobody wakes -
- * `collab_post` answers `notice: 'no-lead'` so the human is told, rather than
- * left watching a room that will never reply.
+ * An unaddressed human message goes to the LEAD alone. With no lead nobody
+ * wakes - `collab_post` answers `notice: 'no-lead'` so the human is told rather
+ * than left watching a room that will never reply.
  */
 export const HUMAN_LEAD: Rule = {
   name: "human-lead",
@@ -161,31 +125,24 @@ export const HUMAN_LEAD: Rule = {
   },
 }
 
-/**
- * An answer wakes NOBODY. The agent that asked already holds it as the result
- * of its own tool call, and everyone else was never part of the exchange.
- */
+/** An answer wakes NOBODY. The agent that asked already holds it as the result
+ *  of its own tool call, and everyone else was never part of the exchange. */
 export const ANSWER: Rule = {
   name: "answer",
   evaluate: ({ message }) => (message.kind === "answer" ? "skip" : undefined),
 }
 
-/**
- * An ask or a hand-off reaches its target only, and the RUNNER routes it: an
- * ask runs nested inside the caller's own turn, a hand-off passes the baton by
- * queueing the target directly. Either way the rule stack must not schedule a
- * second turn for the same message.
- */
+/** An ask or a hand-off reaches its target only, and the RUNNER routes it: an
+ *  ask runs nested in the caller's turn, a hand-off queues the target directly.
+ *  Either way the rule stack must not schedule a second turn for it. */
 export const DIRECTED: Rule = {
   name: "directed",
   evaluate: ({ message }) => (message.kind === "ask" || message.kind === "handoff" ? "skip" : undefined),
 }
 
-/**
- * Board moves that need someone to act: finished work goes back to whoever
- * asked for it, and reopened work goes back to whoever owns it. Every other
- * board move is bookkeeping and wakes no one.
- */
+/** Board moves that need someone to act: finished work goes back to whoever
+ *  asked for it, and reopened work goes back to whoever owns it. Every other
+ *  board move is bookkeeping and wakes no one. */
 export const TASK: Rule = {
   name: "task",
   evaluate: ({ subject, message, task }) => {
@@ -217,11 +174,8 @@ export const SILENT: Rule = {
  * directed messages out of the scheduler, hand finished and reopened work back
  * to the agent that owns it, and stay silent otherwise.
  *
- * An agent's ordinary `say` therefore wakes nobody at all. Talking is not
- * addressing, and a room where it was could never come to rest. An `opinion`
- * and a `synthesis` fall through to {@link SILENT} for exactly that reason and
- * need no rule of their own: a council that answered its own answers would
- * never stop.
+ * An agent's ordinary `say` wakes nobody: talking is not addressing. `opinion`
+ * and `synthesis` fall through to {@link SILENT} for the same reason.
  */
 export const DEFAULT_RULES: readonly Rule[] = [
   SELF,
@@ -250,19 +204,11 @@ export function decide(input: Input, rules: readonly Rule[] = DEFAULT_RULES): De
 /**
  * Who a HUMAN message addressing `mentions` would wake, in roster order.
  *
- * This is the C14 composer preview, and it is here rather than in the ACP layer
- * for one reason: it must not become a second policy. It runs {@link decide}
- * over the same stack the runner fans out on, so a rule that changes moves the
- * preview with it - a preview that is right where the room is wrong would teach
- * the user a routing rule the room does not have.
- *
- * Token-free by construction: the rules read the message's kind and its address
- * list, never its prose, so there is nothing here to send to a model. The
- * draft's TEXT is deliberately not a parameter for the same reason.
- *
- * The hop budget is not consulted either, and must not be: the post this
- * previews is a human one, and a human post buys a fresh budget before it fans
- * out, so a spent budget never narrows the answer.
+ * The composer preview, here rather than in the ACP layer so it cannot become a
+ * second policy: it runs {@link decide} over the same stack the runner fans out
+ * on. Token-free by construction - the rules never read prose, so the draft's
+ * TEXT is not a parameter. The hop budget is not consulted either: a human post
+ * buys a fresh budget before it fans out, so a spent one cannot narrow this.
  */
 export function wakeSet(
   input: {

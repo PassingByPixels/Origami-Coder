@@ -3,6 +3,7 @@ import { CrossSpawnSpawner } from "@origami/core/cross-spawn-spawner"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { $ } from "bun"
 import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import * as TestClock from "effect/testing/TestClock"
 import { InstanceState } from "@/effect/instance-state"
 import {
   disposeAllInstancesEffect,
@@ -314,6 +315,171 @@ it.live("InstanceState dedupes concurrent lookups", () =>
     const [a, b] = yield* Effect.all([access(state, dir), access(state, dir)], { concurrency: "unbounded" })
     expect(a).toBe(b)
     expect(n).toBe(1)
+  }),
+)
+
+// t-tc1tnk (scout B#5). The ScopedCache kept whatever exit the first lookup
+// produced, with no TTL. Stop pressed while the first turn in a folder was
+// still starting MCP servers or loading providers left that service holding an
+// INTERRUPT for the folder until the instance was disposed.
+it.live("InstanceState retries a first lookup that was interrupted", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    const entered = yield* Deferred.make<void>()
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        yield* Deferred.succeed(entered, undefined)
+        if (n === 1) return yield* Effect.never
+        return { n }
+      }),
+    )
+
+    const first = yield* access(state, dir).pipe(Effect.forkChild)
+    yield* Deferred.await(entered)
+    yield* Fiber.interrupt(first)
+
+    const second = yield* access(state, dir).pipe(Effect.timeout("2 seconds"), Effect.exit)
+    expect(Exit.isSuccess(second) ? second.value : second).toEqual({ n: 2 })
+    // A good value is still kept.
+    expect(yield* access(state, dir)).toEqual({ n: 2 })
+    expect(n).toBe(2)
+  }),
+)
+
+it.live("InstanceState retries a first lookup that died", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.suspend(() => (++n === 1 ? Effect.die(new Error("boom")) : Effect.succeed({ n }))),
+    )
+
+    expect(Exit.hasDies(yield* access(state, dir).pipe(Effect.exit))).toBe(true)
+    expect(yield* access(state, dir)).toEqual({ n: 2 })
+    expect(n).toBe(2)
+  }),
+)
+
+it.live("InstanceState: a caller waiting on an interrupted first lookup gets a fresh one", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    const entered = yield* Deferred.make<void>()
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        yield* Deferred.succeed(entered, undefined)
+        if (n === 1) return yield* Effect.never
+        return { n }
+      }),
+    )
+
+    const owner = yield* access(state, dir).pipe(Effect.forkChild)
+    yield* Deferred.await(entered)
+    const waiter = yield* access(state, dir).pipe(Effect.timeout("2 seconds"), Effect.exit, Effect.forkChild)
+    yield* Effect.sleep("10 millis")
+    yield* Fiber.interrupt(owner)
+
+    const got = yield* Fiber.join(waiter)
+    expect(Exit.isSuccess(got) ? got.value : got).toEqual({ n: 2 })
+  }),
+)
+
+// t-tijhw6. A typed failure (a provider or MCP start that failed) was kept
+// until the instance was disposed. It is now kept for a backoff window per
+// directory (2 s, doubling per consecutive failure, at most 60 s), then the
+// next get looks up again. TestClock drives the window.
+it.effect("InstanceState keeps a typed failure for a doubling backoff, then looks up again", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    const state = yield* InstanceState.make(() => Effect.suspend(() => Effect.fail(`start failed ${++n}`)))
+
+    expect(yield* Effect.flip(access(state, dir))).toBe("start failed 1")
+    yield* TestClock.adjust("1999 millis")
+    expect(yield* Effect.flip(access(state, dir))).toBe("start failed 1")
+    yield* TestClock.adjust("1 millis")
+    expect(yield* Effect.flip(access(state, dir))).toBe("start failed 2")
+
+    // Second consecutive failure: 4 s.
+    yield* TestClock.adjust("3999 millis")
+    expect(yield* Effect.flip(access(state, dir))).toBe("start failed 2")
+    yield* TestClock.adjust("1 millis")
+    expect(yield* Effect.flip(access(state, dir))).toBe("start failed 3")
+    expect(n).toBe(3)
+  }),
+)
+
+it.effect("InstanceState: a success after failures is kept and resets the backoff", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    let fail = true
+    const state = yield* InstanceState.make(() =>
+      Effect.suspend(() => (++n, fail ? Effect.fail("start failed") : Effect.succeed({ n }))),
+    )
+
+    yield* Effect.flip(access(state, dir))
+    yield* TestClock.adjust("2 seconds")
+    yield* Effect.flip(access(state, dir))
+    yield* TestClock.adjust("4 seconds")
+    fail = false
+    const value = yield* access(state, dir)
+    expect(value).toEqual({ n: 3 })
+    yield* TestClock.adjust("1 hour")
+    expect(yield* access(state, dir)).toBe(value)
+
+    // After a reload, the next failure starts again at 2 s, not 8 s.
+    fail = true
+    yield* reloadInstance({ directory: dir })
+    yield* Effect.flip(access(state, dir))
+    yield* TestClock.adjust("2 seconds")
+    yield* Effect.flip(access(state, dir))
+    expect(n).toBe(5)
+  }),
+)
+
+it.effect("InstanceState: callers inside the backoff share the failure; one lookup after it", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    // The yield keeps each lookup in flight while the other callers arrive.
+    const state = yield* InstanceState.make(() =>
+      Effect.suspend(() => (++n, Effect.andThen(Effect.yieldNow, Effect.fail("start failed")))),
+    )
+
+    yield* Effect.flip(access(state, dir))
+    yield* Effect.all(Array.from({ length: 10 }, () => Effect.flip(access(state, dir))), { concurrency: "unbounded" })
+    expect(n).toBe(1)
+
+    yield* TestClock.adjust("2 seconds")
+    yield* Effect.all(Array.from({ length: 10 }, () => Effect.flip(access(state, dir))), { concurrency: "unbounded" })
+    expect(n).toBe(2)
+  }),
+)
+
+it.effect("InstanceState: the failure backoff is per directory", () =>
+  Effect.gen(function* () {
+    const one = yield* tmpdirScoped()
+    const two = yield* tmpdirScoped()
+    const seen: string[] = []
+    const state = yield* InstanceState.make((ctx) =>
+      Effect.suspend(() => (seen.push(ctx.directory), Effect.fail("start failed"))),
+    )
+
+    // Three failures in `one` (backoff now 8 s there), one in `two` (2 s).
+    yield* Effect.flip(access(state, one))
+    yield* TestClock.adjust("2 seconds")
+    yield* Effect.flip(access(state, one))
+    yield* TestClock.adjust("4 seconds")
+    yield* Effect.flip(access(state, one))
+    yield* Effect.flip(access(state, two))
+    yield* TestClock.adjust("2 seconds")
+    yield* Effect.flip(access(state, one))
+    yield* Effect.flip(access(state, two))
+    expect(seen).toEqual([one, one, one, two, two])
   }),
 )
 

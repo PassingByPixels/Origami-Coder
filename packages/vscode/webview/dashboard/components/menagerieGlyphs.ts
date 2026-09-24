@@ -1,41 +1,23 @@
-// menagerieGlyphs.ts (W9) - the ORIGAMI MENAGERIE: twenty-six more creatures a
-// bot can wear, in the same visual language as the seven brand glyphs
-// archetypeGlyphs.ts already held.
+// The origami menagerie: twenty-six more creatures a bot can wear, in the
+// same visual language as the seven brand glyphs archetypeGlyphs.ts holds.
 //
-// WHY THIS FILE EXISTS. Until W9 a bot's glyph came from a list of NINE, seven
-// of which were named after AGENT TYPES rather than animals (`architect` for the
-// elephant, `debug` for the fox). Two bots in three therefore wore the same
-// bird, and the picker's job - "which one is mine, at a glance, in a list" -
-// cannot be done by nine marks. The owner's ruling was simply: many more.
+// The style is not negotiable, or a menagerie half low-poly paper and half
+// something else reads as a bug. Every set obeys the same four rules the
+// harvested originals do:
+//   1. A 64x64 viewBox — ArchetypeGlyph.svelte hard-codes it.
+//   2. Polygons only, no curves/strokes/circles: an origami animal is flat
+//      facets meeting at folds. Three or four points per polygon.
+//   3. Per-polygon opacity, 0.45 to 1.0: the same currentColor fill at
+//      different alphas reads as one sheet catching light at different
+//      angles. The convention for a leg or shadow is 0.45.
+//   4. currentColor, inherited — no fill attribute anywhere in this file.
 //
-// THE STYLE IS NOT NEGOTIABLE, because a menagerie that is half low-poly paper
-// and half something else reads as a bug rather than as variety. Every set here
-// obeys the same four rules the harvested originals do:
+// Read at 16px first: every one of these is drawn at 12-32px, so the
+// silhouette carries it and interior detail is wasted ink. Where two
+// creatures would share an outline they're posed apart on purpose.
 //
-//   1. A 64x64 VIEWBOX. Nothing else; ArchetypeGlyph.svelte hard-codes it.
-//   2. POLYGONS ONLY - no curves, no strokes, no circles. An origami animal is
-//      flat facets meeting at folds, and a curve is the one thing paper cannot
-//      do. Three or four points per polygon, straight edges.
-//   3. PER-POLYGON OPACITY, 0.45 to 1.0, and it is what does the work: the same
-//      currentColor fill at different alphas reads as one sheet catching light
-//      at different angles. A flat set of equal opacities looks like a blob.
-//      The family convention for a LEG or a shadow is 0.45 - lifted from the
-//      source SVGs' `<g opacity=".45">`, flattened per polygon.
-//   4. currentColor, INHERITED. There is no fill attribute anywhere in this
-//      file. The renderer sets `fill="currentColor"` once on the <svg>, so a
-//      glyph takes the colour of the text beside it in all five themes - which
-//      is also why architecture.test.ts's colour rule has nothing to find here.
-//
-// READ AT 16px FIRST. Every one of these is drawn at 12-32px, so the SILHOUETTE
-// carries it and interior detail is wasted ink: two long ears say rabbit, a
-// radial mane says lion, a fan says peacock. Where two creatures would share an
-// outline they are posed apart on purpose - the swan floats with no legs and a
-// tight neck where the heron stands tall on two, and the eagle spreads straight
-// where the bat's wings are scalloped.
-//
-// DATA ONLY, and no import of `vscode` or of the lookup that uses it, so the
-// table can be enumerated and every polygon parsed by a test with no DOM
-// (glyphRegistry.test.ts does exactly that).
+// Data only, no import of `vscode`, so the table can be enumerated and every
+// polygon parsed by a test with no DOM (glyphRegistry.test.ts).
 
 import type { GlyphPoly } from './archetypeGlyphs';
 

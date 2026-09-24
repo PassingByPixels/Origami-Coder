@@ -30,9 +30,7 @@ const ADAPTER = "bedrock-converse"
 
 export type { Credentials as BedrockCredentials } from "./utils/bedrock-auth"
 
-// =============================================================================
 // Request Body Schema
-// =============================================================================
 const BedrockTextBlock = Schema.Struct({
   text: Schema.String,
 })
@@ -152,9 +150,8 @@ const BedrockUsageSchema = Schema.Struct({
 type BedrockUsageSchema = Schema.Schema.Type<typeof BedrockUsageSchema>
 
 // Streaming event shape — the AWS event stream wraps each JSON payload by its
-// `:event-type` header (e.g. `messageStart`, `contentBlockDelta`). We
-// reconstruct that wrapping in `decodeFrames` below so the event schema can
-// stay a plain discriminated record.
+// `:event-type` header (`messageStart`, `contentBlockDelta`). `decodeFrames`
+// below reconstructs that wrapping so this schema stays a plain record.
 const BedrockEvent = Schema.Struct({
   messageStart: Schema.optional(Schema.Struct({ role: Schema.String })),
   contentBlockStart: Schema.optional(
@@ -205,9 +202,7 @@ const BedrockEvent = Schema.Struct({
 })
 type BedrockEvent = Schema.Schema.Type<typeof BedrockEvent>
 
-// =============================================================================
 // Request Lowering
-// =============================================================================
 const lowerToolSpec = (tool: ToolDefinition, inputSchema: JsonSchema): BedrockToolSpec => ({
   toolSpec: {
     name: tool.name,
@@ -425,9 +420,7 @@ const fromRequest = Effect.fn("BedrockConverse.fromRequest")(function* (request:
   }
 })
 
-// =============================================================================
 // Stream Parsing
-// =============================================================================
 const mapFinishReason = (reason: string): FinishReason => {
   if (reason === "end_turn" || reason === "stop_sequence") return "stop"
   if (reason === "max_tokens") return "length"
@@ -436,10 +429,9 @@ const mapFinishReason = (reason: string): FinishReason => {
   return "unknown"
 }
 
-// AWS Bedrock Converse reports `inputTokens` (inclusive total) with
-// `cacheReadInputTokens` and `cacheWriteInputTokens` as subsets. Pass
-// the total through and derive the non-cached breakdown. Bedrock does
-// not break reasoning out of `outputTokens` for any current model.
+// Bedrock Converse reports `inputTokens` (inclusive total) with
+// `cacheReadInputTokens` and `cacheWriteInputTokens` as subsets. Pass the total
+// through and derive the non-cached breakdown; reasoning is not broken out.
 const mapUsage = (usage: BedrockUsageSchema | undefined): Usage | undefined => {
   if (!usage) return undefined
   const cacheTotal = (usage.cacheReadInputTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0)
@@ -628,17 +620,17 @@ const onHalt = (state: ParserState): ReadonlyArray<LLMEvent> =>
       })()
     : []
 
-// =============================================================================
 // Protocol And Bedrock Route
-// =============================================================================
-/**
- * The Bedrock Converse protocol — request body construction, body schema, and
- * the streaming-event state machine.
- */
+/** The Bedrock Converse protocol — request body construction, body schema, and
+ *  the streaming-event state machine. */
 export const protocol = Protocol.make({
   id: ADAPTER,
   body: {
     schema: BedrockConverseBody,
+    // `modelId` is read back by the endpoint to build the signed URL, so an overlay
+    // would desync the URL from the body. `additionalModelRequestFields` is
+    // Bedrock's own extras escape hatch and stays overlayable.
+    structure: ["modelId", "messages", "system", "inferenceConfig", "toolConfig"],
     from: fromRequest,
   },
   stream: {
@@ -659,9 +651,8 @@ export const route = Route.make({
   id: ADAPTER,
   provider: "bedrock",
   protocol,
-  // Bedrock's URL embeds the region in the route endpoint host and the
-  // validated modelId in the path. We read the validated body so the URL
-  // matches the body that gets signed.
+  // Bedrock's URL embeds the region in the host and the validated modelId in the
+  // path; the validated body is read so the URL matches the body that gets signed.
   endpoint: Endpoint.path<BedrockConverseBody>(
     ({ body }) => `/model/${encodeURIComponent(body.modelId)}/converse-stream`,
   ),

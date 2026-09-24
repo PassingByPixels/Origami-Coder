@@ -1,5 +1,7 @@
 import { Agent } from "@/agent/agent"
+import { AgentSnapshotCache } from "@/agent/snapshot-cache"
 import { Command } from "@/command"
+import { Config } from "@/config/config"
 import * as InstanceState from "@/effect/instance-state"
 import { Format } from "@/format"
 import { Global } from "@origami/core/global"
@@ -16,6 +18,7 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
   Effect.gen(function* () {
     const agent = yield* Agent.Service
     const command = yield* Command.Service
+    const config = yield* Config.Service
     const format = yield* Format.Service
     const lsp = yield* LSP.Service
     const skill = yield* Skill.Service
@@ -77,9 +80,43 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
       return yield* command.list()
     })
 
+    // origami_change-start (t-qdc718): answer from the cross-process agent snapshot cache.
+    //
+    // This route is what `session/new` waits on (ACP `acp.directory.mode.defaultAgent.load`),
+    // and building the registry cost ~930 ms in EVERY engine process - i.e. in every new
+    // chat - of which ~812 ms is the plugin-runtime wait the registry does to turn
+    // configured references into permission allow-globs. The build is a pure function of
+    // the inputs `AgentSnapshotCache.key` hashes, so a hit is not "probably still right",
+    // it is the same answer. `snapshot-cache.ts` states the one input it cannot see.
+    //
+    // The JSON projection runs on BOTH paths. A hit and a miss must not differ in shape.
+    //
+    // On a hit the real registry is still built, but AFTER the chat is interactive: the
+    // first prompt boots the plugin runtime anyway, and rebuilding refreshes the cache for
+    // the next process. The delay is deliberate - doing it immediately would stall the very
+    // `session/new` this cache exists to speed up.
     const getAgent = Effect.fn("InstanceHttpApi.agent")(function* () {
-      return yield* agent.list()
+      const directory = yield* InstanceState.directory
+      const cacheKey = AgentSnapshotCache.key({
+        directory,
+        config: yield* config.get(),
+        skillDirs: yield* skill.dirs(),
+      })
+      const cached = AgentSnapshotCache.read(cacheKey)
+      if (cached) {
+        yield* agent.list().pipe(
+          Effect.delay("5 seconds"),
+          Effect.tap((fresh) => Effect.sync(() => AgentSnapshotCache.write(cacheKey, fresh))),
+          Effect.ignore,
+          Effect.forkDetach,
+        )
+        return cached
+      }
+      const fresh = yield* agent.list()
+      AgentSnapshotCache.write(cacheKey, fresh)
+      return AgentSnapshotCache.toSnapshot(fresh)
     })
+    // origami_change-end
 
     const getSkill = Effect.fn("InstanceHttpApi.skill")(function* () {
       return yield* skill.all()

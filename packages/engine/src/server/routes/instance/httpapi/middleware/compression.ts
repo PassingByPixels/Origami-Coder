@@ -1,6 +1,11 @@
-import { deflateSync, gzipSync } from "node:zlib"
-import { Effect } from "effect"
+import { deflate, gzip } from "node:zlib"
+import { promisify } from "node:util"
+import { Effect, Option } from "effect"
 import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { isLocalAddress } from "@/artifact/serve"
+
+const gzipAsync = promisify(gzip)
+const deflateAsync = promisify(deflate)
 
 // Keep the server's compressible content-type set stable across HTTP backend changes.
 const COMPRESSIBLE_CONTENT_TYPE_REGEX =
@@ -54,7 +59,16 @@ export const compressionLayer = HttpRouter.middleware<{ handles: unknown }>()((e
     const encoding = pickEncoding(request.headers["accept-encoding"])
     if (!encoding) return response
 
-    const compressed = encoding === "gzip" ? gzipSync(body.body) : deflateSync(body.body)
+    // A loopback peer is this engine's own SDK client, or another local process:
+    // compressing for it costs CPU on both ends and saves no network time.
+    const peer = request.remoteAddress ? Option.getOrUndefined(request.remoteAddress) : undefined
+    if (peer !== undefined && isLocalAddress(peer)) return response
+
+    // Async zlib runs on the thread pool. gzipSync of a large transcript froze
+    // the one JS thread for seconds (t-u1j4jm).
+    const compressed = yield* Effect.promise(() =>
+      encoding === "gzip" ? gzipAsync(body.body) : deflateAsync(body.body),
+    )
     return HttpServerResponse.setHeader(
       HttpServerResponse.setBody(response, HttpBody.uint8Array(compressed, contentType)),
       "content-encoding",

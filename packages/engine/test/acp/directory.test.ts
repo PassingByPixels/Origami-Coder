@@ -5,7 +5,7 @@ import { LayerNode } from "@origami/core/effect/layer-node"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { Provider } from "@/provider/provider"
-import { Effect, Layer } from "effect"
+import { Effect, Exit, Fiber, Layer } from "effect"
 import { it } from "../lib/effect"
 
 const command = (name: string): Command.Info => ({
@@ -168,6 +168,79 @@ describe("ACP directory snapshot", () => {
       expect(alpha.defaultModeID).toBe("build")
     }).pipe(Effect.provide(fakeLayer([]))),
   )
+
+  // t-tc1tnk (scout B#2). The model-switch path puts `refresh` under a 20 s
+  // timeout (t-wusuep). The timeout interrupted the shared load, the memo kept
+  // the INTERRUPT, and every later prompt or session open in the folder failed
+  // with "All fibers interrupted" until the engine restarted.
+  const stallingLayer = (calls: string[], stallOn: number) =>
+    LayerNode.compile(Directory.node, [
+      [
+        Directory.loaderNode,
+        Layer.succeed(
+          Directory.Loader,
+          Directory.Loader.of({
+            load: (directory) =>
+              Effect.suspend(() => {
+                calls.push(directory)
+                return calls.length === stallOn ? Effect.never : Effect.succeed(snapshot(directory))
+              }),
+          }),
+        ),
+      ],
+    ])
+
+  it.live("a refresh that times out does not poison later gets", () => {
+    const calls: string[] = []
+    return Effect.gen(function* () {
+      const directory = yield* Directory.Service
+      yield* directory.get("alpha")
+
+      const refreshed = yield* Effect.exit(directory.refresh("alpha").pipe(Effect.timeout("20 millis")))
+      expect(Exit.isFailure(refreshed)).toBe(true)
+
+      const after = yield* Effect.exit(directory.get("alpha").pipe(Effect.timeout("2 seconds")))
+      expect(Exit.isSuccess(after)).toBe(true)
+      expect(calls).toEqual(["alpha", "alpha", "alpha"])
+    }).pipe(Effect.provide(stallingLayer(calls, 2)))
+  })
+
+  it.live("a get waiting on a refresh that times out gets a fresh load", () => {
+    const calls: string[] = []
+    return Effect.gen(function* () {
+      const directory = yield* Directory.Service
+      const refresh = yield* Effect.forkChild(Effect.exit(directory.refresh("alpha").pipe(Effect.timeout("50 millis"))))
+      yield* Effect.sleep("10 millis")
+      const waiting = yield* Effect.forkChild(Effect.exit(directory.get("alpha").pipe(Effect.timeout("2 seconds"))))
+
+      expect(Exit.isFailure(yield* Fiber.join(refresh))).toBe(true)
+      const got = yield* Fiber.join(waiting)
+      expect(Exit.isSuccess(got)).toBe(true)
+      expect(calls).toEqual(["alpha", "alpha"])
+    }).pipe(Effect.provide(stallingLayer(calls, 1)))
+  })
+
+  it.live("a load that dies is retried by the next get", () => {
+    let loads = 0
+    const layer = LayerNode.compile(Directory.node, [
+      [
+        Directory.loaderNode,
+        Layer.succeed(
+          Directory.Loader,
+          Directory.Loader.of({
+            load: (directory) =>
+              Effect.suspend(() => (++loads === 1 ? Effect.die(new Error("boom")) : Effect.succeed(snapshot(directory)))),
+          }),
+        ),
+      ],
+    ])
+    return Effect.gen(function* () {
+      const directory = yield* Directory.Service
+      expect(Exit.hasDies(yield* Effect.exit(directory.get("alpha")))).toBe(true)
+      expect((yield* directory.get("alpha")).directory).toBe("alpha")
+      expect(loads).toBe(2)
+    }).pipe(Effect.provide(layer))
+  })
 
   it.effect("falls back when the default mode is not available", () =>
     Effect.sync(() => {

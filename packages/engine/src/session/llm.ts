@@ -28,7 +28,12 @@ import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
+import { LLMNativeRoute } from "./llm/native-route"
+import { SessionImageCap } from "./image-cap"
 import { LLMRequestPrep } from "./llm/request"
+import { SessionCachePolicy } from "./cache-policy"
+import { SessionCacheState } from "./cache-state"
+import { SessionCacheWarm } from "./cache-warm"
 // The offered-tools rule lives beside the transparency capture so the set the
 // model is really given and the set the shell REPORTS cannot drift apart.
 import { SessionPromptCapture } from "./prompt-capture"
@@ -48,6 +53,11 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  /** A CACHE WARM rather than a turn (session/cache-warm.ts). It reaches the
+   *  provider through this same path so the prefix is byte-identical, but it is
+   *  drained here and never handed to the session processor — so it appears in
+   *  no transcript, no usage pill and no token total, only in the debug log. */
+  warm?: boolean
 }
 
 export type StreamRequest = StreamInput & {
@@ -106,13 +116,10 @@ const live: Layer.Layer<
       )
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
-      // Live sampling: temperature / top_p / frequency_penalty are read FRESH from
-      // the global config file at request time (config.get() is memoized at spawn),
-      // so changing them in settings applies on the very next message — no engine
-      // respawn. Priority: the per-session per-chat override (this message's
-      // input.user.temperature / input.user.topP, set by the chat's sampling
-      // control) wins over the live global agent sampling (origami.json), which in
-      // turn wins over the agent default. Two chats can run different temps live.
+      // Live sampling: temperature / top_p / frequency_penalty are read fresh from
+      // the global config file at request time, so a settings change applies on the
+      // next message with no engine respawn. Priority: the per-chat override, then
+      // the live global agent sampling, then the agent default.
       const liveSampling = yield* config.getLiveAgentSampling(input.agent.name)
       const sessionTemp = input.user.temperature ?? liveSampling.temperature
       const sessionTopP = input.user.topP ?? liveSampling.topP
@@ -140,12 +147,60 @@ const live: Layer.Layer<
       // from the workflow service are executed via origami's tool system
       // and results sent back over the WebSocket.
       const bridge = yield* EffectBridge.make()
-      // The AI SDK's warnings are the only notice it gives that it dropped part
-      // of the request it was about to send. Two modules silence that channel
-      // outright at import time; this puts it back, on the engine log rather
-      // than on stdout. See `installWarningLogger` for why it is installed per
-      // call.
+      // The AI SDK's warnings are the only notice it gives that it dropped part of
+      // the request it was about to send. Two modules silence that channel at
+      // import time; this puts it back on the engine log rather than on stdout.
       LLMAISDK.installWarningLogger((effect) => void bridge.fork(effect))
+
+      // Arm the next cache warm off THIS request (t-ntmmvh). Here rather than at
+      // the call site because this is where the resolved options exist, and the
+      // options decide whether the prefix carries a cache breakpoint at all.
+      // A title generation (`small`) never arms: it is a different, tiny prefix.
+      if (!input.small && !input.warm) {
+        // The window the composer's warm badge counts against (t-rylyhm).
+        // RECORDED HERE for the same reason the warm is armed here: the inline
+        // cache hint is what separates Anthropic's 1-hour form from its
+        // 5-minute one, and the hint only exists once `options` is settled.
+        // ONE table answers it (cache-policy.ts, t-rylleg), so the badge and
+        // the step's `idle` cause can never disagree about the window. A
+        // provider that publishes none gets `undefined`, and the badge then
+        // reports a hit with no countdown rather than inventing one.
+        SessionCacheState.request({
+          sessionID: input.sessionID,
+          ttlSeconds: SessionCachePolicy.windowSeconds({
+            providerID: input.model.providerID,
+            modelID: input.model.api.id,
+            hintTtlSeconds: SessionCacheWarm.ttlSeconds(input.model, prepared.messageTransformOptions),
+          }),
+        })
+        SessionCacheWarm.armed({
+          sessionID: input.sessionID,
+          model: input.model,
+          options: prepared.messageTransformOptions,
+          messages: input.messages,
+          // The warm goes out through this same service, so `prepare` rebuilds a
+          // byte-identical prefix; only `warm` differs, and that buys one output
+          // token. The stream is DRAINED here, which is what keeps the warm out
+          // of the transcript, the usage pills and the token totals.
+          // Drained through `runForEach` rather than `runDrain` for ONE value:
+          // the warm's own cache read. A warm that came back with nothing
+          // refreshed nothing, so only a read above zero extends the badge
+          // (session/cache-state.ts). Everything else about the warm stays as
+          // invisible as it was - nothing here reaches the transcript.
+          send: (request) =>
+            Effect.runPromise(
+              Stream.runForEach(stream({ ...input, messages: request.messages, warm: true, retries: 0 }), (event) => {
+                if (event.type === "step-finish")
+                  SessionCacheState.warmed({
+                    sessionID: input.sessionID,
+                    cacheRead: event.usage?.cacheReadInputTokens,
+                  })
+                return Effect.void
+              }),
+            ).then(() => undefined),
+          log: (message, fields) => void bridge.fork(Effect.logInfo(message, fields)),
+        })
+      }
       if (language instanceof GitLabWorkflowLanguageModel) {
         const workflowModel = language as GitLabWorkflowLanguageModel & {
           sessionID?: string
@@ -251,16 +306,25 @@ const live: Layer.Layer<
           })
         : undefined
 
-      // Runtime seam: native is an opt-in adapter over @origami/llm. It
-      // either returns a ready LLMEvent stream or a concrete fallback reason.
-      if (flags.experimentalNativeLlm) {
+      // The model the message transform sees, with any image cap this endpoint has
+      // already refused this session applied to it. Identity until an endpoint has
+      // said "at most N images"; only `limit.images` ever differs.
+      const capped = SessionImageCap.clamp(input.sessionID, input.model)
+
+      // Runtime seam: native is a per-family route over @origami/llm (see
+      // native-route.ts for the table). It either returns a ready LLMEvent
+      // stream or a concrete fallback reason.
+      if (LLMNativeRoute.enabled(input.model, flags)) {
         const native = LLMNativeRuntime.stream({
-          model: input.model,
+          model: capped,
           provider: item,
           auth: info,
           llmClient,
           messages: prepared.messages,
           tools: prepared.tools,
+          // Same split as the AI SDK's `activeTools` below: the repair-only
+          // `invalid` tool can be dispatched to but is never offered.
+          activeTools: SessionPromptCapture.offeredToolNames(prepared.tools),
           toolChoice: input.toolChoice,
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,
@@ -270,6 +334,11 @@ const live: Layer.Layer<
           providerOptions: prepared.params.options,
           headers: prepared.headers,
           abort: input.abort,
+          // Identity for the per-provider concurrency cap: which row a queue wait
+          // is reported on, and whether this step is a parent (no parentSessionID)
+          // and therefore takes priority in the permit queue.
+          sessionID: input.sessionID,
+          ...(input.parentSessionID ? { parentSessionID: input.parentSessionID } : {}),
         })
         if (native.type === "supported") {
           yield* Effect.logInfo("llm runtime selected", {
@@ -332,12 +401,11 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
-            // Everything past the tool-name casing fix is a JSON SYNTAX
-            // failure: every tool is built with `jsonSchema(plainObject)`,
-            // whose `validate` is undefined, so the SDK only reaches this hook
-            // when it could not parse the input at all. Shape repair belongs in
-            // Tool.wrap, which sees the parsed arguments; here the SDK's own
-            // message is the accurate one, and it is passed through unchanged.
+            // Everything past the tool-name casing fix is a JSON syntax failure:
+            // every tool is built with `jsonSchema(plainObject)`, whose `validate`
+            // is undefined, so the SDK only reaches this hook when it could not
+            // parse the input at all. Shape repair belongs in Tool.wrap, which sees
+            // the parsed arguments.
             return {
               ...failed.toolCall,
               input: JSON.stringify({
@@ -370,7 +438,7 @@ const live: Layer.Layer<
                     // @ts-expect-error
                     args.params.prompt = ProviderTransform.message(
                       args.params.prompt,
-                      input.model,
+                      capped,
                       prepared.messageTransformOptions,
                     )
                   }
@@ -408,15 +476,11 @@ const live: Layer.Layer<
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
             const state = LLMAISDK.adapterState()
-            // The think-tag scanner HOLDS a trailing partial tag back until the next
-            // chunk proves it was prose. A stream can stop without ever saying so —
-            // the provider can run out of events with no `finish`, or the stream can
-            // fail mid-reply — and on those exits nothing inside the adapter runs
-            // again, so the held characters would silently vanish from the reply.
-            // Drain on BOTH exits: after the last event on a normal end, and ahead of
-            // the failure on an error, so the characters land in the text block that
-            // is still open. `drain` resets the scanner, so the two can never
-            // double-emit.
+            // The think-tag scanner holds a trailing partial tag back until the next
+            // chunk proves it was prose, and nothing inside the adapter runs again
+            // when a stream ends with no `finish` or fails mid-reply. Drain on both
+            // exits so the held characters land in the text block that is still
+            // open; `drain` resets the scanner, so the two cannot double-emit.
             const drained = () => Stream.fromIterable(LLMAISDK.drain(state))
             return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),

@@ -179,7 +179,9 @@ describe('Labyrinth spend — the headline is the REAL cost, not the raw count',
 
   it('every raw component is still on screen, one aligned cell each', async () => {
     const { container } = await withRun({ steps: CANON, truncated: false, total: 4 });
-    const cells = Array.from(container.querySelectorAll('.raw-cell')).map((c) => flat(c.textContent));
+    // `.stat-cell` is LabyrinthStatPills.svelte's — this row and the analytics
+    // Flight header now render through the same component (0.4.79).
+    const cells = Array.from(container.querySelectorAll('.stat-cell')).map((c) => flat(c.textContent));
     // Value THEN label, as the table row reads (0.4.51 UAT). Same five cells,
     // same order, same numbers — only which half of a cell comes first moved.
     expect(cells).toEqual(['147 in', '32 out', '5 reasoning', '900 cache read', '0 cache write']);

@@ -1,31 +1,17 @@
-// Turning ONE `mcpAdd` message into the server object `mcp_add` wants —
-// extracted out of mcpPane.ts when the add form grew the fields a real server
-// needs and took that file over its cap. Nothing here touches `vscode`, the
-// engine or a config file: it is the whole decision "what exactly do we ask
-// the engine to write", checkable without a host.
+// Turns one mcpAdd message into the server object mcp_add wants, extracted out of mcpPane.ts once
+// the add form grew past its cap.
 //
-// The ENGINE validates the full ConfigMCPV1.Info schema (Schema.decodeUnknown
-// in packages/engine/src/acp/mcp.ts), so this is not a second validator. Its
-// job is narrower and different: refuse the two states the engine would happily
-// accept but the user never meant — a command that cannot spawn, and an empty
-// optional block written into their config file as though it were a setting.
+// Not a second validator against the engine's full schema — its job is narrower: refuse the two
+// states the engine would accept but the user never meant, a command that cannot spawn, and an
+// empty optional block written into their config as though it were a setting.
 
 /**
- * A local server's command arrives as ONE string and is split into argv.
- *
- * QUOTE-AWARE, unlike the plain whitespace split this started as: an
- * interpreter on Windows lives at `C:\Program Files\nodejs\node.exe`, and
- * splitting that on spaces produced `["C:\Program", "Files\nodejs\node.exe"]`
- * — a server that could never spawn, reported as an `ENOENT` on a path the
- * user never typed. Double quotes group one argument; they may also open and
- * close mid-argument (`--root="C:/My Files"`), the way the same string would
- * behave in a shell.
- *
- * There is NO escape character, on purpose: in the values this field takes a
- * backslash is a path separator far more often than an escape, so `\` is
- * always literal and a quote cannot itself be quoted. An UNTERMINATED quote
- * keeps the rest of the line as one argument rather than dropping it — a
- * half-typed path should read as a wrong path, not vanish.
+ * A local server's command arrives as ONE string, split into argv, QUOTE-AWARE: a plain whitespace
+ *  split broke a Windows interpreter path like `C:\Program Files\nodejs\node.exe` into two bogus
+ *  arguments. Double quotes group one argument and may open/close mid-argument.
+ * No escape character: a backslash is a path separator far more often than an escape, so it is
+ *  always literal. An unterminated quote keeps the rest of the line as one argument rather than
+ *  dropping it.
  */
 export function commandFrom(input: unknown): string[] {
   if (typeof input !== 'string') return [];

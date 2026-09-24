@@ -33,12 +33,10 @@ export interface Report {
 export interface Interface {
   /** The active profile, or undefined when Flock routing is off. */
   readonly active: () => Effect.Effect<Active | undefined>
-  /**
-   * Ordered candidate bindings for subagent sessions — `use` first, then each
-   * `fallback`. `undefined` means "no opinion": Flock is off, the profile binds
-   * no subagent model, or every entry was malformed. Callers fall through to the
-   * session's own model (D10). Resolution never fails.
-   */
+  /** Ordered candidate bindings for subagent sessions — `use` first, then each
+   *  `fallback`. `undefined` means "no opinion": Flock is off, the profile binds
+   *  no subagent model, or every entry was malformed. Callers fall through to the
+   *  session's own model (D10). Resolution never fails. */
   readonly resolveSubagents: () => Effect.Effect<Binding[] | undefined>
   /** Sanity report for a named profile. Never fails. */
   readonly validate: (profileName: string) => Effect.Effect<Report>
@@ -48,12 +46,10 @@ export class Service extends Context.Service<Service, Interface>()("@origami/Flo
 
 export const use = serviceUse(Service)
 
-/**
- * Split a "provider/model" reference with `Provider.parseModel`'s semantics
- * (first segment is the provider, the rest is the model id, slashes and all)
- * but report a reference that has no usable halves instead of manufacturing an
- * empty one.
- */
+/** Split a "provider/model" reference with `Provider.parseModel`'s semantics
+ *  (first segment is the provider, the rest is the model id, slashes and all)
+ *  but report a reference that has no usable halves instead of manufacturing an
+ *  empty one. */
 export function parseBinding(reference: string): Binding | undefined {
   const [providerID, ...rest] = reference.split("/")
   const modelID = rest.join("/")
@@ -64,11 +60,9 @@ export function parseBinding(reference: string): Binding | undefined {
 /** A binding's references in the order they are tried: `use`, then each fallback. */
 const chainOf = (binding: FlockConfigV1.Binding) => [binding.use, ...(binding.fallback ?? [])]
 
-/**
- * Profile names come from user config, so an ordinary lookup answers "toString"
- * or "constructor" with an inherited member and Flock reports itself active on
- * a profile that does not exist.
- */
+/** Profile names come from user config, so an ordinary lookup answers "toString"
+ *  or "constructor" with an inherited member and Flock reports itself active on
+ *  a profile that does not exist. */
 function profileNamed(profiles: Record<string, FlockConfigV1.Profile> | undefined, name: string) {
   if (!profiles || !Object.hasOwn(profiles, name)) return undefined
   return profiles[name]
@@ -103,15 +97,10 @@ const layer = Layer.effect(
 
     /**
      * The profile's subagent binding, migrating the pre-E1 shape on the way past
-     * and saying so ONCE per profile. Said once rather than never because half
-     * of that profile — scout, workhorse, the per-role overrides — now routes
-     * nothing, and a user who is not told will read the surviving half as proof
-     * the whole file still works.
-     *
-     * The louder of the two notices is the one for a profile that carried no
-     * `executor` at all: it maps to NOTHING, so without this line its owner sees
-     * a profile that is selected, reports itself active, and quietly routes
-     * every subagent back to the session's own model.
+     * and saying so ONCE per profile. Said once rather than never because half of
+     * that profile now routes nothing, and a user who is not told reads the
+     * surviving half as proof the whole file still works. The louder notice is for
+     * a profile with no `executor` at all: it maps to NOTHING, yet reports active.
      */
     const subagentsOf = Effect.fnUntraced(function* (name: string, profile: FlockConfigV1.Profile) {
       const found = FlockConfigV1.subagentsOf(profile)

@@ -1,5 +1,6 @@
 import { NamedError } from "@origami/core/util/error"
 import { ConfigErrorV1 } from "@origami/core/v1/config/error"
+import { EventV2 } from "@origami/core/event"
 import { Cause, Effect } from "effect"
 import { HttpRouter, HttpServerError, HttpServerRespondable, HttpServerResponse } from "effect/unstable/http"
 
@@ -23,6 +24,16 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
         ConfigErrorV1.DirectoryTypoError.isInstance(error)
       ) {
         return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
+      }
+      // t-tjhmhw: a write into a chat another desk owns, refused in the write
+      // transaction. Not a fault: the ACP side turns it into the read-only refusal.
+      if (error instanceof EventV2.ForeignOwnerError) {
+        return Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { name: error._tag, data: { message: error.message, owner: error.owner, aggregateID: error.aggregateID } },
+            { status: 409 },
+          ),
+        )
       }
 
       const ref = `err_${crypto.randomUUID().slice(0, 8)}`

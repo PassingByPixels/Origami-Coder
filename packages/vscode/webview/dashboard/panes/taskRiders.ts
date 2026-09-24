@@ -18,6 +18,7 @@
 // through this function, which is why the rule lives in exactly one place.
 
 import type { SubagentCard } from './subagentInbox';
+import type { SubagentTokens } from './subagentTokens';
 
 /** The rest of the task riders a tool card carries. Separate from SubagentCard
  *  because the drawer never reads these — only the merge below writes them. */
@@ -25,6 +26,7 @@ export interface TaskRiderCard extends SubagentCard {
   taskResumed?: boolean;
   taskBackground?: boolean;
   taskModel?: string;
+  taskTokens?: SubagentTokens;
 }
 
 /** A finite, positive epoch-ms stamp, or undefined for anything else. Mirrors
@@ -65,4 +67,10 @@ export function mergeTaskRiders<T extends TaskRiderCard>(
   if (startedAt) existing.taskStartedAt = startedAt;
   const endedAt = stamp(msg.taskEndedAt);
   if (endedAt && existing.taskEndedAt === undefined) existing.taskEndedAt = endedAt;
+  // Tokens are the one rider where LATEST WINS rather than first: the engine
+  // re-sends the running total per child step, so an early update's figure is
+  // a superseded snapshot. Still write-IF-PRESENT — an update carrying no
+  // tokens (every non-task update, and every update from an older engine)
+  // must not erase the total already on the card.
+  if (msg.taskTokens && typeof msg.taskTokens === 'object') existing.taskTokens = msg.taskTokens as SubagentTokens;
 }

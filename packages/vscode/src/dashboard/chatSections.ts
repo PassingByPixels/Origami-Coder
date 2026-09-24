@@ -1,19 +1,7 @@
-// chatSections.ts — persistence for the sidebar's chat-grouping feature
-// (t-kgserq, extended t-kgserq v2). t-r43glr (2026-08-14): the owner wants NO
-// built-in section besides "Main" (pinned top, undeletable, unrenamable,
-// holds the create-section control) — sections exist only when the user
-// makes one. The old fixed "Loops" section (pinned bottom) and the pre-v2
-// "spare" single custom section are both RETIRED: any chat a user had filed
-// under either now simply reads back as Main (Main is never stored — see
-// ChatSectionsState's own doc below), and neither slot can be recreated by
-// loading old state. See LEGACY_SECTION_ID below for how an already-migrated
-// install's spare section is specifically kept from resurfacing.
+// Persistence for the sidebar's chat-grouping feature.
 //
-// Pure planner + memento glue, mirroring sessionRestore.ts's split: the
-// webview owns the drag gesture and the grouped rendering (its own leaf,
-// webview/chat/chatSections.ts — a SEPARATE file because webview code cannot
-// import a runtime value from src/, see tsconfig.webview.json's rootDir),
-// DashboardPanel supplies the memento glue below.
+// Only "Main" is built-in (pinned, undeletable, never stored); sections exist only
+// when the user makes one. Retired fixed sections fold back to Main on load.
 
 import type { Memento } from 'vscode';
 
@@ -44,13 +32,9 @@ export function defaultChatSectionsState(): ChatSectionsState {
   return { membership: {}, sections: [], mainCollapsed: false };
 }
 
-/** t-r43glr: the id the pre-v2 single "spare" custom section always
- *  migrated onto (see git history — the migration step that created one is
- *  retired along with the section itself). An install that ran that OLD
- *  migration before this change has it sitting in `sections` on disk,
- *  looking like an ordinary entry; rejecting the id here — same as a blank
- *  id or a duplicate — stops it surviving this upgrade as if the user had
- *  made it. */
+/** The id the pre-v2 single "spare" custom section always migrated onto.
+ *  Rejected here (like a blank or duplicate id) so an install that ran that
+ *  old migration doesn't have it resurface as if the user made it. */
 const LEGACY_SECTION_ID = 'legacy-custom';
 
 function parseSections(raw: unknown): ChatSectionDef[] {
@@ -69,14 +53,11 @@ function parseSections(raw: unknown): ChatSectionDef[] {
   return out;
 }
 
-/** Read the persisted state, or sane defaults when absent/malformed. Every
- *  membership entry is validated individually rather than trusting the whole
- *  map — an older/corrupt write must not sink the rest of the sidebar. A
- *  membership entry naming a retired built-in ('loops') or the retired
- *  legacy spare section (LEGACY_SECTION_ID) fails the same `sectionIds.has`
- *  check as any other unknown id, so it folds to Main rather than erroring
- *  or vanishing — this is the whole of the t-r43glr migration, no special
- *  casing needed beyond parseSections rejecting LEGACY_SECTION_ID above. */
+/**
+ * Read the persisted state, or sane defaults when absent/malformed. Each
+ * membership entry is validated individually so a corrupt map can't sink the
+ * rest of the sidebar; an entry naming a retired section folds to Main.
+ */
 export function loadChatSections(memento: Memento): ChatSectionsState {
   const v = memento.get<Record<string, unknown>>(CHAT_SECTIONS_KEY);
   if (!v || typeof v !== 'object') return defaultChatSectionsState();
@@ -150,11 +131,8 @@ export function addSection(
   return { state: { ...state, sections: [...state.sections, { id, name: trimmed, collapsed: false }] }, id };
 }
 
-/** Delete a user section. Every chat that was in it moves back to Main
- *  (membership entry removed, not repointed) — a deleted section cannot
- *  leave a chat pointing at an id nothing owns any more. Returns the SAME
- *  object (pruneChatSections's own no-op convention) when `id` names no
- *  section, e.g. a stale double-click on an already-removed one. */
+/** Delete a user section. Every chat in it moves back to Main (membership
+ *  removed, not repointed). Returns the SAME object when `id` names no section. */
 export function removeSection(state: ChatSectionsState, id: string): ChatSectionsState {
   if (!state.sections.some((s) => s.id === id)) return state;
   const sections = state.sections.filter((s) => s.id !== id);

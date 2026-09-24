@@ -6,6 +6,7 @@ import { Git } from "@/git"
 import { PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
+import { QuestionReplyTool } from "./question-reply"
 import { ShellTool } from "./shell"
 import { EditTool } from "./edit"
 import { FileTool } from "./file"
@@ -14,9 +15,11 @@ import { GoalTool } from "./goal"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { WikiRelatedTool, WikiSearchTool } from "./wiki"
+import { FlockAskTool, FlockReplyTool, FlockWhoTool } from "./flock"
 import { ProcessTool } from "./process"
 import { SessionSearchTool } from "./session-search"
 import { RememberTool } from "./remember"
+import { SideQuestTool } from "./side-quest"
 import { DreamTool } from "./dream"
 import {
   BoardCreateTool,
@@ -26,11 +29,14 @@ import {
   BoardUpdateTool,
   BoardWorktreesTool,
 } from "./board"
+import { ArtifactDiffTool, ArtifactGetTool, ArtifactListTool, ArtifactPublishTool } from "./artifact"
+import { WebmcpCallTool, WebmcpLaunchTool, WebmcpListTool, WebmcpNoteTool, WebmcpToolsTool } from "./webmcp"
 import { ListAgentsTool, SendMessageTool } from "./agents"
 import { BrowserTool } from "./browser"
 import { ChartTool } from "./chart"
 import { ReadTool } from "./read"
 import { ScreenshotTool } from "./screenshot"
+import { ShowImageTool } from "./show-image"
 import { TaskTool } from "./task"
 import { TaskStopTool } from "./task_stop"
 import { TaskListTool } from "./task_list"
@@ -78,6 +84,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { MCP } from "@/mcp"
+import { McpBrowser } from "@/mcp/browser"
+import { WebMcpBridge } from "@/webmcp/bridge"
 import { PermissionV1 } from "@origami/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 
@@ -89,14 +97,10 @@ type TaskDef = Tool.InferDef<typeof TaskTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
 
 /**
- * A user tool FILE that was found but did not load, kept so the user can see
- * why. Mirrors `AgentPlugins.Problem` — same shape, same reason: a file that
- * was skipped must be able to say WHICH file and WHAT went wrong, or the user
- * is left with a tool that silently is not there.
- *
- * `file` is the absolute path the glob found. It is the user's OWN file, so it
- * is safe to show verbatim in the client — see the redaction note in
- * `acp/service.ts`.
+ * A user tool file that was found but did not load, kept so the user can see
+ * why. Mirrors `AgentPlugins.Problem`. `file` is the absolute path the glob
+ * found; it is the user's own file, so it is safe to show verbatim in the
+ * client — see the redaction note in `acp/service.ts`.
  */
 export type ToolProblem = {
   readonly file: string
@@ -123,7 +127,7 @@ export interface Interface {
     agent: Agent.Info
     permission?: PermissionV1.Ruleset
     /**
-     * The chat's VISION PROFILE slug, or undefined. The only hidden agent the
+     * The chat's vision profile slug, or undefined. The only hidden agent the
      * task roster is allowed to name - see `describeTask`.
      */
     visionProfile?: string
@@ -148,6 +152,7 @@ const layer = Layer.effect(
     const taskList = yield* TaskListTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
+    const questionReply = yield* QuestionReplyTool
     const todo = yield* TodoWriteTool
     const goaltool = yield* GoalTool
     const lsptool = yield* LspTool
@@ -162,10 +167,14 @@ const layer = Layer.effect(
     const processtool = yield* ProcessTool
     const gitdifftool = yield* GitDiffTool
     const greptool = yield* GrepTool
+    const flockwho = yield* FlockWhoTool
+    const flockask = yield* FlockAskTool
+    const flockreply = yield* FlockReplyTool
     const wikisearch = yield* WikiSearchTool
     const wikirelated = yield* WikiRelatedTool
     const sessionsearch = yield* SessionSearchTool
     const remembertool = yield* RememberTool
+    const sidequesttool = yield* SideQuestTool
     const dreamtool = yield* DreamTool
     const boardrepos = yield* BoardReposTool
     const boardtickets = yield* BoardTicketsTool
@@ -173,10 +182,20 @@ const layer = Layer.effect(
     const boardupdate = yield* BoardUpdateTool
     const boardregister = yield* BoardRegisterTool
     const boardworktrees = yield* BoardWorktreesTool
+    const artifactpublish = yield* ArtifactPublishTool
+    const artifactlist = yield* ArtifactListTool
+    const artifactget = yield* ArtifactGetTool
+    const artifactdiff = yield* ArtifactDiffTool
+    const webmcplist = yield* WebmcpListTool
+    const webmcplaunch = yield* WebmcpLaunchTool
+    const webmcptools = yield* WebmcpToolsTool
+    const webmcpcall = yield* WebmcpCallTool
+    const webmcpnote = yield* WebmcpNoteTool
     const listagents = yield* ListAgentsTool
     const sendmessage = yield* SendMessageTool
     const browsertool = yield* BrowserTool
     const screenshottool = yield* ScreenshotTool
+    const showimagetool = yield* ShowImageTool
     const charttool = yield* ChartTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
@@ -195,8 +214,7 @@ const layer = Layer.effect(
         ): Tool.Def {
           // Plugin tools still expose Zod args publicly; keep that compatibility
           // boxed at the registry boundary and give the LLM the original JSON Schema.
-          // Normalize missing args to `{}` once — pre-1.14.49 the code was
-          // `z.object(def.args)` and Zod silently tolerated undefined (#27451, #27630).
+          // Missing args normalise to `{}` — Zod no longer tolerates undefined.
           const args = def.args ?? {}
           const entries = Object.entries(args)
           const allZod = entries.every((entry) => isZodType(entry[1]))
@@ -214,7 +232,7 @@ const layer = Layer.effect(
             execute: (args, toolCtx) =>
               Effect.gen(function* () {
                 // Bridge the host's Effect-based `ask` into a Promise-returning
-                // function for the plugin to make sure context persists
+                // function so context persists across the plugin call.
                 const bridge = yield* EffectBridge.make()
                 const pluginCtx: PluginToolContext = {
                   ...toolCtx,
@@ -259,23 +277,15 @@ const layer = Layer.effect(
         const problems: ToolProblem[] = []
         for (const match of matches) {
           const namespace = path.basename(match, path.extname(match))
-          // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
-          // Import it as `file://` so Node on Windows accepts the dynamic import.
+          // `match` is an absolute filesystem path, so import it as `file://` or
+          // Node on Windows rejects the dynamic import.
           //
-          // ONE BAD FILE MUST NOT TAKE THE WORKSPACE DOWN. An unresolvable import,
-          // a syntax error and a throw at module init all REJECT this promise, and
-          // `Effect.promise` turns a rejection into a DEFECT — which escaped
-          // `ToolRegistry.state` and so killed every caller of it: `all()`, `ids()`,
-          // `tools()`, and through `SessionTools.resolve` the whole of
-          // `SessionPrompt.run`. The observed symptom was every prompt in the
-          // workspace failing with a redacted "Origami service failure" and the
-          // Tools pane answering "Could not read the tool list" — all from one file
-          // the user had just scaffolded from that same pane.
-          //
-          // The file is skipped and RECORDED instead. `problems` is what the Tools
-          // pane renders, so the failure is visible where the user created it,
-          // exactly as the Plugins pane already does for a plugin that would not
-          // load (agent-plugins/index.ts).
+          // One bad file must not take the workspace down. An unresolvable
+          // import, a syntax error and a throw at module init all reject this
+          // promise, and `Effect.promise` would turn that into a defect escaping
+          // `ToolRegistry.state` — killing `all()`, `ids()`, `tools()` and the
+          // whole of `SessionPrompt.run`. Skip and record instead; `problems` is
+          // what the Tools pane renders.
           const loaded = yield* Effect.tryPromise({
             try: () => import(pathToFileURL(match).href) as Promise<Record<string, unknown>>,
             catch: (cause) => cause,
@@ -309,8 +319,7 @@ const layer = Layer.effect(
 
         yield* config.get()
         // "acp" (the VS Code shell) surfaces questions via acp/question.ts ->
-        // the ACP permission-prompt channel (same path plan_exit already uses),
-        // so the model-facing question tool is safe to enable here too.
+        // the ACP permission-prompt channel, so the question tool is safe here.
         const questionEnabled = ["app", "cli", "desktop", "acp"].includes(flags.client) || flags.enableQuestionTool
 
         const tool = yield* Effect.all({
@@ -319,10 +328,14 @@ const layer = Layer.effect(
           read: Tool.init(read),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
+          flock_who: Tool.init(flockwho),
+          flock_ask: Tool.init(flockask),
+          flock_reply: Tool.init(flockreply),
           wiki_search: Tool.init(wikisearch),
           wiki_related: Tool.init(wikirelated),
           sessionSearch: Tool.init(sessionsearch),
           remember: Tool.init(remembertool),
+          side_quest: Tool.init(sidequesttool),
           dream: Tool.init(dreamtool),
           board_repos: Tool.init(boardrepos),
           board_tickets: Tool.init(boardtickets),
@@ -330,6 +343,15 @@ const layer = Layer.effect(
           board_update: Tool.init(boardupdate),
           board_register: Tool.init(boardregister),
           board_worktrees: Tool.init(boardworktrees),
+          artifact_publish: Tool.init(artifactpublish),
+          artifact_list: Tool.init(artifactlist),
+          artifact_get: Tool.init(artifactget),
+          artifact_diff: Tool.init(artifactdiff),
+          webmcp_list: Tool.init(webmcplist),
+          webmcp_launch: Tool.init(webmcplaunch),
+          webmcp_tools: Tool.init(webmcptools),
+          webmcp_call: Tool.init(webmcpcall),
+          webmcp_note: Tool.init(webmcpnote),
           list_agents: Tool.init(listagents),
           send_message: Tool.init(sendmessage),
           edit: Tool.init(edit),
@@ -343,6 +365,7 @@ const layer = Layer.effect(
           fetch: Tool.init(webfetch),
           browser: Tool.init(browsertool),
           screenshot: Tool.init(screenshottool),
+          show_image: Tool.init(showimagetool),
           chart: Tool.init(charttool),
           todo: Tool.init(todo),
           goal: Tool.init(goaltool),
@@ -350,6 +373,7 @@ const layer = Layer.effect(
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
+          question_reply: Tool.init(questionReply),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
@@ -361,14 +385,27 @@ const layer = Layer.effect(
           builtin: [
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
+            // t-po041k. The PARENT's end of a sub-agent's question. Gated with
+            // `question` because the two are one path: a client that cannot
+            // surface a question has no child routing a question to it either.
+            ...(questionEnabled ? [tool.question_reply] : []),
             tool.shell,
             tool.read,
             tool.glob,
             tool.grep,
             tool.wiki_search,
             tool.wiki_related,
+            // Offered to every client: asking a friend is an engine-side network
+            // act, not a shell one, and each stops when no transport is set up.
+            tool.flock_who,
+            tool.flock_ask,
+            tool.flock_reply,
             tool.sessionSearch,
             tool.remember,
+            // t-f89g49, default-ON since t-ffjau8. Main-agent only: the natives
+            // deny it, and ORIGAMI_EXPERIMENTAL_SIDE_QUESTS=false takes it out
+            // of the catalog entirely, so the model cannot read even the name.
+            ...(flags.experimentalSideQuests ? [tool.side_quest] : []),
             ...(questionEnabled ? [tool.dream] : []),
             tool.board_repos,
             tool.board_tickets,
@@ -376,6 +413,21 @@ const layer = Layer.effect(
             tool.board_update,
             tool.board_register,
             tool.board_worktrees,
+            // Offered to every client and ON by default. The store is a local
+            // SQLite file plus a blob directory in the user's data dir; the
+            // sidebar pill is how a person opens one, not a prerequisite for
+            // publishing, so a TUI/CLI client still gets a correct result.
+            tool.artifact_publish,
+            tool.artifact_list,
+            tool.artifact_get,
+            tool.artifact_diff,
+            // Offered to every client: the registry is a plain file in the user's
+            // home and the launch runs `open` in the engine process.
+            tool.webmcp_list,
+            tool.webmcp_launch,
+            tool.webmcp_tools,
+            tool.webmcp_call,
+            tool.webmcp_note,
             tool.list_agents,
             tool.send_message,
             tool.edit,
@@ -389,17 +441,18 @@ const layer = Layer.effect(
             ...(flags.experimentalBackgroundSubagents ? [tool.task_stop, tool.task_list] : []),
             tool.fetch,
             tool.browser,
-            // The chart tool is offered to every client. The VS Code shell drives
-            // the engine over `origami acp`, which stamps ORIGAMI_CLIENT="acp"
-            // (cli/cmd/acp.ts), and the renderer lives in packages/vscode/ only.
-            // On a TUI/CLI client the tool still completes with SVG text output
-            // (ok:true, no picture card) — better than the tool being invisible.
+            // Offered to every client. The picture card renderer lives in
+            // packages/vscode/ only; on a TUI/CLI client the tool still completes
+            // with SVG text output, which beats the tool being invisible.
             tool.chart,
             // Offered to every client, like chart: the capture happens in the
-            // ENGINE process (PowerShell / screencapture), not in the shell, so
-            // it works wherever the engine runs a desktop session — the VS Code
-            // client is not a prerequisite the way it is for `browser`.
+            // engine process (PowerShell / screencapture), not in the shell, so
+            // the VS Code client is not a prerequisite the way it is for `browser`.
             tool.screenshot,
+            // Offered to every client. On a client with no picture card the
+            // model still gets a correct "showed <file>" result; the card is a
+            // bonus, not a prerequisite - same reasoning as chart above.
+            tool.show_image,
             tool.todo,
             tool.goal,
             tool.search,
@@ -434,13 +487,10 @@ const layer = Layer.effect(
     ) {
       const items = (yield* agents.list()).filter((item) => {
         if (item.mode === "primary") return false
-        // HIDDEN MEANS HIDDEN. `hidden: true` is what the Agents pane stamps on
-        // every collab bot and every vision profile, and session/prompt.ts:393
-        // already filters on exactly this field when it lists the agents a
-        // mistyped `task` call could have meant. The roster did not, so a
-        // dozen character defs the user never meant as subagents were offered
-        // to the model as delegation targets - most of them with no
-        // description at all.
+        // Hidden means hidden. `hidden: true` is what the Agents pane stamps on
+        // every collab bot and every vision profile, and session/prompt.ts
+        // filters on the same field; without this, character defs the user never
+        // meant as subagents get offered as delegation targets.
         if (item.hidden === true) return isVisionProfile(item, visionProfile)
         return true
       })
@@ -508,9 +558,9 @@ const layer = Layer.effect(
             jsonSchema,
             execute: tool.execute,
             formatValidationError: tool.formatValidationError,
-            // Carried through deliberately: this projection REBUILDS the def,
-            // so a field it forgets is a field the session layer never sees —
-            // and a tool marked deferrable would silently stay in every prompt.
+            // Carried through deliberately: this projection rebuilds the def, so
+            // a field it forgets is one the session layer never sees — a tool
+            // marked deferrable would silently stay in every prompt.
             deferrable: tool.deferrable,
           }
         }),
@@ -528,25 +578,17 @@ const layer = Layer.effect(
 )
 
 /**
- * What a roster line says when the definition said nothing.
- *
- * The old code reached for this with `??`, which only catches an ABSENT
- * description - so a def whose `description:` was written empty rendered as
- * `- name: ` with nothing after the colon. A roster line that names an agent
- * and then says nothing about it is worse than no line: the model has a
- * delegation target it cannot judge.
+ * What a roster line says when the definition said nothing. It must cover an
+ * EMPTY description as well as an absent one: a line that names an agent and
+ * then says nothing gives the model a delegation target it cannot judge.
  */
 const TASK_DESCRIPTION_FALLBACK = "This subagent should only be called manually by the user."
 
 /**
- * The line the RE-ADMITTED VISION PROFILE gets, synthesized rather than read
- * off the def.
- *
- * A vision profile's own `description:` is written for the Agents pane ("Reads
- * screenshots") and says nothing about how to use it or what comes back. This
- * says the three things the calling model cannot work out for itself: that it
- * is blind, that a path or an attachment is the input, and that the reply is
- * words - so it does not sit waiting for a picture that is never coming.
+ * The line a re-admitted vision profile gets, synthesized rather than read off
+ * the def, whose own `description:` is written for the Agents pane. It says what
+ * the calling model cannot work out: that it is blind, that a path or attachment
+ * is the input, and that the reply is words, not a picture.
  */
 const VISION_PROFILE_TASK_DESCRIPTION = [
   "Your model cannot see images.",
@@ -555,10 +597,9 @@ const VISION_PROFILE_TASK_DESCRIPTION = [
   "It replies in words; you never receive the picture.",
 ].join(" ")
 
-/** The one hidden def the roster may name: the chat's OWN vision profile. Both
+/** The one hidden def the roster may name: the chat's own vision profile. Both
  *  halves are required - the name alone would let any hidden def called
- *  `vision-eye` in, and the option alone would name every profile on disk when
- *  the user picked one. */
+ *  `vision-eye` in, the option alone would name every profile on disk. */
 function isVisionProfile(item: Agent.Info, visionProfile: string | undefined): boolean {
   if (!visionProfile) return false
   return item.name === visionProfile && Boolean(item.options["vision-profile"])
@@ -654,12 +695,16 @@ export const node = LayerNode.make({
     Question.node,
     Todo.node,
     Agent.node,
-    // The registry itself asks Flock nothing since E1, but the task tool it
-    // builds still resolves the subagent binding through it.
+    // The registry asks Flock nothing, but the task tool it builds still
+    // resolves the subagent binding through it.
     FlockRouting.node,
     Skill.node,
     Session.node,
     BackgroundJob.node,
+    // The registry evaluates rulesets as pure functions, but the task tool it
+    // builds resolves the SERVICE: it asks how long a child has been parked on
+    // an unanswered ask so the job ceiling can refuse to count that wait.
+    Permission.node,
     Interject.node, // origami_change
     Provider.node,
     LSP.node,
@@ -672,6 +717,12 @@ export const node = LayerNode.make({
     Truncate.node,
     RuntimeFlags.node,
     MCP.node,
+    // A transitive dep is not a provided service: webmcp_launch resolves
+    // McpBrowser itself, so the registry has to name it.
+    McpBrowser.node,
+    // The CDP bridge behind webmcp_launch/_tools/_call, named for the same
+    // reason: the tools resolve it themselves.
+    WebMcpBridge.node,
     Database.node,
     Ripgrep.node,
     Git.node,

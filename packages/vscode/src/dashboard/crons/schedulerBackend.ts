@@ -1,19 +1,8 @@
-// schedulerBackend.ts — the ONE seam between cron bookkeeping and the operating
-// system. Everything above this file (cronService, the pane) is platform-free
-// and runs against a fake in tests; only `windowsBackend` ever executes a
-// process, and nothing in the test suite constructs it.
-//
-// schtasks is invoked through execFile with an ARGUMENT ARRAY and no shell, so
-// Node owns the OS-level quoting of the task name and the `/TR` value. Building
-// a single string and handing it to a shell would put the user's prompt through
-// a second, unmodelled round of quoting — the exact class of bug cronCommand.ts
-// exists to prevent.
-//
-// PLATFORM: Windows (this file) and macOS (launchdBackend.ts). Anything else
-// gets `unavailableBackend`, which reports that plainly and refuses every
-// mutation. No backend may HALF-register — a cron whose file record claims a
-// task that was never created is worse than an honest refusal, because
-// reconcile would then report drift forever.
+// schedulerBackend.ts — the one seam between cron bookkeeping and the operating system; only
+// `windowsBackend` ever executes a process, and nothing in the test suite constructs it.
+// schtasks is invoked through execFile with an argument array and no shell, so Node owns OS-level
+// quoting. No backend may half-register — a cron whose file record claims a task that was never
+// created is worse than an honest refusal.
 
 import { execFile } from 'node:child_process';
 import * as os from 'node:os';
@@ -71,9 +60,8 @@ const realRun: SchtasksRun = (args) =>
   });
 
 /**
- * The real Windows backend. `run` is injectable so the query logic below can be
- * driven against a simulated schtasks in tests; the default talks to the real
- * one, and the extension host is the only caller that lets it.
+ * The real Windows backend. `run` is injectable so the query logic can be driven against a
+ *  simulated schtasks in tests.
  */
 export function windowsBackend(run: SchtasksRun = realRun): SchedulerBackend {
   return {
@@ -94,19 +82,11 @@ export function windowsBackend(run: SchtasksRun = realRun): SchedulerBackend {
       return res.ok ? { ok: true } : { ok: false, error: res.error };
     },
     /**
-     * Two-step, because ONE step cannot be both fast and honest.
-     *
-     * The folder query is ~25ms but 404s identically whether the folder is
-     * absent or the query genuinely failed. Treating that 404 as "no tasks
-     * registered" — which this code used to do — makes every correctly
-     * registered cron report as missing, forever, and the drift report cries
-     * wolf on a perfectly healthy machine.
-     *
-     * So a folder-query failure is never interpreted: it falls through to the
-     * enumerate form (~520ms), which succeeds whether or not our folder exists.
-     * If THAT fails, the query really did fail and we say so rather than
-     * guessing. The slow path only runs when there are no crons yet, where the
-     * extra half-second costs nothing.
+     * Two-step, because one step cannot be both fast and honest. The folder query is ~25ms but 404s
+     *  identically whether the folder is absent or the query failed — treating that as "no tasks"
+     *  made every correctly registered cron report as missing. A folder-query failure now falls
+     *  through to the slower enumerate form (~520ms), which succeeds whether or not our folder
+     *  exists; only if that also fails do we say the query failed.
      */
     async query() {
       const folder = await run(schtasksFolderQueryArgs());

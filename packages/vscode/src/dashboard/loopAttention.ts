@@ -1,19 +1,11 @@
-// loopAttention.ts — the wire shape for a PERSISTED loop whose engine session
-// did not come back on a restore. Extracted from loopSchedules.ts when the live
-// projection grew its next-run / last-run fields and that file was at its cap.
-//
-// The split is along the honesty line the two shapes already had: a live loop
-// can be asked what its armed timer will do next, and a needs-attention one
-// cannot — nothing is armed for it at all.
+// The wire shape for a PERSISTED loop whose engine session did not come back on a restore — split
+// from loopSchedules.ts when that file grew its live-projection fields past its cap.
 
 import { formatInterval } from './chatCommands';
 
-/** A persisted loop whose engine session did NOT come back on this restore
- *  (agentManager/loopPersistence.ts's `needsAttention` bucket) — no live
- *  chat identity (number/agentName/title) to show, only what was persisted.
- *
- *  Deliberately carries NO next-run field: nothing is scheduled for one of
- *  these, so any time here would be an invention. */
+/** A persisted loop whose engine session did NOT come back (agentManager/loopPersistence.ts's
+ *  `needsAttention` bucket) — no live chat identity, and deliberately no next-run field since
+ *  nothing is scheduled for one of these. */
 export interface NeedsAttentionLoop {
   sessionId: string;
   intervalLabel: string;

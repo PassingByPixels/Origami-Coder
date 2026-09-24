@@ -1,27 +1,20 @@
 <script lang="ts">
-  // Folds board — TRANSPOSED (contract §6), REGRIDDED (§11.1). The old board was
-  // a column per repo with four accordion sections inside it; this one is a repo
-  // pill row over the lifecycle of the ONE repo you picked: Triage · Todo ·
-  // Pending on the top row, In progress · Blocked · Done on the bottom. The
-  // transposition is the point — you see every stage of one repo at once instead
-  // of one stage of every repo.
+  // Folds board: a repo pill row over the lifecycle of the one repo you picked —
+  // Triage / Todo / Pending on the top row, In progress / Blocked / Done on the
+  // bottom, so you see every stage of one repo at once instead of one stage of every repo.
   //
-  // Six BLOCKS, not seven columns: UAT round 1 found seven side-by-side columns
-  // unreadable in a pane, so Merged — the one stage you look at least — folds
-  // into the Done block as a collapsed subsection. The BUCKETS are untouched
-  // (boardBuckets still sorts into seven); only the render pairs them up, so
-  // "which column does this land in" stays one rule in one place.
+  // Six blocks, not seven columns: Merged, the stage you look at least, folds
+  // into Done as a collapsed subsection. The buckets are untouched (boardBuckets
+  // still sorts into seven); only the render pairs them up.
   //
-  // The TICKET is the entity (a markdown file in <repo>/.origami/tickets); the
-  // FOLD is provisioned when work starts. So a launched ticket is absorbed by its
-  // fold card and draws once — the dedupe rule that lives in boardBuckets.ts with
-  // the rest of the bucket logic, which is pure and unit-tested there rather than
-  // through this pane.
+  // The ticket is the entity (a markdown file in <repo>/.origami/tickets); the
+  // fold is provisioned when work starts, so a launched ticket is absorbed by
+  // its fold card and draws once (dedupe rule in boardBuckets.ts).
   //
-  // This pane is an ORCHESTRATOR: it owns the wire (amState in, messages out),
-  // the view state a broadcast must never reset (selected repo, card filter, the
-  // single open editor / diff panel / launch popover), and nothing else. Every
-  // pixel is drawn by a child component.
+  // This pane is an orchestrator: it owns the wire (amState in, messages out)
+  // and the view state a broadcast must never reset (selected repo, card
+  // filter, the single open editor/diff panel/launch popover). Every pixel is
+  // drawn by a child component.
   import { onMount } from 'svelte';
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import AgentCard from '../components/AgentCard.svelte';
@@ -35,7 +28,7 @@
   import LaunchPopover from '../components/LaunchPopover.svelte';
   import {
     COLUMNS, buildColumns, clusters, rowMatches, ticketMatches,
-    type ColumnContent, type RepoBoard, type Row, type TicketRow,
+    type ColumnContent, type ColumnId, type RepoBoard, type Row, type TicketRow,
   } from '../components/boardBuckets';
   import type { RepoDetailInfo } from '../components/repoGroups';
 
@@ -56,57 +49,50 @@
   let noRepo = $state(false);
   // Board-only display-name overrides (repoOps.ts), keyed by repo.root. Rides amState.
   let displayNames = $state<Record<string, string>>({});
-  // S5.2 board toggle: auto-approve permission asks from BACKGROUND agent sessions
+  // Board toggle: auto-approve permission asks from background agent sessions
   // (they have no webview to answer, so without this they hang). Rides amState.
   let autoApprove = $state(true);
-  // Error banner: an ACCUMULATING list, not a single slot. A fan-out fires several
-  // launches at once, so more than one can fail (and each failure is followed by a
-  // sibling's broadcast) — a single overwritten slot cleared on every amState
-  // would silently drop all but the last. Cleared on the next launch.
+  // Error banner: an accumulating list, not a single slot — a fan-out can fire
+  // several launches at once, so more than one can fail. Cleared on the next launch.
   let errorMsgs = $state<string[]>([]);
   let modelOptions = $state<ModelOpt[]>([]);
   let providerStatus = $state<ProviderStat[]>([]);
-  let agentTypes = $state<Array<{ id: string; name: string }>>([]); // S6a roster (engine modes), rides amState
+  let agentTypes = $state<Array<{ id: string; name: string }>>([]); // engine-modes roster, rides amState
 
   // ---- view state: NEVER reset by an amState refresh ----
   let selectedRoot = $state(loadSelected());
   let cardFilters = $state<Record<string, string>>({});
-  // The id of the ONE card in edit mode ('' = none). The card owns its working
-  // fields; the pane owns which card is open (single-editor invariant).
+  // The id of the one card in edit mode ('' = none): the pane owns which card
+  // is open (single-editor invariant).
   let editingId = $state('');
-  // The ONE repo whose board name is being edited ('' = none). Pane-owned so the
-  // single-open-editor rule holds and a repo switch closes the field. The field
-  // itself, and the amRenameRepo it posts, stay RepoHeader's.
+  // The one repo whose board name is being edited ('' = none). Pane-owned so a
+  // repo switch closes the field; the field itself stays RepoHeader's.
   let renamingRoot = $state('');
-  // Id of a Save awaiting host confirmation. The editor stays open until the host
-  // acks: a confirming amState (card still queued) closes it; a rejecting amError
-  // keeps it open so a refused update never silently discards the edit.
+  // Id of a Save awaiting host confirmation: a confirming amState closes the
+  // editor, a rejecting amError keeps it open so a refused update isn't lost.
   let savePendingId = $state('');
-  // S4 diff/apply expansion: the ONE card whose AgentDiffPanel is open ('' = none),
-  // and a transient success note shown after a clean apply-to-main.
+  // The one card whose AgentDiffPanel is open ('' = none), and a transient
+  // success note shown after a clean apply-to-main.
   let expandedId = $state('');
   let applyNote = $state('');
-  // The ONE ticket whose popover is open (null = none), and which job it is for:
-  // 'launch' provisions a worktree, 'spec' opens a chat that writes the ticket's
-  // acceptance. One slot, because both are modal and only one can be open.
+  // The one ticket whose popover is open (null = none), and which job it's for:
+  // 'launch' provisions a worktree, 'spec' opens a chat that writes the
+  // ticket's acceptance. One slot, since both are modal.
   let launchTicket = $state<TicketRow | null>(null);
   let launchMode = $state<'launch' | 'spec'>('launch');
-  // Where that popover hangs (contract §12.1): the viewport rect of the card it
-  // was opened from, captured ONCE. Anchoring is why the popover carries no
-  // transform, and a transform is why the model menu inside it used to fly off.
+  // Where that popover hangs: the viewport rect of the card it was opened
+  // from, captured once, so the popover carries no transform.
   let launchAnchor = $state({ top: 0, bottom: 0, left: 0 });
-  // Quick-add is collapsed to a "+ Add ticket" ghost until you ask for it
-  // (§12.2) — an always-open form ate the top of the Triage block.
+  // Quick-add is collapsed to a "+ Add ticket" ghost until asked for — an
+  // always-open form ate the top of the Triage block.
   let quickAddOpen = $state(false);
-  // Merged is collapsed by default and stays view-only state: it is the stage you
-  // look at least, and a poll broadcast must never fold it back under you.
+  // Merged is collapsed by default and stays view-only: a poll broadcast must
+  // never fold it back under you.
   let mergedOpen = $state(false);
-  // What the top strip's detail pane draws, keyed by the entry root it was asked
-  // for: a repository's checkouts and its local branches. Host truth (`git
-  // worktree list` + `for-each-ref` at the primary), so it is FETCHED, not
-  // derived: on select, and on the first broadcast that finds a selection with
-  // nothing cached. A "Make primary" drops the entry so the reply after it
-  // re-reads the flags.
+  // What the top strip's detail pane draws, keyed by the entry root: a
+  // repository's checkouts and local branches. Host truth, so it's fetched on
+  // select and on the first broadcast with nothing cached. "Make primary"
+  // drops the entry so the reply after it re-reads the flags.
   let details = $state<Record<string, RepoDetailInfo>>({});
   let rootEl: HTMLDivElement | undefined;
 
@@ -158,10 +144,8 @@
     selectedRoot = root;
     wantWorktrees(root);
     launchTicket = null;
-    renamingRoot = ''; // the field names ONE repo; carrying it over would rename the wrong one
-    // The capture is bound to the repo you opened it in — carrying a half-typed
-    // title to another repo's Triage is how a ticket lands in the wrong board.
-    quickAddOpen = false;
+    renamingRoot = ''; // the field names one repo; carrying it over would rename the wrong one
+    quickAddOpen = false; // Quick-add is bound to the repo it was opened in
     saveSelected(root);
   }
   // A saved repo that is no longer registered must not leave the board blank —
@@ -184,9 +168,8 @@
         if (typeof msg.autoApprove === 'boolean') autoApprove = msg.autoApprove;
         if (Array.isArray(msg.agentTypes)) agentTypes = msg.agentTypes;
         if (msg.displayNames && typeof msg.displayNames === 'object') displayNames = msg.displayNames;
-        // Do NOT clear errorMsgs here: a launch failure posts amError and then this
-        // very broadcast — wiping it would make the failure invisible. Errors persist
-        // until the next launch (see openLaunch()).
+        // Do not clear errorMsgs here: a launch failure posts amError and then
+        // this broadcast; errors persist until the next launch (openLaunch()).
         resolveSelection();
         wantWorktrees(selectedRoot); // the first broadcast picks a card for you
         // Prune per-repo view state for repos that vanished (keep the rest).
@@ -195,22 +178,20 @@
         details = Object.fromEntries(Object.entries(details).filter(([r]) => roots.has(r)));
         if (renamingRoot && !roots.has(renamingRoot)) renamingRoot = ''; // unregistered under the editor
         // A Save awaiting confirmation: this broadcast is the host's ack of the
-        // update (the card is still queued, now carrying the edit) — close the
-        // editor. A refused update posts amError instead (no broadcast), leaving
-        // the editor open with the edit intact.
+        // update, so close the editor. A refused update posts amError instead,
+        // leaving the editor open with the edit intact.
         if (savePendingId) {
           if (hasQueued(savePendingId)) editingId = '';
           savePendingId = '';
         }
-        // Close the inline editor if its card vanished or is no longer queued
-        // (only queued cards are editable) — never on an ordinary refresh.
+        // Close the inline editor if its card vanished or is no longer queued.
         if (editingId && !hasQueued(editingId)) editingId = '';
-        // Collapse the diff/apply panel if its card vanished. A poll-tick broadcast
-        // also clears the transient apply note (it is intentionally short-lived).
+        // Collapse the diff/apply panel if its card vanished; also clears the
+        // transient apply note.
         if (expandedId && !repos.some((r) => r.rows.some((row) => row.id === expandedId))) expandedId = '';
         applyNote = '';
-        // The open popover's ticket was launched (it now carries a fold) or was
-        // deleted under us — either way there is nothing left to launch.
+        // The open popover's ticket was launched or deleted under us — either
+        // way there is nothing left to launch.
         if (launchTicket) {
           const live = ticketsOf(selectedRoot).find((t) => t.id === launchTicket!.id);
           launchTicket = live && !live.fold ? live : null;
@@ -237,9 +218,8 @@
     };
     window.addEventListener('message', onMsg);
     // The popover is anchored to a card's on-screen position, worked out once on
-    // open — scrolling a block slides that card out from under it, so it closes
-    // rather than hanging over an unrelated card. CAPTURE phase: a scroll inside
-    // a block's own body does not bubble as far as the window.
+    // open, so a scroll closes it rather than leaving it over an unrelated card.
+    // Capture phase: a scroll inside a block's own body doesn't bubble to the window.
     const onScroll = () => { if (launchTicket) launchTicket = null; };
     window.addEventListener('scroll', onScroll, true);
     const onVis = () => {
@@ -262,8 +242,7 @@
     repos.some((r) => r.rows.some((row) => row.id === id && row.state === 'queued'));
   const ticketsOf = (root: string): TicketRow[] => repos.find((r) => r.root === root)?.tickets ?? [];
 
-  // Board shortcuts. '/' and 'n' are single letters, so they fire ONLY when you
-  // are not typing — otherwise they would eat the character you meant to enter.
+  // Board shortcuts fire only when not typing, or they'd eat the intended character.
   function focusIn(selector: string): void {
     (rootEl?.querySelector(selector) as HTMLElement | null)?.focus();
   }
@@ -278,8 +257,7 @@
     const tag = target?.tagName ?? '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
     if (e.key === '/') { e.preventDefault(); focusIn('.am-cardfilter'); }
-    // 'n' EXPANDS quick-add rather than focusing a box that is not on screen;
-    // the form takes focus itself on mount, so the key still lands you typing.
+    // 'n' expands quick-add; the form takes focus itself on mount.
     else if (e.key === 'n') { e.preventDefault(); quickAddOpen = true; }
   }
 
@@ -287,8 +265,8 @@
   function onStartEdit(r: Row): void { editingId = r.id; }
   function onCancelEdit(): void { editingId = ''; savePendingId = ''; }
   function onSaveEdit(root: string, id: string, changed: Record<string, unknown>): void {
-    // Send ONLY the changed fields (server updates just those). Wait for the host
-    // to confirm — do NOT close optimistically (amState closes it, amError keeps it).
+    // Send only the changed fields; wait for the host to confirm rather than
+    // closing optimistically (amState closes it, amError keeps it).
     post({ type: 'amUpdateQueued', root, id, ...changed });
     savePendingId = id;
   }
@@ -314,11 +292,9 @@
     launchTicket = t;
   }
 
-  // A ticket dropped on the Pending block (contract §11.4). The card hands over a
-  // bare id and nothing else, so the RULE lives here: only a spec'd ticket that
-  // has not been launched may be queued, and only from the repo on screen. An id
-  // that fails any of those is a stray drag — a no-op, never a launch. The queued
-  // card still carries the agent/model editor, so the drop needs neither.
+  // A ticket dropped on the Pending block. Only a spec'd ticket not yet
+  // launched may be queued, and only from the repo on screen; anything else
+  // is a stray drag, a no-op.
   function dropTicket(id: string): void {
     const t = ticketsOf(selectedRoot).find((x) => x.id === id);
     if (!t || t.malformed || t.status !== 'todo' || t.fold) return;
@@ -327,9 +303,8 @@
   }
 
   let selected = $derived(repos.find((r) => r.root === selectedRoot) ?? null);
-  // The detail pane heads itself with the ENTRY the board drives — the same root
-  // its three actions are keyed by — not the card's lead, so the name over the
-  // rows always names the repo the messages will reach.
+  // The detail pane heads itself with the entry the board drives, not the
+  // card's lead, so the name always matches the repo the messages will reach.
   let selectedLabel = $derived(selected ? (displayNames[selected.root] ?? selected.name) : '');
   let filter = $derived(selected ? (cardFilters[selected.root] ?? '') : '');
   // A missing folder has nothing to draw; the header still offers unregister.
@@ -342,8 +317,8 @@
 
 <svelte:window onkeydown={onWinKey} />
 
-{#snippet cardFor(repo: RepoBoard, r: Row)}
-  <AgentCard repoRoot={repo.root} defaultModel={repo.defaultModel} row={r}
+{#snippet cardFor(repo: RepoBoard, r: Row, status: ColumnId)}
+  <AgentCard repoRoot={repo.root} defaultModel={repo.defaultModel} row={r} status={status}
     modelOptions={modelOptions} providerStatus={providerStatus} agentTypes={agentTypes}
     editing={editingId === r.id} expanded={expandedId === r.id} post={post}
     onStartEdit={onStartEdit} onCancelEdit={onCancelEdit} onSaveEdit={onSaveEdit}
@@ -351,36 +326,35 @@
 {/snippet}
 
 <!-- One bucket's worth of cards. Shared by a block and by the Merged subsection
-     inside Done, so the two cannot drift into drawing a card differently. -->
-{#snippet bucketBody(repo: RepoBoard, content: ColumnContent)}
+     inside Done, so the two cannot drift into drawing a card differently.
+     `status` is the STATUS EDGE colour (t-qn09vr, CHANGES.md change 35), not
+     necessarily `content`'s own column: the Merged subsection draws under
+     Done and takes Done's colour, since there is no fourth Merged block. -->
+{#snippet bucketBody(repo: RepoBoard, content: ColumnContent, status: ColumnId)}
   {#each clusters(content.rows, repo.rows) as cl (cl.kind === 'group' ? `g:${cl.groupId}` : `s:${cl.row.id}`)}
     {#if cl.kind === 'group'}
       <RaceGroup base={cl.base} count={cl.rows.length} repoRoot={repo.root} groupId={cl.groupId}
         siblings={cl.siblings} post={post} />
       {#each cl.rows as r (r.id)}
-        {@render cardFor(repo, r)}
+        {@render cardFor(repo, r, status)}
       {/each}
     {:else}
-      {@render cardFor(repo, cl.row)}
+      {@render cardFor(repo, cl.row, status)}
     {/if}
   {/each}
   <!-- Keyed by id AND position: a malformed file can carry an empty or
        duplicate id, and a duplicate key blanks the whole board. -->
   {#each content.tickets as t, i (`${t.id}::${i}`)}
-    <TicketCard root={repo.root} ticket={t} onlaunch={openLaunch} onspec={openSpec} post={post} />
+    <TicketCard root={repo.root} ticket={t} status={status} onlaunch={openLaunch} onspec={openSpec} post={post} />
   {/each}
 {/snippet}
 
 <div class="am-root" bind:this={rootEl}>
-  <!-- The top strip: THREE panes on one row (UAT round 2 on §11.6). One wrapping
-       line held the explainer, the cards and the open card's worktree reveal all
-       at once, and every extra repo pushed the board further down. Now the
-       explainer is a fixed panel on the left, the cards SCROLL SIDEWAYS in the
-       middle, and the repository you picked is drawn once on the right. -->
+  <!-- The top strip: two panes on one row. The cards carousel scrolls in the
+       middle (the "Agents run in isolated git worktrees" explainer that used
+       to sit left of it was redundant with the panel titles below — removed,
+       t-q8zufa), and the repository you picked is drawn once on the right. -->
   <div class="am-toppanes">
-    <div class="am-explain">
-      <span class="am-title">Agents run in isolated git worktrees — your working tree stays untouched.</span>
-    </div>
     <div class="am-strip">
       <RepoCards repos={repos} displayNames={displayNames} selected={selectedRoot}
         onselect={select} post={cardPost} />
@@ -425,7 +399,7 @@
                 onclick={() => (quickAddOpen = true)}>+ Add ticket</button>
             {/if}
           {/if}
-          {@render bucketBody(live, content)}
+          {@render bucketBody(live, content, col.id)}
           {#if col.id === 'done'}
             {@const mg = columns.merged}
             <div class="am-merged">
@@ -435,7 +409,7 @@
                 <span class="am-merged-name">Merged</span>
                 <span class="am-merged-count">{mg.rows.length + mg.tickets.length}</span>
               </button>
-              {#if mergedOpen}{@render bucketBody(live, mg)}{/if}
+              {#if mergedOpen}{@render bucketBody(live, mg, 'done')}{/if}
             </div>
           {/if}
         </StatusColumn>
@@ -464,16 +438,6 @@
      repository with many checkouts scrolls its detail pane instead of eating the
      board's height — the whole complaint the old top line earned. */
   .am-toppanes { display: flex; align-items: stretch; gap: 8px; flex: none; max-height: 190px; }
-  .am-explain {
-    flex: none;
-    width: 136px;
-    overflow-y: auto;
-    padding: 7px 9px;
-    border: 1px solid var(--og-border, rgba(255, 255, 255, 0.1));
-    border-radius: 8px;
-    background: var(--og-surface, rgba(255, 255, 255, 0.03));
-  }
-  .am-title { font-size: 11px; opacity: 0.7; line-height: 1.35; }
   /* `min-width: 0` is what makes the sideways scroll real: without it a flex
      item sizes to its content, so a long row of cards would push the detail
      pane off the edge instead of scrolling under it. The cards inside are a

@@ -1,16 +1,7 @@
-// Agent Manager - board.ts (Folds board, repo cards): the amState BROADCAST -
-// the one place a RepoBoard is built - extracted from manager.ts at its line cap
-// when every projection had to start resolving the repo's PRIMARY checkout.
-//
-// Two things live here and nothing else: the roster pre-fill that must run
-// before a board is sent, and the projection itself. Both are driven through a
-// narrow BoardCtx the fleet owner builds, so the owner keeps only routing, the
-// worktree lifecycle and the poller.
-//
-// The PRIMARY rule: a registered entry is a place on disk; the work - its
-// tickets, its fold worktrees, its state file, its apply target - belongs to
-// that repository's PRIMARY checkout. `primaryOf` resolves it (absent = the
-// root itself, which is why a user who never sets one sees no change at all).
+// The amState broadcast: the one place a RepoBoard is built. Two responsibilities: the
+// roster pre-fill that must run before a board is sent, and the projection itself, both
+// driven through a narrow BoardCtx. The PRIMARY rule: a registered entry is a place on disk;
+// the work (tickets, folds, state, apply target) belongs to that repo's primary checkout.
 
 import { loadState } from './state';
 import { boardTickets, ticketTitles, type TicketRow } from './tickets';
@@ -54,14 +45,9 @@ export interface BoardCtx {
   idents: ReadonlyMap<string, RepoIdent>;
 }
 
-/** S6c roster pre-fill: a fresh window's persisted roster is empty or only the
- *  engine-default entry, so a new user opening the board sees Tsuru and nothing
- *  else. Seed it from ANY live session the panel already has (the user's open
- *  chat qualifies) via the same mapping as agentModes. mergeAgentTypes is a
- *  UNION, so this never shrinks a richer persisted roster - and the guard below
- *  skips entirely once the roster has any real (non-default) option. Called from
- *  the broadcast so it rides every amState, and is a no-op when no live session
- *  knows its modes yet. */
+/** Roster pre-fill: a fresh window's persisted roster is often just the default entry, so
+ *  seed it from any live session's modes (a union, never shrinking a richer roster). Runs on
+ *  every broadcast; a no-op once the roster has a real option. */
 function prefillRoster(host: ManagerHost): void {
   const roster = host.agentTypes();
   if (roster.some((t) => !t.default)) return; // already has a pickable option - leave it

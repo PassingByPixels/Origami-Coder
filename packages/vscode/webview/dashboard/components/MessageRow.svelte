@@ -1,5 +1,10 @@
 <script lang="ts">
   import { marked } from 'marked';
+  import { spotlight } from '../../shared/spotlight';
+  import { tip } from '../../shared/warmTip';
+  import { isLive, settleDelay } from './streamSettle';
+  import { markStreamHead } from './streamHead';
+  import { decodeHref, linkifyPaths, splitPathLine } from './pathLinks';
   import hljs from 'highlight.js/lib/core';
 
   // Register only the languages we actually need (tree-shakeable)
@@ -49,6 +54,8 @@
 
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import { renderChartBlock } from '../../shared/chartBlock';
+  import ArtifactCard from './ArtifactCard.svelte';
+  import { artifactOpenMessage, findArtifactLinks, parseArtifactHref } from './artifactLink';
   const vscode = getVsCodeApi();
 
   interface Props {
@@ -80,9 +87,38 @@
      * inert (and un-zoomable-looking) rather than throw.
      */
     onImageClick?: (src: string, alt: string) => void;
+    /**
+     * This row is the OPEN agent message — the one the stream is writing into
+     * (ChatTranscript passes `currentAgentMsgId === msg.id`). While it is also
+     * still growing, the prose renders in --og-chat with a caret on the tail,
+     * and settles to ink 420ms after the text stops (streamSettle.ts). The
+     * product knows which row is live, so nothing here has to guess it from
+     * text growth the way the mock's overlay had to.
+     */
+    streaming?: boolean;
   }
 
-  let { kind, label, text, images, timestamp, tokensAtTurn, tokensThisTurn, ctxPctAtTurn, onImageClick }: Props = $props();
+  let { kind, label, text, images, timestamp, tokensAtTurn, tokensThisTurn, ctxPctAtTurn, onImageClick, streaming = false }: Props = $props();
+
+  // The QUIET half of "is this live": the flag stays true for the whole turn,
+  // but the colour must settle as soon as the text stops arriving, or prose the
+  // reader has finished is still dressed as arriving while a tool call runs.
+  let lastGrowthAt = $state(0);
+  let now = $state(0);
+  // Each delta replaces the whole text, so its LENGTH is the growth signal.
+  $effect(() => {
+    void text.length;
+    lastGrowthAt = Date.now();
+  });
+  // Nothing re-renders a bubble that has gone quiet, so the settle needs its
+  // own wake-up: one timer per growth, cleared when the next delta lands.
+  $effect(() => {
+    const delay = settleDelay(streaming, lastGrowthAt, Date.now());
+    if (delay === null) return;
+    const t = setTimeout(() => (now = Date.now()), delay + 10);
+    return () => clearTimeout(t);
+  });
+  let live = $derived(isLive(streaming, lastGrowthAt, Math.max(now, lastGrowthAt)));
 
   function formatTime(ts?: number): string {
     if (!ts) return '';
@@ -132,8 +168,15 @@
 
   // Make links open in VS Code (file paths) or external browser
   renderer.link = ({ href, text: linkText }: { href: string; text: string }) => {
+    // An artifact link opens the artifact (t-s49986), never a browser tab on
+    // an `origami://` address. The card under the message is the main control;
+    // the inline link does the same thing.
+    const artifact = href ? parseArtifactHref(href) : undefined;
+    if (artifact) {
+      return `<a class="artifact-link" data-artifact-id="${escapeAttr(artifact.artifactId)}" data-artifact-version="${artifact.version}">${linkText}</a>`;
+    }
     if (href && (href.startsWith('/') || href.match(/^[A-Z]:\\/i) || href.match(/^[a-zA-Z0-9_./-]+\.[a-z]+/))) {
-      const { path: filePath, line } = splitPathLine(href);
+      const { path: filePath, line } = splitPathLine(decodeHref(href));
       const dataLine = line !== undefined ? ` data-line="${line}"` : '';
       return `<a class="file-link" data-path="${escapeAttr(filePath)}"${dataLine}>${linkText}</a>`;
     }
@@ -154,60 +197,27 @@
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Split a "path:line[:col]" reference into its path and 1-based line.
-  // A bare path, or a range like ":10-20", yields line: undefined.
-  function splitPathLine(raw: string): { path: string; line?: number } {
-    const m = raw.match(/^(.+?):(\d+)(?::\d+)?$/);
-    if (m) return { path: m[1], line: parseInt(m[2], 10) };
-    return { path: raw };
-  }
-
-  // Linkify bare file paths in already-rendered HTML so the agent naming a
-  // file in prose ("packages/engine/src/agent/agent.ts:109") becomes a
-  // click-to-open link — mirroring the markdown-link path above. Runs on
-  // TEXT segments only: <pre>/<code>/<a> blocks and HTML tags are left
-  // untouched so highlighted code and existing links are never mangled. A
-  // token must have a path separator OR a :line suffix to qualify, which
-  // skips version strings ("1.29.0"), domains, and "a.b" method refs.
-  function linkifyPaths(html: string): string {
-    // PROTECTED skips HIGHLIGHTED code (a whole <pre>…</pre> block) and existing
-    // links, but deliberately NOT standalone inline <code>: coder models wrap
-    // nearly every path in single backticks ("edit `src/foo.ts:78`"), which marked
-    // renders as inline <code> — those MUST linkify or the most common way a path
-    // appears is un-clickable. Fenced ```blocks``` render as <pre><code>…</code></pre>,
-    // so the <pre> alternative still swallows them whole and their bodies stay literal.
-    // (Assumes marked emits balanced tags; a malformed unclosed <pre> could let a
-    // path in its body linkify — cosmetic only, the link still resolves.)
-    const PROTECTED = /(<pre[\s\S]*?<\/pre>|<a\b[\s\S]*?<\/a>|<[^>]+>)/gi;
-    // Leading (?<!...) boundary stops a match starting mid-token, which also
-    // collapses O(n^2) backtracking to linear on a long separator-less blob
-    // (verified: 100k chars 11.9s -> 0.6ms). The [A-Za-z]:[\\/] prefix lets a
-    // Windows absolute path (C:/... or C:\...) linkify too.
-    const PATH = /(?<![\w./\\-])((?:[A-Za-z]:[\\/])?(?:[\w.\-]+[\\/])*[\w.\-]+\.[A-Za-z][\w]{0,7})(:\d+(?::\d+)?)?/g;
-    return html
-      .split(PROTECTED)
-      .map((seg, i) => {
-        if (i % 2 === 1) return seg; // captured tag / protected block — leave as-is
-        return seg.replace(PATH, (whole: string, pathPart: string, linePart?: string) => {
-          const hasSep = /[\\/]/.test(pathPart);
-          if (!hasSep && !linePart) return whole; // unqualified — leave as text
-          const line = linePart ? linePart.slice(1).split(':')[0] : '';
-          const dataLine = line ? ` data-line="${line}"` : '';
-          return `<a class="file-link" data-path="${escapeAttr(pathPart)}"${dataLine}>${whole}</a>`;
-        });
-      })
-      .join('');
-  }
-
   // Only render markdown for agent messages; others stay plain text.
-  // Either way, run the bare-path linkifier over the result.
+  // Either way, run the path linkifier (pathLinks.ts) over the result.
+  //
+  // While the row is LIVE the newest few words are wrapped BEFORE marked sees
+  // them, so the accent rides the head of the stream and the prose behind it is
+  // already ink (streamHead.ts owns where the cut lands, and refuses one that
+  // would break the markdown). One parse, not two: rendering body and head
+  // separately would cut the paragraph in half. A settled row is handed the
+  // text untouched, so nothing is left accent-coloured when the turn ends.
   let rendered = $derived(
     linkifyPaths(
       kind === 'agent'
-        ? marked.parse(text) as string
+        ? marked.parse(markStreamHead(text, live)) as string
         : escapeHtml(text).replace(/\n/g, '<br>')
     )
   );
+
+  // Every artifact link in an agent message, drawn as a card under the text
+  // (t-s49986). Not while the row is live: a half-streamed `?v=1` would draw
+  // a card for a version that the next delta turns into `?v=12`.
+  let artifactLinks = $derived(kind === 'agent' && !live ? findArtifactLinks(text) : []);
 
   function handleClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
@@ -232,6 +242,17 @@
       return;
     }
 
+    // An inline artifact link — the same message the card's Open posts.
+    const artifactLink = target.closest('.artifact-link') as HTMLElement | null;
+    const artifactHit = artifactLink?.dataset.artifactId
+      ? { artifactId: artifactLink.dataset.artifactId, version: Number(artifactLink.dataset.artifactVersion) }
+      : undefined;
+    if (artifactHit && Number.isSafeInteger(artifactHit.version)) {
+      e.preventDefault();
+      vscode.postMessage(artifactOpenMessage(artifactHit));
+      return;
+    }
+
     // File path links
     const fileLink = target.closest('.file-link') as HTMLElement | null;
     if (fileLink?.dataset.path) {
@@ -246,7 +267,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="row {kind}" onclick={handleClick}>
+<div class="row {kind} og-spotlight" class:is-live={live} use:spotlight onclick={handleClick}>
   <div class="row-header">
     <span class="label">{label}</span>
     {#if timestamp}
@@ -257,7 +278,7 @@
         class="spend-badge"
         class:hot={ctxPctAtTurn !== undefined && ctxPctAtTurn >= 80}
         class:warn={ctxPctAtTurn !== undefined && ctxPctAtTurn >= 60 && ctxPctAtTurn < 80}
-        title={`This turn: ${tokensThisTurn ? tokensThisTurn.toLocaleString() + ' tokens spent' : 'spend unknown'}${ctxPctAtTurn ? ` · context ${ctxPctAtTurn}% full` : ''}${tokensAtTurn ? ` · ${tokensAtTurn.toLocaleString()} cumulative` : ''}`}
+        use:tip={`This turn: ${tokensThisTurn ? tokensThisTurn.toLocaleString() + ' tokens spent' : 'spend unknown'}${ctxPctAtTurn ? ` · context ${ctxPctAtTurn}% full` : ''}${tokensAtTurn ? ` · ${tokensAtTurn.toLocaleString()} cumulative` : ''}`}
       >
         {#if tokensThisTurn !== undefined && tokensThisTurn > 0}thought {formatTokens(tokensThisTurn)} tok{/if}
         {#if ctxPctAtTurn !== undefined && ctxPctAtTurn > 0}{#if tokensThisTurn}· {/if}ctx {ctxPctAtTurn}%{/if}
@@ -265,7 +286,7 @@
     {:else if tokensAtTurn !== undefined && tokensAtTurn > 0}
       <span
         class="token-badge"
-        title={`Session-cumulative tokens at end of this turn: ${tokensAtTurn.toLocaleString()}`}
+        use:tip={`Session-cumulative tokens at end of this turn: ${tokensAtTurn.toLocaleString()}`}
       >
         {formatTokens(tokensAtTurn)} tok
       </span>
@@ -279,10 +300,14 @@
     </div>
   {/if}
   <span class="text">{@html rendered}</span>
+  {#each artifactLinks as link (`${link.artifactId}?v=${link.version}`)}
+    <ArtifactCard artifactId={link.artifactId} version={link.version} title={link.title ?? ''} />
+  {/each}
 </div>
 
 <style>
   .row {
+    position: relative; /* the user turn's rail hangs off this — see .user::after */
     margin: 4px 0;
     padding: 5px 8px;
     border-radius: 4px;
@@ -291,11 +316,52 @@
     line-height: 1.5;
   }
 
+  /* STREAMING — the accent FLOWS at the head of the stream: only the newest few
+     words wear --og-chat, and the prose behind them is already ink, so a reader
+     never waits for the turn to end to read settled text in the settled colour
+     (t-qi09w0 item 4). streamHead.ts owns which words those are; streamSettle.ts
+     still owns when the row stops being live at all, and the caret below still
+     rides `.is-live`. `:global` because the span is injected into the markdown,
+     which carries no Svelte scope class. */
+  .row .text :global(.og-stream-head) { color: var(--og-chat); }
+  .row .text { transition: color 700ms ease; }
+  /* The caret rides the END OF THE LAST LINE. `marked` wraps prose in <p>, so
+     an ::after on `.text` itself lands BELOW the block on a line of its own —
+     measured in the browser. The last child is markdown output, which carries
+     no Svelte scope class, hence :global. The second selector is the plain,
+     un-wrapped case. */
+  .row.is-live .text > :global(:last-child)::after,
+  .row.is-live .text:not(:has(*))::after {
+    content: '';
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: var(--og-chat);
+    animation: og-caret 1s steps(1, end) infinite;
+  }
+  @keyframes og-caret { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .row .text { transition: none; }
+    /* The caret rides the END OF THE LAST LINE. `marked` wraps prose in <p>, so
+     an ::after on `.text` itself lands BELOW the block on a line of its own —
+     measured in the browser. The last child is markdown output, which carries
+     no Svelte scope class, hence :global. The second selector is the plain,
+     un-wrapped case. */
+  .row.is-live .text > :global(:last-child)::after,
+  .row.is-live .text:not(:has(*))::after { animation: none; }
+  }
+
   .row-header {
     display: flex;
     align-items: baseline;
-    gap: 6px;
+    gap: 8px;
   }
+  /* Losing the timestamp's `margin-left: auto` below must not drag the header's
+     right-hand end in with it: whatever the header still pushes right — the
+     spend badge, the token badge — keeps the edge for itself. */
+  .row-header > :last-child:not(.timestamp):not(.label) { margin-left: auto; }
 
   .label {
     font-weight: 600;
@@ -303,12 +369,21 @@
     opacity: 0.85;
   }
 
+  /* CHANGES.md change 19 — the time reads as part of the LABEL LINE, not as a
+     column at the far right. `margin-left: auto` was what made it a column.
+     At rest it is not drawn at all: a timestamp is an answer to a question the
+     reader only sometimes asks, so it arrives on hover or keyboard focus. */
   .timestamp {
     font-size: 10px;
     color: var(--og-text-muted);
-    opacity: 0.7;
-    margin-left: auto;
+    opacity: 0;
+    transition: opacity 160ms ease;
     font-variant-numeric: tabular-nums;
+  }
+  .row:hover > .row-header .timestamp,
+  .row:focus-within > .row-header .timestamp { opacity: 0.7; }
+  @media (prefers-reduced-motion: reduce) {
+    .timestamp { transition: none; }
   }
 
   /* Pillar 3 — token badge to the right of the timestamp, with
@@ -370,10 +445,41 @@
     border-color: var(--og-chat);
   }
 
+  /* A TURN is the object, not the tool card inside it (CHANGES.md 18) — but
+     only the USER's turn gets a surface (CHANGES.md 41, round 3). The agent is
+     then the only speaker with no box, which is what makes its prose the thing
+     the eye lands on; giving it one put it in the same frame as everything else
+     and cost it the one thing it had. So `.agent` deliberately carries NO
+     background and NO rail, and messageRowPort.test.ts fails if either returns. */
   .user {
     background: var(--og-surface);
     white-space: pre-wrap;
   }
+  /* The rail is a pseudo-element, not a node: a re-render cannot wipe it and it
+     costs the transcript nothing. Inset top and bottom so it reads as a mark on
+     the turn rather than a border on the box. It sits inside the row's existing
+     8px left padding — no padding was added, because the 0.4.151 row scale is
+     fixed and the rail is 2px wide. */
+  .user::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 0;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--og-chat);
+    pointer-events: none;
+  }
+  /* CHANGES.md change 20 proposed an 80ch reading measure; the owner
+     reversed it on 0.4.154 ("text only uses half the width"). Prose keeps
+     the full pane width, the same as cards and diffs. */
+  .user > .text,
+  .agent > .text {
+    display: block;
+    max-width: none;
+  }
+
   .user .label { color: var(--og-chat); }
 
   .agent .label { color: var(--og-accent-2); }
@@ -434,12 +540,14 @@
     text-decoration-style: solid;
   }
 
+  .text :global(a.artifact-link),
   .text :global(a.file-link) {
     color: var(--og-accent-2);
     text-decoration: underline;
     text-decoration-style: dotted;
     cursor: pointer;
   }
+  .text :global(a.artifact-link:hover),
   .text :global(a.file-link:hover) {
     text-decoration-style: solid;
   }

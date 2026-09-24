@@ -1,27 +1,13 @@
-// sessionOrder.ts — apply a user-chosen chat order to the live sessions map.
-//
-// The sidebar Chats list has no order field of its own: the order IS the
-// sessions Map's insertion order, which both the requestSessions projection and
-// the open-set persistence (sessionRestore.computeOpenSet) read straight off the
-// map. So "reorder the chats" means rebuilding that map, and the rule for doing
-// it safely lives here rather than inline in the panel — sessionRestore.ts, its
-// natural sibling, had 8 lines under its architecture cap.
-//
-// The one invariant worth a module: a reorder must never LOSE a session. The
-// order arrives from a webview that may be a moment stale (a chat opened, or an
-// Agent Manager worktree session created, after the list it dragged was drawn),
-// so anything the order fails to name is kept rather than dropped.
+// Apply a user-chosen chat order to the live sessions map: the sidebar Chats list has no
+// order field of its own, so "reorder" means rebuilding the map's insertion order (which
+// both the sessions projection and open-set persistence read directly). Invariant: a reorder
+// must never lose a session — the order may be a moment stale, so anything it fails to name
+// is kept, not dropped.
 
-/** Rank the live entries by a webview-supplied id order.
- *
- *  Ids that are unknown to the map, or repeated in the order, are ignored. Live
- *  entries the order never named keep their relative order at the TAIL, so a
- *  session created mid-drag survives a stale order instead of vanishing.
- *
- *  Returns null when the order names nothing live at all — a wholly stale drag,
- *  where the honest action is to leave the map untouched rather than reshuffle
- *  it into an order the user never asked for.
- */
+/** Rank live entries by a webview-supplied id order. Unknown or repeated ids are ignored;
+ *  entries the order never named keep their relative order at the tail. Returns null when
+ *  the order names nothing live — a wholly stale drag, where the honest action is to leave
+ *  the map untouched. */
 export function rankEntries<T>(
   entries: Iterable<[string, T]>,
   order: readonly string[],

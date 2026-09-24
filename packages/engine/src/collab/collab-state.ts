@@ -2,14 +2,8 @@
  * The ROOM STATE a collab agent is given, fresh, on every turn.
  *
  * Facts only - who you are, who is in the room, who leads it, the objective,
- * the hop budget, the open tasks. It is never overridable and there is no file
- * behind it, because it is not prose: an agent that is wrong about the roster
- * @mentions handles that do not exist.
- *
- * The prose that used to sit above this block (the "room manual") is gone. One
- * base prompt states the room's rules once - see `collab-agent-base.txt` - and
- * a second document restating them half-accurately is the failure that layer
- * was creating rather than fixing.
+ * the hop budget, the open tasks. Never overridable and no file behind it: an
+ * agent that is wrong about the roster @mentions handles that do not exist.
  */
 
 export type RosterEntry = {
@@ -20,14 +14,9 @@ export type RosterEntry = {
 /** One row of the task board, as the state block shows it. Never the full record. */
 export type TaskSummary = {
   /**
-   * The board id, and the reason this row is not just prose.
-   *
-   * Every board tool takes a `taskId` and NOTHING else identifies a task, so a
-   * row printed without one is a task the agent can see and cannot touch. That
-   * was the W8 bug: a human-added task (the one case where the agent never
-   * receives an id through `ask`, `handoff` or its own `task_add` result) was
-   * unclaimable, `task_claim` refused with "there is no task X on this board",
-   * and the agent read the refusal as the work having already been taken.
+   * The board id, and the reason this row is not just prose. Every board tool
+   * takes a `taskId` and NOTHING else identifies a task, so a row printed
+   * without one is a task the agent can see and cannot touch.
    */
   readonly id: string
   readonly title: string
@@ -40,12 +29,8 @@ export const TASK_LINES_MAX = 8
 
 /**
  * Built fresh per turn so an add or a remove between two turns shows up in the
- * next one without touching any agent definition.
- *
- * `hops.remaining` is the LIVE hop budget, not the collab's configured cap: a
- * number here that never moved would tell an agent the room's rhythm when it
- * is really reporting a constant. `null` means the budget is off (overnight
- * mode), which has no countdown to announce.
+ * next one. `hops.remaining` is the LIVE hop budget, not the configured cap;
+ * `null` means the budget is off (overnight mode), with no countdown to show.
  */
 export function roomState(input: {
   agentSlug: string
@@ -75,9 +60,8 @@ export function roomState(input: {
       ? "The hop budget is off - it runs until stopped."
       : `This room has ${input.hops.remaining} wake${input.hops.remaining === 1 ? "" : "s"} left on the current human request.`,
   )
-  // "Open tasks" was a second lie on the same block: a `done` task is not open,
-  // it is waiting on whoever raised it. The heading names the board, and the id
-  // leads each row because it is the only argument the board tools take.
+  // A `done` task is not open, it is waiting on whoever raised it. The id leads
+  // each row because it is the only argument the board tools take.
   const live = input.tasks.filter((task) => task.state !== "accepted").slice(0, TASK_LINES_MAX)
   if (live.length > 0) {
     lines.push("Task board - name a task by the id below in task_claim / task_done / task_accept / task_reopen:")

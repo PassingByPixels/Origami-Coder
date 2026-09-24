@@ -51,6 +51,14 @@ function ringStates(container: HTMLElement): (string | null)[] {
   return Array.from(container.querySelectorAll('.session-ring')).map((r) => r.getAttribute('data-state'));
 }
 
+/** Open the Collabs half. Since t-qhzy4k it is ABSENT from the DOM until the
+ *  dock's Collabs item asks for it (the memory graph's rule), so every test
+ *  about that half has to ask first — which is what a user does. */
+async function openCollabs(): Promise<void> {
+  await fireEvent.click(screen.getByRole('button', { name: 'Collabs' }));
+  await tick();
+}
+
 describe('SidebarLauncher — Context tracker removed', () => {
   it('renders no Context section, toggle, or ctx-* elements', () => {
     const { container } = render(SidebarLauncher);
@@ -66,15 +74,54 @@ describe('SidebarLauncher — Context tracker removed', () => {
     expect(src).not.toMatch(/from '\.\.\/shared\/contextStats'/);
   });
 
-  it('Settings / Chats / Memory sections and New chat still work — the removal did not take them with it', async () => {
-    const { container } = render(SidebarLauncher);
-    // Collabs was added between Chats and Memory; Context is still gone.
+  it('Connections / Chats / Collabs sections and New chat still work — the removal did not take them with it', async () => {
+    // flockEnabled: true — Front Desk is asserted present below, and the
+    // setting now defaults off (t-5nmeez).
+    const { container } = render(SidebarLauncher, { props: { flockEnabled: true } });
+    // The dock took three labels with the controls they named (change 1):
+    // `Settings` reads `Connections`, Front Desk shows its name only when it
+    // is open, and MEMORY has no label at all — the brain is the way in.
+    // COLLABS is not in that list any more (t-qhzy4k): the half is absent from
+    // the DOM until the dock's Collabs item asks for it, the memory graph's
+    // rule. It is asserted on its own below.
+    // Connections is no longer a `.section-label` row of its own (t-ru0p04):
+    // it folded into the brand row as `.connections-label`, one fewer 24px
+    // row above Chats. Asserted separately so this list stays a clean read of
+    // what remains a full-width section header.
     const labels = Array.from(container.querySelectorAll('.section-label')).map((l) => l.textContent);
-    expect(labels).toEqual(['Settings', 'Chats', 'Collabs', 'Memory']);
-    expect(container.querySelector('.memory-section')).not.toBeNull();
+    expect(labels).toEqual(['Chats']);
+    expect(container.querySelector('.connections-label')?.textContent).toBe('Connections');
+    expect(container.querySelector('.memory-section')).toBeNull();
 
     await fireEvent.click(screen.getByRole('button', { name: /New chat/ }));
     expect(posts()).toContainEqual({ type: 'newSession' });
+  });
+
+  it('the COLLABS block is absent until the dock item is selected (t-qhzy4k)', async () => {
+    const { container } = render(SidebarLauncher);
+    // Not merely hidden: nothing of the half is in the tree, and the divider
+    // that resizes it goes with it.
+    expect(container.querySelector('.collabs-half')).toBeNull();
+    expect(container.querySelector('.section-divider')).toBeNull();
+    expect(Array.from(container.querySelectorAll('.section-label')).map((l) => l.textContent))
+      .not.toContain('Collabs');
+
+    await openCollabs();
+    expect(container.querySelector('.collabs-half')).not.toBeNull();
+    expect(Array.from(container.querySelectorAll('.section-label')).map((l) => l.textContent))
+      .toContain('Collabs');
+
+    // …and the dock item puts it away again.
+    await openCollabs();
+    expect(container.querySelector('.collabs-half')).toBeNull();
+  });
+
+  it("the memory graph opens from the dock's brain and from nothing else", async () => {
+    const { container } = render(SidebarLauncher);
+    expect(container.querySelector('.memory-section')).toBeNull();
+    await fireEvent.click(container.querySelector('.dock-item[aria-label="Memory graph"]') as HTMLButtonElement);
+    await tick();
+    expect(container.querySelector('.memory-section')).not.toBeNull();
   });
 });
 
@@ -460,8 +507,9 @@ describe('SidebarLauncher — Collabs half', () => {
   // M3: create is title-only now — the agent roster is the collab PANE's
   // concern (its own Invite popover), not this half's. This half's handshake
   // shrank to match: it never sends requestCollabAgents at all any more.
-  it('asks the host for the collab list on mount — never the agent roster, which moved to the collab pane', () => {
+  it('asks the host for the collab list on mount — never the agent roster, which moved to the collab pane', async () => {
     render(SidebarLauncher);
+    await openCollabs();
     expect(posts()).toContainEqual({ type: 'requestCollabs' });
     expect(posts().filter((p) => (p as { type: string }).type === 'requestCollabAgents')).toEqual([]);
   });
@@ -471,6 +519,7 @@ describe('SidebarLauncher — Collabs half', () => {
   // that message would sit in the Collabs half forever on a fresh window.
   it('retries the handshake when a session finally appears, and clears the stale no-engine message', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabList', collabs: [], error: 'Open a chat first — this needs a live engine connection.' });
     expect(container.querySelector('.collab-error')).not.toBeNull();
 
@@ -485,6 +534,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('an ordinary new chat costs no extra round trip once collabs are already answered', async () => {
     render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabList', collabs: [] });
     globalThis.__vscodeApiMock.postMessage.mockClear();
     await post({ type: 'sessionCreated', sessionId: 'a', sessionNumber: 1, agentName: 'Tsuru' });
@@ -493,6 +543,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('renders one row per collab returned, in the order the engine sent them', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan', 'Wire review'));
     expect(collabRowTitles(container)).toEqual(['Storm plan', 'Wire review']);
     expect(container.querySelector('.collabs-empty')).toBeNull();
@@ -500,6 +551,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('an empty list shows the empty state, not a blank half', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabList', collabs: [] });
     expect(container.querySelector('.collabs-empty')).not.toBeNull();
     expect(collabRowTitles(container)).toEqual([]);
@@ -507,12 +559,14 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('a collab with no usable id is dropped rather than rendered as a nameless row', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabList', collabs: [{ title: 'ghost' }, { id: 'c9', title: 'real' }] });
     expect(collabRowTitles(container)).toEqual(['real']);
   });
 
   it('clicking a collab asks the host to open ITS tab, carrying the id and the title', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await fireEvent.click(container.querySelector('.collab-row .session-open') as HTMLElement);
     expect(posts()).toContainEqual({ type: 'openCollab', collabId: 'c1', title: 'Storm plan' });
@@ -523,6 +577,7 @@ describe('SidebarLauncher — Collabs half', () => {
   // from the collab's own pane (its Invite popover, see CollabPane.test.ts).
   it('creating a collab posts the typed title with an empty agentSlugs — no roster to wait on or pick from', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await fireEvent.click(screen.getByRole('button', { name: /New collab/ }));
     const input = container.querySelector('.collab-new input') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: '  Storm plan  ' } });
@@ -533,6 +588,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('an empty title creates nothing — Enter on a blank input closes the form and posts no newCollab', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await fireEvent.click(screen.getByRole('button', { name: /New collab/ }));
     const input = container.querySelector('.collab-new input') as HTMLInputElement;
     await fireEvent.keyDown(input, { key: 'Enter' });
@@ -542,6 +598,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('Escape abandons the form without creating anything', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await fireEvent.click(screen.getByRole('button', { name: /New collab/ }));
     const input = container.querySelector('.collab-new input') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'Nope' } });
@@ -552,12 +609,14 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('a refused create is SHOWN — the user is never left staring at a list that silently did not grow', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabCreated', collab: null, error: 'no collab-capable agents' });
     expect(container.querySelector('.collab-error')!.textContent).toContain('no collab-capable agents');
   });
 
   it('a successful create announces nothing on its own — the list broadcast that follows is the confirmation', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabCreated', collab: { id: 'c1', title: 'Storm plan', createdAt: '', loopBreakerCap: null } });
     expect(container.querySelector('.collab-error')).toBeNull();
     // Nothing is spliced in locally: until a collabList arrives, the half is empty.
@@ -568,6 +627,7 @@ describe('SidebarLauncher — Collabs half', () => {
 
   it('chat rows and collab rows stay in their own halves', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(sessionList('a', 'b'));
     await post(collabList('Storm plan'));
     const chatsHalf = container.querySelector('.chats-half')!;
@@ -587,6 +647,7 @@ describe('SidebarLauncher — archiving a collab', () => {
 
   it('the x asks first — no collabArchive goes out until the confirm is taken', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await fireEvent.click(rowClose(container));
     expect(posts().filter((p) => (p as { type: string }).type === 'collabArchive')).toEqual([]);
@@ -598,6 +659,7 @@ describe('SidebarLauncher — archiving a collab', () => {
 
   it('Cancel archives nothing and closes the confirm', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await fireEvent.click(rowClose(container));
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -607,6 +669,7 @@ describe('SidebarLauncher — archiving a collab', () => {
 
   it('an archived collab leaves the live list for History, and is still openable there', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({
       type: 'collabList',
       collabs: [
@@ -634,6 +697,7 @@ describe('SidebarLauncher — archiving a collab', () => {
 
   it('no History control at all when nothing is archived — an empty drawer is not worth a button', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     const collabsHalf = container.querySelector('.collabs-half')!;
     expect(within(collabsHalf).queryByRole('button', { name: /History/ })).toBeNull();
@@ -642,6 +706,7 @@ describe('SidebarLauncher — archiving a collab', () => {
 
   it('a refused archive is SHOWN rather than leaving the row looking closed', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await post({ type: 'collabOpResult', op: 'collabArchive', collabId: 'c1', ok: false, error: 'collab is already archived' });
     expect(container.querySelector('.collab-error')!.textContent).toContain('already archived');
@@ -663,12 +728,14 @@ describe('SidebarLauncher — collab activity rings', () => {
 
   it('a collab nobody has open draws no ring state', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     expect(ringOf(container)).toBe('idle');
   });
 
   it('any agent working lights the ring; everyone idle AFTER that settles it to ready', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
 
     await post(stateFor('c1', ['idle', 'running']));
@@ -680,6 +747,7 @@ describe('SidebarLauncher — collab activity rings', () => {
 
   it('queued counts as working — an agent waiting its turn is not finished', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await post(stateFor('c1', ['queued']));
     expect(ringOf(container)).toBe('working');
@@ -687,6 +755,7 @@ describe('SidebarLauncher — collab activity rings', () => {
 
   it('an all-idle payload with no prior activity does NOT claim to be waiting on you', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await post(stateFor('c1', ['idle', 'idle']));
     expect(ringOf(container)).toBe('idle');
@@ -694,6 +763,7 @@ describe('SidebarLauncher — collab activity rings', () => {
 
   it('a payload for another collab cannot light this row — the host fans every reply out to every view', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(collabList('Storm plan'));
     await post(stateFor('c-other', ['running']));
     expect(ringOf(container)).toBe('idle');
@@ -709,6 +779,7 @@ describe('SidebarLauncher — collab activity rings', () => {
 describe('SidebarLauncher — Chats/Collabs 50/50 split', () => {
   it('Chats and Collabs are two halves of one split container, divided at the midline', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(sessionList('a'));
 
     const split = container.querySelector('.chats-collabs-split');
@@ -728,13 +799,17 @@ describe('SidebarLauncher — Chats/Collabs 50/50 split', () => {
     expect(children).toHaveLength(3);
   });
 
-  it('the Chats half holds the toolbar and the session list; the Collabs half holds its own empty state', async () => {
+  it('the Chats half holds the session list alone; the Collabs half holds its own empty state', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post(sessionList('a', 'b'));
 
     const chatsHalf = container.querySelector('.chats-half')!;
     const collabsHalf = container.querySelector('.collabs-half')!;
-    expect(chatsHalf.querySelector('.chats-toolbar')).not.toBeNull();
+    // The toolbar is the DOCK now, and the dock is OUTSIDE the split: the
+    // half holds the list and nothing else.
+    expect(chatsHalf.querySelector('.chats-toolbar')).toBeNull();
+    expect(container.querySelector('.dock')).not.toBeNull();
     expect(chatsHalf.querySelectorAll('.session-row')).toHaveLength(2);
     expect(collabsHalf.querySelector('.collabs-empty')).not.toBeNull();
     // Not cross-contaminated: a chat row is not also findable inside Collabs.
@@ -743,6 +818,10 @@ describe('SidebarLauncher — Chats/Collabs 50/50 split', () => {
 
   it('Memory sits below the split, reachable, not swallowed into either half', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
+    // It only exists once the dock's brain has opened it (change 1).
+    await fireEvent.click(container.querySelector('.dock-item[aria-label="Memory graph"]') as HTMLButtonElement);
+    await tick();
     const split = container.querySelector('.chats-collabs-split')!;
     const memory = container.querySelector('.memory-section');
     expect(memory).not.toBeNull();
@@ -780,10 +859,11 @@ describe('SidebarLauncher — the Chats History panel', () => {
     ],
   };
 
+  // The History control is the DOCK's now, and the popup is a fixed overlay on
+  // <body>; the rows are read off the document, not the Chats half.
   async function openHistory(container: HTMLElement): Promise<HTMLElement> {
-    const chatsHalf = container.querySelector('.chats-half') as HTMLElement;
-    await fireEvent.click(within(chatsHalf).getByRole('button', { name: /History/ }));
-    return chatsHalf;
+    await fireEvent.click(container.querySelector('.dock-item[aria-label="Chat history"]') as HTMLButtonElement);
+    return document.body;
   }
   const titles = (c: HTMLElement) =>
     Array.from(c.querySelectorAll('.history-row .history-title')).map((n) => n.textContent);
@@ -844,13 +924,15 @@ describe('SidebarLauncher — the Chats History panel', () => {
 // not the actual pixel math a real drag would produce; that needs a human
 // eyeball (see WORKING_ON_ORIGAMI_CODER.md's jsdom-layout caveat).
 describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
-  it('asks the host for the persisted height on mount', () => {
+  it('asks the host for the persisted height on mount', async () => {
     render(SidebarLauncher);
+    await openCollabs();
     expect(posts()).toContainEqual({ type: 'requestCollabsHeight' });
   });
 
   it('a collabsHeight reply applies as an inline flex-basis on the Collabs half', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabsHeight', heightPx: 240 });
     const collabsHalf = container.querySelector('.collabs-half') as HTMLElement;
     expect(collabsHalf.style.flex).toBe('0 0 240px');
@@ -858,6 +940,7 @@ describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
 
   it('a null collabsHeight reply leaves the half on its default 50/50 flex (no inline override)', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     await post({ type: 'collabsHeight', heightPx: null });
     const collabsHalf = container.querySelector('.collabs-half') as HTMLElement;
     expect(collabsHalf.style.flex).toBe('');
@@ -865,6 +948,7 @@ describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
 
   it('a full pointer drag on the divider posts the settled height to the host', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     const divider = container.querySelector('.section-divider') as HTMLElement;
 
     await fireEvent.pointerDown(divider, { pointerId: 1, clientY: 300 });
@@ -878,6 +962,7 @@ describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
 
   it('pointer movement before pointerdown (nothing being dragged) posts nothing', async () => {
     render(SidebarLauncher);
+    await openCollabs();
     await fireEvent.pointerMove(window, { pointerId: 1, clientY: 250 });
     await fireEvent.pointerUp(window, { pointerId: 1 });
     expect(posts().filter((p) => p.type === 'resizeCollabsSection')).toEqual([]);
@@ -885,6 +970,7 @@ describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
 
   it('ArrowUp/ArrowDown on the focused divider also resize and post — a keyboard path, not pointer-only', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     const divider = container.querySelector('.section-divider') as HTMLElement;
 
     await fireEvent.keyDown(divider, { key: 'ArrowUp' });
@@ -898,10 +984,109 @@ describe('SidebarLauncher — draggable Chats/Collabs divider', () => {
     expect(posts().filter((p) => p.type === 'resizeCollabsSection')).toHaveLength(2);
   });
 
-  it('the divider is a real keyboard target — role=separator and tabindex=0', () => {
+  it('the divider is a real keyboard target — role=separator and tabindex=0', async () => {
     const { container } = render(SidebarLauncher);
+    await openCollabs();
     const divider = container.querySelector('.section-divider') as HTMLElement;
     expect(divider.getAttribute('role')).toBe('separator');
     expect(divider.getAttribute('tabindex')).toBe('0');
+  });
+});
+
+// THE REPORTED BUG. A chat whose model was blocked on a foreground shell
+// command — 62 seconds elapsed, Kill button showing — had a GREEN pill in this
+// list. Earlier in that chat a background command had finished, so the turn on
+// screen was one the ENGINE started to hand the model that result: the ACP
+// `prompt()` for the user's own message returned long before, `turnDone`
+// settled the ring, and nothing that arrived afterwards could move it again.
+//
+// The fix is a signal, not a rule change: the engine forwards its own
+// per-session run state (`origami/sessionStatus`), the host posts it on, and
+// these tests pin down what the ring does with it.
+describe('SidebarLauncher — the ring follows the ENGINE, not just the prompt', () => {
+  it('the blind spot: after turnDone, streamed prose and tool calls leave the ring green', async () => {
+    // This is the SHAPE of the bug rather than the fix — the launcher does not
+    // (and should not) infer a turn from transcript traffic, so every one of
+    // these is correctly ignored. It is here so the next reader can see WHY a
+    // new signal was needed: without one there is nothing left to look at.
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a'));
+    await post({ type: 'echoUser', text: 'go', sessionId: 'a' });
+    await post({ type: 'turnDone', stopReason: 'end_turn', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready']);
+
+    await post({ type: 'agentText', text: 'let me rebuild that…', sessionId: 'a' });
+    await post({ type: 'toolCall', toolCallId: 't1', title: 'Wait for rerun5', sessionId: 'a' });
+    await post({ type: 'toolResult', toolCallId: 't1', status: 'in_progress', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready']);
+  });
+
+  it('the screenshot case: a background result injects a turn — busy spins the ring, idle settles it', async () => {
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a', 'b'));
+
+    // The user's own turn, start to finish.
+    await post({ type: 'echoUser', text: 'rebuild and rerun the three specs', sessionId: 'a' });
+    await post({ type: 'turnDone', stopReason: 'end_turn', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready', 'idle']);
+
+    // 202s later the background command finishes; the engine injects the
+    // result as a NEW turn. No echoUser (nobody typed), no prompt() in flight.
+    await post({ type: 'sessionStatus', status: 'busy', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['working', 'idle']);
+
+    // The model is now blocked on a foreground shell command. Still working.
+    await post({ type: 'toolCall', toolCallId: 't9', title: 'Wait for rerun5', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['working', 'idle']);
+
+    await post({ type: 'sessionStatus', status: 'idle', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready', 'idle']);
+  });
+
+  it('a label this build does not know reads as still working — only idle means done', async () => {
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a'));
+    await post({ type: 'sessionStatus', status: 'retry', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['working']);
+    await post({ type: 'sessionStatus', status: 'some_future_variant', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['working']);
+    await post({ type: 'sessionStatus', status: 'idle', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready']);
+  });
+
+  it('the status is pinned to its own chat, and a malformed one changes nothing', async () => {
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a', 'b'));
+    await post({ type: 'sessionStatus', status: 'busy', sessionId: 'b' });
+    expect(ringStates(container)).toEqual(['idle', 'working']);
+
+    await post({ type: 'sessionStatus', status: 'busy', sessionId: 'ghost' });
+    await post({ type: 'sessionStatus', status: 'busy' });               // no sessionId
+    await post({ type: 'sessionStatus', sessionId: 'a' });               // no status
+    await post({ type: 'sessionStatus', status: 7, sessionId: 'a' });    // not a label
+    expect(ringStates(container)).toEqual(['idle', 'working']);
+  });
+
+  it('the old turn-lifecycle path still settles a chat on an engine that sends no status', async () => {
+    // The notification is best-effort on the engine side and absent from every
+    // older build, so echoUser/turnDone remain the fallback — not dead code.
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a'));
+    await post({ type: 'echoUser', text: 'go', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['working']);
+    await post({ type: 'turnDone', stopReason: 'end_turn', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['ready']);
+  });
+
+  it('an open permission ask still beats a busy status — parked on you is not working', async () => {
+    // waiting > working is the existing priority rule (sessionRowState.ts);
+    // a new always-on busy signal must not be able to paint over it.
+    const { container } = render(SidebarLauncher);
+    await post(sessionList('a'));
+    await post({ type: 'sessionStatus', status: 'busy', sessionId: 'a' });
+    await post({ type: 'requestPermission', toolCallId: 'p1', sessionId: 'a' });
+    expect(ringStates(container)).toEqual(['waiting']);
+    await post({ type: 'permissionAudit', action: 'approved', toolCallId: 'p1' });
+    expect(ringStates(container)).toEqual(['working']);
   });
 });

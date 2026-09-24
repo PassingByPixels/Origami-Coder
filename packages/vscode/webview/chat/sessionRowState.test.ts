@@ -25,6 +25,24 @@ describe('deriveRowVisualState', () => {
     expect(deriveRowVisualState('idle', false)).toBe('idle');
     expect(deriveRowVisualState('ready', false)).toBe('ready');
   });
+
+  it('a running background sub-agent shows subagents once the turn itself has settled', () => {
+    expect(deriveRowVisualState('ready', false, true)).toBe('subagents');
+    expect(deriveRowVisualState('idle', false, true)).toBe('subagents');
+  });
+
+  it('working beats subagents — a live foreground turn is the louder truth', () => {
+    expect(deriveRowVisualState('working', false, true)).toBe('working');
+  });
+
+  it('waiting beats subagents too — parked on the user outranks a background child', () => {
+    expect(deriveRowVisualState('ready', true, true)).toBe('waiting');
+  });
+
+  it('no running child falls back to the plain turn state, same as the default param', () => {
+    expect(deriveRowVisualState('ready', false, false)).toBe('ready');
+    expect(deriveRowVisualState('ready', false)).toBe('ready');
+  });
 });
 
 describe('addPendingAsk / removePendingAsk', () => {

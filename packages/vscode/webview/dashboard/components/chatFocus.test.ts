@@ -10,7 +10,7 @@
 // and the `kind` union in panes/chatMessage.ts, read on 2026-08-28.
 
 import { describe, expect, it } from 'vitest';
-import { visibleInFocus } from './chatFocus';
+import { isEmptyAgentTurn, visibleInFocus } from './chatFocus';
 import type { Message } from '../panes/chatMessage';
 
 /** A real row of each kind, so the predicate is exercised with the shape the
@@ -87,5 +87,37 @@ describe('visibleInFocus — fail open', () => {
     // 'todo_summary'): the row reappears rather than vanishing silently.
     expect(visibleInFocus({ kind: 'Tool' })).toBe(true);
     expect(visibleInFocus({ kind: 'todo_summary' })).toBe(true);
+  });
+});
+
+// isEmptyAgentTurn (t-di3a0w) — the ONE predicate ChatTranscript.svelte and
+// focusGaps.ts's foldForFocus both call, so an empty agent bubble and an
+// empty agent boundary can never disagree about what "nothing to show" means.
+describe('isEmptyAgentTurn', () => {
+  it('is true for an agent row with no text and no images', () => {
+    expect(isEmptyAgentTurn(row('agent', { text: '' }))).toBe(true);
+  });
+
+  it('is false for an agent row with text', () => {
+    expect(isEmptyAgentTurn(row('agent', { text: 'shipped' }))).toBe(false);
+  });
+
+  it('is false for an agent row with only whitespace collapsed away — still counts as text', () => {
+    // Guards the trim: a row that is literally "   " reads as empty prose,
+    // not as a real answer.
+    expect(isEmptyAgentTurn(row('agent', { text: '   ' }))).toBe(true);
+  });
+
+  it('is false for an agent row with images and no text — a picture is still something to show', () => {
+    expect(isEmptyAgentTurn(row('agent', { text: '', images: ['data:image/png;base64,abc'] }))).toBe(false);
+  });
+
+  it('is false for a non-agent row, even one with no text', () => {
+    // A 'user' row is never folded away, even an accidental empty send.
+    expect(isEmptyAgentTurn(row('user', { text: '' }))).toBe(false);
+  });
+
+  it('does not throw on a row with images omitted entirely (older sessions)', () => {
+    expect(isEmptyAgentTurn({ kind: 'agent', text: '' })).toBe(true);
   });
 });

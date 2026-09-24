@@ -34,6 +34,16 @@ export class Service extends Context.Service<Service, Interface>()("@origami/LLM
 
 const BODY_LIMIT = 16_384
 const MAX_RETRIES = 2
+
+/**
+ * How many times the executor itself re-sends a request that failed with a
+ * retryable status (429, 5xx). A caller that owns its own retry policy — the
+ * engine's session loop does, with notices, per-family limits and degrade
+ * classification — sets it to 0 so the two ladders do not stack.
+ */
+export const Retries = Context.Reference<number>("@origami/LLM/RequestExecutor/Retries", {
+  defaultValue: () => MAX_RETRIES,
+})
 const BASE_DELAY_MS = 500
 const MAX_DELAY_MS = 10_000
 const REDACTED = "<redacted>"
@@ -201,9 +211,24 @@ const responseBody = (body: string | void, request: HttpClientRequest.HttpClient
   return { body: redacted.slice(0, BODY_LIMIT), bodyTruncated: true }
 }
 
+/**
+ * How much of a LONG refusal body still reaches the message. A body at or
+ * under `MESSAGE_BODY_FULL` is quoted whole, as it always was.
+ *
+ * t-4aqhjb: past that the body used to be dropped ENTIRELY and the user read
+ * "Provider request failed with HTTP 429" with no reason at all — and a
+ * refusal that names a reason (a usage window, a concurrency cap, an oversized
+ * part) is exactly the kind that runs long, because it explains itself. The
+ * whole body is still on the error (`HttpContext.body`, 16 KB); this is only
+ * about what the SENTENCE carries.
+ */
+const MESSAGE_BODY_FULL = 500
+const MESSAGE_BODY_HEAD = 200
+
 const providerMessage = (status: number, body: { readonly body?: string }) => {
-  if (body.body && body.body.length <= 500) return `Provider request failed with HTTP ${status}: ${body.body}`
-  return `Provider request failed with HTTP ${status}`
+  if (!body.body) return `Provider request failed with HTTP ${status}`
+  if (body.body.length <= MESSAGE_BODY_FULL) return `Provider request failed with HTTP ${status}: ${body.body}`
+  return `Provider request failed with HTTP ${status}: ${body.body.slice(0, MESSAGE_BODY_HEAD)}…`
 }
 
 const responseHttp = (input: {
@@ -304,6 +329,41 @@ const statusError =
       })
     })
 
+/**
+ * The sentences along a thrown value's `cause` chain, outermost first. Effect's
+ * fetch client wraps whatever `fetch` threw as `TransportError({ request,
+ * cause })` with NO description, so without this the user read a bare "HTTP
+ * transport failed" for every kind of fault — a signer's "xAI token refresh
+ * failed (429)", Bun's "The socket connection was closed unexpectedly", a
+ * refused connection — and the engine's stream-drop notice carried the same
+ * blank. Node/Bun put the useful part one level down (`fetch failed` ->
+ * cause: ECONNRESET), hence the walk.
+ */
+const causeText = (value: unknown): string | undefined => {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = value
+  while (current !== undefined && current !== null && parts.length < 4 && !seen.has(current)) {
+    seen.add(current)
+    if (typeof current === "string") {
+      if (current.trim()) parts.push(current.trim())
+      break
+    }
+    if (!(current instanceof Error)) break
+    const message = current.message.trim()
+    const code = (current as { code?: unknown }).code
+    const line = message && typeof code === "string" && !message.includes(code) ? `${message} (${code})` : message || (typeof code === "string" ? code : "")
+    if (line && !parts.includes(line)) parts.push(line)
+    current = (current as { cause?: unknown }).cause
+  }
+  return parts.length ? parts.join(": ") : undefined
+}
+
+const transportMessage = (cause: unknown) => {
+  const text = causeText(cause)
+  return text ? `HTTP transport failed: ${text}` : "HTTP transport failed"
+}
+
 const toHttpError = (redactedNames: ReadonlyArray<string | RegExp>) => (error: unknown) => {
   const transportError = (input: {
     readonly message: string
@@ -325,12 +385,12 @@ const toHttpError = (redactedNames: ReadonlyArray<string | RegExp>) => (error: u
     return transportError({ message: error.message, kind: "Timeout" })
   }
   if (!HttpClientError.isHttpClientError(error)) {
-    return transportError({ message: "HTTP transport failed" })
+    return transportError({ message: transportMessage(error) })
   }
   const request = "request" in error ? error.request : undefined
   if (error.reason._tag === "TransportError") {
     return transportError({
-      message: error.reason.description ?? "HTTP transport failed",
+      message: error.reason.description ?? transportMessage(error.reason.cause),
       kind: error.reason._tag,
       request,
     })
@@ -363,19 +423,43 @@ const retryStatusFailures = <A, R>(
     )
   })
 
+/**
+ * A pooled connection the server closed while we were busy. Bun keeps
+ * keep-alive sockets between calls; a provider drops an idle one after a few
+ * seconds, and the next request — typically the step after a long tool run —
+ * fails on the first write with "The socket connection was closed
+ * unexpectedly (ECONNRESET)" before a single response byte. That is not the
+ * provider refusing anything, it is a dead socket, and the only right answer
+ * is to send the same request again at once on a fresh connection. The AI SDK
+ * path never showed the owner this because it hid the retry; the native path
+ * surfaced it as a "Stream dropped … retrying" line on every such step
+ * (2026-09-04, OpenAI and Grok). Limited to failures of `http.execute` — that
+ * call returns once the headers are in, so a retry here can never repeat a
+ * response the caller has started to read.
+ */
+const STALE_SOCKET = /closed unexpectedly|ECONNRESET|EPIPE|socket hang up|other side closed/i
+const isStaleSocket = (error: LLMError) => error.reason._tag === "Transport" && STALE_SOCKET.test(error.reason.message)
+
 export const layer: Layer.Layer<Service, never, HttpClient.HttpClient> = Layer.effect(
   Service,
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
+    const send = (request: HttpClientRequest.HttpClientRequest, redactedNames: ReadonlyArray<string | RegExp>) =>
+      http.execute(request).pipe(Effect.mapError(toHttpError(redactedNames)))
     const executeOnce = (request: HttpClientRequest.HttpClientRequest) =>
       Effect.gen(function* () {
         const redactedNames = yield* Headers.CurrentRedactedNames
-        return yield* http
-          .execute(request)
-          .pipe(Effect.mapError(toHttpError(redactedNames)), Effect.flatMap(statusError(request, redactedNames)))
+        return yield* send(request, redactedNames).pipe(
+          Effect.catch((error) => (isStaleSocket(error) ? send(request, redactedNames) : Effect.fail(error))),
+          Effect.flatMap(statusError(request, redactedNames)),
+        )
       })
     return Service.of({
-      execute: (request) => retryStatusFailures(executeOnce(request)),
+      execute: (request) =>
+        Effect.gen(function* () {
+          const retries = yield* Retries
+          return yield* retryStatusFailures(executeOnce(request), retries)
+        }),
     })
   }),
 )

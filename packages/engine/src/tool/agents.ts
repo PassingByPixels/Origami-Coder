@@ -5,27 +5,20 @@ import { claimPeerMessage, peerMessageId, peerMessageMetadata, PEER_DEDUPE_WINDO
 import * as Tool from "./tool"
 
 /**
- * CROSS-SESSION AGENT MESSAGING (t-kgu05m) — the two tools over the broker.
+ * Cross-session agent messaging — the two tools over the broker. Discovery and
+ * delivery are separate calls: an agent has to look before it speaks, and the
+ * reply address it gets back is the same string it passes to `to`.
  *
- * Discovery and delivery are deliberately separate calls: an agent has to be
- * able to look before it speaks, and the reply address it gets back is the same
- * string it passes to `to`.
- *
- * Delivery needs no queue of its own. A prompt posted to a peer's
- * `/session/:id/prompt_async` is admitted durably: an IDLE peer starts a turn on
- * it, and a BUSY peer's running loop re-reads its inbox between tool calls and
- * picks it up there. Both halves of "queue if mid-turn, start a turn if idle"
- * are therefore existing, proven plumbing rather than anything this file adds.
+ * Delivery needs no queue: a prompt posted to a peer's
+ * `/session/:id/prompt_async` is admitted durably, so an idle peer starts a turn
+ * on it and a busy peer re-reads its inbox between tool calls.
  */
 
 /** Peer calls are same-user, same-machine. Anything slower than this is dead. */
 const PEER_TIMEOUT_MS = 2_000
 
-/**
- * A handoff is a SUMMARY. The cap is what stops an agent pasting a transcript or
- * a file into a peer's context, which would cost the receiver its context window
- * for something it did not ask for.
- */
+/** A handoff is a summary. The cap stops an agent pasting a transcript or a file
+ *  into a peer's context, which would cost the receiver its context window. */
 const DEFAULT_MESSAGE_CHARS = 2_000
 const MAX_MESSAGE_CHARS = 10_000
 
@@ -38,11 +31,9 @@ type AgentsMetadata = {
 }
 
 function authHeaders(): Record<string, string> {
-  // The SAME reuse acp.ts:34 makes: ServerAuth.headers() reads this process's
-  // ORIGAMI_SERVER_PASSWORD, and every engine on this machine was launched by
-  // the same user with the same environment, so our credentials are the peer's
-  // credentials. When no password is set it returns undefined and the peer's own
-  // authorization middleware is not requiring one either.
+  // Every engine on this machine was launched by the same user with the same
+  // environment, so this process's ORIGAMI_SERVER_PASSWORD is the peer's
+  // credential too. Unset, it returns undefined and the peer requires none.
   return { ...(ServerAuth.headers() ?? {}) }
 }
 
@@ -82,15 +73,10 @@ export const ListAgentsTool = Tool.define<typeof ListParameters, AgentsMetadata,
     deferrable: true,
     execute: (params: Schema.Schema.Type<typeof ListParameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {
-        // WHO IS ASKING, said before the roster rather than left to be inferred
-        // from it. The list can never contain the caller — readPeers excludes
-        // our own pid, because an agent messaging itself is a loop — and a
-        // roster that silently omits exactly one agent reads as a discovery
-        // bug: round 5 was reported as "the first chat in a window never
-        // appears in any roster", which was this, seen from the chat doing the
-        // asking. The address is built the way send_message builds `replyTo`:
-        // the broker's name plus the session EXECUTING this call, never the
-        // broker's own idea of which session that is.
+        // Who is asking, said before the roster: readPeers excludes our own pid,
+        // and a roster that silently omits exactly one agent reads as a discovery
+        // bug. Built like send_message's `replyTo` — the broker's name plus the
+        // session executing this call.
         const me = AgentBroker.self()
         const you = me ? `You are ${me.name}#${ctx.sessionID}. This list never includes you.` : undefined
         const found = yield* Effect.promise(() =>
@@ -199,37 +185,27 @@ export const SendMessageTool = Tool.define<typeof SendParameters, AgentsMetadata
         const peers = yield* Effect.promise(() => AgentBroker.readPeers({ includeBackground: true }))
         const target = AgentBroker.resolve(peers, params.to)
         if ("error" in target) return refusal(target.error)
-        // Re-checked at the call site even though readPeers only ever yields
-        // entries this engine wrote: the broker file is ordinary user-writable
-        // JSON, and a tampered entry must not be able to aim this POST at a LAN
-        // address. Loopback-only is the security boundary, so it is asserted
-        // where the request is actually made.
+        // Security boundary: loopback-only, asserted where the request is made.
+        // The broker file is ordinary user-writable JSON, so a tampered entry
+        // must not be able to aim this POST at a LAN address.
         if (!AgentBroker.isLoopback(target.entry.httpBase)) {
           return refusal(`Refused: "${target.entry.name}" is not on a loopback address. Peer messaging is local-only.`)
         }
-        // ATTACHMENT, checked before the POST rather than inferred from its
-        // status. An engine accepts a prompt for any session it holds, whether
-        // or not a chat is rendering that session, so a 204 proves the message
-        // was stored and proves nothing at all about anybody reading it. Round
-        // 3 is what that costs when it goes unchecked: three handoffs reported
-        // "Delivered" into a session with no chat, while the sender waited for
-        // an answer that had nowhere to come from.
+        // Attachment, checked before the POST rather than inferred from it: an
+        // engine accepts a prompt for any session it holds, so a 204 proves the
+        // message was stored and nothing about anybody reading it.
         if (!AgentBroker.attached(target.entry, target.sessionID)) {
           return refusal(unreachable(target.entry.name, target.sessionID, peers))
         }
 
-        // The reply address is the SENDER'S OWN execution session, from the
-        // tool context — never the broker's idea of it. The broker knows which
-        // sessions this ENGINE has open, which is not the same question as
-        // which session is running this tool call, and answering the wrong one
-        // hands the peer an address whose replies land somewhere the sender is
-        // not reading.
+        // The sender's own execution session, from the tool context — never the
+        // broker's idea of it. The broker knows which sessions this engine has
+        // open, not which is running this call, and the wrong answer hands the
+        // peer an address the sender is not reading.
         const replyTo = `${from.name}#${ctx.sessionID}`
-        // Idempotency, minted from the address pair and the text so that the
-        // SECOND identical call is recognisable as the same message (see
-        // peer-message.ts). Claimed here as well as at the receiver: this is
-        // the end that can explain itself to the model, and the loop the UAT
-        // produced was a model re-sending, not a network retry.
+        // Idempotency, minted from the address pair and the text (peer-message.ts).
+        // Claimed here as well as at the receiver: this is the end that can
+        // explain itself to the model.
         const messageId = peerMessageId({ from: replyTo, to: `${target.entry.name}#${target.sessionID}`, text: params.message })
         if (!claimPeerMessage(`out:${ctx.sessionID}`, messageId)) {
           return refusal(
@@ -249,10 +225,9 @@ export const SendMessageTool = Tool.define<typeof SendParameters, AgentsMetadata
                 {
                   type: "text",
                   text: renderPeerMessage({ from: from.name, replyTo, text: params.message }),
-                  // The provenance the RECEIVER's UI badges from. It rides the
-                  // part rather than the text because the text is what the model
-                  // reads, and a client must be able to tell a peer message from
-                  // its own human without parsing prose (acp/event.ts).
+                  // The provenance the receiver's UI badges from. It rides the
+                  // part rather than the text so a client can tell a peer message
+                  // from its own human without parsing prose (acp/event.ts).
                   metadata: peerMessageMetadata({ from: from.name, replyTo, id: messageId }),
                 },
               ],
@@ -280,24 +255,33 @@ export const SendMessageTool = Tool.define<typeof SendParameters, AgentsMetadata
 )
 
 /**
- * The wrapper the receiving MODEL reads. Mirrors tool/task.ts renderOutput: an
- * XML-ish envelope whose attributes carry the provenance, so a model that has
- * never seen this tool still parses who spoke and where to answer.
- *
- * The trailing sentence is t-r300pn: a UAT screenshot showed the receiving
- * model answer the sender's question in its own transcript, where the sender
- * never reads it, instead of calling send_message. The attributes are enough
- * for a CLIENT to badge the provenance, but nothing told the model itself that
- * a chat reply is not delivery, or named the tool and address that are — so it
- * answered the way it answers its own user.
+ * The wrapper the receiving model reads: an XML-ish envelope whose attributes
+ * carry the provenance, so a model that has never seen this tool still parses
+ * who spoke and where to answer. The trailing sentence is load-bearing — the
+ * attributes let a client badge the provenance, but nothing else tells the model
+ * that a chat reply is not delivery, and it would answer where nobody reads.
  */
-export function renderPeerMessage(input: { from: string; replyTo: string; text: string }): string {
+export function renderPeerMessage(input: {
+  from: string
+  replyTo: string
+  text: string
+  /** What KIND of peer message this is, when it is not an ordinary handoff.
+   *  It rides the existing frame as one more attribute rather than a frame of
+   *  its own, so every reader that already strips `<peer_message>` — the model,
+   *  and PeerMessageRow.svelte — keeps working unchanged. */
+  kind?: string
+  /** Replaces the trailing sentence. A kind with a different reply path has to
+   *  name that path, or the model answers where nobody reads. */
+  instruction?: string
+}): string {
+  const kind = input.kind ? ` kind="${escapeAttribute(input.kind)}"` : ""
   return [
-    `<peer_message from="${escapeAttribute(input.from)}" reply_to="${escapeAttribute(input.replyTo)}">`,
+    `<peer_message from="${escapeAttribute(input.from)}" reply_to="${escapeAttribute(input.replyTo)}"${kind}>`,
     input.text,
     "</peer_message>",
-    `This message is from another agent session, not the user — nothing you write in this chat reaches ${input.from}.` +
-      ` To reply, call send_message with to: "${input.replyTo}". Keep the reply short text, not a transcript.`,
+    input.instruction ??
+      `This message is from another agent session, not the user — nothing you write in this chat reaches ${input.from}.` +
+        ` To reply, call send_message with to: "${input.replyTo}". Keep the reply short text, not a transcript.`,
   ].join("\n")
 }
 
@@ -305,19 +289,14 @@ function escapeAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
-/** A refusal is an ANSWER, not a failure: the model must be able to fix its
+/** A refusal is an answer, not a failure: the model must be able to fix its
  *  address and try again inside the same turn. */
 function refusal(output: string) {
   return { title: "send_message: refused", metadata: { delivered: false } as AgentsMetadata, output }
 }
 
-/**
- * The refusal for a target nobody is watching.
- *
- * It NAMES the addresses that would work, because the alternative the model has
- * otherwise is to guess again from the same list that just misled it — which is
- * exactly what the UAT transcript shows it doing, three times.
- */
+/** The refusal for a target nobody is watching. It names the addresses that
+ *  would work, or the model guesses again from the list that just misled it. */
 function unreachable(name: string, sessionID: string, peers: readonly AgentBroker.Entry[]): string {
   const now = Date.now()
   const reachable = peers

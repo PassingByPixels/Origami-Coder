@@ -1,42 +1,34 @@
-// chatFocus.ts — WHICH transcript rows survive FOCUS VIEW.
+// chatFocus.ts — which transcript rows survive focus view.
 //
-// Focus view answers one question: "what did we actually say to each other?"
-// It is a VIEW, never an edit — the rows stay in the list, in order, and one
-// click on the composer's eye brings the hidden ones back. That is what lets
-// the rule below be this blunt: hiding the wrong row costs one click, while a
-// "just the conversation" view that still draws forty tool cards costs the
-// whole feature.
+// Focus view answers one question: "what did we actually say to each
+// other?" It is a view, never an edit — one click on the composer's eye
+// brings hidden rows back. Hiding the wrong row costs one click; a view
+// that still draws forty tool cards costs the whole feature.
 //
-// A pure leaf on purpose (no DOM, no `vscode`, no Svelte): the dispositions
-// are the only thing here that can be WRONG, and chatFocus.test.ts asserts
-// them directly instead of through a rendered transcript.
-//
+// A pure leaf: the dispositions below are the only thing that can be
+// wrong, and chatFocus.test.ts asserts them directly.
 // EVERY kind ChatTranscript.svelte dispatches on, and its disposition:
 //
-//   user        VISIBLE — the user's own words; half of the conversation.
-//   agent       VISIBLE — the model's answer; the other half.
-//   peer        VISIBLE — another agent's prose in a collab chat. THERE the
-//                         peers' answers ARE the conversation, so hiding them
-//                         would empty the very view meant to show it.
-//   system      VISIBLE — host-written prose that lands in the transcript with
-//                         no other home (a handoff from another session).
-//   error       VISIBLE — when a turn fails, the failure IS the answer. A
-//                         focus view that swallowed it would show a silence
-//                         where something went wrong.
-//   tool        HIDDEN  — tool activity; the single loudest thing the owner
-//                         asked to be rid of.
-//   thought     HIDDEN  — reasoning blocks (ThoughtPill).
-//   todoSummary HIDDEN  — the agent's own task tracking, not conversation.
-//   verdict     HIDDEN  — per-turn terminal bookkeeping ABOUT a turn, not a
-//                         line spoken in it. Hidden BY KIND, not by payload: a
-//                         `verdict` row carrying no verdict falls through to a
-//                         plain MessageRow in the transcript, and it is still
-//                         turn metadata when it does.
-//   compacted   HIDDEN  — context housekeeping (the /compact marker).
+//   user          VISIBLE — the user's own words.
+//   agent         VISIBLE — the model's answer.
+//   peer          VISIBLE — another agent's prose in a collab; hiding it
+//                           would empty a view meant to show the conversation.
+//   system        VISIBLE — host-written prose with no other home (a
+//                           handoff from another session).
+//   error         VISIBLE — a failed turn's failure is the answer.
+//   tool          HIDDEN  — tool activity, the loudest thing to hide, INCLUDING
+//                           a `read` that produced a picture (t-h4o65t): it
+//                           folds into the reads gap like any other read.
+//   thought       HIDDEN  — reasoning blocks (ThoughtPill).
+//   todoSummary   HIDDEN  — the agent's own task tracking, not conversation.
+//   verdict       HIDDEN  — per-turn bookkeeping, hidden by kind even when
+//                           it falls through to a plain MessageRow.
+//   compacted     HIDDEN  — context housekeeping (the /compact marker).
+//   secondOpinion VISIBLE — a review the user asked for, with a hand-over
+//                           control; visible by the fail-open rule below.
 //
-// UNKNOWN KINDS ARE VISIBLE, by construction: the set names what to HIDE, so a
-// kind added later keeps showing until somebody decides otherwise. A new
-// message type silently swallowed by an old view is a defect nobody can see.
+// Unknown kinds are visible by construction: the set names what to hide, so
+// a kind added later keeps showing until someone decides otherwise.
 
 const HIDDEN_IN_FOCUS: ReadonlySet<string> = new Set([
   'tool',
@@ -46,10 +38,23 @@ const HIDDEN_IN_FOCUS: ReadonlySet<string> = new Set([
   'compacted',
 ]);
 
-/** Takes `{ kind: string }` rather than `Message`: `kind` is the only field the
- *  rule reads, and a plain `string` is what lets the fail-open case be tested
- *  with a genuinely unknown kind instead of a cast through the closed union.
- *  Every `Message` is assignable to it. */
+/** Takes `{ kind: string }` rather than `Message`, so the fail-open case can
+ *  be tested with a genuinely unknown kind, not a cast through the union. */
 export function visibleInFocus(msg: { kind: string }): boolean {
   return !HIDDEN_IN_FOCUS.has(msg.kind);
+}
+
+/** An agent turn with nothing to show: no prose, no attached images — the
+ *  whole step was edits or a tool cancel, which the table above already
+ *  keeps VISIBLE by kind (an agent turn is a real answer, usually). The ONE
+ *  definition both callers share (t-di3a0w): ChatTranscript.svelte still
+ *  hides the row's bubble in focus view, and focusGaps.ts's `foldForFocus`
+ *  swallows the row entirely so it stops acting as a boundary between two
+ *  tool runs — a duplicated predicate that drifted is exactly how three
+ *  foreground tool runs each got their own "1 tool" divider instead of one
+ *  summed divider (the owner's screenshot). Takes the same loose shape as
+ *  `visibleInFocus` rather than the full `Message` union, so a row missing
+ *  `images` (older sessions) still narrows correctly instead of throwing. */
+export function isEmptyAgentTurn(msg: { kind: string; text?: string; images?: string[] }): boolean {
+  return msg.kind === 'agent' && !(msg.text ?? '').trim() && (!msg.images || msg.images.length === 0);
 }

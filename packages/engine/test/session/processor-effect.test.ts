@@ -15,6 +15,7 @@ import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionStreamDrop } from "../../src/session/stream-drop"
+import { SessionRetry } from "../../src/session/retry"
 import { isRecord } from "@/util/record"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
@@ -28,6 +29,7 @@ import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { SessionProjector } from "@origami/core/session/projector"
 import { LLMEvent } from "@origami/llm"
+import { sql } from "drizzle-orm"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -228,6 +230,49 @@ const fragmentFailureLLM = Layer.succeed(
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
+// origami_change-start (t-3kr4o4: empty terminal reply)
+/**
+ * A scripted OpenAI stream, one entry per request the step makes. The engine
+ * re-sends the IDENTICAL request on a redo, so the fixture - not the request -
+ * is what differs between attempts; entry 0 is the first attempt, entry 1 the
+ * redo. Reset by each test that uses it.
+ */
+const emptyReplyStreams: LLMEvent[][] = []
+let emptyReplyCalls = 0
+const emptyReplyLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () => {
+      const events = emptyReplyStreams[emptyReplyCalls] ?? []
+      emptyReplyCalls++
+      return Stream.fromIterable(events)
+    },
+  }),
+)
+const emptyReplyEnv = LayerNode.compile(root, [...replacements, [LLM.node, emptyReplyLLM]])
+const itEmptyReply = testEffect(emptyReplyEnv)
+
+/** What OpenAI's Responses API sends when a response ends `completed` carrying
+ *  only a reasoning item: no message, no function call, finish reason "stop". */
+const reasoningOnlyStop = (): LLMEvent[] => [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.reasoningStart({ id: "reasoning-1" }),
+  LLMEvent.reasoningDelta({ id: "reasoning-1", text: "planning the next tool call" }),
+  LLMEvent.reasoningEnd({ id: "reasoning-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+const textStop = (text: string): LLMEvent[] => [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: "text-1" }),
+  LLMEvent.textDelta({ id: "text-1", text }),
+  LLMEvent.textEnd({ id: "text-1" }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+// origami_change-end
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -380,13 +425,19 @@ it.live("session.processor effect tests stop after token overflow requests compa
         const database = yield* Database.Service
         const { processors, session, provider } = yield* boot()
 
-        yield* llm.text("after", { usage: { input: 100, output: 0 } })
+        // 20k, not 100: auto-compaction now also requires enough REMOVABLE
+        // history to be worth a generation (overflow.ts MIN_COMPACTABLE_HISTORY).
+        // A 100-token session over a 20-token window overflows but has nothing
+        // to compact, so it is no longer a compaction request.
+        yield* llm.text("after", { usage: { input: 20_000, output: 0 } })
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "compact")
         const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
         const base = yield* provider.getModel(ref.providerID, ref.modelID)
-        const mdl = { ...base, limit: { context: 20, output: 10 } }
+        // A window the prompt fits (the request layer no longer sends a request
+        // that cannot fit, t-tc20mj) and the reported 20k usage overflows.
+        const mdl = { ...base, limit: { context: 16_000, output: 10 } }
         const handle = yield* processors.create({
           assistantMessage: msg,
           sessionID: chat.id,
@@ -475,7 +526,10 @@ it.live("session.processor effect tests reset reasoning state across retries", (
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
 
-        yield* llm.push(reply().reason("one").reset(), reply().reason("two").stop())
+        // t-3kr4o4: the second reply carries text as well as reasoning. A
+        // terminal "stop" with NOTHING on it is now a defect the processor
+        // redoes, so a content-free reply can no longer stand in for a good one.
+        yield* llm.push(reply().reason("one").reset(), reply().reason("two").text("done").stop())
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "reason")
@@ -614,7 +668,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
         const events = yield* EventV2Bridge.Service
 
         yield* llm.error(503, { error: "boom" })
-        yield* llm.text("")
+        yield* llm.text("ok") // t-3kr4o4: see above - an empty reply is now redone, not accepted
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "retry")
@@ -1147,13 +1201,21 @@ it.live("session.processor retries a mid-stream gateway drop and re-sends the SA
         // assistant text fed back as context.
         expect(JSON.stringify(inputs[1]?.["messages"])).toBe(JSON.stringify(inputs[0]?.["messages"]))
 
-        // The user is told, in the transcript, that a retry happened.
+        // The user is told, in the transcript, that a retry happened - as DATA.
+        // t-q90gj9: never again as prose, which landed under the agent's name.
         const notices = parts.filter(
           (part): part is SessionV1.TextPart =>
-            part.type === "text" && isRecord(part.metadata) && "origami_retry" in part.metadata,
+            part.type === "text" && SessionStreamDrop.readNotice(part.metadata) !== undefined,
         )
         expect(notices.length).toBe(1)
-        expect(notices[0]?.text.toLowerCase()).toContain("retrying")
+        expect(notices[0]?.text).toBe("")
+        expect(SessionStreamDrop.readNotice(notices[0]?.metadata)).toMatchObject({
+          kind: "retrying",
+          attempt: 1,
+          max: SessionStreamDrop.LIMIT_DEFAULT,
+          terminal: false,
+        })
+        expect(parts.some((part) => part.type === "text" && part.text.includes("Stream dropped"))).toBe(false)
       }),
     { config: (url) => providerCfg(url) },
   ),
@@ -1187,6 +1249,14 @@ it.live("session.processor stops with a NAMED error once mid-stream drop retries
         expect(failure.data.message).toContain("Upstream idle timeout exceeded")
         expect(failure.data.message).not.toContain('"Upstream')
         expect(failure.data.metadata?.["code"]).toBe(SessionStreamDrop.CODE)
+        // t-q90gj9: the ladder ENDING is said out loud. Without it the last card
+        // the chat drew says "retrying" and never stops saying it.
+        const stopped = (yield* MessageV2.parts(msg.id))
+          .map((part) => SessionStreamDrop.readNotice(part.type === "text" ? part.metadata : undefined))
+          .filter((n) => n?.kind === "stopped")
+        expect(stopped.length).toBe(1)
+        expect(stopped[0]).toMatchObject({ attempt: SessionStreamDrop.LIMIT_DEFAULT + 1, terminal: true })
+        expect(stopped[0]?.detail).toContain("Upstream idle timeout exceeded")
       }),
     { config: (url) => providerCfg(url) },
   ),
@@ -1249,6 +1319,227 @@ it.live("session.processor does NOT retry a drop once a tool call has run in the
         expect(SessionV1.APIError.isInstance(failure)).toBe(true)
         if (!SessionV1.APIError.isInstance(failure)) return
         expect(failure.data.message).toContain("Upstream idle timeout exceeded")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// In-band provider errors the drop family does NOT recognise
+//
+// The frame above is a stream drop because its words say so. Most in-band
+// errors are not: a rate limit, exhausted credits, a moderation block. Those
+// must still reach the user as an error card carrying the PROVIDER'S sentence.
+// On the AI SDK path they do (`ai-sdk.ts` -> `Effect.fail(event.error)`, the
+// bare message). Native used to fail the chunk schema instead and the card read
+// "ProviderShared.stream: Invalid openai/openai-chat stream event", which named
+// the decoder rather than the fault; `openai-chat.ts` now decodes the frame and
+// emits `provider-error`, which `processor.ts` throws on into the same halt.
+// ---------------------------------------------------------------------------
+
+/** OpenRouter's documented mid-stream shape: the error beside the chunk fields. */
+const CREDITS_FRAME = {
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  error: { code: 402, message: "Insufficient credits for this request", metadata: { error_type: "payment" } },
+  choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+}
+
+it.live("session.processor shows the provider's own sentence for an in-band error", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(raw({ head: [chunkLine({ role: "assistant" }), chunkLine({ content: "sure" })], tail: [CREDITS_FRAME] }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "spend")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process(streamInput({ chat: chat.id, parent, mdl, text: "spend" }))
+
+        // Not a drop, so it is not retried: one call, one error card.
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        const failure = handle.message.error
+        expect(failure).toBeDefined()
+        const rendered = JSON.stringify(failure)
+        expect(rendered).toContain("Insufficient credits for this request")
+        expect(rendered).not.toContain("Invalid openai/openai-chat stream event")
+
+        // The prose that arrived before the failure is still in the transcript.
+        const parts = yield* MessageV2.parts(msg.id)
+        expect(parts.some((part) => part.type === "text" && part.text === "sure")).toBe(true)
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+// ---------------------------------------------------------------------------
+// t-h8s3xg. The frame that said NOTHING, and the one that said "rate limit".
+//
+// Three sessions on `openrouter / stealth/union-alpha` recorded
+// `error: { name: "UnknownError", data: { message: "ERROR" } }` about 45 s into
+// a stream. The provider's whole report was the word ERROR, and the transcript
+// then named neither the provider, the model, the code nor how far in it died,
+// while a SIBLING step in the same minutes got an honest HTTP 429.
+//
+// No cassette under test/fixtures/recordings carries a union-alpha mid-stream
+// failure, and union-alpha is a paid lane, so the frames below are synthetic -
+// in the documented OpenRouter shape, through the real `openai-chat` protocol,
+// into the real `Session` message error.
+// ---------------------------------------------------------------------------
+
+/** The union-alpha shape: a whole report that is one machine word. */
+const EMPTY_WORD_FRAME = {
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  error: { message: "ERROR", type: "ERROR", code: 500 },
+  choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+}
+
+/** The same word with a 4xx code. t-tc2itu made a 5xx uninformative frame
+ *  retryable (it now continues), so the naming contract below is pinned on a
+ *  code that still ends the step. */
+const EMPTY_WORD_FRAME_4XX = { ...EMPTY_WORD_FRAME, error: { ...EMPTY_WORD_FRAME.error, code: 400 } }
+
+/** The sibling fault, as it arrives mid-stream rather than in the headers. */
+const RATE_LIMIT_FRAME = {
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  error: {
+    code: 429,
+    message: "stealth/union-alpha is temporarily rate-limited upstream",
+    metadata: { error_type: "rate_limit" },
+  },
+  choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+}
+
+it.live("session.processor names provider, model, code and elapsed time for an uninformative frame", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(
+          raw({ head: [chunkLine({ role: "assistant" }), chunkLine({ content: "working" })], tail: [EMPTY_WORD_FRAME_4XX] }),
+        )
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "go")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        expect(yield* handle.process(streamInput({ chat: chat.id, parent, mdl, text: "go" }))).toBe("stop")
+
+        const failure = handle.message.error
+        expect(failure?.name).not.toBe("UnknownError")
+        expect(SessionV1.APIError.isInstance(failure)).toBe(true)
+        if (!SessionV1.APIError.isInstance(failure)) return
+        // Provider, model, the provider's own word, its code, and the reading
+        // that says this was not a request that never started.
+        expect(failure.data.message).toContain("test · test-model: ERROR")
+        expect(failure.data.message).toMatch(/\(code 400, \d+ s into the stream\)$/)
+        // The raw payload, so the transcript's error row has it to show.
+        expect(failure.data.responseBody).toContain('"type":"ERROR"')
+        expect(failure.data.isRetryable).toBe(false)
+        // The prose that arrived before the failure is still in the transcript.
+        const parts = yield* MessageV2.parts(msg.id)
+        expect(parts.some((part) => part.type === "text" && part.text === "working")).toBe(true)
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor retries a 5xx uninformative frame instead of ending the step (t-tc2itu)", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(
+          raw({ head: [chunkLine({ role: "assistant" }), chunkLine({ content: "working" })], tail: [EMPTY_WORD_FRAME] }),
+        )
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "go")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        expect(yield* handle.process(streamInput({ chat: chat.id, parent, mdl, text: "go" }))).toBe("continue")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor keeps an INFORMATIVE sentence bare", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // The control for the test above: the 402 frame already says what
+        // happened, so nothing may be put in front of it - the stream-drop
+        // classifier reads exactly these words.
+        yield* llm.push(raw({ head: [chunkLine({ role: "assistant" })], tail: [CREDITS_FRAME] }))
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "spend")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process(streamInput({ chat: chat.id, parent, mdl, text: "spend" }))
+
+        const failure = handle.message.error
+        const message = isRecord(failure?.data) ? failure.data["message"] : undefined
+        expect(message).toBe("Insufficient credits for this request")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor reads a mid-stream rate limit as the 429 it is", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        // Retryable is the POINT of this case, so the ladder is pinned to zero
+        // attempts here: what is under test is the classification, not the
+        // ladder that reads it.
+        const previous = process.env["ORIGAMI_SESSION_RETRY_LIMIT"]
+        process.env["ORIGAMI_SESSION_RETRY_LIMIT"] = "0"
+        try {
+          yield* llm.push(raw({ head: [chunkLine({ role: "assistant" })], tail: [RATE_LIMIT_FRAME] }))
+
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "go")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+          yield* handle.process(streamInput({ chat: chat.id, parent, mdl, text: "go" }))
+
+          const failure = handle.message.error
+          expect(SessionV1.APIError.isInstance(failure)).toBe(true)
+          if (!SessionV1.APIError.isInstance(failure)) return
+          // The HTTP 429 branch's own words and status, not a new vocabulary.
+          expect(failure.data.statusCode).toBe(429)
+          expect(failure.data.isRetryable).toBe(true)
+          expect(failure.data.message).toContain("Too Many Requests")
+          expect(failure.data.message).toContain("stealth/union-alpha is temporarily rate-limited upstream")
+          // And the retry ladder reads it as retryable, which is what
+          // "classified like the 429 path" has to mean.
+          expect(SessionRetry.retryable(failure, "test")).toBeDefined()
+        } finally {
+          if (previous === undefined) delete process.env["ORIGAMI_SESSION_RETRY_LIMIT"]
+          else process.env["ORIGAMI_SESSION_RETRY_LIMIT"] = previous
+        }
       }),
     { config: (url) => providerCfg(url) },
   ),
@@ -1343,7 +1634,7 @@ it.live("session.processor retries a SILENT finish-less clean EOF instead of ans
         // And the user is told, in the chat, that a retry happened.
         const notices = parts.filter(
           (part): part is SessionV1.TextPart =>
-            part.type === "text" && isRecord(part.metadata) && "origami_retry" in part.metadata,
+            part.type === "text" && SessionStreamDrop.readNotice(part.metadata) !== undefined,
         )
         expect(notices.length).toBe(1)
       }),
@@ -1447,10 +1738,209 @@ it.live("session.processor still redoes an unreadable finish reason that carried
         expect(parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
         const notices = parts.filter(
           (part): part is SessionV1.TextPart =>
-            part.type === "text" && isRecord(part.metadata) && "origami_retry" in part.metadata,
+            part.type === "text" && SessionStreamDrop.readNotice(part.metadata) !== undefined,
         )
         expect(notices.length).toBe(1)
       }),
     { config: (url) => providerCfg(url) },
   ),
 )
+
+// ---------------------------------------------------------------------------
+// origami_change-start (t-3kr4o4): OpenAI ends a step "stop" with nothing on it
+// ---------------------------------------------------------------------------
+
+const emptyReplyInput = (chatID: SessionID, parent: SessionV1.User, mdl: any) =>
+  ({
+    user: {
+      id: parent.id,
+      sessionID: chatID,
+      role: "user",
+      time: parent.time,
+      agent: parent.agent,
+      model: { providerID: ref.providerID, modelID: ref.modelID },
+    } satisfies SessionV1.User,
+    sessionID: chatID,
+    model: mdl,
+    agent: agent(),
+    system: [],
+    messages: [{ role: "user", content: "carry on" }],
+    tools: {},
+  }) satisfies LLM.StreamInput
+
+itEmptyReply.live("session.processor redoes a terminal stop that produced nothing", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        emptyReplyStreams.length = 0
+        emptyReplyCalls = 0
+        // Attempt 1 is the defect: reasoning only, finish "stop". Attempt 2 is
+        // the same request answered properly, which is what the redo buys.
+        emptyReplyStreams.push(reasoningOnlyStop(), textStop("recovered"))
+
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "carry on")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process(emptyReplyInput(chat.id, parent as SessionV1.User, mdl))
+
+        // The turn carries on with real content instead of ending on an empty
+        // assistant message. Without the guard this is one call and no text.
+        expect(emptyReplyCalls).toBe(2)
+        expect(value).toBe("continue")
+        const parts = yield* MessageV2.parts(msg.id)
+        expect(parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
+        // The redo is STATED, not silent: the stream-drop family writes its
+        // notice into the transcript, carrying the provider-truth sentence - now
+        // in the notice's `detail` rather than in prose under the agent's name.
+        expect(
+          parts.some((part) =>
+            SessionStreamDrop.readNotice(part.type === "text" ? part.metadata : undefined)?.detail.includes(
+              "The provider ended the reply with no content.",
+            ),
+          ),
+        ).toBe(true)
+        expect(msg.error).toBeUndefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+itEmptyReply.live("session.processor leaves a terminal stop that produced prose alone", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        emptyReplyStreams.length = 0
+        emptyReplyCalls = 0
+        emptyReplyStreams.push(textStop("done"), textStop("never asked for"))
+
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "carry on")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        yield* handle.process(emptyReplyInput(chat.id, parent as SessionV1.User, mdl))
+
+        // A real answer is never re-billed: exactly one request.
+        expect(emptyReplyCalls).toBe(1)
+        const parts = yield* MessageV2.parts(msg.id)
+        expect(parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+        expect(parts.some((part) => part.type === "text" && part.text.includes("Stream dropped"))).toBe(false)
+      }),
+    { config: cfg },
+  ),
+)
+// origami_change-end
+
+// origami_change: journal coalescing (t-rz12wq). A running tool rewrites its
+// WHOLE part on every progress callback, and every rewrite used to append a
+// journal row - 13,489 rows for 1,033 parts in the largest session measured. The
+// part table and the bus must still see every update (that is the chat), while
+// the journal sees the opening state, the close, and at most one row per
+// coalescing window in between.
+it.live("session.processor effect tests coalesce streaming tool progress out of the journal", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+
+        yield* llm.tool("lookup", { query: "weather" })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "tool")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        let published = 0
+        const off = yield* events.listen((evt) => {
+          if (evt.type === SessionV1.Event.PartUpdated.type) {
+            const data = evt.data as typeof SessionV1.Event.PartUpdated.data.Type
+            if (data.part.type === "tool") published++
+          }
+          return Effect.void
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "tool" }],
+          tools: {
+            lookup: tool({
+              description: "Look up information",
+              inputSchema: z.object({ query: z.string() }),
+              // Eight progress reports in a row, the way a streaming shell or a
+              // sub-agent reports one.
+              execute: async (input, options) => {
+                for (let step = 0; step < 8; step++) {
+                  await Effect.runPromise(
+                    handle.updateToolCall(options.toolCallId, (part) => ({
+                      ...part,
+                      state: {
+                        status: "running",
+                        input: input as Record<string, unknown>,
+                        title: `step ${step}`,
+                        metadata: { step },
+                        time: { start: 1 },
+                      },
+                    })),
+                  )
+                }
+                return { title: "Weather lookup", output: `result:${input.query}`, metadata: { source: "test" } }
+              },
+            }),
+          },
+        })
+        yield* off
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+        const rows = yield* db
+          .all<{ n: number }>(
+            sql`SELECT count(*) AS n FROM ${sql.identifier("event")}
+                WHERE aggregate_id = ${chat.id} AND type LIKE 'message.part.updated.%'
+                  AND json_extract(data, '$.part.id') = ${call?.id ?? ""}`,
+          )
+          .pipe(Effect.orDie)
+
+        expect(value).toBe("continue")
+        // The chat is unchanged: the part table holds the finished call, and the
+        // bus carried every one of the eight progress updates.
+        expect(call?.state.status).toBe("completed")
+        if (call?.state.status !== "completed") return
+        expect(call.state.output).toBe("result:weather")
+        expect(published).toBeGreaterThanOrEqual(10)
+        // The journal did not: opening state, the running transition, the close.
+        expect(rows[0]?.n).toBeLessThanOrEqual(4)
+        // ...and what it kept is the finished call, not a half-streamed one.
+        const last = yield* db
+          .all<{ data: string }>(
+            sql`SELECT data FROM ${sql.identifier("event")}
+                WHERE aggregate_id = ${chat.id} AND type LIKE 'message.part.updated.%'
+                  AND json_extract(data, '$.part.id') = ${call.id}
+                ORDER BY seq DESC LIMIT 1`,
+          )
+          .pipe(Effect.orDie)
+        expect(JSON.parse(last[0]!.data).part.state.status).toBe("completed")
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+// origami_change-end

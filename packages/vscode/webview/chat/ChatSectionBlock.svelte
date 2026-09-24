@@ -54,7 +54,10 @@
     aria-expanded={!collapsed}
     aria-label="{collapsed ? 'Expand' : 'Collapse'} {ariaLabel}"
   >
-    <span class="chat-section-chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+    <!-- change 32: one glyph that ROTATES on aria-expanded, not a swapped
+         character — the CSS transition is what makes the collapse read as
+         motion instead of a flip. -->
+    <span class="chat-section-chevron" aria-hidden="true">▾</span>
   </button>
   {@render nameSlot()}
   <span class="chat-section-count">{count}</span>
@@ -107,13 +110,25 @@
     font-family: inherit;
   }
   .chat-section-chevron {
+    display: inline-block;
     font-size: 9px;
     color: var(--og-text-muted);
     flex: 0 0 auto;
+    transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1);
   }
+  /* Collapsed rotates the same down-chevron glyph to point right, instead of
+     swapping in a different character (change 32). */
+  .chat-section-chevron-btn[aria-expanded='false'] .chat-section-chevron { transform: rotate(-90deg); }
   .chat-section-count {
-    font-size: 10px;
+    min-width: 16px;
+    padding: 0 5px;
+    border: 1px solid var(--og-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--og-surface) 90%, transparent);
     color: var(--og-text-muted);
+    font-size: 9px;
+    line-height: 14px;
+    text-align: center;
     flex: 0 0 auto;
   }
   .chat-section-delete-btn {

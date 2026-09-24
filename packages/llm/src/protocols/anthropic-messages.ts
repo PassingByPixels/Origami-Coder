@@ -7,7 +7,7 @@ import { Protocol } from "../route/protocol"
 import {
   LLMEvent,
   Usage,
-  type CacheHint,
+  CacheHint,
   type FinishReason,
   type JsonSchema,
   type LLMRequest,
@@ -29,13 +29,12 @@ const ADAPTER = "anthropic-messages"
 export const DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
 export const PATH = "/messages"
 
-// =============================================================================
 // Request Body Schema
-// =============================================================================
 const AnthropicCacheControl = Schema.Struct({
   type: Schema.tag("ephemeral"),
   ttl: Schema.optional(Schema.Literals(["5m", "1h"])),
 })
+type AnthropicCacheControl = Schema.Schema.Type<typeof AnthropicCacheControl>
 
 const AnthropicTextBlock = Schema.Struct({
   type: Schema.tag("text"),
@@ -80,11 +79,9 @@ const AnthropicServerToolUseBlock = Schema.Struct({
 })
 type AnthropicServerToolUseBlock = Schema.Schema.Type<typeof AnthropicServerToolUseBlock>
 
-// Server tool result blocks: web_search_tool_result, code_execution_tool_result,
-// and web_fetch_tool_result. The provider executes the tool and inlines the
-// structured result into the assistant turn — there is no client tool_result
-// round-trip. We round-trip the structured `content` payload as opaque JSON so
-// the next request can echo it back when continuing the conversation.
+// Server tool result blocks: web_search_tool_result, code_execution_tool_result, and
+// web_fetch_tool_result. The provider executes the tool and inlines the structured result
+// — no client tool_result round-trip; `content` is round-tripped as opaque JSON.
 const AnthropicServerToolResultType = Schema.Literals([
   "web_search_tool_result",
   "code_execution_tool_result",
@@ -102,10 +99,7 @@ type AnthropicServerToolResultBlock = Schema.Schema.Type<typeof AnthropicServerT
 
 // Anthropic accepts either a plain string or an ordered array of text/image
 // blocks inside `tool_result.content`. The array form is required when a tool
-// returns image bytes (screenshot, image search, etc.) so they can be passed
-// to the model as proper image inputs instead of being JSON-stringified into
-// the prompt — which silently inflates context by megabytes and can push the
-// conversation over the model's token limit.
+// returns image bytes, so they go in as image inputs instead of base64 in the prompt.
 const AnthropicToolResultContent = Schema.Union([AnthropicTextBlock, AnthropicImageBlock])
 
 const AnthropicToolResultBlock = Schema.Struct({
@@ -140,6 +134,7 @@ const AnthropicTool = Schema.Struct({
   description: Schema.String,
   input_schema: JsonObject,
   cache_control: Schema.optional(AnthropicCacheControl),
+  eager_input_streaming: Schema.optional(Schema.Boolean),
 })
 type AnthropicTool = Schema.Schema.Type<typeof AnthropicTool>
 
@@ -186,9 +181,8 @@ const AnthropicStreamBlock = Schema.Struct({
   thinking: Schema.optional(Schema.String),
   signature: Schema.optional(Schema.String),
   input: Schema.optional(Schema.Unknown),
-  // *_tool_result blocks arrive whole as content_block_start (no streaming
-  // delta) with the structured payload in `content` and the originating
-  // server_tool_use id in `tool_use_id`.
+  // *_tool_result blocks arrive whole as content_block_start (no streaming delta),
+  // with the structured payload in `content` and the server_tool_use id in `tool_use_id`.
   tool_use_id: Schema.optional(Schema.String),
   content: Schema.optional(Schema.Unknown),
 })
@@ -210,10 +204,11 @@ const AnthropicEvent = Schema.Struct({
   content_block: Schema.optional(AnthropicStreamBlock),
   delta: Schema.optional(AnthropicStreamDelta),
   usage: Schema.optional(AnthropicUsage),
-  // `type` and `message` are both required per Anthropic's spec, but
-  // OpenAI-compatible proxies and gateway translations occasionally drop one
-  // or the other; mark them optional so a partial payload still parses and
-  // the parser can fall back to whichever field is populated.
+  // GitHub Copilot serves Claude over a `/v1/messages` shim and puts its billed
+  // amount at the top level of `message_delta`, outside `usage`. Anthropic never sends it.
+  copilot_usage: optionalNull(ProviderShared.CopilotUsage),
+  // `type` and `message` are both required per Anthropic's spec, but proxies and
+  // gateway translations occasionally drop one; optional so a partial payload still parses.
   error: Schema.optional(
     Schema.Struct({ type: Schema.optional(Schema.String), message: Schema.optional(Schema.String) }),
   ),
@@ -228,13 +223,10 @@ interface ParserState {
 
 const invalid = ProviderShared.invalidRequest
 
-// =============================================================================
 // Request Lowering
-// =============================================================================
 // Anthropic accepts at most 4 explicit cache_control breakpoints per request,
 // across `tools`, `system`, and `messages`. Beyond the cap the API returns a
-// 400 — so the lowering layer counts emitted markers and silently drops any
-// that exceed it.
+// 400, so lowering counts emitted markers and silently drops any that exceed it.
 const ANTHROPIC_BREAKPOINT_CAP = 4
 
 const EPHEMERAL_5M = { type: "ephemeral" as const }
@@ -250,6 +242,36 @@ const cacheControl = (breakpoints: Cache.Breakpoints, cache: CacheHint | undefin
   return Cache.ttlBucket(cache.ttlSeconds) === "1h" ? EPHEMERAL_1H : EPHEMERAL_5M
 }
 
+// A caller that decides its own breakpoints marks WHOLE messages rather than individual parts.
+// `@ai-sdk/anthropic` reads that marker off the message and puts `cache_control` on the message's
+// LAST content block, with a part-level marker taking precedence. It arrives on
+// `Message.native.anthropic.cacheControl`; `cache_control` is an accepted alias.
+const messageCacheHint = (message: LLMRequest["messages"][number]): CacheHint | undefined => {
+  const anthropic = message.native?.anthropic
+  if (!ProviderShared.isRecord(anthropic)) return undefined
+  const control = anthropic.cacheControl ?? anthropic.cache_control
+  if (!ProviderShared.isRecord(control) || control.type !== "ephemeral") return undefined
+  return control.ttl === "1h"
+    ? new CacheHint({ type: "ephemeral", ttlSeconds: 3600 })
+    : new CacheHint({ type: "ephemeral" })
+}
+
+// Apply a message-level hint to the last block, leaving an explicit part-level
+// marker in place. Spends a breakpoint only when it actually writes one.
+const withMessageCache = <Block extends { readonly cache_control?: AnthropicCacheControl }>(
+  blocks: Block[],
+  hint: CacheHint | undefined,
+  breakpoints: Cache.Breakpoints,
+): Block[] => {
+  if (!hint || blocks.length === 0) return blocks
+  const last = blocks[blocks.length - 1]!
+  if (last.cache_control !== undefined) return blocks
+  const control = cacheControl(breakpoints, hint)
+  if (!control) return blocks
+  blocks[blocks.length - 1] = { ...last, cache_control: control }
+  return blocks
+}
+
 const anthropicMetadata = (metadata: Record<string, unknown>): ProviderMetadata => ({ anthropic: metadata })
 
 const signatureFromMetadata = (metadata: ProviderMetadata | undefined): string | undefined => {
@@ -258,11 +280,32 @@ const signatureFromMetadata = (metadata: ProviderMetadata | undefined): string |
   return typeof anthropic.signature === "string" ? anthropic.signature : undefined
 }
 
-const lowerTool = (breakpoints: Cache.Breakpoints, tool: ToolDefinition, inputSchema: JsonSchema): AnthropicTool => ({
+// Fine-grained (eager) streaming of tool-call inputs. This adapter always sends
+// `stream: true`, so it is on by default for every function tool, matching
+// `@ai-sdk/anthropic`. Opt out with `providerOptions.anthropic.toolStreaming: false`,
+// or per tool with `ToolDefinition.native.anthropic.eagerInputStreaming: false`.
+const requestEagerInputStreaming = (request: LLMRequest) => {
+  const value = request.providerOptions?.anthropic?.toolStreaming
+  return typeof value === "boolean" ? value : true
+}
+
+const toolEagerInputStreaming = (tool: ToolDefinition, fallback: boolean) => {
+  const anthropic = tool.native?.anthropic
+  if (!ProviderShared.isRecord(anthropic)) return fallback
+  return typeof anthropic.eagerInputStreaming === "boolean" ? anthropic.eagerInputStreaming : fallback
+}
+
+const lowerTool = (
+  breakpoints: Cache.Breakpoints,
+  tool: ToolDefinition,
+  inputSchema: JsonSchema,
+  eagerInputStreaming: boolean,
+): AnthropicTool => ({
   name: tool.name,
   description: tool.description,
   input_schema: inputSchema,
   cache_control: cacheControl(breakpoints, tool.cache),
+  ...(toolEagerInputStreaming(tool, eagerInputStreaming) ? { eager_input_streaming: true as const } : {}),
 })
 
 const lowerToolChoice = (toolChoice: NonNullable<LLMRequest["toolChoice"]>) =>
@@ -288,8 +331,7 @@ const lowerServerToolCall = (part: ToolCallPart): AnthropicServerToolUseBlock =>
 })
 
 // Server tool result blocks are typed by name. Anthropic ships three today;
-// extend this list when new server tools land. The block content is the
-// structured payload returned by the provider, which we round-trip as-is.
+// the block content is the provider's structured payload, round-tripped as-is.
 const serverToolResultType = (name: string): AnthropicServerToolResultType | undefined => {
   if (name === "web_search") return "web_search_tool_result"
   if (name === "code_execution") return "code_execution_tool_result"
@@ -342,8 +384,7 @@ const lowerToolResultContentItem = Effect.fn("AnthropicMessages.lowerToolResultC
 })
 
 const lowerToolResultContent = Effect.fn("AnthropicMessages.lowerToolResultContent")(function* (part: ToolResultPart) {
-  // Text / json / error results stay as a string for backward compatibility
-  // with existing cassettes and provider expectations.
+  // Text/json/error results stay a string, as existing cassettes and providers expect.
   if (part.result.type !== "content") return ProviderShared.toolResultText(part)
   // Preserve the narrowed array element type when compiled through a consumer package.
   const content: ReadonlyArray<ToolContent> = part.result.value
@@ -351,8 +392,7 @@ const lowerToolResultContent = Effect.fn("AnthropicMessages.lowerToolResultConte
 })
 
 // Mid-conversation system messages are a native Claude API feature only for
-// Opus 4.8. Other Anthropic models intentionally use the same visible wrapped-
-// user fallback as non-Anthropic routes rather than sending a role they reject.
+// Opus 4.8. Other models use the visible wrapped-user fallback instead of a role they reject.
 const supportsNativeSystemUpdates = (request: LLMRequest) => String(request.model.id) === "claude-opus-4-8"
 
 const endsInServerToolUse = (message: LLMRequest["messages"][number]) => {
@@ -435,7 +475,7 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
         }
         return yield* ProviderShared.unsupportedContent("Anthropic Messages", "user", ["text", "media"])
       }
-      messages.push({ role: "user", content })
+      messages.push({ role: "user", content: withMessageCache(content, messageCacheHint(message), breakpoints) })
       continue
     }
 
@@ -466,7 +506,10 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
           `Anthropic Messages assistant messages only support text, reasoning, and tool-call content for now`,
         )
       }
-      messages.push({ role: "assistant", content })
+      messages.push({
+        role: "assistant",
+        content: withMessageCache(content, messageCacheHint(message), breakpoints),
+      })
       continue
     }
 
@@ -482,7 +525,7 @@ const lowerMessages = Effect.fn("AnthropicMessages.lowerMessages")(function* (
         cache_control: cacheControl(breakpoints, part.cache),
       })
     }
-    messages.push({ role: "user", content })
+    messages.push({ role: "user", content: withMessageCache(content, messageCacheHint(message), breakpoints) })
   }
 
   return messages
@@ -509,9 +552,9 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
   const toolSchemaCompatibility = request.model.compatibility?.toolSchema
   const outputLimit = request.model.defaults?.limits?.output ?? request.model.route.defaults.limits?.output ?? 4096
   // Allocate the 4-breakpoint budget in invalidation order: tools → system →
-  // messages. Tools live highest in the cache hierarchy, so when callers
-  // over-mark we keep their tool hints and shed the message-tail ones first.
+  // messages. Tools live highest in the cache hierarchy, so tool hints are kept first.
   const breakpoints = Cache.newBreakpoints(ANTHROPIC_BREAKPOINT_CAP)
+  const eagerInputStreaming = requestEagerInputStreaming(request)
   const tools =
     request.tools.length === 0 || request.toolChoice?.type === "none"
       ? undefined
@@ -520,6 +563,7 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
             breakpoints,
             tool,
             ToolSchemaProjection.modelCompatibility(tool.inputSchema, toolSchemaCompatibility),
+            eagerInputStreaming,
           ),
         )
   const system =
@@ -536,6 +580,13 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
       `Anthropic Messages: dropped ${breakpoints.dropped} cache breakpoint(s); the API allows at most ${ANTHROPIC_BREAKPOINT_CAP} per request.`,
     )
   }
+  const thinking = yield* lowerThinking(request)
+  // With extended thinking on, the Messages API refuses `temperature`, `top_p`
+  // and `top_k` (HTTP 400), and `max_tokens` must cover the thinking budget as
+  // well as the visible answer. `@ai-sdk/anthropic` does the same.
+  const sampling = thinking
+    ? {}
+    : { temperature: generation?.temperature, top_p: generation?.topP, top_k: generation?.topK }
   return {
     model: request.model.id,
     system,
@@ -543,18 +594,14 @@ const fromRequest = Effect.fn("AnthropicMessages.fromRequest")(function* (reques
     tools,
     tool_choice: toolChoice,
     stream: true as const,
-    max_tokens: generation?.maxTokens ?? outputLimit,
-    temperature: generation?.temperature,
-    top_p: generation?.topP,
-    top_k: generation?.topK,
+    max_tokens: (generation?.maxTokens ?? outputLimit) + (thinking?.budget_tokens ?? 0),
+    ...sampling,
     stop_sequences: generation?.stop,
-    thinking: yield* lowerThinking(request),
+    thinking,
   }
 })
 
-// =============================================================================
 // Stream Parsing
-// =============================================================================
 const mapFinishReason = (reason: string | null | undefined): FinishReason => {
   if (reason === "end_turn" || reason === "stop_sequence" || reason === "pause_turn") return "stop"
   if (reason === "max_tokens") return "length"
@@ -563,13 +610,10 @@ const mapFinishReason = (reason: string | null | undefined): FinishReason => {
   return "unknown"
 }
 
-// Anthropic reports the non-overlapping breakdown natively — its
-// `input_tokens` is the *non-cached* count per the Messages API docs, with
-// cache reads and writes as separate fields. We sum them to derive the
-// inclusive `inputTokens` the rest of the contract expects. Extended
-// thinking tokens are *not* broken out by Anthropic — they're billed as
-// part of `output_tokens`, so `reasoningTokens` stays `undefined` and
-// `outputTokens` carries the combined total.
+// Anthropic reports the non-overlapping breakdown natively: `input_tokens` is
+// the *non-cached* count, with cache reads and writes as separate fields, summed
+// here for the inclusive `inputTokens`. Thinking tokens are not broken out —
+// they bill inside `output_tokens`, so `reasoningTokens` stays `undefined`.
 const mapUsage = (usage: AnthropicUsage | undefined): Usage | undefined => {
   if (!usage) return undefined
   const nonCached = usage.input_tokens
@@ -587,11 +631,9 @@ const mapUsage = (usage: AnthropicUsage | undefined): Usage | undefined => {
   })
 }
 
-// Anthropic emits usage on `message_start` and again on `message_delta` — the
-// final delta carries the authoritative totals. Right-biased merge: each
-// field prefers `right` when defined, falls back to `left`. `inputTokens` is
-// recomputed from the merged breakdown so the inclusive total stays
-// consistent with `nonCached + cacheRead + cacheWrite`.
+// Anthropic emits usage on `message_start` and again on `message_delta`; the
+// final delta is authoritative. Right-biased merge, with `inputTokens`
+// recomputed from the merged breakdown to stay consistent.
 const mergeUsage = (left: Usage | undefined, right: Usage | undefined) => {
   if (!left) return right
   if (!right) return left
@@ -617,10 +659,8 @@ const mergeUsage = (left: Usage | undefined, right: Usage | undefined) => {
 }
 
 // Server tool result blocks come whole in `content_block_start` (no streaming
-// delta sequence). We convert the payload to a `tool-result` event with
-// `providerExecuted: true`. The runtime appends it to the assistant message
-// for round-trip; downstream consumers can inspect `result.value` for the
-// structured payload.
+// delta sequence) and convert to a `tool-result` event with
+// `providerExecuted: true`; `result.value` carries the structured payload.
 const SERVER_TOOL_RESULT_NAMES: Record<AnthropicServerToolResultType, string> = {
   web_search_tool_result: "web_search",
   code_execution_tool_result: "code_execution",
@@ -785,9 +825,10 @@ const onMessageDelta = (state: ParserState, event: AnthropicEvent): StepResult =
   const lifecycle = Lifecycle.finish(state.lifecycle, events, {
     reason: mapFinishReason(event.delta?.stop_reason),
     usage,
-    providerMetadata: event.delta?.stop_sequence
-      ? anthropicMetadata({ stopSequence: event.delta.stop_sequence })
-      : undefined,
+    providerMetadata: ProviderShared.withCopilotMetadata(
+      event.delta?.stop_sequence ? anthropicMetadata({ stopSequence: event.delta.stop_sequence }) : undefined,
+      ProviderShared.copilotMetadata(event.copilot_usage),
+    ),
   })
   return [{ ...state, lifecycle, usage }, events]
 }
@@ -821,24 +862,41 @@ const step = (state: ParserState, event: AnthropicEvent) => {
   return Effect.succeed<StepResult>([state, NO_EVENTS])
 }
 
-// =============================================================================
 // Protocol And Anthropic Route
-// =============================================================================
+/** The Anthropic Messages protocol — request body construction, body schema,
+ *  and the streaming-event state machine. Used by native Anthropic Cloud and
+ *  (once registered) Vertex Anthropic / Bedrock-hosted Anthropic passthrough. */
 /**
- * The Anthropic Messages protocol — request body construction, body schema,
- * and the streaming-event state machine. Used by native Anthropic Cloud and
- * (once registered) Vertex Anthropic / Bedrock-hosted Anthropic passthrough.
+ * A body that ended without `message_stop` still ends the turn.
+ *
+ * Same shape and reason as `openai-responses.ts` `unfinished`: a body that stops
+ * before its terminal event leaves the stream with no `finish` and no `text-end`,
+ * so the consumer's block never closes. "unknown" is what `@ai-sdk/anthropic`
+ * reports at its flush, and `session/processor.ts` recovers from that value.
+ * `stepStarted` is the exact "not yet finished" signal.
  */
+const unfinished = (state: ParserState): ReadonlyArray<LLMEvent> => {
+  if (!state.lifecycle.stepStarted) return []
+  const events: LLMEvent[] = []
+  Lifecycle.finish(state.lifecycle, events, { reason: "unknown" })
+  return events
+}
+
 export const protocol = Protocol.make({
   id: ADAPTER,
   body: {
     schema: AnthropicMessagesBody,
+    // `max_tokens` is NOT structure: the Messages API requires it, so the
+    // protocol always writes a default, but it stays a knob a configured value
+    // wins. `system`, `tools`, `tool_choice`, `thinking` are owned only when carried.
+    structure: ["model", "system", "messages", "tools", "tool_choice", "stream", "thinking"],
     from: fromRequest,
   },
   stream: {
     event: Protocol.jsonEvent(AnthropicEvent),
     initial: () => ({ tools: ToolStream.empty<number>(), lifecycle: Lifecycle.initial() }),
     step,
+    onHalt: unfinished,
   },
 })
 

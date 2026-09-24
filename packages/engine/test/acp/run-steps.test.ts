@@ -978,3 +978,123 @@ describe("run_steps subagent fetching", () => {
     expect(scoped).toEqual([{ sessionID: "ses_root" }, { sessionID: "ses_kid" }])
   })
 })
+
+/**
+ * CONTEXT COMPACTION, as a reviewable step.
+ *
+ * The shape below is the engine's own, not a guess. `session/compaction.ts`
+ * `create` writes a USER message whose single part is
+ * `{ type: "compaction", auto, overflow }` (schema/src/v1/session.ts
+ * CompactionPart — the part carries no time of its own), and the summary that
+ * follows is an ASSISTANT message with `summary: true`, `agent: "compaction"`
+ * and `parentID` pointing back at that user message. No labyrinth fixture in
+ * this repo carried a compaction, so this is the SOURCE shape rather than a
+ * captured one — stated plainly so the next reader knows which it is.
+ */
+function compactionMessage(messageID: string, created: number, over: Record<string, unknown> = {}) {
+  return {
+    info: {
+      id: messageID,
+      sessionID,
+      role: "user",
+      time: { created },
+      agent: "build",
+      model: { providerID: "prov", modelID: "mod" },
+    },
+    parts: [{ ...partIds(messageID), type: "compaction", auto: true, ...over }],
+  } as unknown as SessionMessageResponse
+}
+
+function summaryMessage(messageID: string, parentID: string, output: number, created: number) {
+  return assistantMessage(messageID, [{ ...partIds(messageID), type: "text", text: "The run so far, summarised." }], {
+    parentID,
+    summary: true,
+    agent: "compaction",
+    mode: "compaction",
+    time: { created, completed: created + 500 },
+    tokens: { input: 120_000, output, reasoning: 0, cache: { read: 0, write: 0 } },
+  })
+}
+
+describe("a compaction is a step, because it is the loudest event in a run", () => {
+  /** A run that fills up, compacts once, and carries on. */
+  const RUN = [
+    userMessage("msg_u1", "start the work", 1_000),
+    assistantMessage("msg_a1", [completedTool("msg_a1", "read", "file")], {
+      time: { created: 1_100, completed: 1_400 },
+      tokens: { input: 15_000, output: 200, reasoning: 0, cache: { read: 0, write: 15_000 } },
+    }),
+    assistantMessage("msg_a2", [completedTool("msg_a2", "grep", "hits")], {
+      time: { created: 2_000, completed: 2_400 },
+      tokens: { input: 152_400, output: 300, reasoning: 0, cache: { read: 15_000, write: 0 } },
+    }),
+    compactionMessage("msg_c1", 3_000),
+    summaryMessage("msg_s1", "msg_c1", 3_100, 3_050),
+    assistantMessage("msg_a3", [completedTool("msg_a3", "edit", "written")], {
+      time: { created: 4_000, completed: 4_400 },
+      tokens: { input: 4_000, output: 100, reasoning: 0, cache: { read: 0, write: 4_000 } },
+    }),
+  ]
+
+  it("projects exactly ONE compaction step, at the instant the compaction message was written", () => {
+    const compactions = project(RUN).steps.filter((step) => step.kind === "compaction")
+    expect(compactions).toHaveLength(1)
+    expect(compactions[0]).toMatchObject({ title: "Context compacted", startedAt: 3_000 })
+  })
+
+  it("carries the context it threw away — the last BILLED prompt before it, never the summary's own", () => {
+    const [compaction] = project(RUN).steps.filter((step) => step.kind === "compaction")
+    // 152,400 is the last prompt a provider actually charged for before the
+    // compaction. The summary message ALSO bills 120,000 input, and counting it
+    // would report the pre-compaction size as the size before the NEXT one.
+    expect(compaction!.compaction).toEqual({ trigger: "auto", contextBefore: 152_400, summaryTokens: 3_100 })
+  })
+
+  it("names the trigger the part recorded, and overflow outranks auto", () => {
+    const triggerOf = (over: Record<string, unknown>) =>
+      project([userMessage("msg_u1", "go", 1_000), compactionMessage("msg_c1", 2_000, over)]).steps.find(
+        (s) => s.kind === "compaction",
+      )!.compaction!.trigger
+    expect(triggerOf({ auto: true })).toBe("auto")
+    expect(triggerOf({ auto: false })).toBe("manual")
+    expect(triggerOf({ auto: true, overflow: true })).toBe("overflow")
+    // A stored part from a build that wrote neither boolean is UNKNOWN, not a
+    // guess at the commoner of the two.
+    expect(triggerOf({ auto: undefined })).toBe("unknown")
+  })
+
+  it("omits a fact the store does not hold rather than sending a 0", () => {
+    // Nothing was billed before this compaction and no summary followed it, so
+    // both numbers are ABSENT — a `contextBefore: 0` would read as "the run had
+    // no context", which is a measurement nobody made.
+    const [compaction] = project([compactionMessage("msg_c1", 2_000)]).steps
+    expect(compaction!.compaction).toEqual({ trigger: "auto" })
+    expect(compaction).not.toHaveProperty("tokens")
+  })
+
+  it("leaves every other step where it was — the compaction is added, nothing is displaced", () => {
+    expect(project(RUN).steps.map((s) => s.kind)).toEqual([
+      "prompt",
+      "tool",
+      "tool",
+      "compaction",
+      "reply",
+      "tool",
+    ])
+    // Usage still rides the assistant message it belongs to.
+    expect(project(RUN).steps[2]!.tokens).toMatchObject({ input: 152_400 })
+  })
+
+  it("reads a sub-agent's compaction against its OWN session's billed prompts", () => {
+    const parent = [
+      userMessage("msg_u1", "delegate it"),
+      assistantMessage("msg_a1", [taskTool("msg_a1", "ses_kid", "delegate")]),
+    ]
+    const children = new Map([["ses_kid", [...childRun("ses_kid", ["read"]), compactionMessage("msg_kid_c", 1_500)]]])
+    const [compaction] = project(parent, children).steps.filter((s) => s.kind === "compaction")
+    // The child's own assistant message bills 1 input token; the parent's bills
+    // 10. Reading the parent's would put 10 here.
+    expect(compaction!.compaction).toEqual({ trigger: "auto", contextBefore: 1 })
+    expect(compaction!.depth).toBe(1)
+  })
+})

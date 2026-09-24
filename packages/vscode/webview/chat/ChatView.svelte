@@ -41,6 +41,14 @@
   // When true, this webview is the Agents board — renders only BoardShell
   // (nav rail + Folds/Skills/Crons/Routings; no chat, no sidebar).
   let boardMode = $state(false);
+  // Mirrors origamicoder.remote.enabled (remote-hide lane): false hides the
+  // board's Remote row entirely, not just its content.
+  let remoteEnabled = $state(false);
+  // Mirrors origamicoder.flock.enabled (flock-messenger lane), which DEFAULTS
+  // FALSE: false hides the board's Flock row and the sidebar's Front Desk.
+  // Starts FALSE too, same as remoteEnabled below: an absent or not-yet-read
+  // global must never paint Flock's surfaces as on, even for one frame.
+  let flockEnabled = $state(false);
   // The board's active view name, reported up by BoardShell so the brand bar
   // names what's on screen rather than always saying "Folds".
   let boardViewName = $state('Folds');
@@ -59,6 +67,8 @@
     soloSessionId = String((window as unknown as { __ORIGAMI_SOLO_SESSION__?: string }).__ORIGAMI_SOLO_SESSION__ ?? '');
     memoryMode = !!(window as unknown as { __ORIGAMI_MEMORY__?: boolean }).__ORIGAMI_MEMORY__;
     boardMode = !!(window as unknown as { __ORIGAMI_BOARD__?: boolean }).__ORIGAMI_BOARD__;
+    remoteEnabled = !!(window as unknown as { __ORIGAMI_REMOTE_ENABLED__?: boolean }).__ORIGAMI_REMOTE_ENABLED__;
+    flockEnabled = !!(window as unknown as { __ORIGAMI_FLOCK_ENABLED__?: boolean }).__ORIGAMI_FLOCK_ENABLED__;
     raceCompareMode = !!(window as unknown as { __ORIGAMI_RACE_COMPARE__?: unknown }).__ORIGAMI_RACE_COMPARE__;
     repoMapMode = !!(window as unknown as { __ORIGAMI_REPO_MAP__?: unknown }).__ORIGAMI_REPO_MAP__;
     collabMode = !!(window as unknown as { __ORIGAMI_COLLAB__?: unknown }).__ORIGAMI_COLLAB__;
@@ -80,8 +90,20 @@
         if (typeof msg.providerLabel === 'string') providerLabel = msg.providerLabel;
         if (typeof msg.providerIsLocal === 'boolean') providerIsLocal = msg.providerIsLocal;
         if (typeof msg.reason === 'string') statusReason = msg.reason; else if (msg.ok) statusReason = '';
+      } else if (msg.type === 'flockEnabled' && typeof msg.enabled === 'boolean') {
+        // Live: origamicoder.flock.enabled changed (the switch, or another
+        // window) — unmount/mount the sidebar's Front Desk without a reload.
+        flockEnabled = msg.enabled;
       } else if (msg.type === 'themeSync') {
         applyThemeSilently(msg.theme as ThemeId);
+      } else if (msg.type === 'soloSession' && typeof msg.sessionId === 'string' && msg.sessionId) {
+        // Re-pin a MOUNTED solo view onto another chat. Nothing in VS Code
+        // sends this — a popped-out tab is one chat for its whole life — but
+        // the Origami Remote shell has no second tab to open, so its session
+        // switcher re-points this one (webview/remote/sessions.ts). ChatPane
+        // already holds every session replaySessionsTo announced, so the swap
+        // is a `visibleCells` re-derive with nothing to fetch.
+        soloSessionId = msg.sessionId;
       }
     };
     window.addEventListener('message', onMsg);
@@ -150,7 +172,7 @@
       {/if}
     </div>
     <div class="chat-fill">
-      <BoardShell onViewName={(n) => (boardViewName = n)} />
+      <BoardShell onViewName={(n) => (boardViewName = n)} {remoteEnabled} {flockEnabled} />
     </div>
   </div>
 {:else if memoryMode}
@@ -204,7 +226,7 @@
 {:else}
   <!-- Sidebar: the launcher (Chats strip + Settings). Chat threads live in
        their own movable editor tabs (the solo branch above). -->
-  <SidebarLauncher />
+  <SidebarLauncher {flockEnabled} />
 {/if}
 
 <style>

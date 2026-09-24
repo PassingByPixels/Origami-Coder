@@ -8,6 +8,7 @@ import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { ModelsDev } from "@origami/core/models-dev"
 import { jsonSchema } from "ai"
+import { InstanceRef } from "@/effect/instance-ref"
 
 describe("ProviderTransform.options - setCacheKey", () => {
   const sessionID = "test-session-123"
@@ -301,6 +302,38 @@ describe("ProviderTransform.options - setCacheKey", () => {
       providerOptions: {},
     })
     expect(result.prompt_cache_key).toBeUndefined()
+  })
+
+  // t-rz0amv. The key is what makes OpenAI's implicit cache reusable across the
+  // steps of one turn: OpenAI routes on it, so a key that moved between steps
+  // would send the second step to another cache.
+  test("the cache key is stable across the steps of a session and differs across sessions", () => {
+    const openaiModel = {
+      ...mockModel,
+      providerID: "openai",
+      api: { id: "gpt-5.2", url: "https://api.openai.com", npm: "@ai-sdk/openai" },
+    }
+    const step = (id: string) => ProviderTransform.options({ model: openaiModel, sessionID: id, providerOptions: {} })
+    expect(step(sessionID).promptCacheKey).toBe(step(sessionID).promptCacheKey)
+    expect(step(sessionID).promptCacheKey).toBe(sessionID)
+    expect(step("ses_other").promptCacheKey).not.toBe(step(sessionID).promptCacheKey)
+  })
+
+  test("extended retention only on the model families the guide lists", () => {
+    const at = (id: string, npm = "@ai-sdk/openai", providerOptions: Record<string, unknown> = {}) =>
+      ProviderTransform.options({
+        model: { ...mockModel, providerID: "openai", api: { id, url: "https://api.openai.com", npm } },
+        sessionID,
+        providerOptions,
+      }).promptCacheRetention
+    for (const id of ["gpt-5", "gpt-5.1-codex-max", "gpt-5.2", "gpt-5.4", "gpt-5.5-pro", "gpt-4.1"])
+      expect(at(id)).toBe("24h")
+    // GPT-5.6 has its own 30-minute default and takes no retention field.
+    for (const id of ["gpt-5.6", "gpt-5.3", "gpt-4o"]) expect(at(id)).toBeUndefined()
+    // Not an OpenAI Responses endpoint: the field is OpenAI-only.
+    expect(at("gpt-5.2", "@ai-sdk/openai-compatible")).toBeUndefined()
+    // The provider's off switch takes the whole cache identity off.
+    expect(at("gpt-5.2", "@ai-sdk/openai", { setCacheKey: false })).toBeUndefined()
   })
 })
 
@@ -4017,19 +4050,19 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
       expect(result.low).toEqual({ reasoning: { effort: "low" } })
       expect(result.high).toEqual({ reasoning: { effort: "high" } })
     })
 
     for (const testCase of [
-      { id: "openai/o3-mini", efforts: ["none", "minimal", "low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5.4", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/o3-mini", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5.4", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-pro", efforts: ["high"] },
       { id: "openai/gpt-5.5-pro", efforts: ["medium", "high", "xhigh"] },
       { id: "openai/gpt-5.2-codex", efforts: ["low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5.3-codex", efforts: ["none", "low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5.3-codex-max", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5.3-codex", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5.3-codex-max", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-chat-latest", efforts: [] },
       { id: "openai/gpt-5.2-chat-latest", efforts: ["medium"] },
     ]) {
@@ -4333,18 +4366,18 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
       expect(result.low).toEqual({ reasoningEffort: "low" })
       expect(result.high).toEqual({ reasoningEffort: "high" })
     })
 
     for (const testCase of [
-      { id: "openai/gpt-5-5", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5-5", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-pro", efforts: ["high"] },
       { id: "openai/gpt-5-5-pro", efforts: ["medium", "high", "xhigh"] },
       { id: "openai/gpt-5-2-codex", efforts: ["low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5-3-codex", efforts: ["none", "low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5-3-codex-max", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5-3-codex", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5-3-codex-max", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-chat-latest", efforts: [] },
       { id: "openai/gpt-5-2-chat-latest", efforts: ["medium"] },
     ]) {
@@ -4646,7 +4679,7 @@ describe("ProviderTransform.variants", () => {
       })
     })
 
-    test("gpt-5 adds minimal effort", () => {
+    test("gpt-5 no longer offers minimal (t-46a74d)", () => {
       const model = createMockModel({
         id: "gpt-5",
         providerID: "azure",
@@ -4657,14 +4690,14 @@ describe("ProviderTransform.variants", () => {
         },
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
     })
 
     for (const testCase of [
-      { id: "gpt-5-1", efforts: ["none", "low", "medium", "high"] },
-      { id: "gpt-5-4", efforts: ["none", "low", "medium", "high", "xhigh"] },
-      { id: "gpt-5.4", efforts: ["none", "low", "medium", "high", "xhigh"] },
-      { id: "gpt-5-5", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "gpt-5-1", efforts: ["low", "medium", "high"] },
+      { id: "gpt-5-4", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "gpt-5.4", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "gpt-5-5", efforts: ["low", "medium", "high", "xhigh"] },
     ]) {
       test(`${testCase.id} returns supported Azure reasoning efforts`, () => {
         const result = ProviderTransform.variants(
@@ -4710,7 +4743,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2024-06-01",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
       expect(result.low).toEqual({
         reasoningEffort: "low",
         reasoningSummary: "auto",
@@ -4718,7 +4751,7 @@ describe("ProviderTransform.variants", () => {
       })
     })
 
-    test("models after 2025-11-13 include 'none' effort", () => {
+    test("models after 2025-11-13 still do NOT offer none or minimal (t-46a74d)", () => {
       const model = createMockModel({
         id: "gpt-5-nano",
         providerID: "openai",
@@ -4730,7 +4763,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2025-11-14",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high"])
     })
 
     test("models after 2025-12-04 include 'xhigh' effort", () => {
@@ -4745,7 +4778,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2025-12-05",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "minimal", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
     })
 
     for (const testCase of [
@@ -4757,13 +4790,13 @@ describe("ProviderTransform.variants", () => {
       { id: "o4-mini", releaseDate: "2025-04-16", efforts: ["low", "medium", "high"] },
       { id: "o3-deep-research", releaseDate: "2025-06-26", efforts: ["medium"] },
       { id: "o4-mini-deep-research", releaseDate: "2025-06-26", efforts: ["medium"] },
-      { id: "gpt-5.1", releaseDate: "2025-11-13", efforts: ["none", "low", "medium", "high"] },
-      { id: "gpt-5.4", releaseDate: "2026-03-05", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "gpt-5.1", releaseDate: "2025-11-13", efforts: ["low", "medium", "high"] },
+      { id: "gpt-5.4", releaseDate: "2026-03-05", efforts: ["low", "medium", "high", "xhigh"] },
       {
         id: "gpt-5.5",
         modelID: "gpt-5-5",
         releaseDate: "2026-04-23",
-        efforts: ["none", "low", "medium", "high", "xhigh"],
+        efforts: ["low", "medium", "high", "xhigh"],
       },
       { id: "gpt-5.4-pro", releaseDate: "2026-03-05", efforts: ["medium", "high", "xhigh"] },
       { id: "gpt-5.5-pro", releaseDate: "2026-04-23", efforts: ["medium", "high", "xhigh"] },
@@ -4771,8 +4804,8 @@ describe("ProviderTransform.variants", () => {
       { id: "gpt-5.1-codex", releaseDate: "2025-11-13", efforts: ["low", "medium", "high"] },
       { id: "gpt-5.1-codex-max", releaseDate: "2025-11-13", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "gpt-5.2-codex", releaseDate: "2025-12-11", efforts: ["low", "medium", "high", "xhigh"] },
-      { id: "gpt-5.3-codex", releaseDate: "2026-01-22", efforts: ["none", "low", "medium", "high", "xhigh"] },
-      { id: "gpt-5.3-codex-max", releaseDate: "2026-01-22", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "gpt-5.3-codex", releaseDate: "2026-01-22", efforts: ["low", "medium", "high", "xhigh"] },
+      { id: "gpt-5.3-codex-max", releaseDate: "2026-01-22", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "gpt-5-chat-latest", releaseDate: "2025-08-07", efforts: [] },
       { id: "gpt-5.1-chat-latest", releaseDate: "2025-11-13", efforts: ["medium"] },
       { id: "gpt-5.2-chat-latest", releaseDate: "2025-12-11", efforts: ["medium"] },
@@ -4823,7 +4856,7 @@ describe("ProviderTransform.variants", () => {
         release_date: "2026-04-23",
       })
       const result = ProviderTransform.variants(model)
-      expect(Object.keys(result)).toEqual(["none", "low", "medium", "high", "xhigh"])
+      expect(Object.keys(result)).toEqual(["low", "medium", "high", "xhigh"])
       expect(result.medium).toEqual({
         reasoningEffort: "medium",
         reasoningSummary: "auto",
@@ -5319,10 +5352,10 @@ describe("ProviderTransform.variants", () => {
     }
 
     for (const testCase of [
-      { apiId: "gpt-5", releaseDate: "2025-08-07", efforts: ["minimal", "low", "medium", "high"] },
-      { apiId: "gpt-5-mini", releaseDate: "2025-08-07", efforts: ["minimal", "low", "medium", "high"] },
-      { apiId: "gpt-5-nano", releaseDate: "2025-08-07", efforts: ["minimal", "low", "medium", "high"] },
-      { apiId: "gpt-5.4", releaseDate: "2026-01-15", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { apiId: "gpt-5", releaseDate: "2025-08-07", efforts: ["low", "medium", "high"] },
+      { apiId: "gpt-5-mini", releaseDate: "2025-08-07", efforts: ["low", "medium", "high"] },
+      { apiId: "gpt-5-nano", releaseDate: "2025-08-07", efforts: ["low", "medium", "high"] },
+      { apiId: "gpt-5.4", releaseDate: "2026-01-15", efforts: ["low", "medium", "high", "xhigh"] },
       { apiId: "azure-openai--o3-mini", releaseDate: "2024-01-01", efforts: ["low", "medium", "high"] },
     ]) {
       test(`${testCase.apiId} returns reasoning_effort variants under modelParams`, () => {
@@ -5364,9 +5397,9 @@ describe("ProviderTransform.variants", () => {
       })
 
     for (const testCase of [
-      { id: "openai/gpt-5.4", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5.4", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5.2-codex", efforts: ["low", "medium", "high", "xhigh"] },
-      { id: "openai/gpt-5.3-codex", efforts: ["none", "low", "medium", "high", "xhigh"] },
+      { id: "openai/gpt-5.3-codex", efforts: ["low", "medium", "high", "xhigh"] },
       { id: "openai/gpt-5-pro", efforts: ["high"] },
       { id: "openai/gpt-5.2-pro", efforts: ["medium", "high", "xhigh"] },
       { id: "openai/gpt-5-chat-latest", efforts: [] },
@@ -5828,5 +5861,290 @@ describe("ReasoningOption mirror", () => {
 
   test("the config schema and the models.dev schema still agree", () => {
     expect(extract("v1/config/provider.ts")).toBe(extract("models-dev.ts"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The ROLLING IMAGE WINDOW.
+//
+// The failure this exists for, reproduced from the owner's session: a self-
+// hosted GLM-5.3-Flash on the DGX Sparks, vLLM started with
+// `--limit-mm-per-prompt {image:4,video:1}`, answering
+//
+//   At most 4 image(s) may be provided in one prompt. (parameter=image)
+//
+// A turn that read six PNG frames sent all six, and so did the "continue" after
+// it, because the same six were still attached. Nothing dropped and nothing
+// degraded, so the chat could not be continued at all.
+//
+// The two homes of an image on the wire are BOTH covered here, because
+// `session/message-v2.ts` splits them by provider: media stays inside the tool
+// result for the SDKs that take it there, and is re-injected as a synthetic
+// user message for the ones that do not (every openai-compatible endpoint,
+// which is what a self-hosted vLLM is).
+// ---------------------------------------------------------------------------
+
+describe("ProviderTransform.message - the rolling image window", () => {
+  const PNG = "AAECAw=="
+
+  /** A model that CAN see. `images` declares the endpoint's own per-prompt cap. */
+  const seeing = (images?: number) =>
+    ({
+      id: "spark/glm-5.3-flash",
+      providerID: "spark",
+      api: { id: "GLM-5.3-Flash-EXL3", url: "http://192.0.2.10:8000/v1", npm: "@ai-sdk/openai-compatible" },
+      name: "GLM 5.3 Flash",
+      capabilities: {
+        temperature: true,
+        reasoning: false,
+        attachment: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: true, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+      limit: { context: 1_000_000, output: 32_000, ...(images === undefined ? {} : { images }) },
+      status: "active",
+      options: {},
+      headers: {},
+      release_date: "2026-08-28",
+    }) as any
+
+  /** The same model with the image modality off — the capability gate's path. */
+  const blind = () => {
+    const model = seeing()
+    model.capabilities.input.image = false
+    return model
+  }
+
+  /** How `message-v2` hands an openai-compatible endpoint a tool's picture. */
+  const userImage = (name: string) =>
+    ({
+      role: "user",
+      content: [
+        { type: "text", text: "Called the read tool with the following input" },
+        { type: "file", data: `data:image/png;base64,${PNG}`, mediaType: "image/png", filename: name },
+      ],
+    }) as any
+
+  /** How it hands one to an SDK that takes media inside the tool result. */
+  const toolImage = (id: string) =>
+    ({
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: id,
+          toolName: "read",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: "Image read successfully" },
+              { type: "media", mediaType: "image/png", data: PNG },
+            ],
+          },
+        },
+      ],
+    }) as any
+
+  /** Every part on the wire, flattened, so counting does not depend on shape. */
+  const flat = (msgs: any[]) =>
+    msgs.flatMap((msg) =>
+      (Array.isArray(msg.content) ? msg.content : []).flatMap((part: any) =>
+        part?.output?.type === "content" ? part.output.value : [part],
+      ),
+    )
+  const images = (msgs: any[]) =>
+    flat(msgs).filter((p: any) => p.type === "image" || p.type === "file" || p.type === "media")
+  const notes = (msgs: any[]) => flat(msgs).filter((p: any) => p.text === ProviderTransform.IMAGE_OMITTED)
+
+  test("the note reads exactly as specified", () => {
+    expect(ProviderTransform.IMAGE_OMITTED).toBe("[image omitted — outside the recent-image window]")
+    expect(ProviderTransform.IMAGE_WINDOW_DEFAULT).toBe(8)
+  })
+
+  test("under the window nothing is touched", () => {
+    const msgs = Array.from({ length: ProviderTransform.IMAGE_WINDOW_DEFAULT }, (_, i) => userImage(`f${i}.png`))
+    const result = ProviderTransform.message(msgs, seeing(), {})
+    expect(images(result).length).toBe(ProviderTransform.IMAGE_WINDOW_DEFAULT)
+    expect(notes(result).length).toBe(0)
+  })
+
+  test("over the window the OLDEST images become notes and the newest ride", () => {
+    const msgs = Array.from({ length: 11 }, (_, i) => userImage(`f${i}.png`))
+    const result = ProviderTransform.message(msgs, seeing(), {})
+
+    expect(images(result).length).toBe(8)
+    expect(notes(result).length).toBe(3)
+    // Position is preserved: the note stands where the picture stood.
+    expect(result[0]!.content).toEqual([
+      { type: "text", text: "Called the read tool with the following input" },
+      { type: "text", text: ProviderTransform.IMAGE_OMITTED },
+    ])
+    // ...and the three that were noted out are the three OLDEST, so every
+    // surviving picture comes from the tail.
+    const kept = result
+      .slice(3)
+      .flatMap((msg: any) => msg.content.filter((p: any) => p.type === "file").map((p: any) => p.filename))
+    expect(kept).toEqual(["f3.png", "f4.png", "f5.png", "f6.png", "f7.png", "f8.png", "f9.png", "f10.png"])
+  })
+
+  test("a per-model limit.images wins over the default - the real Spark cap of 4", () => {
+    const msgs = Array.from({ length: 6 }, (_, i) => userImage(`frame_${i}.png`))
+    const result = ProviderTransform.message(msgs, seeing(4), {})
+    expect(images(result).length).toBe(4)
+    expect(notes(result).length).toBe(2)
+  })
+
+  test("images inside a TOOL RESULT count and are noted out in place", () => {
+    const msgs = [toolImage("c0"), toolImage("c1"), toolImage("c2")]
+    const result = ProviderTransform.message(msgs, seeing(1), {})
+
+    expect(images(result).length).toBe(1)
+    expect((result[0]!.content as any)[0].output.value).toEqual([
+      { type: "text", text: "Image read successfully" },
+      { type: "text", text: ProviderTransform.IMAGE_OMITTED },
+    ])
+    // The newest tool result keeps its pixels.
+    expect((result[2]!.content as any)[0].output.value[1]).toEqual({
+      type: "media",
+      mediaType: "image/png",
+      data: PNG,
+    })
+  })
+
+  test("one window spans both homes, in wire order", () => {
+    const msgs = [userImage("a.png"), toolImage("c1"), userImage("b.png"), toolImage("c2")]
+    const result = ProviderTransform.message(msgs, seeing(2), {})
+    expect(images(result).length).toBe(2)
+    expect(notes(result).length).toBe(2)
+    // The two OLDEST - the first user image and the first tool result.
+    expect(notes([result[0], result[1]]).length).toBe(2)
+    expect(images([result[2], result[3]]).length).toBe(2)
+  })
+
+  test("a model that cannot see is untouched: the capability ERROR still wins", () => {
+    const msgs = Array.from({ length: 11 }, (_, i) => userImage(`f${i}.png`))
+    const result = ProviderTransform.message(msgs, blind(), {})
+
+    // Every picture became the capability gate's own line, and the window
+    // found nothing left to count - no note of its own appears anywhere.
+    expect(images(result).length).toBe(0)
+    expect(notes(result).length).toBe(0)
+    expect(
+      flat(result).filter((p: any) => typeof p.text === "string" && p.text.startsWith("ERROR: Cannot read")).length,
+    ).toBe(11)
+  })
+
+  test("text-only history is never touched, however long", () => {
+    const msgs = Array.from({ length: 40 }, (_, i) => ({
+      role: "user",
+      content: [{ type: "text", text: `m${i}` }],
+    })) as any
+    const result = ProviderTransform.message(msgs, seeing(1), {})
+    expect(notes(result).length).toBe(0)
+    expect(flat(result).length).toBe(40)
+  })
+
+  test("a limit of 0 notes out every picture", () => {
+    const result = ProviderTransform.message([userImage("a.png"), toolImage("c1")], seeing(0), {})
+    expect(images(result).length).toBe(0)
+    expect(notes(result).length).toBe(2)
+  })
+})
+
+// t-rz0amv. OpenCode Go/Zen: "Send a stable session ID in `x-opencode-session`
+// for each conversation so we can optimize routing and prompt caching"
+// (https://opencode.ai/docs/go/). A warm that reached the gateway without it
+// would be routed somewhere else and refresh nothing.
+describe("LLMRequestPrep.prepare - OpenCode session routing", () => {
+  const sessionID = "ses_opencode_1"
+  const model = {
+    id: "opencode-go/gpt-5.2",
+    providerID: "opencode-go",
+    api: { id: "gpt-5.2", url: "https://opencode.ai/zen/go/v1", npm: "@ai-sdk/openai-compatible" },
+    name: "GPT-5.2 (Go)",
+    capabilities: {
+      temperature: true,
+      reasoning: true,
+      attachment: false,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0 },
+    limit: { context: 200000, output: 8192 },
+    status: "active",
+    options: {},
+    headers: {},
+  } as any
+
+  // `prepare` reads the project id for the sibling `x-opencode-project` header,
+  // so the OpenCode branch needs an instance in context; nothing else here does.
+  const prepare = (warm: boolean) =>
+    Effect.runPromise(
+      LLMRequestPrep.prepare({
+        user: {
+          id: "msg_user-test",
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: "test",
+          model: { providerID: "opencode-go", modelID: "gpt-5.2" },
+        } as any,
+        sessionID,
+        model,
+        warm,
+        agent: { name: "test", mode: "primary", options: {}, permission: [] } as any,
+        system: [],
+        messages: [{ role: "user", content: "Hello" }],
+        tools: {},
+        provider: { id: "opencode-go", options: {} } as any,
+        auth: undefined,
+        plugin: {
+          trigger: (_name: string, _input: unknown, output: unknown) => Effect.succeed(output),
+          list: () => Effect.succeed([]),
+          init: () => Effect.void,
+        } as any,
+        flags: { outputTokenMax: 32_000, client: "test" } as any,
+        isWorkflow: false,
+      }).pipe(Effect.provideService(InstanceRef, { project: { id: "prj_test" } } as any)),
+    )
+
+  test("a real request and its warm carry the same x-opencode-session", async () => {
+    // The union of the two header shapes is not indexable; the wire is strings.
+    const real = (await prepare(false)).headers as Record<string, string>
+    const warm = await prepare(true)
+    expect(real["x-opencode-session"]).toBe(sessionID)
+    expect((warm.headers as Record<string, string>)["x-opencode-session"]).toBe(sessionID)
+    // The warm is the same prefix with the cheapest possible reply.
+    expect(warm.params.maxOutputTokens).toBe(1)
+  })
+})
+
+// t-u54x6w: the well-formed fast path must answer exactly what the regex does.
+describe("ProviderTransform.sanitizeSurrogates", () => {
+  const regex = (content: string) =>
+    content.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD")
+  const cases = [
+    "",
+    "plain ascii",
+    "Ünïcödé ✓ and an emoji \ud83d\ude00 pair",
+    "lone high \ud800 here",
+    "lone low \udc00 here",
+    "reversed \udc00\ud800 pair",
+    "\ud800",
+    "trailing high \ud83d",
+    "x".repeat(100_000) + "\ud800",
+  ]
+  test("gives the regex's answer for well-formed and broken strings", () => {
+    for (const input of cases) expect(ProviderTransform.sanitizeSurrogates(input)).toBe(regex(input))
+  })
+  test("returns a well-formed string as it is", () => {
+    const input = "already fine \ud83d\ude00"
+    expect(ProviderTransform.sanitizeSurrogates(input)).toBe(input)
+    expect(ProviderTransform.sanitizeSurrogates("a\ud800b")).toBe("a\uFFFDb")
   })
 })

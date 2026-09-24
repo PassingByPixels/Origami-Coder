@@ -73,6 +73,10 @@ const baseConfig = () => ({
     // connect, and what the xai/openai/anthropic key-only prompt writes minus
     // the key: a name, an npm package, models. No `options`, so no baseURL.
     xai: { name: 'xAI', npm: '@ai-sdk/xai', models: { 'grok-4.6': { name: 'Grok 4.6' } } },
+    // A cloud provider that is NOT a Labs OAuth connection, for the VLM-leak
+    // test below. Same shape as the xai block — a name, an npm package, models,
+    // no `options` and so no baseURL — so it exercises the same fallthrough.
+    openrouter: { name: 'OpenRouter', npm: '@ai-sdk/openai-compatible', models: { 'glm-5.3': { name: 'GLM 5.3' } } },
   },
 });
 
@@ -148,10 +152,27 @@ describe('a cloud session with no probeable endpoint', () => {
 
   it('does NOT inherit the LM Studio VLM flag either — same gate, same leak', async () => {
     const panel = makePanel(); // LM Studio has a *vlm* loaded
+    // NOT grok, and the swap is load-bearing. `readModelVision` now answers TRUE
+    // for a Labs OAuth provider whose block declares no modalities — the backends
+    // behind ChatGPT/xAI/Copilot all take images, and the picker chip has no
+    // other source (firstFold.ts). A grok witness would therefore read `true`
+    // from its own provider and `true` from the leak alike, and prove neither.
+    // OpenRouter is cloud, is not a Labs connection, and declares nothing: the
+    // only `true` it could produce is the leak.
+    const s = session('openrouter/glm-5.3');
+    await panel.refreshModelInfoFor(s);
+    expect(s.modelIsVlm).toBe(false);
+  });
+
+  it('and a Labs OAuth model reads sighted from its provider, not from the local probe', async () => {
+    const panel = makePanel();
     const s = session('xai/grok-4.6');
     await panel.refreshModelInfoFor(s);
-    // grok-4.6's own config block declares no image modality, so: false.
-    expect(s.modelIsVlm).toBe(false);
+    // True for the RIGHT reason: xai is an OAuth connection, so silence in the
+    // block means "the backend decides", and the backend takes images. The
+    // window assertions above are what prove the local probe is still ignored.
+    expect(s.modelIsVlm).toBe(true);
+    expect(s.modelWindow).toBe(0);
   });
 
   it('resolves NO probe target rather than pointing at the local engine URL', () => {

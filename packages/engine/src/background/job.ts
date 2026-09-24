@@ -4,11 +4,17 @@ import { InstanceState } from "@/effect/instance-state"
 import { Effect, Layer } from "effect"
 
 export {
+  cancelTree,
+  CANCEL_REASON_KEY,
+  type CancelReason,
   DEFAULT_MAX_DURATION_MS,
+  formatDuration,
   Service,
   type ExtendInput,
   type Info,
   type Interface,
+  type Outcome,
+  outcome,
   type StartInput,
   type Status,
   type WaitInput,
@@ -28,7 +34,7 @@ const layer = Layer.effect(
       wait: (input) => InstanceState.useEffect(state, (jobs) => jobs.wait(input)),
       waitForPromotion: (id) => InstanceState.useEffect(state, (jobs) => jobs.waitForPromotion(id)),
       promote: (id) => InstanceState.useEffect(state, (jobs) => jobs.promote(id)),
-      cancel: (id) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id)),
+      cancel: (id, reason) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id, reason)),
     })
   }),
 )

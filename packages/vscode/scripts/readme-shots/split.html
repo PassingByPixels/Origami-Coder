@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<!-- Two real webviews side by side, the way VS Code lays out the Origami sidebar
+     and a chat editor tab. Each iframe is host.html with its own globals
+     (?pane=side / ?pane=main, chosen by lib.cjs). Only this frame is layout. -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #1f1f1f; }
+    body { display: flex; }
+    iframe { border: 0; height: 100%; display: block; }
+    #side { flex: 0 0 var(--side-w, 340px); border-right: 1px solid #2b2b2b; }
+    #main { flex: 1 1 auto; min-width: 0; }
+  </style>
+</head>
+<body>
+  <iframe id="side" name="side" src="host.html?pane=side"></iframe>
+  <iframe id="main" name="main" src="host.html?pane=main"></iframe>
+</body>
+</html>

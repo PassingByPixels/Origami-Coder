@@ -2,14 +2,17 @@ import type { Message, Part, SessionMessageResponse } from "@origami/sdk/v2"
 
 /**
  * Read-only projection of a stored run into an ordered, wire-safe step list.
- *
  * Used by the `run_steps` ext method so a shell can review a PAST run without
- * loading/resuming the session. Nothing here mutates: it only reads the
- * `{ info, parts }` records `session.messages` already returns.
+ * loading/resuming the session. Nothing here mutates.
  */
 
-export type RunStepKind = "prompt" | "reply" | "tool" | "thinking" | "subagent" | "error"
+export type RunStepKind = "prompt" | "reply" | "tool" | "thinking" | "subagent" | "compaction" | "error"
 export type RunStepStatus = "completed" | "error" | "running" | "pending"
+
+/** Why a compaction ran, read off the compaction PART's own two booleans
+ *  (`auto`, `overflow` - schema/src/v1/session.ts CompactionPart). `unknown` keeps
+ *  a stored part that carries neither from degrading to a wrong answer. */
+export type CompactionTrigger = "auto" | "manual" | "overflow" | "unknown"
 
 export type RunStep = {
   readonly ordinal: number
@@ -22,13 +25,10 @@ export type RunStep = {
   readonly durationMs?: number
   /**
    * Usage for the assistant message this step belongs to. `input`/`output` are
-   * unchanged: always paired, always present together.
-   *
-   * `reasoning` and `cache` are ADDITIVE and OPTIONAL — an absent one is
-   * OMITTED, never zeroed, because a fabricated 0 reads as a measurement.
-   * Cache-read is not folded into `input` on purpose: a cached turn can carry
-   * a hundred times its `input` in cache, which is the whole difference
-   * between an expensive turn and a cheap one.
+   * always paired and always present. `reasoning` and `cache` are ADDITIVE and
+   * OPTIONAL - an absent one is OMITTED, never zeroed, because a fabricated 0
+   * reads as a measurement. Cache-read is not folded into `input` on purpose: a
+   * cached turn can carry a hundred times its `input` in cache.
    */
   readonly tokens?: {
     readonly input: number
@@ -39,32 +39,71 @@ export type RunStep = {
   /** The message's own cost. A genuine 0 (a local model) is KEPT, not dropped. */
   readonly cost?: number
   /**
-   * True when the assistant message that produced this step recorded NO token
-   * usage. A run total summed over the remaining steps is then an UNDERCOUNT,
-   * and a consumer must SAY so rather than print a confident wrong number.
-   * Emitted only when true, so absent means "this message's usage is here".
+   * Why THIS step read nothing from the provider's prefix cache, as the ENGINE
+   * recorded it on the step-finish part (session/cache-policy.ts). A viewer no
+   * longer derives a cause: absent means the engine measured none, and the
+   * reason is either a cache-blind provider or a run recorded before 0.4.160.
+   * A hit carries the facts with NO `cause`.
    */
+  readonly cache?: RunStepCache
+  /** The prefix digests this step was sent, as stored. `history` is absent on a
+   *  run recorded before the digest existed. */
+  readonly prefix?: { readonly system: string; readonly tools: string; readonly history?: string }
+  /** True when the assistant message that produced this step recorded NO token
+   *  usage, so a run total summed over the remaining steps is an UNDERCOUNT and a
+   *  consumer must say so. Emitted only when true. */
   readonly usageMissing?: true
   readonly model?: string
   readonly agent?: string
   readonly preview?: string
   readonly error?: string
-  /**
-   * True when this subagent was spawned detached (`background: true`), so it ran
-   * CONCURRENTLY with the steps that follow it instead of blocking them. Absent
-   * on a foreground subagent and on every non-subagent step.
-   */
+  /** Only on a `compaction` step. Every member but `trigger` is OPTIONAL and is
+   *  OMITTED when the store does not hold it - 0 for either would read as a
+   *  measurement. */
+  readonly compaction?: {
+    readonly trigger: CompactionTrigger
+    /** The last billed prompt before the compaction — how big the run got. */
+    readonly contextBefore?: number
+    /** Output tokens the summary message itself cost. */
+    readonly summaryTokens?: number
+  }
+  /** True when this subagent was spawned detached (`background: true`), so it ran
+   *  CONCURRENTLY with the steps that follow it. Absent otherwise. */
   readonly background?: boolean
   /** Session the subagent ran in — the key that links a spawn to its own run. */
   readonly childSessionId?: string
-  /**
-   * Nesting level: absent/0 on the reviewed session's own steps, 1 on a
-   * subagent's steps, 2 on a subagent's subagent. OPTIONAL by contract — a
-   * consumer that ignores it still reads a correct flat run.
-   */
+  /** Nesting level: absent/0 on the reviewed session's own steps, 1 on a subagent's,
+   *  2 on a subagent's subagent. OPTIONAL by contract. */
   readonly depth?: number
   /** `ordinal` of the subagent step that spawned this one. Only set with `depth`. */
   readonly parentOrdinal?: number
+}
+
+/** One cause per miss, in the engine's fixed precedence - see
+ *  `session/cache-policy.ts`, which is where it is derived. */
+export type RunStepCacheCause =
+  | "cold"
+  | "model"
+  | "compaction"
+  | "idle"
+  | "system"
+  | "tools"
+  | "history"
+  | "provider"
+  | "small"
+
+export type RunStepCache = {
+  readonly cause?: RunStepCacheCause
+  readonly preserved?: boolean
+  readonly divergence?: {
+    readonly message: number
+    readonly role: string
+    readonly offset: number
+    readonly source?: "tool-aging" | "reminder" | "plugin" | "unknown"
+  }
+  readonly idleMs?: number
+  readonly ttlSeconds?: number
+  readonly warmed?: boolean
 }
 
 export type RunStepsResult = {
@@ -73,39 +112,29 @@ export type RunStepsResult = {
   readonly total: number
 }
 
-// There WAS a 500-step ceiling here. It was removed on 2026-08-03 by design: a
-// review that silently drops everything after step 500 is worse than a large
-// payload, because the part the reader wants is usually the end of the run. The
-// payload growth is accepted; `preview` and PREVIEW_LIMIT keep each step small.
 /** Hard cap on any single `preview` excerpt, counted in code points. */
 export const PREVIEW_LIMIT = 400
-/**
- * Deepest subagent nesting projected: 1 = a subagent's steps, 2 = its own
- * subagent's steps. Level 3 is dropped — the spawning step is still shown, just
- * not expanded. (The engine's own `subagent_depth` defaults to 1, so level 2 is
- * only reachable on a config that raises it.)
- */
+/** Deepest subagent nesting projected: 1 = a subagent's steps, 2 = its own
+ *  subagent's steps. Level 3 is dropped - the spawning step is still shown, just
+ *  not expanded. */
 export const MAX_SUBAGENT_DEPTH = 2
-/**
- * Hard cap on how many child sessions a caller should FETCH to expand one run.
- * Each expansion is a separate `session.messages` read, so an unbounded fan-out
- * would turn one review into a hundred round trips.
- */
+/** Hard cap on how many child sessions a caller should FETCH to expand one run.
+ *  Each expansion is a separate `session.messages` read, so an unbounded fan-out
+ *  would turn one review into a hundred round trips. */
 export const MAX_CHILD_SESSIONS = 32
 
-/**
- * Tools whose call IS a subagent spawn. Only `task` exists in this fork's
- * registry (tool/task.ts `const id = "task"`); `task_stop`/`task_list` manage
- * existing tasks and stay ordinary tool steps.
- */
+/** Tools whose call IS a subagent spawn. Only `task` exists in this fork's registry
+ *  (tool/task.ts); `task_stop`/`task_list` manage existing tasks and stay ordinary
+ *  tool steps. */
 const SUBAGENT_TOOLS = new Set(["task"])
 
 /**
- * Part types that carry run bookkeeping rather than a reviewable action.
- * Skipped deliberately — listing them explicitly is what lets a genuinely
- * UNKNOWN (future) part type fall through to a generic step instead.
+ * Part types that carry run bookkeeping rather than a reviewable action. Listing
+ * them explicitly lets a genuinely UNKNOWN (future) part type fall through to a
+ * generic step instead. `compaction` is deliberately NOT here - it throws the
+ * prompt cache away, so a review that drops it shows the cost with no cause.
  */
-const STRUCTURAL_PARTS = new Set(["step-start", "step-finish", "snapshot", "patch", "agent", "compaction", "file"])
+const STRUCTURAL_PARTS = new Set(["step-start", "step-finish", "snapshot", "patch", "agent", "file"])
 
 /** Truncate on code points so a cut never splits a surrogate pair into lone halves. */
 function preview(text: string): string | undefined {
@@ -127,8 +156,7 @@ function timing(start?: number, end?: number) {
 }
 
 /** Assistant errors are NamedError-shaped: `{ name, data: { message? } }`.
- *  Exported for acp/subagent-transcript.ts, which has to read the same field
- *  off the same stored message — a second unwrap would drift from this one. */
+ *  Exported for acp/subagent-transcript.ts so a second unwrap cannot drift. */
 export function errorMessage(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined
   const data = (error as { data?: unknown }).data
@@ -148,8 +176,7 @@ function firstLine(text: string, fallback: string): string {
 
 /** Epoch ms the message was created, on user and assistant messages alike.
  *  Exported for acp/event.ts, which stamps the SAME instant onto a replayed
- *  sub-agent's terminal marker — a second reader of `time.created` would be
- *  free to disagree about when a child finished. */
+ *  sub-agent's terminal marker. */
 export function messageCreated(info: Message): number | undefined {
   const created = (info as { time?: { created?: unknown } }).time?.created
   return typeof created === "number" && Number.isFinite(created) ? created : undefined
@@ -161,8 +188,8 @@ function isBackground(part: Extract<Part, { type: "tool" }>): boolean {
   return metadata?.["background"] === true
 }
 
-/** A number we can actually report. Used for the NEW usage fields only —
- *  `input`/`output` keep the looser `typeof` gate they have always had. */
+/** A number we can actually report. Used for the NEW usage fields only - `input`/`output` keep
+ *  their looser gate. */
 function finite(n: unknown): number | undefined {
   return typeof n === "number" && Number.isFinite(n) ? n : undefined
 }
@@ -170,12 +197,9 @@ function finite(n: unknown): number | undefined {
 type Usage = Pick<RunStep, "tokens" | "cost" | "usageMissing">
 
 /**
- * One assistant message's recorded usage, in the projected shape.
- *
- * Every optional field is included only when the store really holds it. When
- * the message recorded no token usage at all the result says `usageMissing`
- * instead of substituting zeros — the difference between "this turn was free"
- * and "we do not know what this turn cost" is the whole point.
+ * One assistant message's recorded usage, in the projected shape. Every optional
+ * field is included only when the store really holds it; a message that recorded
+ * no token usage says `usageMissing` rather than substituting zeros.
  */
 function messageUsage(info: Message): Usage {
   const tokens = (
@@ -206,6 +230,76 @@ function messageUsage(info: Message): Usage {
   }
 }
 
+const CACHE_CAUSES = new Set<string>([
+  "cold",
+  "model",
+  "compaction",
+  "idle",
+  "system",
+  "tools",
+  "history",
+  "provider",
+  "small",
+])
+const DIVERGENCE_SOURCES = new Set<string>(["tool-aging", "reminder", "plugin", "unknown"])
+
+/** What one stored `step-finish` part says about its cached prefix, in the
+ *  projected shape. Read defensively: these rows outlive the build that wrote
+ *  them, and an unrecognised cause is dropped rather than passed on as a label
+ *  no reader has a sentence for. Undefined when the part carries neither. */
+function stepCacheFacts(part: unknown): Pick<RunStep, "cache" | "prefix"> | undefined {
+  const raw = part as {
+    cache?: {
+      cause?: unknown
+      preserved?: unknown
+      divergence?: { message?: unknown; role?: unknown; offset?: unknown; source?: unknown }
+      idleMs?: unknown
+      ttlSeconds?: unknown
+      warmed?: unknown
+    }
+    prefix?: { system?: unknown; tools?: unknown; history?: unknown }
+  }
+  const digests =
+    typeof raw.prefix?.system === "string" && typeof raw.prefix.tools === "string"
+      ? {
+          system: raw.prefix.system,
+          tools: raw.prefix.tools,
+          ...(typeof raw.prefix.history === "string" ? { history: raw.prefix.history } : {}),
+        }
+      : undefined
+  const divergence = raw.cache?.divergence
+  const cache = raw.cache
+    ? {
+        ...(cacheCause(raw.cache.cause) ? { cause: cacheCause(raw.cache.cause) } : {}),
+        ...(typeof raw.cache.preserved === "boolean" ? { preserved: raw.cache.preserved } : {}),
+        ...(divergence && finite(divergence.message) !== undefined && finite(divergence.offset) !== undefined
+          ? {
+              divergence: {
+                message: divergence.message as number,
+                role: typeof divergence.role === "string" ? divergence.role : "unknown",
+                ...(typeof divergence.source === "string" && DIVERGENCE_SOURCES.has(divergence.source)
+                  ? { source: divergence.source as NonNullable<RunStepCache["divergence"]>["source"] }
+                  : {}),
+                offset: divergence.offset as number,
+              },
+            }
+          : {}),
+        ...(finite(raw.cache.idleMs) === undefined ? {} : { idleMs: raw.cache.idleMs as number }),
+        ...(finite(raw.cache.ttlSeconds) === undefined ? {} : { ttlSeconds: raw.cache.ttlSeconds as number }),
+        ...(typeof raw.cache.warmed === "boolean" ? { warmed: raw.cache.warmed } : {}),
+      }
+    : undefined
+  if (!cache && !digests) return undefined
+  return { ...(cache ? { cache } : {}), ...(digests ? { prefix: digests } : {}) }
+}
+
+/** A cause this build has a sentence for, or undefined. */
+function cacheCause(value: unknown): RunStepCacheCause | undefined {
+  if (typeof value !== "string" || !CACHE_CAUSES.has(value)) return undefined
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- guarded by CACHE_CAUSES above
+  return value as RunStepCacheCause
+}
+
 function modelLabel(info: Message): string | undefined {
   if (info.role === "assistant") {
     return info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined
@@ -215,6 +309,52 @@ function modelLabel(info: Message): string | undefined {
 }
 
 type Draft = Omit<RunStep, "ordinal">
+
+/** What a compaction can say beyond its own trigger. Both members optional. */
+type CompactionFact = { readonly contextBefore?: number; readonly summaryTokens?: number }
+
+/** `session/compaction.ts` `create` writes `auto` always and `overflow` only on the
+ *  media-overflow path, so overflow OUTRANKS auto: an overflow compaction is also
+ *  an automatic one, and the narrower fact is the useful one. */
+function compactionTrigger(part: Extract<Part, { type: "compaction" }>): CompactionTrigger {
+  if (part.overflow === true) return "overflow"
+  if (part.auto === true) return "auto"
+  if (part.auto === false) return "manual"
+  return "unknown"
+}
+
+/**
+ * What each compaction in ONE session's messages can say about itself beyond its
+ * trigger, keyed by the id of the message that carries the compaction part.
+ * CONTEXT BEFORE is the last BILLED prompt before the compaction - nothing in the
+ * store records the context window itself. THE SUMMARY is the assistant message
+ * whose `parentID` is that compaction message and whose `summary` flag is set; its
+ * `input` is deliberately NOT counted as a billed prompt because the summary
+ * re-reads the whole PRE-compaction history.
+ */
+function compactionFacts(messages: readonly SessionMessageResponse[]): Map<string, CompactionFact> {
+  const out = new Map<string, CompactionFact>()
+  let billed: number | undefined
+  for (const message of messages ?? []) {
+    const info = message?.info
+    if (!info) continue
+    if ((message.parts ?? []).some((part) => (part as { type?: unknown } | null)?.type === "compaction")) {
+      out.set(info.id, billed === undefined ? {} : { contextBefore: billed })
+      continue
+    }
+    if (info.role !== "assistant") continue
+    const tokens = (info as { tokens?: { input?: unknown; output?: unknown } }).tokens
+    const parent = (info as { summary?: unknown }).summary === true ? info.parentID : undefined
+    if (parent !== undefined && out.has(parent)) {
+      const summaryTokens = finite(tokens?.output)
+      if (summaryTokens !== undefined) out.set(parent, { ...out.get(parent)!, summaryTokens })
+      continue
+    }
+    const input = finite(tokens?.input)
+    if (input !== undefined && input > 0) billed = input
+  }
+  return out
+}
 
 function toolStep(part: Extract<Part, { type: "tool" }>): Draft {
   const state = part.state
@@ -230,12 +370,9 @@ function toolStep(part: Extract<Part, { type: "tool" }>): Draft {
   }
 
   // A detached spawn RETURNS the instant the child is launched, so the engine
-  // stores it `completed` with an end ~10ms after its start while the subagent
-  // itself runs on for minutes. Reporting that as the subagent's own span is the
-  // bug: a real stored run has a background task whose tool state says 12ms and
-  // whose subagent actually took 1_591_366ms. So the spawn only ever carries the
-  // START here; the true end is stitched on in `project` from the completion the
-  // engine really injected, and stays ABSENT while the task is still running.
+  // stores it `completed` with an end ~10ms after its start while the subagent runs
+  // on for minutes. The spawn therefore carries only the START here; the true end is
+  // stitched on in `project`, and stays ABSENT while the task is still running.
   if (detached && state.status === "completed") {
     return {
       ...base,
@@ -274,8 +411,9 @@ function toolStep(part: Extract<Part, { type: "tool" }>): Draft {
   return { ...base, title: part.tool, status: "pending" }
 }
 
-/** Map one part to at most one step. Returns undefined for parts we skip. */
-function partStep(info: Message, part: Part): Draft | undefined {
+/** Map one part to at most one step. Returns undefined for parts we skip. `fact` is
+ *  this MESSAGE's compaction fact, which only a compaction part uses. */
+function partStep(info: Message, part: Part, fact?: CompactionFact): Draft | undefined {
   switch (part.type) {
     case "text": {
       if (part.synthetic || part.ignored) return undefined
@@ -285,13 +423,9 @@ function partStep(info: Message, part: Part): Draft | undefined {
       return {
         kind,
         title: firstLine(text, kind === "prompt" ? "Prompt" : "Reply"),
-        // A part-level start only exists for STREAMED (assistant) parts. A user
-        // prompt is never streamed, so `part.time` is undefined on every one of
-        // them — and a consumer that needs the whole run timed (the map's thread
-        // axis) then fell back to list order on literally every real run, since
-        // every run has a prompt. The owning message's created instant IS when
-        // the prompt happened, so fall back to it — the same honest instant the
-        // `subtask` case below already uses for the same reason.
+        // A part-level start only exists for STREAMED (assistant) parts, so
+        // `part.time` is undefined on every user prompt. The owning message's
+        // created instant IS when the prompt happened, so fall back to it.
         ...timing(part.time?.start ?? messageCreated(info), part.time?.end),
         ...(preview(text) ? { preview: preview(text) } : {}),
       }
@@ -308,11 +442,9 @@ function partStep(info: Message, part: Part): Draft | undefined {
     case "tool":
       return toolStep(part)
     case "subtask":
-      // A user-invoked subagent. `SubtaskPart` carries prompt/description/agent
-      // and NOTHING else — no time, no status, no session id (schema/src/v1
-      // session.ts) — so the only honest instant available is the moment its
-      // owning message was created, i.e. when the user invoked it. No end and no
-      // status are emitted because the store genuinely holds neither.
+      // A user-invoked subagent. `SubtaskPart` carries prompt/description/agent and
+      // NOTHING else - no time, no status, no session id - so the only honest
+      // instant is the moment its owning message was created.
       return {
         kind: "subagent",
         title: part.description || part.agent || "Subagent",
@@ -320,10 +452,18 @@ function partStep(info: Message, part: Part): Draft | undefined {
         ...timing(messageCreated(info)),
         ...(preview(part.prompt ?? "") ? { preview: preview(part.prompt ?? "") } : {}),
       }
+    case "compaction":
+      // The engine writes this part onto a user message of its OWN making
+      // (session/compaction.ts `create`), and the part carries no time of its own.
+      return {
+        kind: "compaction",
+        title: "Context compacted",
+        ...timing(messageCreated(info)),
+        compaction: { trigger: compactionTrigger(part), ...(fact ?? {}) },
+      }
     case "retry":
-      // Same story as an unstreamed text part: `RetryPart` carries no time of
-      // its own, so without the owning message's instant a single retry made
-      // the whole run untimeable.
+      // Same story as an unstreamed text part: `RetryPart` carries no time of its
+      // own, so without the owning message's instant a retry makes a run untimeable.
       return {
         kind: "error",
         title: `Retry ${part.attempt}`,
@@ -332,9 +472,8 @@ function partStep(info: Message, part: Part): Draft | undefined {
         ...(errorMessage(part.error) ? { error: errorMessage(part.error) } : {}),
       }
     default: {
-      // Known bookkeeping parts are dropped on purpose; anything else is a part
-      // type this build does not understand yet. Surface it as a generic step
-      // rather than throwing — losing one step must never lose the whole run.
+      // Known bookkeeping parts are dropped on purpose; anything else is a part type
+      // this build does not understand yet. Surface it rather than throwing.
       const type = (part as { type?: unknown }).type
       if (typeof type === "string" && STRUCTURAL_PARTS.has(type)) return undefined
       return { kind: "tool", tool: typeof type === "string" ? type : "unknown", title: "Unrecognised step" }
@@ -342,15 +481,9 @@ function partStep(info: Message, part: Part): Draft | undefined {
   }
 }
 
-/**
- * Session the `task` call spawned. The task tool records it itself —
- * `ctx.metadata({ metadata: { sessionId, parentSessionId, model, … } })` in
- * `tool/task.ts` — and the engine persists that on the tool part's state, for
- * running, completed AND error states alike (pinned by
- * `test/session/prompt.test.ts`'s "running subtask preserves metadata after
- * tool-call transition" and "failed subtask preserves metadata on error tool
- * state"). A `pending` state has no metadata yet, hence the optional chain.
- */
+/** Session the `task` call spawned. The task tool records it itself via
+ *  `ctx.metadata` in `tool/task.ts`, and the engine persists it on the tool part's
+ *  state for running, completed AND error states. A `pending` state has none yet. */
 export function childSessionId(part: Part): string | undefined {
   if (!part || typeof part !== "object") return undefined
   if (part.type !== "tool" || !SUBAGENT_TOOLS.has(part.tool)) return undefined
@@ -358,12 +491,9 @@ export function childSessionId(part: Part): string | undefined {
   return typeof id === "string" && id ? id : undefined
 }
 
-/**
- * Every child session these messages spawned, in call order, de-duplicated —
- * what a caller needs to fetch before `project` can expand them. Resuming a
- * task (`task_id`) reuses one session across several calls, so the same id can
- * appear more than once.
- */
+/** Every child session these messages spawned, in call order, de-duplicated - what a
+ *  caller needs to fetch before `project` can expand them. Resuming a task
+ *  (`task_id`) reuses one session across calls, so an id can appear more than once. */
 export function childSessionIds(messages: readonly SessionMessageResponse[]): string[] {
   const seen = new Set<string>()
   for (const message of messages ?? []) {
@@ -378,19 +508,35 @@ export function childSessionIds(messages: readonly SessionMessageResponse[]): st
 
 type Pending = { draft: Draft; child?: string }
 
-/**
- * One message's drafts, already carrying that message's own model/agent/usage.
- * Decorating here rather than over a window of the shared list is what stops a
- * parent's model leaking onto the subagent steps spliced in after it.
- */
-function messageDrafts(message: SessionMessageResponse): Pending[] {
+/** One message's drafts, already carrying that message's own model/agent/usage.
+ *  Decorating here stops a parent's model leaking onto subagent steps spliced in. */
+function messageDrafts(message: SessionMessageResponse, fact?: CompactionFact): Pending[] {
   const info = message?.info
   if (!info) return []
 
   const out: Pending[] = []
+  // A `step-finish` part ENDS one model step, so its cached-prefix facts belong
+  // to the last step this message produced BEFORE it - the reply or tool call of
+  // that same model step, which is also where `tokens` lands on a single-step
+  // message. `closed` is how far the previous step-finish already claimed, so a
+  // message with several of them puts each step's cause on its own step.
+  let closed = 0
+  let orphan: Pick<RunStep, "cache" | "prefix"> | undefined
   for (const part of message.parts ?? []) {
     if (!part || typeof part !== "object") continue
-    const step = partStep(info, part as Part)
+    if ((part as { type?: unknown }).type === "step-finish") {
+      const facts = stepCacheFacts(part)
+      if (!facts) continue
+      // A step that produced no reviewable part at all: held for the synthetic
+      // step below rather than stamped onto a neighbouring step's row.
+      if (out.length === closed) orphan = facts
+      if (out.length > closed) {
+        out[out.length - 1]!.draft = { ...out[out.length - 1]!.draft, ...facts }
+        closed = out.length
+      }
+      continue
+    }
+    const step = partStep(info, part as Part, fact)
     if (!step) continue
     const child = childSessionId(part as Part)
     out.push({ draft: step, ...(child ? { child } : {}) })
@@ -408,19 +554,11 @@ function messageDrafts(message: SessionMessageResponse): Pending[] {
 
   if (info.role === "assistant") {
     const usage = messageUsage(info)
-    // A request that produced NO reviewable part still ran, and was still
-    // billed. Two real shapes do this, both measured in the local store: a
-    // message whose only parts are `step-start`/`step-finish` — the provider
-    // reported a tool call it never emitted a part for — and a `final_answer`
-    // text part that came back empty. 2,665 of 33,718 stored assistant
-    // messages are one of the two, carrying 25.9M tokens between them.
-    //
-    // Attaching usage to "the last step" therefore dropped it whenever there
-    // was no step, and took `usageMissing` down with it: the run's total came
-    // out SHORT and, worse, UNFLAGGED. One step for the turn is what keeps the
-    // sum honest. Only a message that actually measured something earns one —
-    // a request with neither parts nor usage is a non-event, and a marker for
-    // it would be a node on the map standing for nothing.
+    // A request that produced NO reviewable part still ran, and was still billed:
+    // a message whose only parts are `step-start`/`step-finish`, or a `final_answer`
+    // text part that came back empty. Attaching usage to "the last step" dropped it
+    // whenever there was no step, and took `usageMissing` with it - the run's total
+    // came out SHORT and UNFLAGGED. One step for the turn keeps the sum honest.
     if (out.length === 0 && (usage.tokens !== undefined || usage.cost !== undefined)) {
       out.push({
         draft: {
@@ -429,12 +567,12 @@ function messageDrafts(message: SessionMessageResponse): Pending[] {
           ...timing(messageCreated(info)),
           ...(model ? { model } : {}),
           ...(agent ? { agent } : {}),
+          ...(orphan ?? {}),
         },
       })
     }
-    // Usage is per assistant message, not per part. Attach it to the last
-    // step that message produced so a UI totals a run by summing steps
-    // instead of double-counting the same message on every one of its parts.
+    // Usage is per assistant message, not per part. Attach it to the last step that
+    // message produced so a UI totals a run without double-counting.
     const last = out.length - 1
     if (last >= 0) {
       out[last]!.draft = { ...out[last]!.draft, ...usage }
@@ -456,27 +594,20 @@ function messageDrafts(message: SessionMessageResponse): Pending[] {
   return out
 }
 
-/**
- * The marker `tool/task.ts` renders when a background subagent settles. Its
- * `renderOutput` opens every result with `<task id=… state=…>`; the drainer joins
- * a whole BATCH of them into one injected turn, so a single part can carry
- * several and this is matched globally rather than once.
- */
+/** The marker `tool/task.ts` renders when a background subagent settles. The drainer
+ *  joins a whole BATCH of them into one injected turn, so a single part can carry
+ *  several and this is matched globally rather than once. */
 const TASK_RESULT = /<task id="([^"]+)" state="(completed|error)">/g
 
 type Completion = { readonly at: number; readonly status: "completed" | "error" }
 
 /**
- * When each background subagent actually finished, read off the results the
- * engine ALREADY injected back into its parent's stream — `inject`/`drain` in
- * `tool/task.ts` prompt the parent with a synthetic `<task_result>` turn. Nothing
- * is synthesised here: a task with no injected result simply has no entry, which
- * is what makes "still running" distinguishable from "finished".
- *
- * The instant comes from the owning MESSAGE (`info.time.created`) because the
- * injected text part itself is stored with no `time` at all — verified against a
- * real run, where that message lands 4-5ms after the child's own last assistant
- * message completed.
+ * When each background subagent actually finished, read off the results the engine
+ * ALREADY injected back into its parent's stream (`inject`/`drain` in `tool/task.ts`).
+ * Nothing is synthesised here: a task with no injected result has no entry, which is
+ * what makes "still running" distinguishable from "finished". The instant comes from
+ * the owning MESSAGE (`info.time.created`) because the injected text part itself is
+ * stored with no `time` at all.
  */
 function indexCompletions(messages: readonly SessionMessageResponse[], into: Map<string, Completion>) {
   for (const message of messages ?? []) {
@@ -503,17 +634,17 @@ type Collect = {
   readonly out: Draft[]
 }
 
-/**
- * Append these messages' steps to `out`, expanding any subagent step whose
- * child session was supplied, inline and immediately after it. The push order
- * IS the ordinal order — nothing is ever spliced in later — so a child's
- * ordinal is simply `out.length` at the moment its parent was pushed.
- */
+/** Append these messages' steps to `out`, expanding any subagent step whose child
+ *  session was supplied, inline and immediately after it. The push order IS the
+ *  ordinal order, so a child's ordinal is `out.length` when its parent was pushed. */
 function collect(ctx: Collect, messages: readonly SessionMessageResponse[], depth: number, parentOrdinal?: number) {
   const nest = depth > 0 ? { depth, ...(parentOrdinal === undefined ? {} : { parentOrdinal }) } : {}
+  // Per LIST, never across lists: a sub-agent's compaction reads its own
+  // session's billed prompts, not its parent's.
+  const facts = compactionFacts(messages ?? [])
 
   for (const message of messages ?? []) {
-    for (const entry of messageDrafts(message)) {
+    for (const entry of messageDrafts(message, facts.get(message?.info?.id ?? ""))) {
       const ordinal = ctx.out.length
       ctx.out.push({ ...entry.draft, ...nest })
 
@@ -530,19 +661,16 @@ function collect(ctx: Collect, messages: readonly SessionMessageResponse[], dept
 }
 
 /**
- * Project stored messages into ordered steps. Message order is preserved as
- * returned by the engine, parts in their stored order within each message.
+ * Project stored messages into ordered steps, preserving message and part order.
+ * `ordinal` is the 0-based position in the run and `total` is how many steps there
+ * were. Every step is returned, so `truncated` is always false; it stays in the
+ * result because the wire shape is the contract.
  *
- * `ordinal` is the 0-based position in the run and `total` is how many steps
- * there were. Every step is returned, so `truncated` is always false; it stays
- * in the result because the wire shape is the contract.
- *
- * Pass `children` (child sessionID -> that session's messages, fetched by the
- * caller — see `childSessionIds`) to branch subagent runs into the same list:
- * their steps land directly after the spawning step, carrying `depth` and
- * `parentOrdinal`, and share the one contiguous ordinal sequence. A subagent
- * whose messages were NOT supplied still projects as a single step, exactly as
- * before — the map is the only thing that expands anything.
+ * Pass `children` (child sessionID -> that session's messages, see
+ * `childSessionIds`) to branch subagent runs into the same list: their steps land
+ * directly after the spawning step with `depth`/`parentOrdinal`, sharing the one
+ * contiguous ordinal sequence. A subagent whose messages were NOT supplied still
+ * projects as a single step.
  */
 export function project(
   messages: readonly SessionMessageResponse[],
@@ -557,9 +685,8 @@ export function project(
 
   collect({ children, visited, out: drafts }, messages ?? [], 0)
 
-  // Stitch each detached spawn to the completion the engine really recorded.
-  // Done as a pass over the finished list, never by splicing, so `ordinal` stays
-  // the one contiguous sequence `collect` produced.
+  // Stitch each detached spawn to the completion the engine really recorded. Done as
+  // a pass over the finished list so `ordinal` stays the sequence `collect` produced.
   const completions = new Map<string, Completion>()
   indexCompletions(messages ?? [], completions)
   // A subagent can itself background a task, so its own stream carries results too.

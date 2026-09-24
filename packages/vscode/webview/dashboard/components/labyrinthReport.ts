@@ -1,10 +1,6 @@
 // The exported page's INTERACTIVE layer — what turns the artifact from a
-// picture plus a table into a report you can interrogate.
-//
-// Owner's UAT: "click a node and you get the stream's information". So the
-// file carries the per-step detail as DATA and a small inline script that
-// renders it on click. Extracted rather than grown into labyrinthHtml.ts,
-// which had 23 lines left under its cap.
+// picture plus a table into a report you can interrogate. The per-step
+// detail is DATA plus a small inline script that renders it on click.
 //
 // Two safety properties are load-bearing and neither is negotiable:
 //
@@ -12,32 +8,23 @@
 //     src, no stylesheet, no font, no image — so the page is identical off a
 //     file:// URL with the network gone.
 //  2. Run content is arbitrary model output, so it is never markup. The JSON
-//     block escapes every `<` and `>`, which is what stops a step titled
-//     `</script>` from closing the block and running the rest of the title as
-//     script; and every value reaches the DOM through `textContent`, which is
-//     what stops `<img onerror=...>` from becoming a live element. Both are
-//     asserted with exactly those payloads in labyrinthHtml.test.ts.
+//     block escapes every `<` and `>`, and every value reaches the DOM
+//     through `textContent`. Both are asserted in labyrinthHtml.test.ts.
 //
-// The rendered VALUES are all computed here, server-side, off the same helpers
-// the table uses — so the detail panel and the ledger can never disagree, and
-// the inline script stays a dumb painter with no formatting rules of its own.
+// The rendered VALUES are computed here, off the same helpers the table
+// uses, so the detail panel and the ledger can never disagree.
 //
-// No literal colour lives here: the CSS is written in `var(--og-*)` terms and
-// resolved by labyrinthExport.ts against the live root, same as the map.
+// No literal colour lives here: the CSS uses `var(--og-*)` terms, resolved
+// by labyrinthExport.ts against the live root, same as the map.
 
 import { formatClock, formatDuration } from './labyrinthFormat';
 import { isThreshold } from './labyrinthLanes';
 import { stepUsageText, type UsageStep } from './labyrinthUsage';
 
 /**
- * The step fields the report prints — `UsageStep` (ordinal, kind, title,
- * status, agent, tokens, cost, depth, parentOrdinal) plus the few the export
- * renders that the usage rules have no use for.
- *
- * Extending rather than restating it is deliberate: the usage bag is growing
- * (reasoning, cache, cost) and a private copy of its shape here would drift
- * silently. Every one of those fields is OPTIONAL, so an export stays correct
- * against a run carrying only `{input, output}` or no tokens at all.
+ * The step fields the report prints, extending `UsageStep` rather than
+ * restating it so a private copy can't drift as the usage bag grows.
+ * Every field is OPTIONAL, so export stays correct with partial or no tokens.
  */
 export interface HtmlStep extends UsageStep {
   tool?: string;
@@ -74,7 +61,6 @@ interface ReportStep {
 
 function detail(s: HtmlStep): ReportStep {
   const rows: Array<[string, string]> = [];
-  // Absent contributes NO row — but a genuine 0 is a measurement and stays.
   const add = (label: string, value: string | number | undefined): void => {
     if (value === undefined || value === '') return;
     rows.push([label, String(value)]);
@@ -84,8 +70,7 @@ function detail(s: HtmlStep): ReportStep {
   add('Started', formatClock(s.startedAt));
   add('Ended', formatClock(s.endedAt));
   add('Duration', formatDuration(s.durationMs));
-  // The inspector's OWN usage line, not a second copy of the formatting rules —
-  // the exported report and the pane must never disagree about a run's cost.
+  // Reuses the inspector's own usage line, so report and pane can't disagree.
   add('Tokens', stepUsageText(s));
   add('Model', s.model);
   add('Agent', s.agent);
@@ -99,28 +84,23 @@ function detail(s: HtmlStep): ReportStep {
 }
 
 /**
- * The step data, safe to sit inside a <script> block.
- *
- * `<` and `>` become JSON unicode escapes, so `</script>`, `<script` and
- * `<!--` in run content are all inert: the parser sees no tag-ish sequence,
- * and JSON.parse hands the ORIGINAL characters back to be set as text.
+ * The step data, safe inside a <script> block: `<`/`>` are JSON-escaped so
+ * `</script>` in run content can't close the tag; JSON.parse restores them.
  */
 export function stepsJson(steps: readonly HtmlStep[]): string {
   return JSON.stringify(steps.map(detail)).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 }
 
 /**
- * The panel's resting state — the page says what to do before it is clicked.
- * It sits in the atlas's pinned rail (labyrinthAtlas.ts wraps it), so the copy
- * names both surfaces a reader can click and says the rail will stay put.
+ * The panel's resting state. Sits in the atlas's pinned rail, so the copy
+ * names both surfaces a reader can click and says the rail stays put.
  */
 export const REPORT_PANEL =
   '<div class="detail" id="og-detail"><p class="dt-idle">Select a step — click any node on the map, '
   + 'or any row in the ledger drawer — and everything it recorded lands here. '
   + 'The rail stays put while you work across the map.</p></div>';
 
-// The atlas owns LAYOUT (labyrinthAtlasCss.ts): the filter row, the rail and
-// the drawer are its furniture. What stays here is the per-step detail's own
+// The atlas owns layout; this file keeps only the per-step detail's own
 // typography and the two selection rules, which belong with the painter.
 export const REPORT_CSS = `
 .dt-idle { margin: 0; color: var(--og-text-muted); font-style: italic; line-height: 1.6; }
@@ -149,9 +129,8 @@ export const REPORT_CSS = `
 `;
 
 /**
- * The painter. Every string it writes goes in via `textContent`, so a preview
- * full of markup is shown, not run. It reads formatted values only — there is
- * no date or duration logic in here to drift from the ledger's.
+ * The painter. Every string goes in via `textContent`, so markup is shown,
+ * not run. It reads formatted values only, with no date logic of its own.
  */
 export const REPORT_JS = `
 (function () {

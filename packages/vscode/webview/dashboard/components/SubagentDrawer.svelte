@@ -1,49 +1,37 @@
 <script lang="ts">
-  // The sub-agents this chat has out, as a LEFT-edge slide-out drawer.
+  // Sub-agents this chat has out, as a left-edge slide-out drawer. A
+  // fan-out's only trace in the transcript is N tool cards that scroll away,
+  // so this answers "is anything still running, and for how long".
   //
-  // WHY IT EXISTS. A fan-out puts N sub-agents to work and the only trace of
-  // them in the transcript is N tool cards, which scroll away. "Is anything
-  // still running, and how long has it been?" then had no answer short of
-  // scrolling back and reading statuses one at a time.
+  // Left, not right: the right edge already belongs to the per-turn todo
+  // overlay. The pull-tab interaction copies TodoStrip's; the top-strip
+  // layout is its own, since this is an edge drawer.
   //
-  // WHY LEFT. The right edge already belongs to the per-turn todo overlay. Two
-  // panels fighting for the same corner is worse than either.
+  // Collapsed by default: a background roster is something to consult, not
+  // something that should cover the reply being read.
   //
-  // The pull-tab INTERACTION is TodoStrip's (a persistent tab, the panel
-  // sliding off toward its docked edge, the list always mounted so reopening is
-  // instant). Its top-strip LAYOUT is not: this is an edge drawer, so the
-  // geometry is its own and the two are copied, not factored — the same call
-  // CollabTaskDrawer.svelte's cap comment already records for the right edge.
+  // Two levels of collapse, each on its own precedent: `open` (the whole
+  // drawer) is session-persisted, since checking the roster is a deliberate
+  // act worth remembering. `listOpen` (the row list) is plain local $state
+  // and no longer resets between fan-outs, so settled rows persist.
   //
-  // Collapsed by DEFAULT: a background roster is a thing you consult, not a
-  // thing that should cover the reply you are reading.
+  // Two groups, Running and Complete, so a settled agent still gets a row
+  // instead of vanishing from the roster; an empty band draws nothing. The
+  // Complete band is a HISTORY (t-h8gv8w): nothing sweeps it and there is no
+  // bulk clear, only the per-row × the owner presses on purpose.
   //
-  // TWO LEVELS OF COLLAPSE (t-kgryh1 polish), on purpose, each following a
-  // DIFFERENT existing precedent:
-  //   `open` — the whole drawer sliding to/from the edge — is SESSION-
-  //     PERSISTED (cellSession.subagentsOpen in ChatPane), because "let me
-  //     check the roster" is a deliberate act worth remembering across turns,
-  //     the same reasoning TodoOverlay's own collapse already carries.
-  //   `listOpen` below — the ROW LIST inside an open panel — is plain local
-  //     $state, CollabTaskDrawer.svelte's precedent ("a drawer is a glance,
-  //     not a setting"). It no longer resets between fan-outs: settled rows
-  //     persist now, so the {#if} below stops unmounting this component.
-  //
-  // TWO GROUPS, Running and Complete (groupSubagents in subagentRows.ts): a
-  // settled agent used to have no row at all, so the drawer emptied itself
-  // exactly when you wanted to read what it did. An empty band draws nothing.
+  // The EDGE HANDLE left for SubagentTab.svelte (t-dclj7z) when the panel head
+  // gained the agent-map button.
   import { rosterSummary } from '../panes/subagentFormat';
-  import { groupSubagents, type SubagentRow as SubagentRowT } from '../panes/subagentRows';
+  import { groupSubagents } from '../panes/subagentRows';
+  import type { SubagentDrawerProps } from '../panes/subagentProps';
   import SubagentGroup from './SubagentGroup.svelte';
+  import SubagentTab from './SubagentTab.svelte';
+  import { createReveal, revealFirstRunning } from './subagentAutoOpen';
+  import { tick } from 'svelte';
 
-  interface Props {
-    rows: SubagentRowT[];
-    open: boolean;
-    onToggle: () => void;
-    onDismiss: (key: string) => void;
-    onOpen: (row: SubagentRowT) => void;
-  }
-  let { rows, open, onToggle, onDismiss, onOpen }: Props = $props();
+  // The prop SHAPE lives in subagentProps.ts — see that file's header.
+  let { rows, open, onToggle, onDismiss, onOpen, onStop, onMap, limitMs = 0 }: SubagentDrawerProps = $props();
 
   const groups = $derived(groupSubagents(rows));
   const running = $derived(rows.filter((r) => r.state === 'running').length); // not the band: it holds queued too
@@ -51,6 +39,28 @@
 
   // Collapsed by default — see the header comment above.
   let listOpen = $state(false);
+  // The COMPLETE band's own fold, shut by default. A finished roster is a
+  // record, not a thing to watch: a chat that has spawned twenty agents over an
+  // afternoon otherwise pushes the two that are still working off a 220px list.
+  // It lives HERE, not in SubagentGroup.svelte, because the band is re-created
+  // on every re-render of the roster (the drawer re-derives once a second while
+  // anything is out) and a fold owned by the band would spring open on each
+  // tick. Running never folds: hiding what is still working is the one thing
+  // this drawer exists to prevent.
+  let completeOpen = $state(false);
+
+  // A CHILD GOING OUT REVEALS THE ROSTER, once, and never after the user has
+  // shut this surface by hand. Both halves of that rule: subagentAutoOpen.ts.
+  const reveal = createReveal();
+  let groupsEl = $state<HTMLDivElement | null>(null); // the scroll box the first running row lives in
+  $effect(() => {
+    if (!reveal.arrived(groups.running.length)) return;
+    listOpen = true;
+    if (!open) onToggle();
+    tick().then(() => revealFirstRunning(groupsEl));
+  });
+  /** Every way the user shuts this surface by hand. */
+  const userCollapse = (next: () => void) => { reveal.stop(); next(); };
 </script>
 
 <!-- No rows, no drawer — not even the tab. A handle that opens onto "nothing
@@ -58,35 +68,40 @@
 {#if rows.length > 0}
   <aside class="sa-drawer" class:collapsed={!open}>
     <div class="sa-panel">
-      <!-- The list's own fold: a real <button> header (count always visible,
-           collapsed or not) so a roster of many tasks costs one line until
-           asked to expand. -->
-      <button class="sa-head" aria-expanded={listOpen} onclick={() => (listOpen = !listOpen)}>
-        <span class="sa-head-chevron" aria-hidden="true">{listOpen ? '▾' : '▸'}</span>
-        <span class="sa-title">Sub-agents</span>
-        <span class="sa-count">{summary}</span>
-      </button>
+      <!-- The list's own fold: a real <button> header keeps the count visible
+           even when collapsed, so a big roster costs one line until expanded. -->
+      <div class="sa-head-row">
+        <button class="sa-head" aria-expanded={listOpen} onclick={() => (listOpen ? userCollapse(() => (listOpen = false)) : (listOpen = true))}>
+          <span class="sa-head-chevron" aria-hidden="true">{listOpen ? '▾' : '▸'}</span>
+          <span class="sa-title">Sub-agents</span>
+          <span class="sa-count">{summary}</span>
+        </button>
+        <!-- The map is offered from the PULL-OUT rather than from the chat's
+             own chrome: it is a view OF this roster, so it belongs to the
+             surface that lists it. Live session only — Labyrinth draws the
+             history (SubagentMap.svelte). -->
+        <button class="sa-map-btn" title="Open the agent map" aria-label="Open the agent map" onclick={onMap}>&#9737;</button>
+      </div>
       {#if listOpen}
         <!-- ONE scroll region over both bands: two 220px lists would let a
              busy chat grow the panel past the chat cell it floats over. -->
-        <div class="sa-groups">
-          <SubagentGroup label="Running" rows={groups.running} {onDismiss} {onOpen} />
-          <SubagentGroup label="Complete" rows={groups.complete} {onDismiss} {onOpen} />
+        <div class="sa-groups" bind:this={groupsEl}>
+          <!-- Stop reaches the RUNNING band only; the Complete band below gets no
+               `onStop`, so a settled row cannot draw a control over a dead job. -->
+          <SubagentGroup label="Running" rows={groups.running} {onDismiss} {onOpen} {onStop} {limitMs} />
+          <SubagentGroup
+            label="Complete"
+            rows={groups.complete}
+            collapsed={!completeOpen}
+            onToggleCollapse={() => (completeOpen = !completeOpen)}
+            {onDismiss}
+            {onOpen}
+            {limitMs}
+          />
         </div>
       {/if}
     </div>
-    <!-- The handle rides with the panel so it lands flush at the docked edge,
-         and is always present so a hidden drawer can be pulled back out. -->
-    <button
-      class="sa-tab"
-      aria-expanded={open}
-      aria-label={open ? 'Hide sub-agents' : `Show sub-agents (${running} running)`}
-      title={open ? 'Hide sub-agents' : `${running} sub-agent${running === 1 ? '' : 's'} running`}
-      onclick={onToggle}
-    >
-      <span class="sa-tab-glyph" aria-hidden="true">{open ? '⟨' : '⟩'}</span>
-      {#if !open && running > 0}<span class="sa-tab-count">{running}</span>{/if}
-    </button>
+    <SubagentTab {open} {running} onToggle={() => (open ? userCollapse(onToggle) : onToggle())} />
   </aside>
 {/if}
 
@@ -130,16 +145,16 @@
     box-shadow: 0 6px 22px rgba(0, 0, 0, 0.42);
   }
 
+  .sa-head-row { display: flex; align-items: baseline; gap: 4px; flex: 0 0 auto; margin-bottom: 5px; min-width: 0; }
   .sa-head {
     display: flex;
     align-items: baseline;
     gap: 6px;
-    width: 100%;
-    flex: 0 0 auto;
+    flex: 1 1 auto;
+    min-width: 0;
     background: transparent;
     border: none;
     padding: 0;
-    margin-bottom: 5px;
     cursor: pointer;
     font-family: inherit;
     text-align: left;
@@ -147,6 +162,12 @@
   .sa-head-chevron { flex: 0 0 auto; font-size: 8px; color: var(--og-text-muted); }
   .sa-title { font-size: 10.5px; font-weight: 600; color: var(--og-text); }
   .sa-count { font-size: 9px; color: var(--og-text-muted); }
+  .sa-map-btn {
+    flex: 0 0 auto;
+    background: none; border: none; padding: 0 2px; border-radius: 3px;
+    color: var(--og-text-muted); cursor: pointer; font-family: inherit; font-size: 12px; line-height: 1;
+  }
+  .sa-map-btn:hover { color: var(--og-text); background: var(--og-btn-bg); }
 
   /* Explicit px cap + its own scroll, INDEPENDENT of .sa-drawer's percentage
      max-height above: a fan-out of a dozen tasks must never grow the panel
@@ -160,25 +181,4 @@
     max-height: 220px;
     overflow-y: auto;
   }
-
-  .sa-tab {
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    width: 18px;
-    padding: 0;
-    background: var(--og-btn-bg);
-    color: var(--og-text-secondary);
-    border: 1px solid var(--og-border);
-    border-left: none;
-    border-radius: 0 6px 6px 0;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .sa-tab:hover { color: var(--og-text); background: var(--og-btn-hover); }
-  .sa-tab-glyph { font-size: 10px; line-height: 1; }
-  .sa-tab-count { font-size: 9px; font-weight: 600; color: var(--og-accent); }
 </style>

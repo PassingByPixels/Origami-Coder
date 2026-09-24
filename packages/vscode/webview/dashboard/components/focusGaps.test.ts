@@ -29,6 +29,23 @@ function msg(id: number, kind: Message['kind'], extra: Partial<Message> = {}): M
 function tool(id: number, toolName: string, toolKind = 'other'): Message {
   return msg(id, 'tool', { toolName, toolKind, toolStatus: 'completed' });
 }
+/** A read that DRAWS: the desktop's own resource URI for the file. `src` (or,
+ *  on the phone, `thumb`) is what makes the row worth its own line — the rider
+ *  alone is stamped for every image read, picture or not (t-fisfs5 R7). */
+function imageRead(id: number): Message {
+  return msg(id, 'tool', {
+    toolName: 'read', toolKind: 'read', toolStatus: 'completed',
+    toolReadImage: { path: `img${id}.png`, mime: 'image/png', bytes: 100, src: `vscode-resource://img${id}.png` },
+  });
+}
+/** The same rider with NO picture: a GIF/WebP, or a read the phone could not
+ *  get under its cap. The card draws its size-and-path placeholder. */
+function picturelessRead(id: number): Message {
+  return msg(id, 'tool', {
+    toolName: 'read', toolKind: 'read', toolStatus: 'completed',
+    toolReadImage: { path: `img${id}.gif`, mime: 'image/gif', bytes: 100 },
+  });
+}
 function gaps(rows: ReturnType<typeof foldForFocus>): FocusGap[] {
   return rows.filter(isFocusGap);
 }
@@ -96,6 +113,55 @@ describe('foldForFocus — where the gaps land', () => {
     expect(found.map((g) => g.label)).toEqual(['1 file read', '2 file reads']);
   });
 
+  // t-di3a0w — an empty agent row folds INTO the surrounding gap instead of
+  // closing it. AGENT is a real answer (has text) so it still splits runs;
+  // AGENT_EMPTY carries neither, the shape a step of only edits or a tool
+  // cancel actually sends.
+  const AGENT_EMPTY = (id: number) => msg(id, 'agent', { label: 'Tsuru', text: '' });
+
+  it('merges tool runs separated only by an empty agent row: the UAT shape', () => {
+    // The owner's screenshot, verbatim: three foreground `task` cards each
+    // followed by an empty Tsuru row. Before the fix that was TWO '1 tool'
+    // dividers (chatFocus.ts already hides the bubble; foldForFocus still
+    // flushed at the empty row) — the fix is ONE '3 tools' divider, then the
+    // real answer.
+    const finalAnswer = msg(6, 'agent', { label: 'Tsuru', text: 'done' });
+    const rows = foldForFocus([
+      tool(1, 'task'), AGENT_EMPTY(2),
+      tool(3, 'task'), AGENT_EMPTY(4),
+      tool(5, 'task'), finalAnswer,
+    ]);
+    expect(rows.map((r) => (isFocusGap(r) ? 'gap' : r.kind))).toEqual(['gap', 'agent']);
+    expect(gaps(rows)[0].label).toBe('3 tools');
+    expect(rows[1], 'the kept row is the SAME object, never a copy').toBe(finalAnswer);
+  });
+
+  it('drops an empty agent row at the very START with no gap left behind', () => {
+    const rows = foldForFocus([AGENT_EMPTY(1), tool(2, 'read'), USER]);
+    expect(rows.map((r) => (isFocusGap(r) ? 'gap' : r.kind))).toEqual(['gap', 'user']);
+    expect(gaps(rows)[0].label).toBe('1 file read');
+  });
+
+  it('drops an empty agent row at the very END with no gap left behind', () => {
+    const rows = foldForFocus([USER, tool(2, 'read'), AGENT_EMPTY(3)]);
+    expect(rows.map((r) => (isFocusGap(r) ? 'gap' : r.kind))).toEqual(['user', 'gap']);
+    expect(gaps(rows)[0].label).toBe('1 file read');
+  });
+
+  it('drops a transcript that is ONLY an empty agent row into nothing at all', () => {
+    expect(foldForFocus([AGENT_EMPTY(1)])).toEqual([]);
+  });
+
+  it('keeps an agent row with IMAGES ONLY visible — a picture is still something to show', () => {
+    const withImage = msg(2, 'agent', { label: 'Tsuru', text: '', images: ['data:image/png;base64,abc'] });
+    const rows = foldForFocus([tool(1, 'task'), withImage, tool(3, 'task')]);
+    // Two SEPARATE gaps either side of the image row: unlike the empty-turn
+    // case, this row is a real thing to show, so it still closes a run.
+    expect(rows.map((r) => (isFocusGap(r) ? 'gap' : r.kind))).toEqual(['gap', 'agent', 'gap']);
+    expect(rows[1]).toBe(withImage);
+    expect(gaps(rows).map((g) => g.label)).toEqual(['1 tool', '1 tool']);
+  });
+
   it('never swallows a kind chatFocus has not heard of', () => {
     // chatFocus.ts fails open on purpose. A row of a kind added next year must
     // arrive as a ROW, not be counted into a divider nobody can expand.
@@ -103,6 +169,46 @@ describe('foldForFocus — where the gaps land', () => {
     const rows = foldForFocus([USER, future, AGENT]);
     expect(gaps(rows)).toHaveLength(0);
     expect(rows[1]).toBe(future);
+  });
+});
+
+// t-h4o65t — the owner reversed t-ffk0qi: a `read` that produced a picture
+// folds into the reads gap with every other read, in focus mode. Outside
+// focus mode the card still opens on arrival (readImageCard.test.ts, untouched).
+describe('foldForFocus — a read-image row folds like any other read (t-h4o65t)', () => {
+  it('the acceptance shape: 3 text reads + 1 image read fold into one gap, "4 file reads", nothing kept', () => {
+    const rows = foldForFocus([tool(1, 'read'), tool(2, 'read'), tool(3, 'read'), imageRead(4)]);
+    expect(rows).toHaveLength(1);
+    expect(isFocusGap(rows[0])).toBe(true);
+    expect((rows[0] as FocusGap).label).toBe('4 file reads');
+  });
+
+  it('a picture-less image read folds the same way', () => {
+    const rows = foldForFocus([tool(1, 'read'), picturelessRead(2)]);
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as FocusGap).label).toBe('2 file reads');
+  });
+
+  it('a phone thumb read (src absent, thumb present) folds the same way', () => {
+    const phone = msg(5, 'tool', {
+      toolName: 'read', toolKind: 'read', toolStatus: 'completed',
+      toolReadImage: { path: 'img5.png', mime: 'image/png', bytes: 100, thumb: 'data:image/jpeg;base64,AAAA' },
+    });
+    const rows = foldForFocus([tool(1, 'read'), phone]);
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as FocusGap).label).toBe('2 file reads');
+  });
+
+  it('a lone image read between two kept rows still folds into a gap of its own', () => {
+    const rows = foldForFocus([USER, imageRead(10), AGENT]);
+    expect(rows.map((r) => (isFocusGap(r) ? 'gap' : r.kind))).toEqual(['user', 'gap', 'agent']);
+    expect(gaps(rows).map((g) => g.label)).toEqual(['1 file read']);
+  });
+
+  it('a run of only image reads folds into one gap — no row stands alone', () => {
+    const rows = foldForFocus([imageRead(1), imageRead(2)]);
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as FocusGap).label).toBe('2 file reads');
   });
 });
 

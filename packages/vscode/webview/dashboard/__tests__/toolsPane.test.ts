@@ -140,6 +140,13 @@ vi.mock('node:fs', async () => {
 
 import { TOOLS_PANE_MESSAGE_TYPES, handleToolsPaneMessage } from '../../../src/dashboard/toolsPane';
 import { toolFileName, toolTemplate } from '../../../src/dashboard/toolScaffold';
+import {
+  patchSubagentStatePayload,
+  isAgentName,
+  writeSubagentToolState,
+  __resetPendingSubagentOverridesForTests,
+} from '../../../src/dashboard/subagentToolConfig';
+import { resetSubagentToolDefaults } from '../../../src/dashboard/subagentToolReset';
 import ToolsPane from '../panes/ToolsPane.svelte';
 
 const CATALOG = {
@@ -179,6 +186,10 @@ beforeEach(() => {
   fake.deleted = [];
   fake.deleteThrows = false;
   fake.globalConfig = new Map();
+  // pendingOverrides is module state by design (see its comment) — it has to outlive one
+  // catalogPayload() call so a second cell's write cannot cost the first its patch, which means it
+  // also outlives one `it()` block unless cleared here.
+  __resetPendingSubagentOverridesForTests();
   // The config path is XDG_CONFIG_HOME-aware now (finding 5), so mocking
   // homedir alone no longer pins it: on a machine with XDG_CONFIG_HOME set,
   // the writer would aim somewhere this fake never keyed.
@@ -191,15 +202,19 @@ afterEach(() => {
 });
 
 describe('toolsPane host — reading the catalog', () => {
-  it('routes exactly the seven messages the pane sends and nothing else', () => {
+  it('routes exactly the eleven messages the pane sends and nothing else', () => {
     expect([...TOOLS_PANE_MESSAGE_TYPES].sort()).toEqual([
       'toolsCopyPath',
       'toolsDeleteProblem',
       'toolsOpenProblem',
       'toolsRequest',
+      'toolsResetSubagentDefaults',
       'toolsScaffold',
       'toolsSetCodeMode',
       'toolsSetState',
+      'toolsSetSubagentColumn',
+      'toolsSetSubagentRow',
+      'toolsSetSubagentState',
     ]);
   });
 
@@ -259,6 +274,46 @@ describe('toolsPane host — reading the catalog', () => {
 
     const rows = (posted[0]!['tools'] as Array<{ id: string }>).filter((t) => t.id === 'tool_search');
     expect(rows).toHaveLength(1);
+  });
+
+  // t-fdv45j — the catalog read is a pure pass-through of whatever the engine
+  // reports, so once ORIGAMI_EXPERIMENTAL_SIDE_QUESTS reaches the engine spawn
+  // (engineEnv.test.ts) and a fresh chat registers the tool, this pane has to
+  // show the row with no filtering of its own in the way.
+  it('lists side_quest once the engine catalog reports it, with a fresh chat', async () => {
+    const withSideQuest = {
+      ...CATALOG,
+      tools: [...CATALOG.tools, { id: 'side_quest', description: 'Raise a side quest', deferred: false, disabled: false, source: 'builtin', hardRequired: false }],
+    };
+    const { host, posted } = hostWith({ listTools: async () => withSideQuest });
+
+    await handleToolsPaneMessage(host, { type: 'toolsRequest' });
+
+    const row = (posted[0]!['tools'] as Array<{ id: string }>).find((t) => t.id === 'side_quest');
+    expect(row, 'side_quest row missing from the Tools pane catalog').toBeDefined();
+  });
+});
+
+// t-fisfs5 R14 — the whole-sheet reset against an EMPTY roster used to say
+// "not reporting a sub-agent called undefined": there is no name to print when
+// no column was named. A named column that is gone still names it.
+describe('toolsPane host — resetting the sub-agent ledger with no roster', () => {
+  it('the whole sheet against an empty roster says there are no sub-agents, not "undefined"', async () => {
+    const { host } = hostWith({ listTools: async () => CATALOG });
+
+    await resetSubagentToolDefaults(host, undefined);
+
+    expect(fake.errors).toHaveLength(1);
+    expect(fake.errors[0]).not.toContain('undefined');
+    expect(fake.errors[0]).toContain('not reporting any sub-agents');
+  });
+
+  it('a NAMED column the engine no longer reports still names that column', async () => {
+    const { host } = hostWith({ listTools: async () => CATALOG });
+
+    await resetSubagentToolDefaults(host, 'reviewer');
+
+    expect(fake.errors).toEqual(['The engine is not reporting a sub-agent called reviewer.']);
   });
 });
 
@@ -1286,5 +1341,804 @@ describe('toolsPane host — opening and deleting a failed tool file', () => {
 
     expect(fake.deleted).toEqual([]);
     expect(String(posted.at(-1)!['error'])).toContain('Open a chat first');
+  });
+});
+
+// -- The SUB-AGENT matrix (t-di2u7z) ------------------------------------------
+// The per-agent half of the same view. The host side is where the risk is: a
+// cell names an AGENT as well as a tool, and the agent name becomes a KEY in
+// the user's origami.json — so it is validated here, and the write is resolved
+// against a fresh catalog read because whether "On" needs an explicit `allow`
+// depends on the state the engine reports RIGHT NOW.
+describe('toolsPane host — one cell of the sub-agent matrix', () => {
+  const ROWS = [
+    // `general`'s real default: todowrite denied by its own definition.
+    { agent: 'general', native: true, states: { read: 'loaded', todowrite: 'off', browser: 'deferred' } },
+    { agent: 'orchestrator', native: false, states: { read: 'loaded', todowrite: 'loaded', browser: 'deferred' } },
+  ];
+  const catalog = { ...CATALOG, problems: [], subagents: ROWS };
+  const hostWithAgents = () => hostWith({ listTools: async () => catalog as unknown as typeof CATALOG });
+  const CONFIG = 'C:/fakehome/.config/origami/origami.json';
+  const written = () => JSON.parse(fake.globalConfig.get(CONFIG) ?? '{}');
+
+  it('OFF writes a deny under that agent alone', async () => {
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'read', state: 'off' });
+
+    expect(written().agent).toEqual({ orchestrator: { permission: { read: 'deny' } } });
+    expect(fake.infos.join(' ')).toContain('orchestrator');
+  });
+
+  it('ON writes an explicit allow ONLY when the engine says the cell is off', async () => {
+    const { host } = hostWithAgents();
+
+    // todowrite is OFF for general (its definition denies it), so only an
+    // explicit allow can reopen it...
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'todowrite', state: 'loaded' });
+    expect(written().agent.general.permission).toEqual({ todowrite: 'allow' });
+    expect(written().agent.general.tool_search).toEqual({ always: ['todowrite'] });
+
+    // ...while a tool that is merely DEFERRED needs no permission line at all:
+    // writing `allow` there would also silence an ask nobody asked about.
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'browser', state: 'loaded' });
+    expect(written().agent.orchestrator).toEqual({ tool_search: { always: ['browser'] } });
+  });
+
+  it('DEFERRED lands in that agent own defer list', async () => {
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'deferred' });
+
+    expect(written().agent.general).toEqual({ tool_search: { defer: ['read'] } });
+  });
+
+  it('never leaves the block saying two things about one tool', () => {
+    // Driven through the writer rather than the host, because each step has to
+    // carry the state the PREVIOUS one produced — the faked catalog above is
+    // static, and this is exactly the walk (defer -> load -> off) where a
+    // write that only ADDED would leave two claims standing.
+    writeSubagentToolState('general', 'read', 'deferred', 'loaded');
+    expect(written().agent.general).toEqual({ tool_search: { defer: ['read'] } });
+
+    writeSubagentToolState('general', 'read', 'loaded', 'deferred');
+    expect(written().agent.general).toEqual({ tool_search: { always: ['read'] } });
+
+    // OFF clears both lists: a stale `always` would pick the next state the day
+    // the tool is switched back on.
+    writeSubagentToolState('general', 'read', 'off', 'loaded');
+    expect(written().agent.general).toEqual({ permission: { read: 'deny' } });
+
+    // ...and back on from OFF needs the explicit allow, with the list beside it.
+    writeSubagentToolState('general', 'read', 'loaded', 'off');
+    expect(written().agent.general).toEqual({ permission: { read: 'allow' }, tool_search: { always: ['read'] } });
+  });
+
+  it('leaves another agent’s block, and the user’s own keys, untouched', () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({
+      agent: { general: { model: 'anthropic/x', permission: { bash: 'deny' } }, explore: { permission: { read: 'deny' } } },
+    }));
+
+    writeSubagentToolState('general', 'read', 'off', 'loaded');
+
+    expect(written().agent).toEqual({
+      general: { model: 'anthropic/x', permission: { bash: 'deny', read: 'deny' } },
+      explore: { permission: { read: 'deny' } },
+    });
+  });
+
+  it('cleans the block away again when every toggle is back at its default', async () => {
+    const { host } = hostWithAgents();
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'read', state: 'off' });
+    expect(written().agent).toBeTruthy();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'read', state: 'loaded' });
+
+    // The engine's rows still say `read` is Loaded for that agent, so clicking Loaded
+    // needs no override at all — and a block with nothing left in it is removed
+    // rather than left as an empty object.
+    expect(written().agent).toBeUndefined();
+  });
+
+  it('refuses an agent the engine is not reporting, and writes nothing', async () => {
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'ghost', id: 'read', state: 'off' });
+
+    expect(fake.globalConfig.size).toBe(0);
+    expect(fake.errors.join(' ')).toContain('ghost');
+  });
+
+  it('refuses a name that could never be an agent, before it becomes a config key', async () => {
+    const { host } = hostWithAgents();
+
+    for (const agent of ['../../etc/passwd', '__proto__.x', '', 'a b']) {
+      await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent, id: 'read', state: 'off' });
+    }
+
+    expect(fake.globalConfig.size).toBe(0);
+    expect(isAgentName('general')).toBe(true);
+    expect(isAgentName('deep-plan')).toBe(true);
+    expect(isAgentName('__proto__')).toBe(false);
+  });
+
+  it('refuses a state the webview invented', async () => {
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'ON' });
+
+    expect(fake.globalConfig.size).toBe(0);
+  });
+
+  it('patches the confirmed cell into the re-read payload — the engine is still cached', async () => {
+    const { host, posted } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'off' });
+
+    const rows = posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>;
+    expect(rows.find((r) => r.agent === 'general')!.states['read']).toBe('off');
+    // ...and nobody else's row moved.
+    expect(rows.find((r) => r.agent === 'orchestrator')!.states['read']).toBe('loaded');
+  });
+
+  it('patchSubagentStatePayload leaves a payload with no rows alone', () => {
+    expect(patchSubagentStatePayload({ type: 'toolsData' }, 'general', 'read', 'off')).toEqual({ type: 'toolsData' });
+  });
+
+  // t-dkk5jd — the OWNER's own repro: turn cell A on, click cell B, and A reverts. Each click
+  // re-reads the catalog fresh, and the faked engine below always answers with the same static
+  // ROWS (never picking up a config write, exactly like the real engine before a reload) — so a
+  // fix that patches only the CURRENT click's cell into that stale read drops every earlier one
+  // the moment a second click posts a new payload.
+  it('keeps every cell change after a second, unrelated click — same agent, different tool', async () => {
+    const { host, posted } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'off' });
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'browser', state: 'loaded' });
+
+    const rows = posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>;
+    const general = rows.find((r) => r.agent === 'general')!;
+    expect(general.states['read']).toBe('off');
+    expect(general.states['browser']).toBe('loaded');
+  });
+
+  it('keeps every cell change after a second click on a DIFFERENT agent', async () => {
+    const { host, posted } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'off' });
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'browser', state: 'loaded' });
+
+    const rows = posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>;
+    expect(rows.find((r) => r.agent === 'general')!.states['read']).toBe('off');
+    expect(rows.find((r) => r.agent === 'orchestrator')!.states['browser']).toBe('loaded');
+  });
+
+  it('a plain refresh (toolsRequest) after two clicks still shows both, with no reload', async () => {
+    const { host, posted } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'off' });
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'browser', state: 'loaded' });
+    await handleToolsPaneMessage(host, { type: 'toolsRequest' });
+
+    const rows = posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>;
+    expect(rows.find((r) => r.agent === 'general')!.states['read']).toBe('off');
+    expect(rows.find((r) => r.agent === 'orchestrator')!.states['browser']).toBe('loaded');
+  });
+});
+
+// -- The ledger's BULK writes (t-f1j2y3) --------------------------------------
+// A column and a "-> all agents" row are one message each, not a loop of cell
+// messages, so the loop is here. Two things are worth a test and neither is
+// visible on screen: the host resolves WHICH tools exist and what each cell is
+// in RIGHT NOW from its own fresh catalog read, and it refuses to write a cell
+// the nesting rule has locked even though the webview drew that cell disabled.
+describe('toolsPane host — a whole column and a whole row', () => {
+  const CONFIG = 'C:/fakehome/.config/origami/origami.json';
+  const written = () => JSON.parse(fake.globalConfig.get(CONFIG) ?? '{}');
+  const catalogOf = (tools: unknown[], subagents: unknown[]) =>
+    ({ tools, settings: CATALOG.settings, problems: [], subagents }) as unknown as typeof CATALOG;
+  const hostFor = (tools: unknown[], subagents: unknown[]) =>
+    hostWith({ listTools: async () => catalogOf(tools, subagents) });
+
+  const READ = CATALOG.tools[0]!;
+  const TICKETS = CATALOG.tools[1]!;
+  const TASK = { id: 'task', description: 'Launch a new agent', deferred: false, disabled: false, source: 'builtin', hardRequired: false };
+
+  it('a column writes every settable tool for that agent and says so ONCE', async () => {
+    const rows = [{ agent: 'orchestrator', native: false, states: { read: 'loaded', board_board_tickets: 'deferred' } }];
+    const { host } = hostFor([READ, TICKETS], rows);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentColumn', agent: 'orchestrator', state: 'off' });
+
+    expect(written().agent).toEqual({
+      orchestrator: { permission: { read: 'deny', board_board_tickets: 'deny' } },
+    });
+    // One notice for the whole click — the reason the loop is host-side at all.
+    expect(fake.infos).toHaveLength(1);
+    expect(fake.infos[0]).toContain('2 cells');
+  });
+
+  it('a column SKIPS a cell the nesting rule locked, even though the click named it', async () => {
+    // `task` reported off for an agent is an agent whose own definition does not
+    // name it, and an allow written here would be a control that looks live and
+    // is not. The webview draws that cell disabled; this is the host refusing it
+    // on its own, from its own read.
+    const rows = [{ agent: 'general', native: true, states: { read: 'loaded', task: 'off' } }];
+    const { host } = hostFor([READ, TASK], rows);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentColumn', agent: 'general', state: 'off' });
+
+    expect(written().agent).toEqual({ general: { permission: { read: 'deny' } } });
+  });
+
+  it('a column that changes nothing writes nothing and says nothing was written', async () => {
+    const rows = [{ agent: 'general', native: true, states: { read: 'loaded', board_board_tickets: 'loaded' } }];
+    const { host } = hostFor([READ, TICKETS], rows);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentColumn', agent: 'general', state: 'loaded' });
+
+    expect(fake.globalConfig.get(CONFIG)).toBeUndefined();
+    expect(fake.infos[0]).toContain('nothing was written');
+  });
+
+  it('the row action copies the tool OWN workspace state, read here and not sent', async () => {
+    // The message carries an id and nothing else. board_board_tickets is
+    // DEFERRED in the catalog, so every agent not already deferred gets it —
+    // and `general`, which already is, is left alone rather than given a
+    // redundant override.
+    const rows = [
+      { agent: 'general', native: true, states: { board_board_tickets: 'deferred' } },
+      { agent: 'orchestrator', native: false, states: { board_board_tickets: 'loaded' } },
+    ];
+    const { host } = hostFor([READ, TICKETS], rows);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentRow', id: 'board_board_tickets' });
+
+    expect(written().agent).toEqual({
+      orchestrator: { tool_search: { defer: ['board_board_tickets'] } },
+    });
+    expect(fake.infos[0]).toContain('deferred');
+  });
+
+  it('refuses a tool the fresh catalog is not reporting', async () => {
+    const { host } = hostFor([READ], [{ agent: 'general', native: true, states: { read: 'loaded' } }]);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentRow', id: 'not_a_tool' });
+
+    expect(fake.globalConfig.get(CONFIG)).toBeUndefined();
+    expect(fake.errors.join(' ')).toContain('not_a_tool');
+  });
+
+  it('refuses a single cell the nesting rule locked', async () => {
+    const rows = [{ agent: 'general', native: true, states: { task: 'off' } }];
+    const { host } = hostFor([TASK], rows);
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'general', id: 'task', state: 'loaded' });
+
+    expect(fake.globalConfig.get(CONFIG)).toBeUndefined();
+    expect(fake.errors.join(' ')).toContain('task');
+  });
+});
+
+// -- The SUB-AGENT LEDGER as it renders (t-f1j2y3) ----------------------------
+// The view the owner picked, replacing the bolted-on table. What is asserted is
+// structure and text: which columns exist and in what order, that the legend is
+// INSIDE the sticky header row rather than in a footer, that a description
+// carries the clamp class and the full text in its title, and that a locked
+// cell is really disabled. jsdom has no layout and no <style>, so the clamp
+// itself — like the grid before it — needs a human eye; the class is what can
+// honestly be asserted here.
+describe('toolsPane host — Reset to defaults (t-f3a74m)', () => {
+  const CONFIG = 'C:/fakehome/.config/origami/origami.json';
+  const written = () => JSON.parse(fake.globalConfig.get(CONFIG) ?? '{}');
+  const ROWS = [
+    { agent: 'architect', native: false, states: { read: 'loaded' } },
+    { agent: 'scout', native: false, states: { read: 'loaded' } },
+  ];
+  const catalog = { ...CATALOG, problems: [], subagents: ROWS } as unknown as typeof CATALOG;
+  const hostWithAgents = () => hostWith({ listTools: async () => catalog });
+  const reset = (agent?: string) => ({
+    type: 'toolsResetSubagentDefaults',
+    ...(agent === undefined ? {} : { agent }),
+  });
+
+  it('removes the keys the ledger wrote for ONE agent and leaves every other key standing', async () => {
+    // The whole point of a reset: what the sheet put in goes, and what the user
+    // put in by hand stays. A path-scoped OBJECT is never a shape this ledger
+    // writes, so removing one would silently widen an agent they narrowed.
+    fake.globalConfig.set(CONFIG, JSON.stringify({
+      model: 'anthropic/x',
+      agent: {
+        architect: {
+          model: 'anthropic/y',
+          prompt: 'mine',
+          permission: { read: 'deny', bash: 'allow', edit: { '*': 'deny', '*.md': 'allow' } },
+          tool_search: { defer: ['skill'], always: ['browser'] },
+        },
+        scout: { permission: { read: 'deny' } },
+      },
+    }));
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, reset('architect'));
+
+    expect(written().agent.architect).toEqual({
+      model: 'anthropic/y',
+      prompt: 'mine',
+      permission: { edit: { '*': 'deny', '*.md': 'allow' } },
+    });
+    expect(written().agent.scout).toEqual({ permission: { read: 'deny' } }); // another column, untouched
+    expect(written().model).toBe('anthropic/x'); // and nothing outside `agent`
+    expect(fake.infos.join(' ')).toContain('architect');
+  });
+
+  it('removes the whole agent block when the ledger wrote everything in it', async () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({
+      agent: { architect: { permission: { read: 'deny' }, tool_search: { defer: ['lsp'] } } },
+    }));
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, reset('architect'));
+
+    // An `agent: {}` left behind is wreckage in a file people hand-edit — the
+    // same pruning a single cell write does when it goes back to its default.
+    expect(written().agent).toBeUndefined();
+  });
+
+  it('with no agent named, resets EVERY agent the engine reports, in one notice', async () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({
+      agent: {
+        architect: { permission: { read: 'deny' } },
+        scout: { tool_search: { defer: ['read'] } },
+        // Not a row the engine reported, so the sheet has no column for it and
+        // "reset the sheet" must not reach it.
+        general: { permission: { todowrite: 'allow' } },
+      },
+    }));
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, reset());
+
+    expect(written().agent).toEqual({ general: { permission: { todowrite: 'allow' } } });
+    expect(fake.infos).toHaveLength(1);
+    expect(fake.infos[0]).toContain('2 overrides removed');
+  });
+
+  it('says so out loud when there was nothing to remove, and writes no file', async () => {
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, reset('architect'));
+
+    expect(fake.globalConfig.get(CONFIG)).toBeUndefined();
+    expect(fake.infos[0]).toContain('already on the shipped defaults');
+  });
+
+  it('refuses an agent the engine is not reporting, and re-posts the catalog unchanged', async () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({ agent: { architect: { permission: { read: 'deny' } } } }));
+    const { host } = hostWithAgents();
+
+    await handleToolsPaneMessage(host, reset('nonesuch'));
+
+    expect(fake.errors.join(' ')).toContain('nonesuch');
+    expect(written().agent.architect).toEqual({ permission: { read: 'deny' } }); // nothing was removed
+  });
+
+  it('puts a cell written this session back to where the ledger found it', async () => {
+    // The t-dkk5jd cache exists to show a write the engine has not caught up
+    // with. Once the write is gone from the file the cell must read as it did
+    // before the sheet ever touched it — which for a write made THIS session is
+    // exactly the state the engine is still reporting.
+    const { host, posted } = hostWithAgents();
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'architect', id: 'read', state: 'off' });
+    const masked = (posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>);
+    expect(masked.find((r) => r.agent === 'architect')!.states['read']).toBe('off');
+
+    await handleToolsPaneMessage(host, reset('architect'));
+
+    const after = (posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>);
+    expect(after.find((r) => r.agent === 'architect')!.states['read']).toBe('loaded');
+  });
+
+  // t-h8s3xg. The engine's `unavailable` reasons are what the sheet greys a
+  // cell with, and they have to survive the POST boundary - the pending-override
+  // mask rebuilds each row, so a spread that dropped the key would leave the
+  // cell looking like an ordinary `off` the user could click.
+  it('carries the engine’s unavailable reasons through to the webview', async () => {
+    const reason = 'nested sub-agents need subagent_depth ≥ 2';
+    const rows = [
+      { agent: 'architect', native: false, states: { read: 'loaded', task: 'off' }, unavailable: { task: reason } },
+    ];
+    const { host, posted } = hostWith({
+      listTools: async () => ({ ...CATALOG, problems: [], subagents: rows }) as unknown as typeof CATALOG,
+    });
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetSubagentState', agent: 'architect', id: 'read', state: 'off' });
+
+    const sent = posted.at(-1)!['subagents'] as Array<{ agent: string; unavailable?: Record<string, string> }>;
+    expect(sent.find((r) => r.agent === 'architect')!.unavailable).toEqual({ task: reason });
+  });
+
+  // t-fiszlv R13. THE CASE NO MASK COVERED: an override that was already in
+  // origami.json when the engine started. Its agent registry is a snapshot, so
+  // the `permission` half of its answer keeps voting for the rule the reset has
+  // just deleted — and with the mask dropped the sheet redrew, as the engine's
+  // own truth, the very override the click removed. The toast says reload; until
+  // then the sheet must show the reset value.
+  it('holds a reset cell at its new value while the engine still reports the old override', async () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({
+      agent: { architect: { permission: { read: 'deny' }, tool_search: { always: ['board_board_tickets'] } } },
+    }));
+    // The STALE engine: `read` reads off for architect before AND after the reset, because its
+    // registry will not be rebuilt until the window reloads.
+    const stale = {
+      ...CATALOG,
+      problems: [],
+      subagents: [{ agent: 'architect', native: false, states: { read: 'off', board_board_tickets: 'loaded' } }],
+    } as unknown as typeof CATALOG;
+    const { host, posted } = hostWith({ listTools: async () => stale });
+
+    await handleToolsPaneMessage(host, reset('architect'));
+
+    const after = (posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>);
+    // `read` is loaded at the workspace level, and with the deny gone that is what this agent
+    // gets at the next spawn (subagentResetStates.ts).
+    expect(after.find((r) => r.agent === 'architect')!.states['read']).toBe('loaded');
+    // The `tool_search` half needs no mask at all: the engine reads that key live, so its answer
+    // for a tool deferred at the workspace level is already the reset one.
+    expect(after.find((r) => r.agent === 'architect')!.states['board_board_tickets']).toBe('loaded');
+  });
+
+  it('leaves a NATIVE archetype to the engine — its defaults are in its own ruleset, not the file', async () => {
+    fake.globalConfig.set(CONFIG, JSON.stringify({ agent: { general: { permission: { read: 'deny' } } } }));
+    const native = {
+      ...CATALOG,
+      problems: [],
+      subagents: [{ agent: 'general', native: true, states: { read: 'off' } }],
+    } as unknown as typeof CATALOG;
+    const { host, posted } = hostWith({ listTools: async () => native });
+
+    await handleToolsPaneMessage(host, reset('general'));
+
+    const after = (posted.at(-1)!['subagents'] as Array<{ agent: string; states: Record<string, string> }>);
+    // Answering 'loaded' here would be a guess: `general`'s own archetype can deny a tool with no
+    // line of config anywhere, and nothing in this payload says whether it does.
+    expect(after.find((r) => r.agent === 'general')!.states['read']).toBe('off');
+  });
+});
+
+describe('ToolsPane — the sub-agent ledger', () => {
+  const ROWS = [
+    { agent: 'general', native: true, description: 'Multi-step work.', states: { read: 'off', board_board_tickets: 'deferred' } },
+    { agent: 'orchestrator', native: false, states: { read: 'loaded', board_board_tickets: 'loaded' } },
+  ];
+  const deliver = (payload: Record<string, unknown>) =>
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'toolsData', ...payload } }));
+  // Svelte appends a per-component scope class to every styled element, so an
+  // exact className never matches here — these read the class that carries the
+  // meaning and ignore the rest.
+  const STATES = ['loaded', 'deferred', 'off', 'locked'];
+  const stateClass = (el: Element | null) => [...el!.classList].find((c) => STATES.includes(c)) ?? null;
+  const kindClass = (el: Element) =>
+    [...el.classList].find((c) => c.startsWith('lg-')) ?? null;
+  /** Render, deliver a catalog, and switch to the Sub-agents half. */
+  const show = async (payload: Record<string, unknown> = {}) => {
+    const rendered = render(ToolsPane);
+    await tick();
+    deliver({ tools: CATALOG.tools, settings: CATALOG.settings, codeMode: false, subagents: ROWS, ...payload });
+    await tick();
+    const sub = Array.from(rendered.container.querySelectorAll('.tl-seg-btn'))[1] as HTMLButtonElement;
+    await fireEvent.click(sub);
+    await tick();
+    return rendered;
+  };
+
+  it('starts on Main agent — the ledger is not drawn until the switch is used', async () => {
+    const { container } = render(ToolsPane);
+    await tick();
+    deliver({ tools: CATALOG.tools, settings: CATALOG.settings, codeMode: false, subagents: ROWS });
+    await tick();
+
+    const segs = Array.from(container.querySelectorAll('.tl-seg-btn'));
+    expect(segs.map((s) => s.textContent!.trim().replace(/\s+/g, ' '))).toEqual(['Main agent', 'Sub-agents 2 types']);
+    expect(segs[0]!.classList.contains('on')).toBe(true);
+    expect(container.querySelector('.lg-table')).toBeNull();
+    expect(container.querySelectorAll('.tool-card')).toHaveLength(2);
+
+    await fireEvent.click(segs[1]!);
+    await tick();
+    // One pane, two halves: the cards go when the ledger comes.
+    expect(container.querySelector('.lg-table')).not.toBeNull();
+    expect(container.querySelectorAll('.tool-card')).toHaveLength(0);
+  });
+
+  it('runs the tools DOWN, grouped by source, with Workspace before the agents', async () => {
+    const { container } = await show();
+
+    expect(Array.from(container.querySelectorAll('thead th')).map(kindClass)).toEqual([
+      'lg-tool-h',
+      'lg-ws-h',
+      'lg-agent-h',
+      'lg-agent-h',
+    ]);
+    expect(Array.from(container.querySelectorAll('.lg-agent-name')).map((h) => h.textContent!.trim())).toEqual([
+      'generalbuilt-in',
+      'orchestrator',
+    ]);
+    // Group heading, then its tools — builtin before user file.
+    expect(Array.from(container.querySelectorAll('tbody tr')).map((r) =>
+      r.classList.contains('lg-group') ? `# ${r.textContent!.trim()}` : r.querySelector('.lg-id')!.textContent!.trim(),
+    )).toEqual(['# builtin', 'read', '# user file', 'board_board_tickets']);
+  });
+
+  it('counts each agent column in its own header', async () => {
+    const { container } = await show();
+
+    expect(Array.from(container.querySelectorAll('.lg-cnt')).map((c) => c.textContent!.trim())).toEqual([
+      '1 of 2 on', // general: read is off
+      '2 of 2 on',
+    ]);
+  });
+
+  it('pins the four-glyph legend in the header row beside Tool, not in a footer', async () => {
+    const { container } = await show();
+
+    const legend = container.querySelector('.lg-tool-h .lg-legend');
+    expect(legend).not.toBeNull();
+    expect(legend!.textContent!.replace(/\s+/g, ' ').trim()).toBe('Loaded Deferred Off Locked');
+    // The header row is the sticky one, so the legend is sticky with it — and
+    // there is exactly ONE legend on the pane, in the thead.
+    expect(container.querySelectorAll('.lg-legend')).toHaveLength(1);
+    expect(container.querySelector('.lg-note .lg-legend')).toBeNull();
+  });
+
+  it('cycles a cell loaded to deferred to off and names the next state first', async () => {
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    // Row order: read (general, orchestrator) then board_board_tickets.
+    const cells = Array.from(container.querySelectorAll('tbody .lg-cell:not(.lg-ws) .lg-cellbtn')) as HTMLButtonElement[];
+    expect(cells[1]!.title).toContain('click for Deferred');
+    await fireEvent.click(cells[1]!); // orchestrator - read, Loaded
+    await fireEvent.click(cells[0]!); // general - read, Off
+    await fireEvent.click(cells[2]!); // general - board_board_tickets, Deferred
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsSetSubagentState', agent: 'orchestrator', id: 'read', state: 'deferred' },
+      { type: 'toolsSetSubagentState', agent: 'general', id: 'read', state: 'loaded' },
+      { type: 'toolsSetSubagentState', agent: 'general', id: 'board_board_tickets', state: 'off' },
+    ]);
+  });
+
+  it('says each cell state in a glyph SHAPE, not a fill alone', async () => {
+    const { container } = await show();
+
+    const dots = Array.from(container.querySelectorAll('tbody .lg-cell:not(.lg-ws) .lg-dot'));
+    // jsdom has no <style>, so this asserts the class the shape rules hang off.
+    expect(dots.map(stateClass)).toEqual(['off', 'loaded', 'deferred', 'loaded']);
+  });
+
+  it('edits the SAME state the card pill edits from the Workspace column', async () => {
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    const ws = Array.from(container.querySelectorAll('tbody .lg-ws .lg-cellbtn')) as HTMLButtonElement[];
+    // read is loaded in the catalog; board_board_tickets is deferred.
+    expect(ws.map((b) => stateClass(b.querySelector('.lg-dot')))).toEqual(['loaded', 'deferred']);
+    await fireEvent.click(ws[0]!);
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsSetState', id: 'read', state: 'deferred' },
+    ]);
+  });
+
+  it('disables a nesting-locked cell and says why in its title', async () => {
+    const TASK = { id: 'task', description: 'Launch a new agent', deferred: false, disabled: false, source: 'builtin', hardRequired: false };
+    const { container } = await show({
+      tools: [TASK],
+      subagents: [
+        { agent: 'general', native: true, states: { task: 'off' } },
+        { agent: 'orchestrator', native: false, states: { task: 'loaded' } },
+      ],
+    });
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    const cells = Array.from(container.querySelectorAll('tbody .lg-cell:not(.lg-ws) .lg-cellbtn')) as HTMLButtonElement[];
+    expect(cells[0]!.disabled).toBe(true);
+    expect(cells[0]!.title).toContain('its own agent definition names it');
+    expect(stateClass(cells[0]!.querySelector('.lg-dot'))).toBe('locked');
+    // The agent that DOES name it is a live cell, not a locked one.
+    expect(cells[1]!.disabled).toBe(false);
+    await fireEvent.click(cells[0]!);
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls).toHaveLength(0);
+  });
+
+  it('sets a whole column from its header, as one message', async () => {
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    // orchestrator's first settable cell is read, which is Loaded — so the
+    // column goes to the state a click on that cell would have gone to.
+    await fireEvent.click(Array.from(container.querySelectorAll('.lg-col'))[1]!);
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsSetSubagentColumn', agent: 'orchestrator', state: 'deferred' },
+    ]);
+  });
+
+  it('a column header menu resets THAT agent, and the cycle click still works beside it', async () => {
+    // Reset is not a fourth state to cycle to — it removes overrides instead of
+    // writing one — so it hangs off a menu rather than stealing the header click.
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    const menus = Array.from(container.querySelectorAll('.lg-menu-btn')) as HTMLButtonElement[];
+    expect(menus).toHaveLength(2); // one per agent column
+    expect(container.querySelector('.lg-menu')).toBeNull(); // closed until asked for
+
+    await fireEvent.click(menus[1]!);
+    const item = container.querySelector('.lg-menu-item') as HTMLButtonElement;
+    expect(item.textContent!.trim()).toBe('Reset to defaults');
+    await fireEvent.click(item);
+
+    // t-fisfs5 R5: the column reset ASKS first, through the same ConfirmModal
+    // the whole-sheet reset uses. Nothing goes to the host on the menu click.
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls).toHaveLength(0);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.getAttribute('aria-label')).toBe('Reset orchestrator to defaults?');
+    await fireEvent.click(
+      Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent!.trim() === 'Reset column')!,
+    );
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsResetSubagentDefaults', agent: 'orchestrator' },
+    ]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector('.lg-menu')).toBeNull(); // and the menu closes behind itself
+  });
+
+  it('cancelling the column reset sends nothing at all', async () => {
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    await fireEvent.click((Array.from(container.querySelectorAll('.lg-menu-btn')) as HTMLButtonElement[])[1]!);
+    await fireEvent.click(container.querySelector('.lg-menu-item') as HTMLButtonElement);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await fireEvent.click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent!.trim() === 'Cancel')!);
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls).toHaveLength(0);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('both reset dialogs warn that a hand-written plain rule goes too', async () => {
+    // The removal cannot tell a plain `tool: action` the user typed from one
+    // this sheet wrote (subagentToolReset.ts), and the dialogs used to imply
+    // every hand-written key survived.
+    const { container } = await show();
+
+    await fireEvent.click(container.querySelector('.lg-reset-all') as HTMLButtonElement);
+    const sheet = document.querySelector('[role="dialog"]')!.textContent ?? '';
+    expect(sheet).toContain('you wrote by hand');
+    expect(sheet).toContain('path-scoped rule');
+    await fireEvent.click(
+      Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll('button'))
+        .find((b) => b.textContent!.trim() === 'Cancel')!,
+    );
+
+    await fireEvent.click((Array.from(container.querySelectorAll('.lg-menu-btn')) as HTMLButtonElement[])[0]!);
+    await fireEvent.click(container.querySelector('.lg-menu-item') as HTMLButtonElement);
+    const column = document.querySelector('[role="dialog"]')!.textContent ?? '';
+    expect(column).toContain('you wrote by hand');
+    expect(column).toContain('path-scoped rule');
+  });
+
+  it('the whole sheet ASKS first — the message goes only after the confirm', async () => {
+    // It drops overrides across every column at once and nothing in the webview
+    // can put them back, so a misclick must not be enough.
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    await fireEvent.click(container.querySelector('.lg-reset-all') as HTMLButtonElement);
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls).toHaveLength(0);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.getAttribute('aria-label')).toContain('Reset every sub-agent');
+
+    // Cancel leaves the sheet alone...
+    await fireEvent.click(Array.from(dialog.querySelectorAll('button')).find((b) => b.textContent!.trim() === 'Cancel')!);
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls).toHaveLength(0);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    // ...and confirming sends ONE message, with no agent in it: the host reads
+    // which agents exist rather than trusting a list the sheet drew.
+    await fireEvent.click(container.querySelector('.lg-reset-all') as HTMLButtonElement);
+    const reopened = document.querySelector('[role="dialog"]')!;
+    await fireEvent.click(Array.from(reopened.querySelectorAll('button')).find((b) => b.textContent!.trim() === 'Reset all')!);
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsResetSubagentDefaults' },
+    ]);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('copies one tool to every agent from the row, as one message with no state in it', async () => {
+    const { container } = await show();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+
+    const all = Array.from(container.querySelectorAll('.lg-all')) as HTMLButtonElement[];
+    expect(all[0]!.title).toContain('workspace state (Loaded)');
+    await fireEvent.click(all[0]!);
+
+    expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0])).toEqual([
+      { type: 'toolsSetSubagentRow', id: 'read' },
+    ]);
+  });
+
+  it('keeps a 300-character description INSIDE its cell — clamped, with the whole line in the title', async () => {
+    const long = 'x'.repeat(300);
+    const { container } = await show({ tools: [{ ...CATALOG.tools[0], description: long }] });
+
+    const desc = container.querySelector('.lg-desc') as HTMLElement;
+    expect(desc.classList.contains('lg-clamp')).toBe(true);
+    expect(desc.title).toBe(long);
+    // The text is all there — the clamp is CSS, which jsdom does not run, so
+    // what this can honestly assert is that nothing was truncated in markup
+    // and that the class carrying the clamp is on the element.
+    expect(desc.textContent).toBe(long);
+  });
+
+  it('narrows its ROWS with the pane own search box', async () => {
+    const { container } = await show();
+
+    await fireEvent.input(container.querySelector('.tl-search') as HTMLInputElement, { target: { value: 'board' } });
+    await tick();
+
+    expect(Array.from(container.querySelectorAll('.lg-id')).map((h) => h.textContent!.trim())).toEqual([
+      'board_board_tickets',
+    ]);
+    // The counts follow the filter: one tool in view, and both agents have it.
+    expect(Array.from(container.querySelectorAll('.lg-cnt')).map((c) => c.textContent!.trim())).toEqual([
+      '1 of 1 on',
+      '1 of 1 on',
+    ]);
+  });
+
+  it('says so, rather than drawing an empty sheet, when the engine reported no sub-agents', async () => {
+    const { container } = await show({ subagents: [] });
+
+    expect(container.querySelector('.lg-table')).toBeNull();
+    expect(container.querySelector('.lg-empty')!.textContent).toContain('no sub-agent types');
+  });
+});
+
+// The peer-tool list is stated TWICE — once in the webview's ledgerRows.ts and
+// once in the host's subagentToolWrites.ts — because tsconfig.webview.json pins
+// rootDir to `webview/`, so the webview cannot import the host's copy at all.
+// The failure that guard catches is silent: add a fourth peer tool to the
+// engine and patch only one copy, and the pane draws a live control over a cell
+// the host then refuses, or the host refuses a cell the pane drew live.
+describe('peer tools — drift guard across the ledger mirrors', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const listIn = (rel: string) => {
+    const src = readFileSync(path.resolve(here, rel), 'utf8');
+    const line = src.match(/NESTING_TOOLS = new Set\(\[[^\]]*\]/);
+    if (!line) throw new Error(`${rel}: NESTING_TOOLS not found — it was renamed or moved`);
+    return [...line[0].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]!).sort();
+  };
+
+  it('the webview and the host name the same peer tools, and the engine denies each', () => {
+    const webview = listIn('../panes/ledgerRows.ts');
+    const host = listIn('../../../src/dashboard/subagentToolWrites.ts');
+    const engine = readFileSync(
+      path.resolve(here, '../../../../engine/src/agent/subagent-permissions.ts'),
+      'utf8',
+    );
+
+    expect(webview).toEqual(['list_agents', 'send_message', 'task']);
+    expect(host, 'subagentToolWrites.ts drifted from ledgerRows.ts').toEqual(webview);
+    // ...and each one is really a default deny in the engine's own derivation.
+    for (const tool of webview) {
+      expect(engine, `${tool} is not denied by deriveSubagentSessionPermission`).toContain(
+        `{ permission: "${tool}" as const, pattern: "*" as const, action: "deny" as const }`,
+      );
+    }
   });
 });

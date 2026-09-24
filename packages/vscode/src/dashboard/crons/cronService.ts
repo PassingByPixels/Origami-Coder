@@ -1,20 +1,8 @@
-// cronService.ts — cron bookkeeping over an injected SchedulerBackend. No
-// vscode import and no process spawning of its own, so every path here is
-// exercised against a FAKE backend in tests (the real schtasks backend is
-// constructed only by the extension host).
-//
-// The invariant this file exists to hold: NOTHING registers itself. A cron
-// becomes an OS task only when created or enabled, and stops being one when
-// disabled or deleted. The file is written only AFTER the backend agreed, so a
-// record can never claim a registration that does not exist.
-//
-// Drift is REPORTED in both directions and repaired in neither — the rule and
-// its reasoning live in cronReconcile.ts, which this file re-exports so the
-// panel keeps one import site.
-//
-// The launcher script (cronLauncher.ts) is written before registration and
-// removed with it, so the disk and the OS can never disagree about what a cron
-// runs.
+// cronService.ts — cron bookkeeping over an injected SchedulerBackend. No vscode import, no process
+// spawning of its own, so every path is exercised against a fake backend in tests.
+// The invariant this file holds: nothing registers itself. A cron becomes an OS task only when
+// created or enabled, and stops being one when disabled or deleted; the file is written only after
+// the backend agreed.
 
 import { nextRun, parseSchedule, scheduleLabel, type CronSchedule } from './cronSchedule';
 import { readCronRunStats, type CronOutcome } from './cronLog';
@@ -73,9 +61,8 @@ export class CronService {
   }
 
   /**
-   * Write the cron's launcher script and return the `/TR` value pointing at it,
-   * or an error if the path is too long for schtasks to accept. The length is
-   * checked BEFORE the script is written, so a refusal leaves nothing behind.
+   * Write the cron's launcher script and return the `/TR` value, or an error if the path is too
+   *  long. Checked before the script is written, so a refusal leaves nothing behind.
    */
   private installLauncher(cron: CronRecord): { ok: true; command: string } | { ok: false; error: string } {
     const script = cronScriptPath(this.deps.repoRoot, cron.id);
@@ -136,15 +123,12 @@ export class CronService {
   }
 
   /**
-   * Validate a draft without touching disk or the OS — drives the pane's form.
+   * Validate a draft without touching disk or the OS.
    *
-   * MODEL IS REQUIRED, and it is the only field here whose absence costs money
-   * rather than failing. `runInvocation` omits `--model` when it is unset
-   * (cronCommand.ts), and the engine then resolves it from the MACHINE-WIDE
-   * recent-models file (Provider.defaultModel in engine/src/provider/
-   * provider.ts) — so an unpinned job adopts whatever model was last used in
-   * any chat on this computer, unattended, at whatever that costs. Refused
-   * HERE rather than only in the form, so a stale webview cannot create one.
+   * Model is required: `runInvocation` omits `--model` when unset, and the engine then resolves it
+   *  from the machine-wide recent-models file — so an unpinned job would adopt whatever model was
+   *  last used anywhere on this computer, unattended, at whatever that costs. Refused here so a
+   *  stale webview cannot create one.
    */
   static validate(draft: CronDraft): { ok: true; schedule: CronSchedule } | { ok: false; error: string } {
     if (typeof draft.name !== 'string' || draft.name.trim() === '') return { ok: false, error: 'name is required' };

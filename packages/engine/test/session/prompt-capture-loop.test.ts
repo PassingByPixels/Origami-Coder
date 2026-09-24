@@ -228,6 +228,22 @@ const lastUserFromBody = (body: unknown): string => {
   return textOf(user[user.length - 1]?.content)
 }
 
+/**
+ * The trailing engine-context of a request, wherever the loop delivered it.
+ * Since t-46a74d a block that changed MID-TURN rides inside the last tool
+ * result rather than opening a user turn, so a request that ends on a tool
+ * message carries the block in that result's text; a request that ends on a
+ * user message (step 0 of a turn) carries it in that user message.
+ */
+const tailFromBody = (body: unknown): string => {
+  const msgs = (body as { messages?: { role: string; content: unknown }[] })?.messages ?? []
+  const last = msgs[msgs.length - 1]
+  if (last?.role !== "tool") return lastUserFromBody(body)
+  // The wire shape of a tool result is provider-specific: a string on the
+  // chat-completions body the fake server records, part arrays elsewhere.
+  return textOf(last.content)
+}
+
 it.instance(
   "the capture matches the system prompt the provider really received",
   () =>
@@ -371,11 +387,11 @@ it.instance(
       // 2. THE GUARD: the model is still given the index and the recall footer,
       //    at the tail. A fix that blinds the agent to its own memory is worse
       //    than the stall it cures.
-      const tail = lastUserFromBody(hits[1]?.body)
+      const tail = tailFromBody(hits[1]?.body)
       expect(tail).toContain("# Memory Index")
       expect(tail).toContain("- [gitea](gitea.md) - the git host")
       expect(tail).toContain("[flock-map](flock-map.md)")
-      expect(tail).toContain("Read the topic file with the read tool for detail before acting on a hook.")
+      expect(tail).toContain("The detail behind each hook is in that topic's own file, which the read tool loads on demand.")
       expect(tail).toContain(`Memory directory: ${memdir}`)
 
     }),
@@ -462,7 +478,7 @@ it.instance(
 
       // 2. THE GUARD. The rewritten index still reaches the model on the very
       //    next step, and again on the next TURN.
-      expect(lastUserFromBody(hits[1]?.body)).toContain("[flock-map](flock-map.md)")
+      expect(tailFromBody(hits[1]?.body)).toContain("[flock-map](flock-map.md)")
 
       yield* llm.text("second turn")
       yield* user(chat.id, "and now?")
@@ -553,6 +569,32 @@ it.instance(
       expect(second!.divergenceMessage).toBeGreaterThanOrEqual(2)
       expect(second!.messages[0]!.hash).toBe(first!.messages[0]!.hash)
       expect(second!.messages[1]!.hash).toBe(first!.messages[1]!.hash)
+
+      // 4. THE RECONCILE NUDGE, which rides this same lane but is a claim about
+      //    TURNS, so it takes real turns to be true or false about. It says the
+      //    model did not update the list in its previous turn, and it may only
+      //    fire when that is so.
+      //
+      //    TURN 2: turn 1 called todowrite, so there is nothing to reconcile.
+      yield* llm.text("second turn")
+      yield* user(chat.id, "and now?")
+      yield* prompt.loop({ sessionID: chat.id })
+      const turn2 = (yield* llm.hits).filter((h) => !JSON.stringify(h.body).includes("Generate a title"))
+      expect(turn2.length).toBeGreaterThan(hits.length)
+      expect(lastUserFromBody(turn2[turn2.length - 1]?.body)).not.toContain(SessionReminders.TODO_RECONCILE_NUDGE)
+
+      //    TURN 3: turn 2 answered in prose and left "fix the bug" in_progress.
+      //    That is the case this nudge exists for.
+      yield* llm.text("third turn")
+      yield* user(chat.id, "carry on")
+      yield* prompt.loop({ sessionID: chat.id })
+      const turn3 = (yield* llm.hits).filter((h) => !JSON.stringify(h.body).includes("Generate a title"))
+      expect(turn3.length).toBeGreaterThan(turn2.length)
+      const last = turn3[turn3.length - 1]?.body
+      expect(lastUserFromBody(last)).toContain(SessionReminders.TODO_RECONCILE_NUDGE)
+      //    ...delivered at the TAIL. The head is still the same two messages it
+      //    was on the very first request of the session.
+      expect(JSON.stringify(bodyMessages(last).slice(0, 2))).toBe(head[0]!)
     }),
   { git: true },
   30_000,

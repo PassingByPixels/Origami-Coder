@@ -3,6 +3,7 @@ export * as Image from "./image"
 import { makeLocationNode } from "./effect/app-node"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Config } from "./config"
+import { cachedInvalidateForever } from "./effect/cached"
 import { FileSystem } from "./filesystem"
 
 export class ResizerUnavailableError extends Schema.TaggedErrorClass<ResizerUnavailableError>()(
@@ -48,7 +49,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
-    const loadAdapter = yield* Effect.cached(
+    const [loadAdapter] = yield* cachedInvalidateForever(
       Effect.tryPromise({
         try: () => import("./image/photon"),
         catch: () => new ResizerUnavailableError(),

@@ -1,44 +1,123 @@
 import type { Hooks, PluginInput } from "@origami/plugin"
 import { InstallationVersion } from "@origami/core/installation/version"
 import { OAUTH_DUMMY_KEY } from "../../auth"
+import { ProviderReauth } from "../../provider/reauth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
 import { OpenAIWebSocketPool } from "./ws-pool"
 import { OauthCallbackPage } from "@origami/core/oauth/page"
+import { applyCapabilityDefaults } from "../capabilityDefaults"
+import { fetchCodexCatalog } from "./codexCatalog"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+
+/**
+ * Default `max_concurrent` for the ChatGPT OAuth route (t-52cxcw).
+ *
+ * A JUDGEMENT CALL, stated as one: OpenAI publishes no parallel-stream number
+ * for the ChatGPT subscription backend, and neither reference harness documents
+ * one either — hermes-agent puts no semaphore at all on its codex path (an httpx
+ * pool of 100 is a socket pool, not a rate), deepseek-harness has none. Four is
+ * the smallest number that still lets a normal fan-out (a parent plus three
+ * sub-agents) run genuinely in parallel, while keeping a ten-way fan-out off a
+ * subscription endpoint that answers 429 rather than queueing.
+ *
+ * Installed by the auth LOADER, which provider.ts applies BEFORE the config
+ * pass, so `provider.openai.options.max_concurrent` in origami.json overrides it
+ * — including with a much larger number. An api-key OpenAI credential never
+ * reaches here and stays uncapped.
+ */
+export const OAUTH_MAX_CONCURRENT = 4
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
 // `gpt-5.3-codex-spark` was here and is NOT coming back: the backend refuses it
-// by name — "The 'gpt-5.3-codex-spark' model is not supported when using Codex
-// with a ChatGPT account" (owner session, 2026-08-15, first message on a fresh
-// sign-in). Nothing else rescues it — the version fallback below reads 5.3, which
-// is not > 5.4 — but a future threshold change would, so this note stays.
+// by name on a ChatGPT account. The version fallback below reads 5.3, which is
+// not > 5.4, but a future threshold change would rescue it — so this note stays.
 const ALLOWED_MODELS = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"])
 const DISALLOWED_MODELS = new Set(["gpt-5.5-pro"])
+
+/** Whether this plugin serves `apiID` over the ChatGPT subscription backend.
+ *  Lifted out of the `models` hook so the `config` hook can ask the same
+ *  question of an id it never sees. The two must not drift: one decides which
+ *  rows the picker gets, the other decides what those rows can DO. */
+export function servesOverOauth(apiID: string, reasoningMode?: unknown): boolean {
+  if (reasoningMode === "pro") return false
+  if (ALLOWED_MODELS.has(apiID)) return true
+  if (DISALLOWED_MODELS.has(apiID)) return false
+  // origami_change: the ACCOUNT's own answer, when we have one. `liveServed` is the list the
+  // backend published for this credential (codexCatalog.ts), so it outranks every name guess below.
+  // It sits under DISALLOWED_MODELS because that set records ids the backend LISTS and then refuses
+  // at inference.
+  if (liveServed?.has(apiID)) return true
+  // `gpt-5.6` bare is refused by the backend while `gpt-5.6-sol` / `-terra` /
+  // `-luna` are served, so the name rule below cannot express it. Kept as the
+  // OFFLINE default: the line above overrules it the moment the account lists it.
+  if (apiID === "gpt-5.6") return false
+  return matchesOauthNaming(apiID)
+}
+
+/**
+ * The ids this backend is EXPECTED to serve, judged from the name alone.
+ *
+ * origami_change: the comparison is on the (major, minor) PAIR, not a parsed
+ * float — `parseFloat("5.10")` is 5.1, so `gpt-5.10` would read as OLDER than
+ * `gpt-5.4`. A major-only version with a codename (`gpt-6-astra`) matches too.
+ * A fallback, not the source of truth — see `liveServed` above.
+ */
+const OAUTH_MODEL_RE = /^gpt-(\d+)(?:\.(\d+))?(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?$/
+
+export function matchesOauthNaming(apiID: string): boolean {
+  const match = OAUTH_MODEL_RE.exec(apiID)
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = match[2] === undefined ? 0 : Number(match[2])
+  return major > 5 || (major === 5 && minor > 4)
+}
+
+/**
+ * The model ids the ChatGPT backend listed for THIS account, or `undefined`
+ * before anything has asked it (offline, signed out, or the first list build).
+ *
+ * Module scope because the readers are in different passes. `undefined` and
+ * "listed nothing" are kept apart: an empty answer must not empty the picker.
+ */
+let liveServed: Set<string> | undefined
+
+/** Record what the account was listed. `undefined` clears it back to "never
+ *  asked", which is what a test needs between cases. */
+export function setLiveServedModels(ids: Iterable<string> | undefined): void {
+  liveServed = ids ? new Set(ids) : undefined
+}
+
+/**
+ * Fill in the ChatGPT BACKEND's capabilities for every model this plugin serves
+ * that the config left silent.
+ *
+ * The mechanism, and why it is the config hook, is in capabilityDefaults.ts.
+ * What is only true HERE is the `serves` test: the same `openai` block backs an
+ * OpenAI PLATFORM key, whose ids are metered API models, so the stamp has to be
+ * limited to the ids this plugin admits.
+ */
+export function applyCodexCapabilityDefaults(cfg: unknown): void {
+  applyCapabilityDefaults(cfg, "openai", (apiID, model) =>
+    servesOverOauth(apiID, (model["options"] as Record<string, unknown> | undefined)?.["reasoningMode"]),
+  )
+}
 
 /**
  * `temperature` / `top_p`, removed from a body bound for the ChatGPT backend.
  *
- * WHY THIS LIVES IN THE FETCH WRAPPER AND NOT IN `chat.params`. The refusal
- * belongs to the ENDPOINT, not to the model and not to the auth type.
- * chatgpt.com/backend-api/codex answers "Unsupported parameter: temperature" for
- * the gpt-5 family, while api.openai.com/v1/responses accepts the very same body
- * — proved by two LIVE recordings that both sent `temperature: 0` and got HTTP
- * 200: test/fixtures/recordings/session/native-openai-oauth-tool-loop.json (an
- * OAuth bearer, gpt-5.5) and native-zen-tool-loop.json. `chat.params` fires for
- * EVERY openai-provider request including those two — the missing
- * `max_output_tokens` in the first cassette is this plugin's own chat.params
- * hook, recorded — so a strip up there reds both. This runs ONLY on the branch
- * that actually rewrote the URL. Do not "simplify" it upwards.
+ * This lives in the fetch wrapper, not `chat.params`, because the refusal belongs
+ * to the ENDPOINT: chatgpt.com/backend-api/codex answers "Unsupported parameter:
+ * temperature" for the gpt-5 family while api.openai.com/v1/responses accepts the
+ * same body. `chat.params` fires for EVERY openai request, so a strip there breaks
+ * the platform path; this runs only on the branch that rewrote the URL.
  *
- * These two are the whole class that can reach the wire: @ai-sdk/openai's
- * responses model already drops topK / seed / presencePenalty /
- * frequencyPenalty / stopSequences with an "unsupported" warning, so they are
- * never in a body to strip.
+ * These two are the whole class that can reach the wire: @ai-sdk/openai's responses
+ * model already drops topK / seed / penalties / stopSequences with a warning.
  */
 export function withoutSampling(body: BodyInit | null | undefined): BodyInit | null | undefined {
   if (typeof body !== "string") return body
@@ -173,8 +252,14 @@ async function refreshAccessToken(refreshToken: string, issuer = ISSUER): Promis
     }).toString(),
   })
   if (!response.ok) {
-    throw new Error(`Token refresh failed: ${response.status}`)
+    const detail = await response.text().catch(() => "")
+    const message = `Token refresh failed: ${response.status}${detail ? ` ${detail}` : ""}`
+    // Same reason as plugin/xai.ts: a REFUSED grant leaves a well-formed credential
+    // on disk that every "signed in" surface keeps believing, so nothing says to sign in again.
+    ProviderReauth.markIfRefused("openai", response.status, message)
+    throw new Error(message)
   }
+  ProviderReauth.clear("openai")
   return response.json()
 }
 
@@ -307,6 +392,9 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
   const websocketFetches: Array<ReturnType<typeof OpenAIWebSocketPool.createWebSocketFetch>> = []
 
   return {
+    async config(cfg) {
+      applyCodexCapabilityDefaults(cfg)
+    },
     async dispose() {
       for (const websocketFetch of websocketFetches) websocketFetch.close()
       websocketFetches.length = 0
@@ -317,19 +405,35 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
     },
     provider: {
       id: "openai",
+      /**
+       * Ask the account what it is served, instead of shipping the answer.
+       *
+       * Runs after the `models` hook and the config pass, so it only ever ADDS
+       * rows nobody declared. The list is also handed to `servesOverOauth`, which
+       * stops the NEXT provider-list build stripping that same id back out.
+       *
+       * An api-key credential is skipped: this endpoint belongs to the ChatGPT
+       * subscription backend. NO REFRESH IS ATTEMPTED — a stale bearer answers 401,
+       * the catalogue comes back empty and the seed list stands.
+       */
+      async discoverModels(ctx) {
+        const auth = ctx.auth
+        if (auth?.type !== "oauth" || !auth.access) return {}
+        const models = await fetchCodexCatalog({
+          accessToken: auth.access,
+          ...((auth as { accountId?: string }).accountId ? { accountId: (auth as { accountId?: string }).accountId! } : {}),
+        })
+        // Only a NON-EMPTY answer is recorded: an empty one means the request failed
+        // or the account is signed out, not that it is served nothing.
+        if (Object.keys(models).length > 0) setLiveServedModels(Object.keys(models))
+        return models
+      },
       async models(provider, ctx) {
         if (ctx.auth?.type !== "oauth") return provider.models
 
         return Object.fromEntries(
           Object.entries(provider.models)
-            .filter(([, model]) => {
-              if (model.options.reasoningMode === "pro") return false
-              if (ALLOWED_MODELS.has(model.api.id)) return true
-              if (DISALLOWED_MODELS.has(model.api.id)) return false
-              if (model.api.id === "gpt-5.6") return false
-              const match = model.api.id.match(/^gpt-(\d+\.\d+)/)
-              return match ? parseFloat(match[1]) > 5.4 : false
-            })
+            .filter(([, model]) => servesOverOauth(model.api.id, model.options.reasoningMode))
             .map(([modelID, model]) => [
               modelID,
               {
@@ -379,6 +483,7 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
 
         return {
           apiKey: OAUTH_DUMMY_KEY,
+          max_concurrent: OAUTH_MAX_CONCURRENT,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
             if (init?.headers) {
               if (init.headers instanceof Headers) {
@@ -592,9 +697,8 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       output.headers.originator = "origami"
       output.headers["User-Agent"] = `origami/${InstallationVersion} (${os.platform()} ${os.release()}; ${os.arch()})`
       output.headers["session-id"] = input.sessionID
-      // Temporary fetch-layer hack: title generation currently shares the conversation
-      // session ID, so the OpenAI plugin marks it for HTTP fallback until transport
-      // context can be passed directly instead of smuggled through headers.
+      // Temporary: title generation shares the conversation session ID, so it is
+      // marked for HTTP fallback until transport context can be passed directly.
       if (websocketFetchInstalled && input.agent === "title") output.headers[OpenAIWebSocketPool.TITLE_HEADER] = "true"
     },
     "chat.params": async (input, output) => {

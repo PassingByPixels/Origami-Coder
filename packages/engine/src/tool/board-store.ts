@@ -2,26 +2,19 @@ import path from "path"
 import { Effect, Semaphore } from "effect"
 import { FSUtil } from "@origami/core/fs-util"
 import { Global } from "@origami/core/global"
+import { pathKey } from "@/util/path-key"
 
 /**
- * FOLDS BOARD STORE.
- *
- * The ticket is the entity and the FILE is the truth: every ticket is one
- * markdown file at `<repoRoot>/.origami/tickets/<id>.md`, and the repo registry
- * is `~/.origami/repos.json`. Humans edit both by hand, the extension renders
- * them, and the `board_*` tools read/write them — so the parse and the write
- * live HERE, once, and cannot drift between the readers.
- *
- * Two rules drive the whole module:
+ * Folds board store: one markdown file per ticket at
+ * `<repoRoot>/.origami/tickets/<id>.md`, with the repo registry at
+ * `~/.origami/repos.json`. Humans edit both by hand and the extension renders
+ * them, so two rules drive the whole module.
  *
  *  1. A WRITE IS A TARGETED LINE EDIT. Frontmatter is re-emitted line by line
- *     with only the changed key replaced. Rebuilding it from a fixed field list
- *     would silently delete every key this module does not know about — the
- *     collab agent-def serializer bug class, which is exactly what a
- *     hand-authored ticket file cannot afford.
+ *     with only the changed key replaced; rebuilding it from a fixed field
+ *     list would silently delete every key this module does not know about.
  *  2. A FILE THAT WILL NOT PARSE IS SURFACED, NEVER DROPPED. `readTicket`
- *     returns a ticket carrying `malformed` rather than failing, so a typo in
- *     one file cannot make it vanish off the board.
+ *     returns a ticket carrying `malformed` rather than failing.
  */
 
 /** Registry of repos the board knows about. Shared: the extension writes it,
@@ -38,7 +31,6 @@ export type TicketStatus = (typeof TICKET_STATUSES)[number]
 /** The statuses an agent may set. The rest are stamped by the fold lifecycle. */
 export const AGENT_STATUSES = ["triage", "todo", "closed"] as const
 
-/** Ticket priorities, lowest first. */
 export const PRIORITIES = ["low", "normal", "high"] as const
 
 /** `~/.origami/repos.json`. A getter, so it honours ORIGAMI_TEST_HOME. */
@@ -46,12 +38,10 @@ export function reposPath(): string {
   return path.join(Global.Path.origami, REPOS_FILE)
 }
 
-/** `<repoRoot>/.origami/tickets/`. */
 export function ticketsDir(root: string): string {
   return path.join(root, ".origami", TICKETS_DIR)
 }
 
-/** `<repoRoot>/.origami/tickets/<id>.md`. */
 export function ticketPath(root: string, id: string): string {
   return path.join(ticketsDir(root), `${id}.md`)
 }
@@ -61,33 +51,23 @@ export type RepoEntry = {
   readonly name: string
   readonly workspace: boolean
   readonly addedAt: number
-  /** Board-only display label (VS Code Folds pill/header), never used to
-   *  resolve a `repo` param — the ticket store and this bridge key by `name`
-   *  alone, so a rename can never move where a tool writes. Display-only. */
+  /** Board-only display label, never used to resolve a `repo` param — both
+   *  sides key by `name` alone, so a rename cannot move where a tool writes. */
   readonly displayName?: string
   /** Absolute path of the checkout that OWNS this repo's tickets, and that
    *  folds branch from and apply into. A repo can have many worktrees; exactly
-   *  one holds `.origami/tickets/`. ABSENT is the normal case and means the
-   *  registered `root` is that checkout. */
+   *  one holds `.origami/tickets/`. Absent means the registered `root` is it. */
   readonly primary?: string
 }
 
-/**
- * Comparable form of a path: resolved, trailing separator dropped, and
- * case-folded on Windows. Used for repo identity and for the write mutex, so
- * `C:\Repos\X\` and `c:/repos/x` are one repo and take one lock.
- */
-export function pathKey(p: string): string {
-  const resolved = path.resolve(p).replace(/[\\/]+$/, "")
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved
-}
+/** Repo identity and the write mutex both key on the shared path rule, so
+ *  `C:\Repos\X\` and `c:/repos/x` are one repo and take one lock (t-v47qh6:
+ *  the rule moved to util/path-key.ts so the artifact store uses the same one). */
+export { pathKey }
 
-/**
- * Parse `repos.json`. Anything unreadable — absent file, broken JSON, wrong
- * shape — reads as NO repos rather than an error: the registry is written by
- * the extension, and a tool that dies because the user has never opened the
- * board is worse than one that says the board is empty.
- */
+/** Parse `repos.json`. Anything unreadable — absent, broken JSON, wrong shape —
+ *  reads as NO repos rather than an error, so a tool does not die because the
+ *  user has never opened the board. */
 export function parseRepos(text: string | undefined): RepoEntry[] {
   if (!text?.trim()) return []
   let data: unknown
@@ -120,17 +100,13 @@ export function parseRepos(text: string | undefined): RepoEntry[] {
   return out
 }
 
-/**
- * The checkout that owns a repo's tickets: `primary` when the entry names one,
- * the registered root otherwise. Every ticket path for a repo resolved BY NAME
- * goes through here — a repo with three worktrees still has ONE ticket folder,
- * or the same board would read differently from each checkout.
- */
+/** The checkout that owns a repo's tickets: `primary` when the entry names one,
+ *  the registered root otherwise. Every ticket path resolved BY NAME goes
+ *  through here, or one board reads differently from each worktree. */
 export function primaryRoot(entry: Pick<RepoEntry, "root" | "primary">): string {
   return entry.primary?.trim() || entry.root
 }
 
-/** Read and parse the registry. */
 export function readRepos(fs: FSUtil.Interface) {
   return Effect.gen(function* () {
     const text = yield* fs.readFileStringSafe(reposPath()).pipe(Effect.catch(() => Effect.succeed(undefined)))
@@ -138,24 +114,40 @@ export function readRepos(fs: FSUtil.Interface) {
   })
 }
 
-/**
- * One registry change: the `root` that identifies the entry, plus the fields to
- * set on it. Anything the patch does not name keeps the value it already had.
- */
+/** Raised by `writeRepos` when `repos.json` exists but a read of it failed for
+ *  a reason other than "does not exist yet". Never caught silently — a caller
+ *  that swallowed this would be back to the bug it fixes. */
+export class RegistryReadFailedError extends Error {
+  constructor(file: string) {
+    super(`Refused to write ${file}: it exists but could not be read (a race, EBUSY/EPERM, or similar). Left untouched.`)
+    this.name = "RegistryReadFailedError"
+  }
+}
+
+/** The text a merge may start from. `readFileStringSafe` reads "not found" and
+ *  "permission denied" alike as `undefined` -- correct for a display read
+ *  (`readRepos`, above), wrong for a write: if `existed` is true and `text` is
+ *  still `undefined`, something failed to read a file that is actually there,
+ *  and merging from `undefined` would build a fresh `{ repos: [...patch] }`
+ *  and overwrite every other entry in it. Only a file that never existed is
+ *  safe to start clean from. */
+export function registryTextForWrite(file: string, existed: boolean, text: string | undefined) {
+  if (existed && text === undefined) return Effect.fail(new RegistryReadFailedError(file))
+  return Effect.succeed(text)
+}
+
+/** One registry change: the `root` that identifies the entry, plus the fields
+ *  to set. Anything the patch does not name keeps the value it had. */
 export type RepoPatch = { readonly root: string } & Partial<Omit<RepoEntry, "root">>
 
 /**
  * Merge patches into the TEXT of repos.json and return the new text.
  *
  * The merge works on the RAW parsed JSON, never on the projected `RepoEntry`
- * list. That is the whole point: the registry is a shared file — the extension
- * writes it too, and each side carries keys the other has never heard of — so
- * projecting and re-emitting would silently delete every unknown field. Same
- * rule as `fmSet` on the ticket side, for the same reason.
- *
- * Unreadable input reads as no repos rather than an error. Broken JSON has
- * nothing left to preserve; a readable object whose `repos` is unusable still
- * keeps every other top-level key.
+ * list: the registry is shared with the extension and each side carries keys
+ * the other has never heard of, so projecting and re-emitting would silently
+ * delete every unknown field. Same rule as `fmSet` on the ticket side. A
+ * readable object whose `repos` is unusable still keeps every other key.
  */
 export function mergeReposText(text: string | undefined, patches: readonly RepoPatch[]): string {
   let parsed: unknown
@@ -184,26 +176,25 @@ export function mergeReposText(text: string | undefined, patches: readonly RepoP
     else list[at] = { ...(list[at] as Record<string, unknown>), ...set }
   }
 
-  // `version` is what the extension's reader gates on: a file without it reads
-  // as "no prior file" over there, and every addedAt gets re-dated on its next
-  // rewrite. Stamp it when it is missing, never overwrite one already there.
+  // The extension's reader gates on `version`: without it the file reads as "no
+  // prior file" there, and every addedAt is re-dated on the next rewrite. Stamp
+  // it when missing, never overwrite one already there.
   if (typeof doc.version !== "number") doc.version = 1
   doc.repos = list
   return `${JSON.stringify(doc, null, 2)}\n`
 }
 
-/**
- * Merge patches into `~/.origami/repos.json`. The engine's only write path to
- * the registry: atomic (tmp + rename, the ritual the extension already uses,
- * so a reader mid-write never sees half a file) and serialised on the
- * registry's own lock, or two tools registering two repos at once would lose
- * one of the entries. Returns the registry as it now stands.
- */
+/** Merge patches into `~/.origami/repos.json`. The engine's only write path to
+ *  the registry: atomic (tmp + rename, as the extension does, so a reader
+ *  mid-write never sees half a file) and serialised on the registry's own lock,
+ *  or two tools registering two repos at once would lose one entry. */
 export function writeRepos(fs: FSUtil.Interface, patches: readonly RepoPatch[]) {
   const file = reposPath()
   return repoLock(file).withPermits(1)(
     Effect.gen(function* () {
-      const text = yield* fs.readFileStringSafe(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const existed = yield* fs.existsSafe(file)
+      const read = yield* fs.readFileStringSafe(file).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const text = yield* registryTextForWrite(file, existed, read)
       const next = mergeReposText(text, patches)
       const temp = `${file}.${process.pid}.${Date.now()}.tmp`
       yield* fs.writeWithDirs(temp, next).pipe(
@@ -220,13 +211,10 @@ export function writeRepos(fs: FSUtil.Interface, patches: readonly RepoPatch[]) 
   )
 }
 
-/**
- * Resolve the tools' `repo` parameter against the registry: by name first
- * (that is what the pills show), then by absolute root. A literal "." is the
- * session's own worktree — the one repo a fold session always knows without
- * being told. Everything else must be REGISTERED: an unregistered absolute
- * path would let an agent scatter ticket files into any directory it can name.
- */
+/** Resolve the tools' `repo` parameter: by name first, then by absolute root. A
+ *  literal "." is the session's own worktree. Everything else must be
+ *  REGISTERED — an unregistered absolute path would let an agent scatter ticket
+ *  files into any directory it can name. */
 export function resolveRepo(repos: readonly RepoEntry[], param: string | undefined, worktree: string) {
   const raw = (param ?? "").trim()
   if (!raw || raw === ".") {
@@ -251,14 +239,9 @@ export type WorktreeRow = {
   readonly bare: boolean
 }
 
-/**
- * Parse `git worktree list --porcelain`: blank-line separated records, each
- * opening with `worktree <path>`, then zero or more `<key> [value]` lines
- * (`HEAD`, `branch`, `detached`, `bare`, `locked`, `prunable`). Keys this
- * function does not know are skipped, not treated as an error — git adds new
- * ones, and a board that stops listing checkouts because of one is worse than
- * one that lists them without the new detail.
- */
+/** Parse `git worktree list --porcelain`: blank-line separated records opening
+ *  with `worktree <path>`. Unknown keys are skipped, not an error — git adds
+ *  new ones, and a board that stops listing checkouts over one is worse. */
 export function parseWorktreeList(text: string): WorktreeRow[] {
   const rows: WorktreeRow[] = []
   let current: { path: string; branch?: string; head?: string; detached: boolean; bare: boolean } | undefined
@@ -290,18 +273,14 @@ export function parseWorktreeList(text: string): WorktreeRow[] {
   return rows.filter((row) => row.path)
 }
 
-// ============================ document shape =============================
-
 export type TicketDoc = {
   /** Frontmatter lines VERBATIM, fences excluded. Unknown keys live here. */
   readonly fm: readonly string[]
-  /** Everything after the closing fence, verbatim. */
   readonly body: string
   /** The file's own line ending, preserved across a rewrite. */
   readonly eol: "\n" | "\r\n"
 }
 
-/** Split a ticket file into frontmatter lines + body. `undefined` = no fence. */
 export function splitDoc(text: string): TicketDoc | undefined {
   const eol = text.includes("\r\n") ? "\r\n" : "\n"
   const lines = text.split(/\r?\n/)
@@ -323,28 +302,20 @@ function keyIndex(fm: readonly string[], key: string): number {
   return fm.findIndex((line) => line.match(KEY_LINE)?.[1] === key)
 }
 
-/** Raw value of a frontmatter key, trimmed. `undefined` when the key is absent. */
 export function fmGet(fm: readonly string[], key: string): string | undefined {
   const index = keyIndex(fm, key)
   return index === -1 ? undefined : (fm[index].match(KEY_LINE)?.[2] ?? "").trim()
 }
 
-/** The optional keys the slim template (§12 item 5) may omit until a stamp
- *  gives them their first real value, in the order the template documents.
- *  Any other key — including one this module has never heard of — still
- *  appends at the absolute end, exactly as before. */
+/** The optional keys the slim template may omit until a stamp gives them their
+ *  first real value, in the order the template documents. Any other key still
+ *  appends at the absolute end. */
 const TAIL_KEYS = ["labels", "assignee", "fold", "branch"]
 
-/**
- * Set one frontmatter key IN PLACE. The whole point of the module: every other
- * line — unknown keys, comments, blank lines, ordering — survives untouched.
- * A key that is already present is updated on its own line, wherever that is
- * (an old-format ticket's blank `assignee: ''` never moves). A key that is
- * ABSENT is inserted right after `updated:` — or, if a TAIL_KEYS entry that
- * sorts no later than it is already there, right after that one instead — so
- * a slim ticket's first claim/labels/fold/branch lands in the documented
- * order rather than tacked onto the very end of the frontmatter.
- */
+/** Set one frontmatter key IN PLACE: every other line — unknown keys, comments,
+ *  blank lines, ordering — survives untouched. A key already present is updated
+ *  on its own line. An ABSENT key is inserted after `updated:`, or after the
+ *  last TAIL_KEYS entry that sorts no later than it. */
 export function fmSet(fm: readonly string[], key: string, value: string): string[] {
   const next = [...fm]
   const index = keyIndex(next, key)
@@ -364,7 +335,6 @@ export function fmSet(fm: readonly string[], key: string, value: string): string
   return next
 }
 
-/** Strip one matching pair of surrounding quotes. `''` reads as empty. */
 export function unquote(value: string): string {
   const text = value.trim()
   const quoted =
@@ -372,12 +342,10 @@ export function unquote(value: string): string {
   return quoted ? text.slice(1, -1) : text
 }
 
-/**
- * First whitespace-delimited token of a value. Used ONLY for `status` and
- * `priority`, which are single-token enums — that is what makes it safe to
- * drop the trailing `# low | normal | high` comment the template ships. Never
- * use it on free text like `title`, where a `#` is a legitimate character.
- */
+/** First whitespace-delimited token of a value. Only for `status` and
+ *  `priority`, single-token enums where dropping the template's trailing
+ *  `# low | normal | high` comment is safe. Never on free text like `title`,
+ *  where `#` is a legitimate character. */
 export function firstToken(value: string): string {
   return unquote(value).split(/\s+/)[0] ?? ""
 }
@@ -391,7 +359,6 @@ export function parseLabels(value: string | undefined): string[] {
     .filter(Boolean)
 }
 
-/** The inline-array form the ticket template uses. */
 export function serializeLabels(labels: readonly string[]): string {
   return `[${labels.join(", ")}]`
 }
@@ -401,16 +368,11 @@ export function stamp(when: Date = new Date()): string {
   return `${when.toISOString().slice(0, 19)}Z`
 }
 
-// ============================ body sections ==============================
-
 const HEADING = /^#{1,6}\s/
 const CHECKBOX = /^\s*[-*]\s+\[([ xX])\]\s*(.*)$/
 
-/**
- * Half-open line range of a `## <name>` section: the heading line, then every
- * line up to the next heading of any level. `undefined` when there is no such
- * section.
- */
+/** Half-open line range of a `## <name>` section: the heading line, then every
+ *  line up to the next heading of any level. */
 export function sectionRange(lines: readonly string[], name: string): { start: number; end: number } | undefined {
   const wanted = name.toLowerCase()
   const start = lines.findIndex((line) => {
@@ -443,34 +405,28 @@ export function acceptanceItems(body: string): AcceptanceItem[] {
   return items
 }
 
-/** Acceptance progress as the board card shows it. */
 export function countAcceptance(body: string): { done: number; total: number } {
   const items = acceptanceItems(body)
   return { done: items.filter((item) => item.done).length, total: items.length }
 }
 
-/** Render one acceptance line. */
 function acceptanceLine(item: AcceptanceItem): string {
   return `- [${item.done ? "x" : " "}] ${item.text}`
 }
 
-/**
- * Parse a caller-supplied acceptance entry. A leading `[x]` / `[ ]` (with or
- * without the list dash) sets the state explicitly; plain text leaves it
- * unstated so `setAcceptance` can carry the existing tick over.
- */
+/** Parse a caller-supplied acceptance entry. A leading `[x]` / `[ ]` sets the
+ *  state explicitly; plain text leaves it unstated so `setAcceptance` can carry
+ *  the existing tick over. */
 function parseAcceptanceInput(raw: string): { done?: boolean; text: string } {
   const match = raw.match(CHECKBOX) ?? raw.trim().match(/^\[([ xX])\]\s*(.*)$/)
   if (match) return { done: match[1] !== " ", text: match[2].trim() }
   return { text: raw.replace(/^\s*[-*]\s+/, "").trim() }
 }
 
-/**
- * Replace the `## Acceptance` list. An entry whose text is unchanged KEEPS its
- * tick unless the caller states one — otherwise re-specifying a ticket would
- * quietly untick everything already done. The section is created before
- * `## Log` when absent, so the file keeps the documented order.
- */
+/** Replace the `## Acceptance` list. An entry whose text is unchanged KEEPS its
+ *  tick unless the caller states one, or re-specifying a ticket would untick
+ *  everything already done. Created before `## Log` when absent, so the file
+ *  keeps the documented order. */
 export function setAcceptance(body: string, entries: readonly string[], eol: "\n" | "\r\n"): string {
   const previous = new Map(acceptanceItems(body).map((item) => [item.text, item.done]))
   const rendered = entries
@@ -494,11 +450,9 @@ export function setAcceptance(body: string, entries: readonly string[], eol: "\n
   return [...trimmed, "", ...section].join(eol)
 }
 
-/**
- * Append one entry to `## Log`, creating the section when the file has none.
- * Appends at the END of the section (blank padding backed over) so the log
- * stays chronological and anything after it in the file stays put.
- */
+/** Append one entry to `## Log`, creating the section when the file has none,
+ *  at the END of it so the log stays chronological and anything after it in the
+ *  file stays put. */
 export function appendLog(body: string, entry: string, eol: "\n" | "\r\n"): string {
   const line = `- ${entry.replace(/\s+/g, " ").trim()}`
   const lines = body.split(/\r?\n/)
@@ -518,8 +472,6 @@ export function logEntry(who: string, text: string, when: Date = new Date()): st
   return `${stamp(when)} ${who || "agent"}: ${text}`
 }
 
-// ================================ tickets ================================
-
 export type Ticket = {
   readonly id: string
   readonly title: string
@@ -532,7 +484,6 @@ export type Ticket = {
   readonly fold: string
   readonly branch: string
   readonly acceptance: { readonly done: number; readonly total: number }
-  /** Markdown after the frontmatter, verbatim. */
   readonly body: string
   readonly file: string
   /** Set when the file is not a readable ticket. The row is still returned. */
@@ -558,7 +509,6 @@ function malformedTicket(file: string, reason: string): Ticket {
   }
 }
 
-/** Project a parsed document into the board's ticket model. */
 export function ticketOf(doc: TicketDoc, file: string): Ticket {
   const title = (fmGet(doc.fm, "title") ?? "").trim()
   const status = firstToken(fmGet(doc.fm, "status") ?? "")
@@ -606,7 +556,6 @@ export function listTickets(fs: FSUtil.Interface, root: string) {
   })
 }
 
-/** Ticket counts keyed by status, malformed rows counted under "malformed". */
 export function countByStatus(tickets: readonly Ticket[]): Map<string, number> {
   const counts = new Map<string, number>()
   for (const ticket of tickets) {
@@ -618,12 +567,9 @@ export function countByStatus(tickets: readonly Ticket[]): Map<string, number> {
 
 const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
-/**
- * `t-` + 6 base36: 4 time-derived (whole seconds, so ids sort roughly by age
- * inside a ~19-day window) + 2 random. Short enough to read out loud on a card
- * chip; the caller still probes for a free filename, which is what actually
- * guarantees uniqueness.
- */
+/** `t-` + 6 base36: 4 time-derived (whole seconds, so ids sort roughly by age
+ *  inside a ~19-day window) + 2 random. The caller still probes for a free
+ *  filename, which is what actually guarantees uniqueness. */
 export function newTicketId(now: number = Date.now(), random: () => number = Math.random): string {
   const time = Math.floor(now / 1000)
     .toString(36)
@@ -633,11 +579,9 @@ export function newTicketId(now: number = Date.now(), random: () => number = Mat
   return `t-${time}${tail}`
 }
 
-/**
- * The refusal for a status an agent may not set, or `undefined` when it may.
- * A REFUSAL STRING, not an error: the model has to be able to read why and
- * pick a legal move, and a thrown error reads as a broken tool.
- */
+/** The refusal for a status an agent may not set, or `undefined` when it may. A
+ *  refusal string, not an error: the model has to read why and pick a legal
+ *  move, and a thrown error reads as a broken tool. */
 export function statusRefusal(next: string): string | undefined {
   if ((AGENT_STATUSES as readonly string[]).includes(next)) return undefined
   if ((TICKET_STATUSES as readonly string[]).includes(next))
@@ -645,18 +589,14 @@ export function statusRefusal(next: string): string | undefined {
   return `Refused: "${next}" is not a ticket status. Agents may set only ${AGENT_STATUSES.join(", ")}.`
 }
 
-/** The refusal for a bad priority, or `undefined`. */
 export function priorityRefusal(next: string): string | undefined {
   if ((PRIORITIES as readonly string[]).includes(next)) return undefined
   return `Refused: "${next}" is not a priority. Use one of ${PRIORITIES.join(", ")}.`
 }
 
-/**
- * The refusal for a claim that would steal a ticket, or `undefined`. A
- * compare-and-set on `assignee`: an unassigned ticket is claimable, a ticket
- * already claimed by the same slug is a no-op, and anything else is refused so
- * two agents racing one ticket cannot both believe they own it.
- */
+/** The refusal for a claim that would steal a ticket, or `undefined`. A
+ *  compare-and-set on `assignee`, so two agents racing one ticket cannot both
+ *  believe they own it. */
 export function claimRefusal(assignee: string, slug: string): string | undefined {
   if (!assignee || assignee === slug) return undefined
   return `Refused: that ticket is already claimed by @${assignee}. Ask them, or pick another ticket.`
@@ -664,12 +604,9 @@ export function claimRefusal(assignee: string, slug: string): string | undefined
 
 const locks = new Map<string, Semaphore.Semaphore>()
 
-/**
- * The per-repo write mutex. In-process only, by design: it serialises the
- * read-modify-write of the tools running inside ONE engine, which is where the
- * lost-update risk is. Cross-process safety is the file's own atomicity plus
- * the fact that humans edit tickets one at a time.
- */
+/** The per-repo write mutex. In-process only, by design: it serialises the
+ *  read-modify-write of tools inside ONE engine, which is where the lost-update
+ *  risk is. Cross-process safety is the file's own atomicity. */
 export function repoLock(root: string): Semaphore.Semaphore {
   const key = pathKey(root)
   const hit = locks.get(key)
@@ -694,10 +631,9 @@ export function newTicketFile(input: {
   const when = input.when ?? new Date()
   const created = stamp(when)
   const parts = ["---", `id: ${input.id}`, `title: ${input.title}`, `status: ${input.status}`, `priority: ${input.priority}`]
-  // Slim template (§12 item 5): assignee/fold/branch are ALWAYS blank on a
-  // brand-new ticket, so they are never written; labels is written only when
-  // the caller actually gave some. fmSet inserts every one of them later, in
-  // this same order, the moment a stamp gives it a first real value.
+  // Slim template: assignee/fold/branch are always blank on a brand-new ticket
+  // so they are never written, and labels only when the caller gave some. fmSet
+  // inserts each one later, in this order, on its first real value.
   if (input.labels.length) parts.push(`labels: ${serializeLabels(input.labels)}`)
   parts.push(`created: ${created}`, `updated: ${created}`, "---", "")
   const body = (input.body ?? "").trim()

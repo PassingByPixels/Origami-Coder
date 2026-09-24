@@ -457,6 +457,70 @@ describe('ChatPane — #4 no-session regression (split bootstrap replay)', () =>
   });
 });
 
+// The Claude Code flip (0.4.69). Picking a Claude Code model binds THIS cell to
+// a passthrough session; picking an engine model afterwards hands it back. Both
+// arrive as one message — `sessionKind` — because kind is what the capability
+// gates read, so it is the whole flip.
+//
+// Asserted through a REAL gate rather than internal state: the context gauge
+// keeps its reading and loses every compaction affordance on a passthrough
+// (InputBar.svelte), which is a thing a user can see.
+describe('ChatPane — a cell flips to Claude Code and back', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const gauge = () => document.querySelector('.ctx-gauge');
+
+  async function cell() {
+    render(ChatPane);
+    postFromHost({ type: 'sessionCreated', sessionId: ACP_UUID, sessionNumber: 1, agentName: 'Tsuru', agentArt: null });
+    postFromHost({ type: 'restoreActiveSession', sessionId: ACP_UUID });
+    // The composer mounts with the CELL, and it owns its own listener — so the
+    // messages below have to come AFTER that render or they land on nothing.
+    await new Promise((r) => setTimeout(r, 0));
+    // The gauge only draws with a model online and real tokens in play — those
+    // are its own render conditions, not part of what is under test here.
+    postFromHost({ type: 'modelStatus', sessionId: ACP_UUID, ok: true, modelName: 'qwen3-30b' });
+    postFromHost({ type: 'contextUpdate', sessionId: ACP_UUID, contextUsed: 4096, contextWindow: 131072, turns: 1 });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(gauge(), 'the gauge must render, or these gate assertions prove nothing').not.toBeNull();
+  }
+
+  it('starts as an ordinary engine chat — the gauge is a compaction button', async () => {
+    await cell();
+    expect(gauge()!.getAttribute('role')).toBe('button');
+    expect(gauge()!.getAttribute('data-tip')).not.toContain('Claude Code manages its own compaction');
+  });
+
+  it('takes the gates on when the host binds it', async () => {
+    await cell();
+    postFromHost({ type: 'sessionKind', sessionId: ACP_UUID, kind: 'claude' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(gauge()!.getAttribute('data-tip')).toContain('Claude Code manages its own compaction');
+    expect(gauge()!.getAttribute('role')).toBeNull();
+  });
+
+  it('gives them back when the host parks it — the cell is never re-created', async () => {
+    await cell();
+    postFromHost({ type: 'sessionKind', sessionId: ACP_UUID, kind: 'claude' });
+    await new Promise((r) => setTimeout(r, 0));
+    // '' is the unbind signal the host posts, and it must read as "no kind".
+    postFromHost({ type: 'sessionKind', sessionId: ACP_UUID, kind: '' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(gauge()!.getAttribute('role')).toBe('button');
+    expect(gauge()!.getAttribute('data-tip')).not.toContain('Claude Code manages its own compaction');
+    // Still ONE cell, the same one: a flip is not a new chat.
+    expect(document.querySelectorAll('.chat-cell').length).toBe(1);
+    expect(document.querySelector('.chat-cell')!.getAttribute('data-session-id')).toBe(ACP_UUID);
+  });
+
+  it('ignores a flip aimed at a DIFFERENT cell', async () => {
+    await cell();
+    postFromHost({ type: 'sessionKind', sessionId: 'some-other-session', kind: 'claude' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(gauge()!.getAttribute('role')).toBe('button');
+  });
+});
+
 // #3 — multiple concurrent chat INSTANCES. The new-chat (+) path calls
 // DashboardPanel.addSession → createSession → a second `sessionCreated`
 // broadcast. ChatPane must register it as an ADDITIONAL session (its own
@@ -560,7 +624,7 @@ describe('ChatPane — last user message stays pinned (tweak 2)', () => {
       return el!;
     });
     expect(pinned.textContent).toContain('add a logout button');
-    expect(pinned.getAttribute('title')).toBe('add a logout button');
+    expect(pinned.getAttribute('data-tip')).toBe('add a logout button');
 
     // It PERSISTS once the turn settles (the inFlight gate is gone).
     postFromHost({ type: 'turnDone', sessionId: ACP_UUID, stopReason: 'success' });
@@ -640,9 +704,16 @@ const clickLabel = async (container: HTMLElement, label: string) => {
 describe('ChatPane — the sub-agent drawer', () => {
   beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
 
-  const startChild = (id: string, title: string) => postFromHost({
+  /** A `task` spawn AS THE ENGINE SENDS IT: the pending frame's title is the
+   *  bare tool name (acp/tool.ts titles it from the part, which has none yet),
+   *  and the model's own brief rides `rawInput` — which is what every surface
+   *  NAMES the sub-agent by (t-f6u661, subagentLabel.ts). This helper used to
+   *  pass a hand-made `title: 'task: audit the bundle'` that the wire never
+   *  carries, which is how the drawer shipped reading `task` for every row. */
+  const startChild = (id: string, description: string) => postFromHost({
     type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-' + id,
-    title, kind: 'other', toolName: 'task', status: 'in_progress', taskSessionId: id,
+    title: 'task', kind: 'other', toolName: 'task', status: 'in_progress', taskSessionId: id,
+    rawInput: { description, subagent_type: 'general-purpose', prompt: 'go' },
   });
 
   it('draws nothing at all — not even a tab — when no sub-agent is out', async () => {
@@ -654,54 +725,65 @@ describe('ChatPane — the sub-agent drawer', () => {
     expect(container.querySelector('.sa-tab')).toBeNull();
   });
 
-  it('appears COLLAPSED (drawer AND the row list) when a task starts, listing the child once expanded', async () => {
+  // CONTRACT CHANGE (t-ru13hb item 3). This used to assert that a task starting
+  // left the drawer AND its row list shut, on the reading that a roster is
+  // consulted rather than imposed. The owner's later ruling is that a fan-out
+  // nobody can see is the worse failure: a child going out now REVEALS the
+  // roster once. The user's own collapse is still respected for the session —
+  // subagentAutoOpen.test.ts owns that half.
+  it('a child going out OPENS the drawer and its row list, with the child listed', async () => {
     const { container } = render(ChatPane);
     newSession();
-    startChild('child-a', 'task: audit the bundle');
+    startChild('child-a', 'audit the bundle');
     const drawer = await need(container, '.sa-drawer');
-    // Collapsed by default: a roster is consulted, not imposed over the reply.
-    expect(drawer.classList.contains('collapsed')).toBe(true);
-    // ...and the tab is there to pull it out with.
+    await waitFor(() => expect(drawer.classList.contains('collapsed')).toBe(false));
     expect(container.querySelector('.sa-tab')).not.toBeNull();
-    // t-kgryh1 — the LIST'S OWN fold: the header/count reads immediately, but
-    // no row (and so no row title) renders until it is asked to expand.
     expect(drawer.textContent).toContain('1 running');
-    expect(container.querySelector('.sa-row')).toBeNull();
-
-    await fireEvent.click(await need(container, '.sa-head'));
     await need(container, '.sa-row');
-    expect(drawer.textContent).toContain('task: audit the bundle');
+    expect(drawer.textContent).toContain('general-purpose · T1 · audit the bundle');
   });
 
-  it('the tab opens and closes it', async () => {
+  it('the tab closes and reopens it', async () => {
     const { container } = render(ChatPane);
     newSession();
-    startChild('child-a', 'task: audit the bundle');
+    startChild('child-a', 'audit the bundle');
     const tab = await need(container, '.sa-tab');
-
-    await fireEvent.click(tab);
+    // Open already, by the rule above — so the FIRST click is the close.
     await waitFor(() => expect(container.querySelector('.sa-drawer')!.classList.contains('collapsed')).toBe(false));
-    await fireEvent.click(container.querySelector('.sa-tab')!);
+    await fireEvent.click(tab);
     await waitFor(() => expect(container.querySelector('.sa-drawer')!.classList.contains('collapsed')).toBe(true));
+    await fireEvent.click(container.querySelector('.sa-tab')!);
+    await waitFor(() => expect(container.querySelector('.sa-drawer')!.classList.contains('collapsed')).toBe(false));
   });
 
   // CONTRACT CHANGE. This used to assert that a finished child left the drawer
   // and that the drawer vanished with the last one. It now MOVES to Complete
   // and stays readable: a sub-agent's output is only worth reading once it has
-  // finished, so emptying the drawer at that moment threw away the answer.
+/** The COMPLETE band ships SHUT (t-d93fjo) — a chat that has spawned twenty
+   *  agents over an afternoon must not push the two still working off the list.
+   *  Its rows are therefore not in the DOM until it is opened; every case below
+   *  that reads a settled row opens it first. The fold's own behaviour is
+   *  SubagentDrawer.test.ts's. */
+  async function expandComplete(c: HTMLElement): Promise<void> {
+    const fold = c.querySelector('.sa-group-fold') as HTMLElement | null;
+    if (fold?.getAttribute('aria-expanded') === 'false') await fireEvent.click(fold);
+  }
+  
+// finished, so emptying the drawer at that moment threw away the answer.
   it('moves a child to Complete when it finishes, and keeps the drawer', async () => {
     const { container } = render(ChatPane);
     newSession();
-    startChild('child-a', 'task: audit the bundle');
-    startChild('child-b', 'task: check the tests');
+    startChild('child-a', 'audit the bundle');
+    startChild('child-b', 'check the tests');
     await waitFor(() => expect(container.querySelector('.sa-drawer')?.textContent).toContain('2 running'));
-    await fireEvent.click(await need(container, '.sa-head')); // expand the list once — persists across the updates below
+    if (!container.querySelector('.sa-groups')) await fireEvent.click(await need(container, '.sa-head')); // t-ru13hb: a running row may have unfolded it // expand the list once — persists across the updates below
 
     postFromHost({
       type: 'toolResult', sessionId: ACP_UUID, toolCallId: 'tc-child-a',
       status: 'completed', content: 'done', taskSessionId: 'child-a',
     });
     await waitFor(() => expect(container.querySelector('.sa-drawer')?.textContent).toContain('1 running'));
+    await expandComplete(container);
     // Still listed — under Complete now, not gone.
     const bandOf = (name: string) => [...container.querySelectorAll('.sa-group')]
       .find((g) => g.textContent?.includes(name))?.querySelector('.sa-group-label')?.textContent;
@@ -713,6 +795,7 @@ describe('ChatPane — the sub-agent drawer', () => {
       status: 'completed', content: 'done', taskSessionId: 'child-b',
     });
     await waitFor(() => expect(container.querySelector('.sa-drawer')?.textContent).toContain('0 running'));
+    await expandComplete(container);
     expect(bandOf('check the tests')).toBe('Complete');
     expect(container.querySelectorAll('.sa-group')).toHaveLength(1);
   });
@@ -726,7 +809,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     newSession();
     postFromHost({
       type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-child-a',
-      title: 'task: audit the bundle', kind: 'other', toolName: 'task', status: 'in_progress',
+      title: 'task', kind: 'other', toolName: 'task', status: 'in_progress',
+      rawInput: { description: 'audit the bundle', subagent_type: 'general-purpose', prompt: 'go' },
       taskSessionId: 'child-a', taskBackground: true, taskModel: 'openrouter/qwen3-coder',
     });
     postFromHost({
@@ -736,20 +820,37 @@ describe('ChatPane — the sub-agent drawer', () => {
     });
 
     const drawer = await need(container, '.sa-drawer');
-    await fireEvent.click(await need(container, '.sa-head'));
+    if (!container.querySelector('.sa-groups')) await fireEvent.click(await need(container, '.sa-head')); // t-ru13hb: a running row may have unfolded it
     await waitFor(() => expect(drawer.textContent).toContain('1 running'));
     // WHICH model — a sub-agent routinely runs on a different one from the chat.
     expect(drawer.textContent).toContain('openrouter/qwen3-coder');
 
     // Live activity from the child lands in ITS row, so "is it stuck?" has an
-    // answer without opening the transcript.
+    // answer without opening the transcript — behind the fold, since t-f9jxl1
+    // every row (running ones too) now starts COLLAPSED.
     postFromHost({
       type: 'subagentChunk', sessionId: ACP_UUID, childSessionId: 'child-a',
       text: '> read: a.ts\n> bash: npm test\n',
     });
+    await fireEvent.click(await need(container, '.sa-fold'));
     await waitFor(() =>
       expect(container.querySelector('.sa-activity')?.textContent).toContain('> bash: npm test'),
     );
+
+    // t-dkkd2o. The child's counters arrive on their OWN channel, not on the
+    // launcher's tool call: a background spawn's call completed at line 810
+    // above and the engine can write nothing onto it after that. Latest wins.
+    // t-f9jxl1: the row prints the single `<X> tokens` total, not in/out.
+    postFromHost({
+      type: 'subagentTokens', sessionId: ACP_UUID, childSessionId: 'child-a',
+      tokens: { input: 16_077, output: 46, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    await waitFor(() => expect(container.querySelector('.sa-tokens')?.textContent).toBe('16.1k tokens'));
+    postFromHost({
+      type: 'subagentTokens', sessionId: ACP_UUID, childSessionId: 'child-a',
+      tokens: { input: 46_724, output: 96, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    await waitFor(() => expect(container.querySelector('.sa-tokens')?.textContent).toBe('46.8k tokens'));
 
     // Only the engine's terminal marker ends it — and ending it means moving to
     // Complete, not disappearing (see the contract note above).
@@ -766,13 +867,14 @@ describe('ChatPane — the sub-agent drawer', () => {
   it('lists a spawn that FAILED before it had a session id, beside the one that ran', async () => {
     const { container } = render(ChatPane);
     newSession();
-    startChild('child-a', 'task: audit the bundle');
+    startChild('child-a', 'audit the bundle');
     postFromHost({
       type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-denied',
-      title: 'task: rewrite the config', kind: 'other', toolName: 'task', status: 'in_progress',
+      title: 'task', kind: 'other', toolName: 'task', status: 'in_progress',
+      rawInput: { description: 'rewrite the config', subagent_type: 'general-purpose', prompt: 'go' },
     });
     const drawer = await need(container, '.sa-drawer');
-    await fireEvent.click(await need(container, '.sa-head'));
+    if (!container.querySelector('.sa-groups')) await fireEvent.click(await need(container, '.sa-head')); // t-ru13hb: a running row may have unfolded it
     // Anonymous and still in flight: one row, the child that really started.
     await waitFor(() => expect(drawer.textContent).toContain('1 running'));
     expect(drawer.textContent).not.toContain('rewrite the config');
@@ -783,7 +885,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     });
     await waitFor(() => expect(drawer.textContent).toContain('1 failed'));
     expect(drawer.textContent).toContain('1 running');
-    expect(drawer.textContent).toContain('task: rewrite the config');
+    await expandComplete(container);
+    expect(drawer.textContent).toContain('rewrite the config');
     expect(container.querySelector('.sa-dot.sa-failed')).not.toBeNull();
   });
 
@@ -795,7 +898,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     newSession();
     postFromHost({
       type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-denied',
-      title: 'task: rewrite the config', kind: 'other', toolName: 'task', status: 'in_progress',
+      title: 'task', kind: 'other', toolName: 'task', status: 'in_progress',
+      rawInput: { description: 'rewrite the config', subagent_type: 'general-purpose', prompt: 'go' },
     });
     postFromHost({
       type: 'toolResult', sessionId: ACP_UUID, toolCallId: 'tc-denied',
@@ -803,7 +907,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     });
     const drawer = await need(container, '.sa-drawer');
     await waitFor(() => expect(drawer.textContent).toContain('1 failed'));
-    await fireEvent.click(await need(container, '.sa-head'));
+    if (!container.querySelector('.sa-groups')) await fireEvent.click(await need(container, '.sa-head')); // t-ru13hb: a running row may have unfolded it
+    await expandComplete(container);
     const dismiss = await need(container, '.sa-dismiss');
 
     await fireEvent.click(dismiss);
@@ -823,7 +928,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     newSession();
     postFromHost({
       type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-denied',
-      title: 'task: rewrite the config', kind: 'other', toolName: 'task', status: 'in_progress',
+      title: 'task', kind: 'other', toolName: 'task', status: 'in_progress',
+      rawInput: { description: 'rewrite the config', subagent_type: 'general-purpose', prompt: 'go' },
     });
     postFromHost({
       type: 'toolResult', sessionId: ACP_UUID, toolCallId: 'tc-denied',
@@ -1756,5 +1862,290 @@ describe('ChatPane — the composer focus toggle', () => {
     await fireEvent.click(eye);
     await tick();
     expect((await need(container, '.focus-eye')).getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+// Composer drag-and-drop, the pane-level fallback. Reading ChatPane before
+// this change showed no dragover/drop handler anywhere on `.chat-pane` (and
+// none on the window either) — a file dropped anywhere but the composer's
+// own textarea fell through to the browser default, which in a webview means
+// navigating it. The fix: prevent that default everywhere in the pane, and
+// forward the DataTransfer on to the active session's composer so the drop
+// still lands somewhere instead of just being swallowed more quietly.
+describe('ChatPane — a drop outside the composer never navigates the webview', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  function makeDataTransfer(files: File[]) {
+    return { getData: () => '', setData: () => {}, files };
+  }
+
+  it('a drop on the pane background (not the textarea) reaches the SAME composer triage', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await new Promise((r) => setTimeout(r, 0));
+    const pane = container.querySelector('.chat-pane') as HTMLElement;
+    const textarea = container.querySelector(`textarea.input[data-session-id="${ACP_UUID}"]`) as HTMLTextAreaElement;
+    expect(textarea).not.toBeNull();
+
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(event, 'dataTransfer', { value: makeDataTransfer([file]) });
+    // Dispatched on the pane itself, well outside the textarea.
+    expect(() => pane.dispatchEvent(event)).not.toThrow();
+
+    await waitFor(() => expect(textarea.value).toBe(' notes.txt '));
+  });
+
+  it('preventDefault is called even with no active composer to forward to (an empty pane)', async () => {
+    const { container } = render(ChatPane);
+    // No session created — nothing on screen to forward to.
+    const pane = container.querySelector('.chat-pane') as HTMLElement;
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(event, 'dataTransfer', { value: makeDataTransfer([file]) });
+    expect(() => pane.dispatchEvent(event)).not.toThrow();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('a drop that lands ON the textarea is handled once, not twice (no double insertion)', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await new Promise((r) => setTimeout(r, 0));
+    const textarea = container.querySelector(`textarea.input[data-session-id="${ACP_UUID}"]`) as HTMLTextAreaElement;
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    await fireEvent.drop(textarea, { dataTransfer: makeDataTransfer([file]) });
+    expect(textarea.value).toBe(' notes.txt ');
+  });
+});
+
+// The composer had the same blind spot as the chat list's ring: its in-flight
+// flag was raised by the SEND path (or by the /loop path's `busy`) and lowered
+// by `turnDone`. A turn the ENGINE starts — a background task result being
+// injected, a wakeup — has neither, so the Stop affordance never appeared for
+// it and the box invited a message the engine could not take yet.
+//
+// `origami/sessionStatus` is the engine's own answer. This case handles ONLY
+// the in-flight flag: turnDone still owns the rest of the end-of-turn work,
+// which is why the flag must also come DOWN on idle (there is no turnDone
+// coming for a turn nobody prompted).
+describe('ChatPane — the composer follows the engine on a turn nobody typed', () => {
+  const placeholderOf = (container: HTMLElement) =>
+    (container.querySelector('textarea.input') as HTMLTextAreaElement).placeholder;
+
+  it('an engine-started turn puts the composer in flight, and idle releases it', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'busy' });
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'idle' });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+  });
+
+  // The correction that stopped this from being a regression on the NORMAL
+  // path. The `idle` SSE event and the JSON-RPC response behind `turnDone`
+  // race by design, so on a user-typed turn `idle` can land first. Releasing
+  // the composer there lets InputBar's held send fire into a turn whose
+  // prompt() has not resolved, and the OLD turn's late `turnDone` then lowers
+  // the flag over the NEW one. Only a turn the status itself ADOPTED (nobody
+  // typed it, nothing else will settle it) may be released by an idle.
+  it('a user-typed turn is NOT released by an early idle — turnDone still owns it', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await tick();
+
+    // The send path raises the flag itself; the engine reports the same turn
+    // busy a moment later, which must NOT adopt a turn already in flight.
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'rebuild the three specs' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'busy' });
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'idle' });
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'turnDone', sessionId: ACP_UUID, stopReason: 'success' });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+  });
+
+  it('a user send after an engine-started turn is settled by ITS turnDone, not by a stale label', async () => {
+    // The stale-label trap: the engine turn must not leave its mark on the
+    // session, or the next user turn would be released by an idle again.
+    const { container } = render(ChatPane);
+    newSession();
+    await tick();
+
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'busy' });
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'idle' });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+
+    const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
+    await fireEvent.input(box, { target: { value: 'now ship it' } });
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await tick();
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'idle' });
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'turnDone', sessionId: ACP_UUID, stopReason: 'success' });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+  });
+
+  it('a /loop run (raised by the host, settled by turnDone) is left alone too', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await tick();
+
+    postFromHost({ type: 'busy', sessionId: ACP_UUID });
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'busy' });
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID, status: 'idle' });
+    await tick();
+    expect(placeholderOf(container)).toContain('running turn');
+
+    postFromHost({ type: 'turnDone', sessionId: ACP_UUID, stopReason: 'loop_run' });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+  });
+
+  it('a status for another session, or a malformed one, leaves this composer alone', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    await tick();
+
+    postFromHost({ type: 'sessionStatus', sessionId: 'some-other-session', status: 'busy' });
+    postFromHost({ type: 'sessionStatus', status: 'busy' });
+    postFromHost({ type: 'sessionStatus', sessionId: ACP_UUID });
+    await tick();
+    expect(placeholderOf(container)).toContain('Type a message');
+  });
+});
+
+// 0.4.116, owner: a chat pane that was plainly working - turns running, real
+// token counts in the composer, no offline banner - showed no context gauge and
+// no turn count at all. Both hang off the model bar's `modelOnline && modelName`
+// gate, which reads a provider LIVENESS probe; a pane that mounts before that
+// probe answers gets ok:false with an empty model name, and until something
+// re-posts `modelStatus` the reading the chat has already earned is simply not
+// drawn.
+//
+// The liveness verdict is still the right owner of the offline BANNER - it is
+// the only thing that knows the server is unreachable. It is the wrong owner of
+// a number the chat measured itself.
+describe('ChatPane - the gauge survives a liveness verdict that has not landed', () => {
+  const gauge = () => document.querySelector('.ctx-gauge');
+  const turns = () => document.querySelector('.ctx-turns');
+
+  async function paneWithProbeInFlight() {
+    render(ChatPane);
+    postFromHost({ type: 'sessionCreated', sessionId: ACP_UUID, sessionNumber: 1, agentName: 'Tsuru', agentArt: null });
+    postFromHost({ type: 'restoreActiveSession', sessionId: ACP_UUID });
+    await new Promise((r) => setTimeout(r, 0));
+    // Exactly what the host posts while providerStatusCache is still empty:
+    // reachability unknown, so no name, and the neutral probing reason that
+    // deliberately draws NO banner.
+    postFromHost({ type: 'modelStatus', sessionId: ACP_UUID, ok: false, modelName: '', reason: 'Checking provider…', providerIsLocal: false });
+    postFromHost({ type: 'contextUpdate', sessionId: ACP_UUID, contextUsed: 51200, contextWindow: 131072, turns: 1 });
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it('draws the turn count and the gauge from real tokens, not from the probe', async () => {
+    await paneWithProbeInFlight();
+    expect(turns()?.textContent).toBe('1 turn');
+    expect(gauge(), 'the chat has 50k real tokens in play and drew no gauge').not.toBeNull();
+    expect(gauge()!.getAttribute('data-tip')).toContain('39%');
+  });
+
+  it('keeps the gauge once the probe lands and the model is named', async () => {
+    // The repair path, so the fix above cannot be mistaken for one that only
+    // works while the verdict is missing.
+    await paneWithProbeInFlight();
+    postFromHost({ type: 'modelStatus', sessionId: ACP_UUID, ok: true, modelName: 'omen-alpha', reason: null, providerIsLocal: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(gauge()).not.toBeNull();
+    expect(turns()?.textContent).toBe('1 turn');
+  });
+
+  it('a brand-new chat with nothing measured yet still shows nothing', async () => {
+    // The gate must not become "always on": with no tokens and no turns there
+    // is no reading to defend, and an empty gauge would be noise.
+    render(ChatPane);
+    postFromHost({ type: 'sessionCreated', sessionId: ACP_UUID, sessionNumber: 1, agentName: 'Tsuru', agentArt: null });
+    postFromHost({ type: 'restoreActiveSession', sessionId: ACP_UUID });
+    await new Promise((r) => setTimeout(r, 0));
+    postFromHost({ type: 'modelStatus', sessionId: ACP_UUID, ok: false, modelName: '', reason: 'Checking provider…', providerIsLocal: false });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(turns()).toBeNull();
+    expect(gauge()).toBeNull();
+  });
+});
+
+// t-sj3fvo: the stream-drop card stayed yellow ("Retrying") after the turn
+// recovered with reasoning or a tool call instead of prose. settleStreamDrop
+// used to read only `rows[rows.length - 1]`, so a retry that resumed with
+// thinking or a tool call — landing AFTER the card but not as its immediate
+// neighbour — could never reach it.
+describe('ChatPane — the stream-drop card recovers on reasoning or a tool call (t-sj3fvo)', () => {
+  const card = (container: HTMLElement) => container.querySelector('[data-state]');
+
+  it('flips to recovered when a TOOL CALL lands after it, with no prose at all', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    postFromHost({
+      type: 'streamDrop', sessionId: ACP_UUID,
+      notice: { kind: 'retrying', attempt: 1, max: 3, detail: 'fetch failed (ECONNRESET)', terminal: false },
+    });
+    await need(container, '[data-state]');
+    expect(card(container)?.getAttribute('data-state')).toBe('retrying');
+    postFromHost({
+      type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-1',
+      title: 'grep', kind: 'read', toolName: 'grep', status: 'in_progress',
+    });
+    await waitFor(() => expect(card(container)?.getAttribute('data-state')).toBe('recovered'));
+  });
+
+  it('flips to recovered when REASONING lands after it, with no prose at all', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    postFromHost({
+      type: 'streamDrop', sessionId: ACP_UUID,
+      notice: { kind: 'retrying', attempt: 1, max: 3, detail: 'fetch failed (ECONNRESET)', terminal: false },
+    });
+    await need(container, '[data-state]');
+    postFromHost({ type: 'agentThought', sessionId: ACP_UUID, text: 'checking the loop' });
+    await waitFor(() => expect(card(container)?.getAttribute('data-state')).toBe('recovered'));
+  });
+
+  it('a STOPPED card never recovers, whatever lands after it', async () => {
+    const { container } = render(ChatPane);
+    newSession();
+    postFromHost({
+      type: 'streamDrop', sessionId: ACP_UUID,
+      notice: { kind: 'stopped', attempt: 3, max: 3, detail: 'fetch failed (ECONNRESET)', terminal: true },
+    });
+    await need(container, '[data-state]');
+    expect(card(container)?.getAttribute('data-state')).toBe('stopped');
+    postFromHost({ type: 'agentThought', sessionId: ACP_UUID, text: 'a later, unrelated turn' });
+    postFromHost({
+      type: 'toolCall', sessionId: ACP_UUID, toolCallId: 'tc-2',
+      title: 'grep', kind: 'read', toolName: 'grep', status: 'in_progress',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(card(container)?.getAttribute('data-state')).toBe('stopped');
   });
 });

@@ -173,12 +173,69 @@ export function subagentsOf(profile: Profile): { binding: Binding; legacy: boole
   }
 }
 
+/** What the owner marked shareable with flock friends. Globs, relative to the worktree. */
+export const FrontDeskScope = Schema.Struct({
+  repos: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+    description: "Repo paths or globs a flock friend's question may be answered from",
+  }),
+  wiki: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+    description: "Wiki folders or globs a flock friend's question may be answered from",
+  }),
+  skills: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+    description: "Skill folders or globs a flock friend's question may be answered from",
+  }),
+}).annotate({ identifier: "FlockFrontDeskScope" })
+export type FrontDeskScope = Schema.Schema.Type<typeof FrontDeskScope>
+
+/**
+ * The Front Desk: what happens when a FRIEND's Origami asks this one a question.
+ *
+ * Nested under `flock` for the owner's convenience, and worth one line of
+ * warning for a reader of this file: the block above is the PROVIDER FLEET
+ * (which model runs a subagent) and this one is the CROSS-PERSON feature. They
+ * share a config key and nothing else. Friends themselves are deliberately NOT
+ * here — they live in `flock.json` under the global config directory, because a
+ * project-local `origami.json` must never be able to introduce a trusted party.
+ *
+ * `model` has NO DEFAULT. With it unset every inbound question is refused with
+ * "front desk model not set" and the owner is told once. Choosing a model for
+ * them would spend their money on a decision they did not make.
+ */
+export const FrontDesk = Schema.Struct({
+  model: Schema.optional(Schema.String).annotate({
+    description:
+      "Model the Front Desk answers flock questions on, as provider/model. REQUIRED to answer: unset means every inbound question is refused",
+  }),
+  dailyBudgetTokens: Schema.optional(PositiveInt).annotate({
+    description: "Tokens per friend per UTC day the Front Desk may spend. Omit for no cap",
+  }),
+  scope: Schema.optional(FrontDeskScope).annotate({
+    description: "What a Front Desk answer may be read from. Defaults to nothing",
+  }),
+}).annotate({ identifier: "FlockFrontDesk" })
+export type FrontDesk = Schema.Schema.Type<typeof FrontDesk>
+
 export const Info = Schema.Struct({
   profile: Schema.optional(Schema.NullOr(Schema.String)).annotate({
     description: "Name of the active profile in 'profiles'. Absent or null means Flock routing is off",
   }),
   profiles: Schema.optional(Schema.Record(Schema.String, Profile)).annotate({
     description: "Named routing profiles, keyed by profile name",
+  }),
+  frontDesk: Schema.optional(FrontDesk).annotate({
+    description: "How this Origami answers questions from flock friends",
+  }),
+  /**
+   * THE FALLBACK RENDEZVOUS, and the setting most likely to be confused with
+   * another one. `origamicoder.remote.relayUrl` (VS Code settings) points the
+   * owner's PHONE at a relay; this one carries questions between two people's
+   * Origamis. They may name the same host and they are still different
+   * settings — a friend's invite can override this per friendship, and no
+   * phone pairing ever consults it.
+   */
+  relayUrl: Schema.optional(Schema.String).annotate({
+    description:
+      "Relay a flock friendship uses when the friend's invite named none, eg wss://relay.origamilabs.nl. Not the Remote phone relay",
   }),
 }).annotate({ identifier: "FlockConfig" })
 export type Info = Schema.Schema.Type<typeof Info>

@@ -26,6 +26,7 @@
   // Colours are theme vars ONLY.
   import { formatCost, formatTokenCount, type UsageTotal } from './labyrinthUsage';
   import { cacheHitRatio, formatPercent, inputEquivalents, type Indicative } from './labyrinthCost';
+  import LabyrinthStatPills, { type StatCell } from './LabyrinthStatPills.svelte';
 
   let { run, quote }: { run: UsageTotal; quote: Indicative | undefined } = $props();
 
@@ -38,7 +39,8 @@
   let raws = $derived(
     ([['in', run.input], ['out', run.output], ['reasoning', run.reasoning || undefined],
       ['cache read', run.cacheRead], ['cache write', run.cacheWrite]] as Array<[string, number | undefined]>)
-      .filter(([, n]) => n !== undefined) as Array<[string, number]>,
+      .filter(([, n]) => n !== undefined)
+      .map(([label, n]): StatCell => ({ key: label, value: (n as number).toLocaleString(), label })),
   );
 </script>
 
@@ -59,12 +61,11 @@
   {/if}
 </div>
 
+<!-- The row's cells are LabyrinthStatPills.svelte's, not a second copy of the
+     same rhythm: the analytics Flight header prints through the very same
+     component, so the two rows cannot drift apart. -->
 {#if raws.length > 0}
-  <div class="spend-parts">
-    {#each raws as [label, n] (label)}
-      <span class="raw-cell"><span class="raw-v">{n.toLocaleString()}</span> <span class="raw-l">{label}</span></span>
-    {/each}
-  </div>
+  <div class="spend-parts"><LabyrinthStatPills cells={raws} /></div>
 {/if}
 
 <style>
@@ -72,9 +73,10 @@
      of the second row land under the cells of the first wherever the counts
      allow it. They do not always — the rows carry three figures and four or
      five — and no attempt is made to fake the alignment where they cannot. */
-  .spend-head, .spend-parts { display: flex; align-items: baseline; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
-  .spend-head > *, .spend-parts > * { min-width: 94px; padding: 1px 9px; border-left: 1px solid var(--og-border); }
-  .spend-head > :first-child, .spend-parts > :first-child { padding-left: 0; border-left: none; }
+  .spend-head { display: flex; align-items: baseline; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+  .spend-head > * { min-width: 94px; padding: 1px 9px; border-left: 1px solid var(--og-border); }
+  .spend-head > :first-child { padding-left: 0; border-left: none; }
+  /* Spacing only — the cells' own rhythm belongs to LabyrinthStatPills.svelte. */
   .spend-parts { margin-top: 3px; }
   .spend-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--og-text-muted); }
   /* The figure the reader takes away, so it is the one that carries weight. */
@@ -84,6 +86,4 @@
   .spend-cost { font-size: 11px; color: var(--og-text-secondary); }
   .spend-quote { font-size: 11px; color: var(--og-accent-2); }
   .spend-none { font-size: 11px; font-style: italic; color: var(--og-text-muted); }
-  .raw-cell { font-size: 11px; color: var(--og-text-secondary); white-space: nowrap; }
-  .raw-l { text-transform: uppercase; letter-spacing: 0.05em; font-size: 9px; color: var(--og-text-muted); }
 </style>

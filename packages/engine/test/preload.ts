@@ -10,8 +10,18 @@ import { afterAll } from "bun:test"
 const dir = path.join(os.tmpdir(), "origami-test-data-" + process.pid)
 await fs.mkdir(dir, { recursive: true })
 afterAll(async () => {
-  const { AppRuntime } = await import("../src/effect/app-runtime")
-  await AppRuntime.dispose()
+  // Dispose the AppRuntime only when the file under test loaded it. Importing
+  // it here costs ~1.3 s (the whole engine module graph) for the many files
+  // that never touch it, inside the hook's 5 s limit under `bun test <file>`;
+  // a stall in that import failed a green file as an "(unnamed)" hook timeout
+  // (t-u1j4jm).
+  const loaded = Object.keys(require.cache).some((key) =>
+    key.replace(/\\/g, "/").endsWith("/src/effect/app-runtime.ts"),
+  )
+  if (loaded) {
+    const { AppRuntime } = await import("../src/effect/app-runtime")
+    await AppRuntime.dispose()
+  }
 
   const busy = (error: unknown) =>
     typeof error === "object" && error !== null && "code" in error && error.code === "EBUSY"

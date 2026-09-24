@@ -5,6 +5,8 @@ import { QuestionTool } from "../../src/tool/question"
 import { Question } from "../../src/question"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Agent } from "../../src/agent/agent"
+import { Permission } from "../../src/permission"
+import { Session } from "../../src/session/session"
 import { Truncate } from "@/tool/truncate"
 import { testEffect } from "../lib/effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
@@ -21,7 +23,13 @@ const ctx = {
 }
 
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([Question.node, EventV2Bridge.node, Truncate.node, Agent.node])),
+  // t-po041k. The question tool now reads the session tree (is this a
+  // sub-agent?) and the permission service (credit the wait), so both join the
+  // rig. `ses_test-session` has no parent, so every case here still takes the
+  // ask-the-user branch.
+  LayerNode.compile(
+    LayerNode.group([Question.node, EventV2Bridge.node, Truncate.node, Agent.node, Permission.node, Session.node]),
+  ),
 )
 
 const pending = Effect.fn("QuestionToolTest.pending")(function* (question: Question.Interface) {

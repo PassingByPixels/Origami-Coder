@@ -15,7 +15,12 @@
   // the mode DOES ("Deep Plan" alone does not tell you it never starts
   // building), while Ask/Auto/Bypass are their own explanation. Absent, the
   // tooltip stays the option name, exactly as the two approve rows had it.
-  interface Opt { value: string; name: string; hint?: string }
+  //
+  // `disabled` on ONE option (not just the whole row) is what a Claude Code
+  // passthrough needed: its Ask/Auto notches are live and only Bypass is not
+  // reachable. The dead notch keeps its `hint`, so the tooltip can say WHY
+  // instead of leaving a notch that just does nothing when clicked.
+  interface Opt { value: string; name: string; hint?: string; disabled?: boolean }
 
   let { mode, options, onSelect, disabled = false }: {
     mode: string;
@@ -45,7 +50,7 @@
       <!-- The notch holds only a decorative dot, so its accessible NAME comes
            from aria-label rather than from the tooltip — which is now free to
            carry a longer `hint` without renaming the control. -->
-      <button class="approve-notch" class:active={opt.value === mode} disabled={disabled}
+      <button class="approve-notch" class:active={opt.value === mode} disabled={disabled || opt.disabled === true}
         onclick={() => onSelect(opt.value)} aria-label={opt.name} title={opt.hint ?? opt.name}>
         <span class="approve-dot" style={opt.value === mode ? dotColor(opt.value) : ''}></span>
       </button>

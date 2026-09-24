@@ -1,22 +1,13 @@
-// The scaffold's naming + starter-file text. Extracted out of toolsPane.ts
-// (t-kgtaac round 3) so the host file stays under its architecture cap — this
-// pair was already named as the reason that file sat near its cap before the
-// load/unload override was added, and a second self-contained unit landing on
-// top of it is exactly the case the cap exists to catch.
-//
-// Pure: no `vscode` import, no I/O. `toolsPane.ts` is the only caller.
+// The scaffold's naming + starter-file text, extracted out of toolsPane.ts to keep it under its
+// cap. Pure: no vscode import, no I/O.
 
 /** Where a scaffolded tool has to land for the engine to glob it: the registry
  *  scans `{tool,tools}/*.{js,ts}` under each config directory. */
 export const TOOL_DIR = ['.origami', 'tool'];
 
-/**
- * A tool name the engine can actually register, or null.
- *
- * The engine derives the tool id from the FILENAME (`<basename>` for a default
- * export), and that id goes straight into a JSON tool schema, so anything a
- * model could not name — spaces, dots, path separators, leading digits — has to
- * be refused here rather than written and then silently ignored.
+/** A tool name the engine can actually register, or null. The engine derives the tool id from the
+ *  FILENAME, which goes straight into a JSON tool schema — anything a model couldn't name (spaces,
+ *  dots, path separators, leading digits) must be refused here rather than silently ignored later.
  */
 export function toolFileName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -25,17 +16,11 @@ export function toolFileName(raw: unknown): string | null {
 }
 
 /**
- * A real, runnable tool — and, above all, one that LOADS UNEDITED.
- *
- * NO IMPORTS, deliberately. This used to open with
- * `import { tool } from "@origami/plugin"`, which can never resolve from a
- * workspace `.origami/tool/` folder: that package is workspace-internal and
- * unpublished — `npm view` answers 404. The engine used to npm-install it into
- * every config dir; that never once succeeded and it failed the whole install
- * with it, so the dir's own dependencies did not land either. The add is gone
- * (engine config.ts's `waitForDependencies` note). The import is not needed
- * anyway: the engine recognises a tool by SHAPE (`isPluginTool` in
- * engine/src/tool/registry.ts wants only `description`, `args`, `execute`).
+ * A real, runnable tool that LOADS UNEDITED. No imports, deliberately: an
+ * earlier version imported `@origami/plugin`, which can never resolve from a
+ * workspace `.origami/tool/` folder (unpublished package) and used to break
+ * the whole install. The engine recognises a tool by SHAPE instead
+ * (`isPluginTool` wants only `description`, `args`, `execute`).
  */
 export function toolTemplate(name: string): string {
   return `// This file IS the tool: the engine globs .origami/tool/*.ts at startup and

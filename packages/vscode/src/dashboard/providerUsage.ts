@@ -1,62 +1,30 @@
 /**
- * How much of a subscription connection's quota is spent, for the Lab fold.
- *
- * ITS OWN FILE, not part of providerAuthPane.ts, for the reason the ratchet
- * exists: that file sat at 284 against a cap of 285. It is also a different
- * subject — providerAuthPane owns a FLOW (three calls, a browser hand-off, a
- * config write), this owns a READ. Nothing here can change anything.
- *
- * LAZY, NEVER TIMED. The webview asks once when a provider's fold opens. There
- * is deliberately no poller: openai/codex#10869 is the bug report filed against
- * OpenAI's own CLI for polling this same endpoint every 60 seconds.
- *
- * THE TOKEN NEVER COMES HERE. The engine reads the credential, makes the call,
- * and answers with percentages (acp/provider-usage.ts). This file sees only what
- * a webview may see.
+ * How much of a subscription's quota is spent, for the Lab fold. Own file
+ * because providerAuthPane.ts is at its cap and owns a flow, not a read.
+ * Lazy, never polled; the token never reaches here, only the engine's percentages.
  */
 
 import { configuredUsageCapableIds } from './usageCapable';
+import { fetchProviderUsage, type ProviderUsageClient, type UsageWindow } from './providerUsageFetch';
+
+// Re-exported so the fold's callers and its tests keep one import path.
+export { fetchProviderUsage } from './providerUsageFetch';
+export type { ProviderUsageClient, UsageResult, UsageWindow } from './providerUsageFetch';
 
 export const PROVIDER_USAGE_MESSAGE_TYPES = new Set(['providerUsageRequest', 'providerUsageCapableRequest']);
-
-export interface ProviderUsageClient {
-  extMethod(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
-}
 
 export interface ProviderUsageHost {
   readonly client?: ProviderUsageClient;
   readonly post: (msg: Record<string, unknown>) => void;
 }
 
-/** One quota lane, as `acp/provider-usage.ts` shapes it. */
-export interface UsageWindow {
-  readonly label: string;
-  readonly usedPercent: number;
-  /** Epoch millis. */
-  readonly resetsAt?: number;
-}
-
-/** Hand-mirrored from the engine's `UsageResult`, like providerAuthPane's shapes. */
-interface UsageResult {
-  ok?: boolean;
-  providerID?: string;
-  plan?: string;
-  windows?: UsageWindow[];
-  unavailable?: string;
-}
-
-/**
- * A window as one short sentence: "5-hour: 12% used, resets in 2h 30m".
- *
- * Rendered here rather than in Svelte so the wording is testable without a DOM,
- * and so "resets in" is computed against a clock the test controls.
- */
+/** A window as one short sentence ("5-hour: 12% used, resets in 2h 30m"). Rendered here, not in
+ *  Svelte, so the wording is testable without a DOM. */
 export function usageLine(window: UsageWindow, now: number): string {
   const used = `${Math.round(window.usedPercent)}% used`;
   if (window.resetsAt === undefined) return `${window.label}: ${used}`;
   const seconds = Math.round((window.resetsAt - now) / 1000);
-  // A reset already in the past is not "resets in -3m" — the window has rolled
-  // over and the number beside it is simply stale.
+  // A reset already in the past reads as "resetting now", not a negative time.
   if (seconds <= 0) return `${window.label}: ${used}, resetting now`;
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -65,21 +33,14 @@ export function usageLine(window: UsageWindow, now: number): string {
   return `${window.label}: ${used}, resets in ${span}`;
 }
 
-/**
- * Ask the engine, and post the answer back to the webview.
- *
- * Every failure path ends in a `providerUsageData` carrying `unavailable`, never
- * in a thrown error or in silence: the fold has to decide between "hide the
- * line" and "keep waiting", and silence cannot tell it which.
- */
+/** Ask the engine and post the answer back. Every failure path answers with `unavailable` rather
+ *  than throwing or staying silent. */
 export async function handleProviderUsageMessage(
   host: ProviderUsageHost,
   m: Record<string, unknown>,
 ): Promise<void> {
-  // "Which providers could answer at all" — asked once on mount, before any
-  // model is picked, so the model bar knows whether to ask for a usage read.
-  // Config-only: it answers correctly with no engine running, which is exactly
-  // the state a freshly opened window is in.
+  // Which providers could answer at all — asked once on mount, before any model is picked.
+  // Config-only, so it works with no engine running.
   if (m.type === 'providerUsageCapableRequest') {
     host.post({ type: 'providerUsageCapable', ids: configuredUsageCapableIds() });
     return;
@@ -93,15 +54,8 @@ export async function handleProviderUsageMessage(
     send({ unavailable: 'Open a chat so the engine is running, then reopen this.' });
     return;
   }
-  let result: UsageResult;
-  try {
-    result = (await host.client.extMethod('provider_auth_usage', { providerID: providerId })) as unknown as UsageResult;
-  } catch (e) {
-    // An engine that predates this ext method answers method_not_found. That is
-    // a version skew, not a broken account — say so without a stack.
-    send({ unavailable: 'This engine build cannot report subscription usage.' });
-    return;
-  }
+  // An engine predating this method answers method_not_found — version skew, not a broken account.
+  const result = await fetchProviderUsage(host.client, providerId);
   if (!result?.ok) {
     send({ unavailable: result?.unavailable || 'Usage is not available for this connection.' });
     return;
@@ -111,12 +65,17 @@ export async function handleProviderUsageMessage(
     send({ unavailable: 'The provider reported no quota window for this account.' });
     return;
   }
-  // Formatted HERE, not in the webview. `tsconfig.webview.json` pins rootDir to
-  // webview/, so a Svelte component cannot import this module — sending raw
-  // numbers would mean a second copy of the wording living across that split,
-  // which is exactly the drift keyOnlyPresets.mirror.test.ts exists to police.
-  // The text is a SNAPSHOT: "resets in" is computed once, at fold-open. It goes
-  // stale if the fold is left open, and reopening it asks again.
+  // Formatted here, not in the webview: tsconfig.webview.json blocks importing this module there,
+  // and the text is a snapshot computed once at fold-open.
   const now = Date.now();
-  send({ lines: windows.map((w) => usageLine(w, now)), ...(result.plan ? { plan: result.plan } : {}) });
+  send({
+    lines: windows.map((w) => usageLine(w, now)),
+    // SAME order as `lines`, index-for-index — the webview picks the tightest
+    // window for the pill's own number (t-d942yi) and reuses the matching
+    // pre-formatted `lines` entry for its text, rather than reformatting a
+    // second time on that side (tsconfig.webview.json blocks importing
+    // usageLine there too).
+    windows: windows.map((w) => ({ label: w.label, pct: Math.round(w.usedPercent), resetsAt: w.resetsAt ?? 0 })),
+    ...(result.plan ? { plan: result.plan } : {}),
+  });
 }

@@ -12,6 +12,7 @@ import { CrossSpawnSpawner } from "@origami/core/cross-spawn-spawner"
 import { FlockRouting } from "@/flock/routing"
 import { Provider } from "@/provider/provider"
 import { Ripgrep } from "@origami/core/ripgrep"
+import { Permission } from "@/permission"
 import { Session } from "@/session/session"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -19,7 +20,14 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
-import { taskResults } from "@/session/task-result"
+import { TaskStopTool } from "../../src/tool/task_stop"
+import {
+  enqueueResult,
+  queuedResults,
+  TASK_TOKENS_KEY,
+  taskResults,
+} from "@/session/task-result"
+import { RunStats } from "@/acp/run-stats"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -48,6 +56,9 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       // The task tool resolves Flock routes and looks routed bindings up in the
       // provider registry, so both services must be in the tool's context.
       FlockRouting.node,
+      // The task tool reads how long a child has been parked on an unanswered
+      // ask, so the real permission service has to be in the tool's context.
+      Permission.node,
       Provider.node,
       Session.node,
       SessionProjector.node,
@@ -64,6 +75,11 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 
 const it = testEffect(layer())
 const background = testEffect(layer({ experimentalBackgroundSubagents: true }))
+// t-d935qk. A 250 ms ceiling standing in for the four-hour one. Nothing but
+// `subagentMaxDurationMs` can set a task job's ceiling, so a child that is
+// stopped at 250 ms is proof the flag was read here AND applied by the real
+// registry - and it makes the stop sentence assertable in a live-clock test.
+const capped = testEffect(layer({ experimentalBackgroundSubagents: true, subagentMaxDurationMs: 250 }))
 
 function defer<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -592,7 +608,69 @@ describe("tool.task", () => {
         .pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
-      expect(asked).toBe(false)
+      // t-h8s3xg: the ASK now runs first, so a child whose ruleset denies the
+      // tool reads the denial instead of a config key it cannot raise. This
+      // one is allowed, so the ask passes and the cap stops it - with words
+      // that say what to do rather than which key to edit.
+      expect(asked).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const pretty = Cause.pretty(exit.cause)
+        expect(pretty).toContain("already a sub-agent and nested sub-agents are off (subagent_depth 1)")
+        expect(pretty).toContain("Finish the work yourself or report back to the parent")
+        expect(pretty).not.toContain("Subagent depth limit reached")
+      }
+      expect(yield* sessions.children(child.id)).toHaveLength(0)
+    }),
+  )
+
+  // t-h8s3xg. The order the two checks run in IS the behaviour: a denied child
+  // must read its denial. Before the swap the depth check answered first and
+  // every denied child - the ordinary case, since `subagent-permissions.ts`
+  // denies `task` to any agent whose definition does not name it - was told to
+  // raise `subagent_depth`, which would not have helped it at all.
+  it.instance("a child whose ruleset DENIES task reads the denial, not the depth cap", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "child" })
+      const nestedAssistant = yield* sessions.updateMessage({
+        ...assistant,
+        id: MessageID.ascending(),
+        parentID: MessageID.ascending(),
+        sessionID: child.id,
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: child.id,
+            messageID: nestedAssistant.id,
+            agent: "general",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            // What `Permission.ask` does for a `deny` rule, as `session/tools.ts`
+            // hands it to a tool: the refusal is raised, not returned (that
+            // seam pipes `permission.ask` through `Effect.orDie`).
+            ask: () => Effect.die(new Error("The user denied permission to use the task tool")),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const pretty = Cause.pretty(exit.cause)
+        expect(pretty).toContain("denied permission")
+        expect(pretty).not.toContain("subagent_depth")
+      }
       expect(yield* sessions.children(child.id)).toHaveLength(0)
     }),
   )
@@ -683,6 +761,12 @@ describe("tool.task", () => {
           },
           {
             permission: "list_agents",
+            pattern: "*",
+            action: "deny",
+          },
+          // t-fijeld: side quests are the main agent's list to fill.
+          {
+            permission: "side_quest",
             pattern: "*",
             action: "deny",
           },
@@ -2064,6 +2148,129 @@ describe("tool.task", () => {
     }),
   )
 
+  // A cancel is a settled outcome too - the notify fiber that lives in the
+  // tool's own scope wakes up on `background.cancel`'s `done` resolution just
+  // as it does on completed/error, and without an injected result the drawer
+  // and the ring never learn the child is gone: they keep it listed as if it
+  // were still running.
+  background.instance("a cancelled background sub-agent injects an error result, not a silent drop", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const hold = yield* Deferred.make<void>()
+
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.gen(function* () {
+                yield* Deferred.succeed(injected, input)
+                return reply(input, "ack")
+              })
+            : Effect.gen(function* () {
+                yield* Deferred.await(hold)
+                return reply(input, "child done")
+              }),
+      }
+
+      const started = yield* def.execute(
+        { description: "task A", prompt: "build A", subagent_type: "general", background: true },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      // Cancel while the child is still running - `hold` never resolves, so
+      // the only way the parent hears about this is the cancel path itself.
+      yield* jobs.cancel(started.metadata.sessionId)
+
+      const input = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "the cancelled background result was never injected",
+        "3 seconds",
+      )
+
+      const part = (input.parts ?? [])[0] as { text?: string; metadata?: unknown }
+      expect(taskResults(part.metadata)).toEqual([{ sessionId: started.metadata.sessionId, state: "error" }])
+      expect(part.text).toContain(`<task id="${started.metadata.sessionId}" state="error">`)
+      // t-d935qk: the word "cancelled" alone left the model guessing who did
+      // it. The sentence now names the actor.
+      expect(part.text).toContain("stopped by the parent")
+    }),
+  )
+
+  background.instance("stopping a background sub-agent via task_stop also injects an error result", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const stopDef = yield* (yield* TaskStopTool).init()
+      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const hold = yield* Deferred.make<void>()
+
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.gen(function* () {
+                yield* Deferred.succeed(injected, input)
+                return reply(input, "ack")
+              })
+            : Effect.gen(function* () {
+                yield* Deferred.await(hold)
+                return reply(input, "child done")
+              }),
+      }
+
+      const started = yield* def.execute(
+        { description: "task B", prompt: "build B", subagent_type: "general", background: true },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      yield* stopDef.execute(
+        { task_id: started.metadata.sessionId },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const input = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "the task_stop-cancelled background result was never injected",
+        "3 seconds",
+      )
+
+      const part = (input.parts ?? [])[0] as { text?: string; metadata?: unknown }
+      expect(taskResults(part.metadata)).toEqual([{ sessionId: started.metadata.sessionId, state: "error" }])
+      // task_stop IS the parent stopping its own child, so it reads the same
+      // as a turn-stop (t-d935qk).
+      expect(part.text).toContain("stopped by the parent")
+    }),
+  )
+
   background.instance("a parent turn-stop spares a running detached background sub-agent", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
@@ -2137,6 +2344,502 @@ describe("tool.task", () => {
       expect((yield* jobs.get(fgChild.id))?.status).toBe("cancelled")
       expect((yield* jobs.get(fgGrandchild.id))?.status).toBe("cancelled")
       expect((yield* jobs.get(bgChild.id))?.status).toBe("running")
+    }),
+  )
+
+  // t-d935qk. Five tests for one report: a sub-agent that died at thirty
+  // minutes mid-investigation, a sub-agent that died while a permission ask sat
+  // unanswered, and a card that said only `MessageAbortedError: Aborted`.
+  background.instance(
+    "a background sub-agent runs under the four-hour ceiling, not the registry's thirty-minute default",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const def = yield* (yield* TaskTool).init()
+
+        const result = yield* def.execute(
+          { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: { ...stubOps(), prompt: () => Effect.never } satisfies TaskPromptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        // Read off the REAL registry entry, which is the ceiling the watchdog is
+        // actually armed with. The registry default below is the bug the owner
+        // reported: nothing on this path ever passed a ceiling of its own.
+        expect((yield* jobs.get(result.metadata.sessionId))?.metadata?.max_duration_ms).toBe(4 * 60 * 60 * 1_000)
+        expect(BackgroundJob.DEFAULT_MAX_DURATION_MS).toBe(30 * 60 * 1_000)
+      }),
+  )
+
+  capped.instance("a ceiling stop reaches the parent as a named cause and an elapsed time", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const injected = yield* Deferred.make<string>()
+
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.gen(function* () {
+                yield* Deferred.succeed(
+                  injected,
+                  (input.parts ?? []).map((part) => (part as { text?: string }).text ?? "").join("\n"),
+                )
+                return reply(input, "ack")
+              })
+            : // The child never comes back: what a wedged sub-agent looks like.
+              Effect.never,
+      }
+
+      const result = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const settled = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 5_000 })
+      expect(settled.timedOut).toBe(false)
+      expect(settled.info?.metadata?.expired).toBe(true)
+
+      const text = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "the expired task result was never injected",
+        "5 seconds",
+      )
+      // The sentence, not `MessageAbortedError: Aborted`: WHO stopped it, at
+      // what limit, and after how long. Built from the registry's numbers, so
+      // no part of it is read back out of an error string.
+      expect(text).toContain("stopped: 250 ms sub-agent time limit reached after ")
+      expect(text).toContain(`state="error"`)
+      expect(text).not.toContain("MessageAbortedError")
+    }),
+  )
+
+  capped.instance("a parent stop reaches the parent as a named stop, not a bare abort", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const injected = yield* Deferred.make<string>()
+
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.gen(function* () {
+                yield* Deferred.succeed(
+                  injected,
+                  (input.parts ?? []).map((part) => (part as { text?: string }).text ?? "").join("\n"),
+                )
+                return reply(input, "ack")
+              })
+            : Effect.never,
+      }
+
+      const result = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      yield* jobs.cancel(result.metadata.sessionId)
+      const text = yield* awaitWithTimeout(
+        Deferred.await(injected),
+        "the cancelled task result was never injected",
+        "5 seconds",
+      )
+      expect(text).toContain("stopped by the parent")
+      expect(text).not.toContain("MessageAbortedError")
+    }),
+  )
+
+  capped.instance("a child parked on an unanswered permission ask is not stopped by the ceiling", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const permission = yield* Permission.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        // What a child's turn does when it reaches a gated tool: park on the
+        // REAL Permission service for its own session until somebody replies.
+        // `parentSessionID` is what marks the ask unattended, so this is the
+        // sub-agent shape and not a main session's.
+        prompt: (input) =>
+          permission
+            .ask({
+              sessionID: input.sessionID,
+              parentSessionID: chat.id,
+              permission: "bash",
+              patterns: ["rm -rf /"],
+              metadata: {},
+              always: [],
+              ruleset: [{ permission: "bash", pattern: "*", action: "ask" }],
+            })
+            .pipe(Effect.as(reply(input, "approved")), Effect.orDie),
+      }
+
+      const result = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      // More than twice the ceiling, every millisecond of it waiting on a human.
+      // This is the job that must NOT be stopped: stopping it throws away the
+      // child's whole context for the crime of the user being slow.
+      yield* Effect.sleep("600 millis")
+      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+
+      const request = (yield* permission.list()).find((item) => item.sessionID === result.metadata.sessionId)
+      expect(request).toBeDefined()
+      yield* permission.reply({ requestID: request!.id, reply: "once" })
+
+      const settled = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 5_000 })
+      expect(settled.timedOut).toBe(false)
+      expect(settled.info?.status).toBe("completed")
+      expect(settled.info?.output).toContain("approved")
+    }),
+  )
+
+  capped.instance("resuming a task restarts its ceiling instead of counting the time it already spent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const hold = yield* Deferred.make<void>()
+
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: {
+          promptOps: {
+            ...stubOps(),
+            prompt: (input: SessionPrompt.PromptInput) =>
+              input.sessionID === chat.id
+                ? Effect.succeed(reply(input, "ack"))
+                : Deferred.await(hold).pipe(Effect.as(reply(input, "child done"))),
+          } satisfies TaskPromptOps,
+        },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      const first = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+        context,
+      )
+
+      yield* Effect.sleep("150 millis")
+      const resumed = yield* def.execute(
+        {
+          description: "review the cache path",
+          prompt: "and now check the invalidation",
+          subagent_type: "general",
+          background: true,
+          task_id: first.metadata.sessionId,
+        },
+        context,
+      )
+      expect(resumed.output).toContain("Background task updated")
+
+      yield* Effect.sleep("200 millis")
+      // 350 ms in, past the ceiling this job STARTED with. A resume is the
+      // parent deliberately handing the child new work, so its clock restarts.
+      expect((yield* jobs.get(first.metadata.sessionId))?.status).toBe("running")
+
+      yield* Deferred.succeed(hold, undefined)
+      expect((yield* jobs.wait({ id: first.metadata.sessionId, timeout: 5_000 })).info?.status).toBe("completed")
+    }),
+  )
+  // --- t-dcl8fe: the registry's stops and losses reach the MODEL, not a stack ---
+
+  capped.instance("a FOREGROUND task stopped by the ceiling returns a readable task_error", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      // A wedged child: the ceiling is the only thing that can end this.
+      const promptOps: TaskPromptOps = { ...stubOps(), prompt: () => Effect.never }
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "review the cache path",
+            prompt: "read it all",
+            subagent_type: "general",
+            background: false,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps, bypassAgentCheck: true },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      // Red before the fix: this branch was `Effect.fail`, and `execute` is
+      // `Effect.orDie`, so the parent's window got a DEFECT card with a stack
+      // instead of a tool result - for a stop the engine itself decided on.
+      expect(Exit.isSuccess(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) {
+        expect(exit.value.output).toContain('state="error"')
+        expect(exit.value.output).toContain("<task_error>")
+        expect(exit.value.output).toContain("250 ms sub-agent time limit reached after ")
+        expect(exit.value.output).not.toContain('state="completed"')
+      }
+    }),
+  )
+
+  it.instance("a job the registry has LOST fails the task instead of completing it empty", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const real = yield* BackgroundJob.Service
+      // The registry as it behaves for a job it no longer holds: `wait` reports
+      // no job at all and `waitForPromotion` never answers. Everything else -
+      // the tool, the session store, the permission service - is the real
+      // thing; only the loss is staged, because a live registry never drops a
+      // job on demand.
+      const lost: BackgroundJob.Interface = {
+        ...real,
+        wait: () => Effect.succeed({ timedOut: false }),
+        waitForPromotion: () => Effect.never,
+      }
+      const tool = yield* TaskTool.pipe(Effect.provideService(BackgroundJob.Service, lost))
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps(), bypassAgentCheck: true },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      // Red before the fix: an absent job was rendered as a COMPLETED task with
+      // an empty <task_result>, and the parent read "it finished and said
+      // nothing" and carried on.
+      expect(result.output).toContain('state="error"')
+      expect(result.output).toContain("no longer registered")
+      expect(result.output).not.toContain('state="completed"')
+    }),
+  )
+
+  background.instance("a resume whose job had already settled says it STARTED AGAIN", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps(), bypassAgentCheck: true },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      const first = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general", background: true },
+        context,
+      )
+      expect(first.output).toContain("Background task started")
+      expect(first.output).not.toContain("STARTED AGAIN")
+      // The child answered and its job settled, so there is nothing left to
+      // extend: the resume below can only start a new one on the same session.
+      expect((yield* jobs.wait({ id: first.metadata.sessionId, timeout: 5_000 })).info?.status).toBe("completed")
+
+      const resumed = yield* def.execute(
+        {
+          description: "review the cache path",
+          prompt: "and now check the invalidation",
+          subagent_type: "general",
+          background: true,
+          task_id: first.metadata.sessionId,
+        },
+        context,
+      )
+
+      // Red before the fix: word for word the launch briefing, so the parent
+      // believed the agent it asked to CARRY ON was still mid-thought. It was
+      // not - and what it keeps (the context) is worth saying too.
+      expect(resumed.output).toContain("Background task started again")
+      expect(resumed.output).toContain("STARTED AGAIN")
+      expect(resumed.metadata.sessionId).toBe(first.metadata.sessionId)
+    }),
+  )
+
+  // --- t-dcl8fe: the child's spend, on the parent's tool call ---
+
+  it.instance("carries the child's token totals as origami_task_tokens, posted once when the child settles", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const writes: Array<Record<string, unknown>> = []
+
+      // A child turn that BILLS: one assistant message with two step-finish
+      // parts, which is what a two-step tool loop leaves behind.
+      const steps = [
+        { input: 100, output: 20, reasoning: 5, cache: { read: 7, write: 3 }, cost: 0.25 },
+        { input: 200, output: 40, reasoning: 1, cache: { read: 9, write: 0 }, cost: 0.5 },
+      ]
+      const billingOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.gen(function* () {
+            const message = reply(input, "done")
+            yield* sessions.updateMessage(message.info)
+            for (const step of steps) {
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: message.info.id,
+                sessionID: input.sessionID,
+                type: "step-finish",
+                reason: "stop",
+                cost: step.cost,
+                tokens: {
+                  input: step.input,
+                  output: step.output,
+                  reasoning: step.reasoning,
+                  cache: step.cache,
+                },
+              })
+            }
+            return message
+          }),
+      }
+
+      const result = yield* def.execute(
+        { description: "review the cache path", prompt: "read it all", subagent_type: "general" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: billingOps, bypassAgentCheck: true },
+          messages: [],
+          metadata: (input) => Effect.sync(() => void writes.push(input.metadata ?? {})),
+          ask: () => Effect.void,
+        },
+      )
+
+      const totals = {
+        input: 300,
+        output: 60,
+        reasoning: 6,
+        cacheRead: 16,
+        cacheWrite: 3,
+        cost: 0.75,
+        // t-ffziaz. `steps` and `context` are the two that are NOT sums: two
+        // step-finish parts, and the LAST one's context — its 200 input plus
+        // the 9 it read from cache. 209, not the 316 the run sent in total.
+        steps: 2,
+        context: 209,
+      }
+      // The number the drawer will draw, on the call that owns the child.
+      expect(result.metadata[TASK_TOKENS_KEY]).toEqual(totals)
+      // And it must agree with the child's own stored messages - the same sum
+      // the run index reports, not a second figure kept beside it.
+      const messages = yield* sessions.messages({ sessionID: result.metadata.sessionId })
+      const stat = RunStats.stat(result.metadata.sessionId, messages as unknown as Parameters<typeof RunStats.stat>[1])
+      expect({
+        input: stat.tokens?.input ?? 0,
+        output: stat.tokens?.output ?? 0,
+        reasoning: stat.tokens?.reasoning ?? 0,
+        cacheRead: stat.tokens?.cacheRead ?? 0,
+        cacheWrite: stat.tokens?.cacheWrite ?? 0,
+        cost: stat.cost ?? 0,
+        steps: stat.steps ?? 0,
+        context: stat.context ?? 0,
+      }).toEqual(totals)
+
+      // t-f6vig2. The LAUNCH write carries no token key at all: nothing has
+      // been measured yet, and an all-zero rider read as a spend of 0 - which
+      // is what the drawer printed for the whole run. Every write that HAS the
+      // key carries a real figure.
+      expect(writes.length).toBeGreaterThanOrEqual(2)
+      expect(writes[0]).not.toHaveProperty(TASK_TOKENS_KEY)
+      expect(writes.slice(1).every((write) => !!write[TASK_TOKENS_KEY])).toBe(true)
+      // t-fijy8a F7. ONE update, when the child settles - not one per
+      // step-finish. The live per-step figure travels on the ACP chunk rider
+      // (acp/event.ts childTokens), which is the only channel a background
+      // child has and the one the extension's card already reads; refreshing
+      // here as well meant reading the child's whole transcript twice a step.
+      const updates = writes.filter((write) => ((write[TASK_TOKENS_KEY] as { input?: number })?.input ?? 0) > 0)
+      expect(updates).toHaveLength(1)
+      expect(updates[0]?.[TASK_TOKENS_KEY]).toEqual(totals)
+    }),
+  )
+
+  it.instance("drops a deleted parent's queued background results", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat } = yield* seed()
+      // A result that finished after its parent was already on its way out.
+      // Nothing could ever write it: `ops.prompt` has no session to write into.
+      enqueueResult(chat.id, {
+        text: `<task id="ses_child" state="completed"></task>`,
+        entry: { sessionId: "ses_child", state: "completed" },
+      })
+      expect(queuedResults(chat.id)).toBe(1)
+
+      yield* sessions.remove(chat.id)
+
+      // Red before the fix: the entry (and the drainer claim and the semaphore
+      // beside it) stayed in a process-global map for the life of the process.
+      expect(queuedResults(chat.id)).toBe(0)
     }),
   )
 })

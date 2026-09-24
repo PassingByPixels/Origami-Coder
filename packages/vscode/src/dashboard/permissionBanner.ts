@@ -1,15 +1,9 @@
-// The sticky permission-mode banner's STATE, kept pure so "does the banner
-// follow the engine's mode stream?" is answerable without a webview host.
+// The sticky permission-mode banner's STATE, kept pure so "does the banner follow the engine's mode
+// stream?" is testable without a webview host.
 //
-// It used to be answered by POLLING: `refreshPermissionMode()` called the
-// `get_permission_mode` ext-method on every bootstrap / mode write / tab focus.
-// The engine implements no ext-methods, so that call always threw into a
-// swallow-and-keep-the-cached-value catch — the banner could only ever show
-// whatever it was last told, which was nothing. There is no poll now: the mode
-// arrives on the live `current_mode_update` stream (AcpClient.onModeChanged)
-// and from the mode writes the extension issues itself (slash /plan /default
-// /auto /bypass, the InputBar toggle, the optimistic revert), and this object
-// is where those land.
+// No poll: the engine implements no get_permission_mode ext-method, so the mode arrives only on the
+// live current_mode_update stream and from the mode writes the extension issues itself, and this
+// object is where those land.
 
 /** The modes the banner knows how to render. Anything else the engine reports
  *  (`build`, a custom primary agent) is not a permission escalation, so it
@@ -28,6 +22,16 @@ export function toPermissionMode(modeId: string | undefined): PermissionMode {
   }
 }
 
+/** Phase C2 (bypass) + t-dih1p7 (auto) — banner copy. Empty for `default`,
+ *  `bypass` and now `auto` too: `/auto` and `/bypass` ride `MODE_COMMANDS`
+ *  (DashboardPanel.ts) through `setSessionMode`, which posts `modeUpdate` and
+ *  lands in InputBar.svelte's `permissionMode`, rendering its own
+ *  `mode-badge` (InputBar.svelte ~819) — so that badge is already the
+ *  on-screen signal and a full-width banner saying the same thing was a
+ *  duplicate. Only `plan` has no other chrome, so it still renders. */
+export function permBannerCopy(mode: PermissionMode): string {
+  return mode === 'plan' ? '🟦 PLAN MODE — sticky. Every turn enters plan-mode. Type /default to exit.' : '';
+}
 /** Per-session mode tracking. Per-session because the banner must follow the
  *  FOCUSED tab — a workspace singleton would show a background chat's plan
  *  mode over the chat the user is actually typing into. */
@@ -42,13 +46,9 @@ export class PermissionBannerState {
   }
 
   /**
-   * The mode the banner should display.
-   *
-   * `engineMode` is the session's live ACP `mode` config-option — authoritative
-   * at bootstrap, before any mode event has fired for this session. It is only
-   * consulted when nothing has been tracked yet: once a mode event or write has
-   * landed it wins, because `setSessionMode` (the slash-command path) does NOT
-   * refresh configOptions, so the config-option would be stale after a /plan.
+   * The mode the banner should display. `engineMode` (the session's live ACP mode config-option) is
+   *  consulted only when nothing has been tracked yet — once a mode event or write has landed it
+   *  wins, since the slash-command path does not refresh configOptions.
    */
   modeFor(sessionId: string | null | undefined, engineMode?: string): PermissionMode {
     if (!sessionId) return 'default';
@@ -56,13 +56,9 @@ export class PermissionBannerState {
   }
 
   /**
-   * The mode a given WEBVIEW must show. Each chat popped into its own editor tab
-   * is a separate webview with its own banner, so a solo view speaks for ITS OWN
-   * session and the multi-session sidebar for whichever chat is focused.
-   * Deliberately NOT "the last mode this panel painted": that panel-global value
-   * was stamped into every webview rendered after it, so entering plan on one
-   * chat put a sticky plan banner on every chat opened later — a brand new one
-   * with zero turns included (0.3.24 UAT).
+   * The mode a given WEBVIEW must show. Each popped-out chat is a separate webview speaking for its
+   *  own session; deliberately NOT "the last mode this panel painted", since that stamped a sticky
+   *  plan banner onto every later-opened chat including brand new ones.
    */
   modeForView(solo: string | null | undefined, activeSessionId: string | null, engineMode?: string): PermissionMode {
     return this.modeFor(solo || activeSessionId, engineMode);

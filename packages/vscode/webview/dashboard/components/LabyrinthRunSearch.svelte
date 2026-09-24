@@ -8,8 +8,9 @@
   // The count reads "shown/total" only while a filter is narrowing anything;
   // printing "12/12" unfiltered would imply a filter that is not there.
   // Colours are theme vars ONLY.
+  import HistoryKindToggle from '../../chat/HistoryKindToggle.svelte';
   let {
-    shown, total, query, onQuery, onRefresh, pricesOpen = false, onPrices,
+    shown, total, query, onQuery, onRefresh, pricesOpen = false, onPrices, claudeMark = '', showClaude = true, onShowClaude,
   }: {
     shown: number;
     total: number;
@@ -19,6 +20,7 @@
     /** Whether the price panel is showing; the gear reports it, never colour alone. */
     pricesOpen?: boolean;
     onPrices?: () => void;
+    claudeMark?: string; showClaude?: boolean; onShowClaude?: (on: boolean) => void; // the History popup's own switch, on its own stored preference (historyKinds.ts)
   } = $props();
 </script>
 
@@ -32,6 +34,7 @@
     {/if}
     <button class="lab-refresh" onclick={onRefresh} title="Reload past runs">↻</button>
   </div>
+  {#if onShowClaude}<HistoryKindToggle on={showClaude} mark={claudeMark} onChange={onShowClaude} />{/if}
   <input class="lab-search" type="search" placeholder="Filter runs…" aria-label="Filter the run index"
     value={query} oninput={(e) => onQuery((e.currentTarget as HTMLInputElement).value)} />
 </div>

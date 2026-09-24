@@ -96,6 +96,70 @@ describe("Image", () => {
     }),
   )
 
+  // t-4aqhjb. The resizer's ceiling and the wire's ceiling have to be the SAME
+  // number, or the engine hands the provider a picture it will refuse. 3.75 MB
+  // was legal here and refused by the ChatGPT backend, and the session could
+  // never send a request without those bytes again.
+  it.effect("keeps the default ceiling at the 2 MB the OpenAI Responses route sends", () =>
+    Effect.gen(function* () {
+      const image = yield* Image.Service
+      expect(yield* image.maxBase64Bytes).toBe(2 * 1024 * 1024)
+    }),
+  )
+
+  tiny.effect("reports the configured ceiling rather than the default", () =>
+    Effect.gen(function* () {
+      const image = yield* Image.Service
+      expect(yield* image.maxBase64Bytes).toBe(1)
+    }),
+  )
+
+  it.effect("brings the 5MB fixture under the 2MB ceiling the provider accepts", () =>
+    Effect.gen(function* () {
+      const data = Buffer.from(
+        yield* Effect.promise(() =>
+          Bun.file(path.join(import.meta.dir, "fixtures", "picture-5mb-base64.png")).arrayBuffer(),
+        ),
+      )
+      const image = yield* Image.Service
+      const result = yield* image.normalize(part("image/png", data.toString("base64")))
+      const base64 = result.url.slice(result.url.indexOf(";base64,") + ";base64,".length)
+
+      // The exact number the 2026-09-09 failure turned on: 3.75 MB got through
+      // the old 5 MB ceiling and died on the wire. It cannot get through now.
+      expect(base64.length).toBeLessThanOrEqual(2 * 1024 * 1024)
+      expect(base64.length).toBeLessThan(3_753_798)
+    }),
+  )
+
+  tiny.effect("names the size and the limit when a picture cannot be brought under it", () =>
+    Effect.gen(function* () {
+      const photon = yield* Effect.promise(() => import("@silvia-odwyer/photon-node"))
+      const source = new photon.PhotonImage(new Uint8Array(Array.from({ length: 4 }, () => 255)), 1, 1)
+      const image = yield* Image.Service
+      const exit = yield* image
+        .normalize(part("image/png", Buffer.from(source.get_bytes()).toString("base64")))
+        .pipe(Effect.exit)
+
+      source.free()
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = Cause.squash(exit.cause)
+      expect(error).toBeInstanceOf(Image.SizeError)
+      // Sizes a reader (or a model) can act on, not a raw byte count.
+      expect((error as Image.SizeError).message).toContain("as base64 and could not be resized below")
+      expect((error as Image.SizeError).message).toContain("0 KB")
+    }),
+  )
+
+  it.effect("formats sizes the way the omitted-image note reads them", () =>
+    Effect.sync(() => {
+      expect(Image.megabytes(2 * 1024 * 1024)).toBe("2.0 MB")
+      expect(Image.megabytes(3_753_798)).toBe("3.6 MB")
+      expect(Image.megabytes(600)).toBe("1 KB")
+    }),
+  )
+
   tiny.effect("fails with a typed size error when no resized candidate fits", () =>
     Effect.gen(function* () {
       const photon = yield* Effect.promise(() => import("@silvia-odwyer/photon-node"))

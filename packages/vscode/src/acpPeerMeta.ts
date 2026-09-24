@@ -1,28 +1,33 @@
 // The `_meta.origami_peer` rider: "this user turn came from another AGENT".
 //
-// Its own leaf, beside acpTaskMeta.ts and questionBatch.ts, which decode the
-// other riders acpClient.ts routes on — that file sat exactly on its line cap,
-// and the ratchet's remedy is a module, not a bigger number.
+// FAIL-CLOSED is the whole rule. A peer message arrives in the same wire slot as the
+// human's own turn (`user_message_chunk`), so a half-formed rider must read as NO
+// rider. Validated the same way in packages/engine/src/session/peer-message.ts.
 //
-// FAIL-CLOSED is the whole rule here. A peer message arrives in the same wire
-// slot as the human's own turn (`user_message_chunk`), so a half-formed rider
-// must read as NO rider: rendering the operator's own words under an invented
-// sender's name is worse than losing a badge. The engine writes the key in
-// packages/engine/src/session/peer-message.ts and validates it the same way.
+// WHICH kind of agent — a flock contact, or one of this chat's own sub-agents —
+// is acpPeerRiders.ts beside it. This file decides only whether the message
+// leaves the human transcript at all.
+
+import { flockFromMeta, subagentFromMeta, type FlockOrigin, type SubagentOrigin } from './acpPeerRiders';
+
+export type { FlockOrigin, SubagentOrigin } from './acpPeerRiders';
 
 export interface PeerOrigin {
   /** The sending agent's display name. */
   from: string;
   /** The address a reply goes to — `name#sessionId`. */
   replyTo: string;
+  flock?: FlockOrigin;
+  subagent?: SubagentOrigin;
 }
 
 /** The provenance an update carries, or undefined for an ordinary user turn. */
 export function peerFromMeta(update: unknown): PeerOrigin | undefined {
   const meta = (update as { _meta?: { origami_peer?: unknown } } | undefined)?._meta?.origami_peer;
   if (!meta || typeof meta !== 'object') return undefined;
-  const peer = meta as { from?: unknown; replyTo?: unknown };
-  if (typeof peer.from !== 'string' || !peer.from) return undefined;
-  if (typeof peer.replyTo !== 'string' || !peer.replyTo) return undefined;
-  return { from: peer.from, replyTo: peer.replyTo };
+  const peer = meta as { from?: unknown; replyTo?: unknown; flock?: unknown; subagent?: unknown };
+  if (typeof peer.from !== 'string' || !peer.from || typeof peer.replyTo !== 'string' || !peer.replyTo) return undefined;
+  const flock = flockFromMeta(peer.flock);
+  const subagent = subagentFromMeta(peer.subagent);
+  return { from: peer.from, replyTo: peer.replyTo, ...(flock ? { flock } : {}), ...(subagent ? { subagent } : {}) };
 }

@@ -13,22 +13,15 @@ import type * as ACPError from "./error"
 
 /**
  * The Plugins management pane's read (`list_agent_plugins`) and two writes
- * (`agent_plugin_add`, `agent_plugin_set_enabled`). Round 3 of t-kgtolm — the
- * management UI the loader/config/parser work (round 2, shipped 0.3.60)
- * deferred.
+ * (`agent_plugin_add`, `agent_plugin_set_enabled`).
  *
- * `list` reads `AgentPlugins.Service` (which already carries BOTH enabled and
- * disabled plugins, see `agent-plugins/index.ts`) and cross-references each
- * ENABLED plugin's declared MCP servers against `MCP.Service.status()` — the
- * SAME status a running session's MCP connections report, so the pane can
- * never show a connection state the engine does not itself believe. A
- * disabled plugin's `mcp` is the loader's raw DECLARED map (never deduped
- * against server ownership, see `index.ts`'s disabled branch), so its names
- * can collide with an unrelated ENABLED plugin's own server of the same
- * name — looking that name up in the global status map would then show the
- * disabled plugin running a server it does not own. A disabled plugin never
- * registers anything, so every one of its servers is reported `disabled`
- * unconditionally, never cross-referenced against live status.
+ * `list` reads `AgentPlugins.Service` (which carries BOTH enabled and disabled
+ * plugins, see `agent-plugins/index.ts`) and cross-references each ENABLED plugin's
+ * declared MCP servers against `MCP.Service.status()` - the SAME status a running
+ * session's MCP connections report, so the pane can never show a state the engine
+ * does not believe. A DISABLED plugin's `mcp` is the loader's raw DECLARED map,
+ * whose names can collide with an unrelated enabled plugin's own server, so its
+ * servers are reported `disabled` unconditionally, never cross-referenced.
  */
 
 export type PluginMcpServer = {
@@ -84,10 +77,8 @@ export function project(item: AgentPlugins.Entry, status: Record<string, MCP.Sta
     enabled: item.enabled,
     skillFiles: item.skillFiles,
     // Only an ENABLED plugin's `mcp` names are ones it actually registered
-    // (index.ts dedupes `registered` against `state.owners` before storing
-    // it); a disabled plugin's `mcp` is the raw declared map and can share a
-    // name with a server a different, enabled plugin owns, so it is never
-    // looked up in the live status map — it is always `disabled`.
+    // (index.ts dedupes `registered` against `state.owners`); a disabled plugin's
+    // raw declared map can share a name with an enabled plugin's own server.
     mcp: Object.entries(item.mcp)
       .toSorted(([a], [b]) => a.localeCompare(b))
       .map(([name, info]) => ({
@@ -99,12 +90,9 @@ export function project(item: AgentPlugins.Entry, status: Record<string, MCP.Sta
   }
 }
 
-/**
- * Runs against the process-wide AppRuntime, which already provides
- * `AgentPlugins.Service` and `MCP.Service` — same rationale as
- * `ACPSkills.list`/`ACPInstructions.list`: a private layer stack here would
- * stand up a second instance and deadlock against the live one.
- */
+/** Runs against the process-wide AppRuntime, which already provides
+ *  `AgentPlugins.Service` and `MCP.Service` - same rationale as `ACPSkills.list`: a
+ *  private layer stack here would stand up a second instance and deadlock. */
 export const list = Effect.fn("ACPAgentPlugins.list")(function* (directory: string) {
   const store = yield* InstanceStore.Service
   const plugins = yield* AgentPlugins.Service
@@ -123,13 +111,10 @@ export const list = Effect.fn("ACPAgentPlugins.list")(function* (directory: stri
   }).pipe(Effect.provideService(InstanceRef, ctx))
 })
 
-/**
- * Validate a folder as an agent-plugins.org package — resolve it, then run it
- * through the SAME manifest parser `agent-plugin add` uses — and only once
- * that succeeds, append it to the project config. A parser failure never
- * reaches the filesystem write; its message is returned verbatim so the pane
- * can show exactly what the CLI would print.
- */
+/** Validate a folder as an agent-plugins.org package - resolve it, then run it
+ *  through the SAME manifest parser `agent-plugin add` uses - and only then append
+ *  it to the project config. A parser failure never reaches the filesystem write,
+ *  and its message is returned verbatim so the pane shows what the CLI would. */
 export const add = Effect.fn("ACPAgentPlugins.add")(function* (directory: string, dir: string) {
   const fsys = yield* FSUtil.Service
   const resolved = yield* AgentPluginLoader.resolve({ spec: dir }, fsys, Global.Path.home, directory)

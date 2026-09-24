@@ -3,6 +3,7 @@ import { Context, Duration, Effect, Layer, Option, Schedule, Schema } from "effe
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { ModelsDev } from "@origami/schema/models-dev"
 import { Global } from "./global"
+import { cachedInvalidateForever } from "./effect/cached"
 import { Flag } from "./flag/flag"
 import { Flock } from "./util/flock"
 import { Hash } from "./util/hash"
@@ -225,7 +226,7 @@ const layer = Layer.effect(
       return JSON.parse(text) as Record<string, Provider>
     }).pipe(Effect.withSpan("ModelsDev.populate"), Effect.orDie)
 
-    const [cachedGet, invalidate] = yield* Effect.cachedInvalidateWithTTL(populate, Duration.infinity)
+    const [cachedGet, invalidate] = yield* cachedInvalidateForever(populate)
 
     const get = (): Effect.Effect<Record<string, Provider>> => cachedGet
 

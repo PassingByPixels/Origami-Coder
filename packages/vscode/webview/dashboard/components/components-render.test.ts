@@ -78,17 +78,21 @@ describe('ToolCard ← origami ToolCall fixture (lilinyx_tool_name decoration)',
     return container;
   }
 
-  it('shows the actual read range as a suffix, and clicking the path opens at its start line', async () => {
+  it('shows the actual read range as a suffix, and clicking the path reveals the file', async () => {
+    // t-qmzegs item 5 (CHANGES.md 46): the header path reveals the file in the
+    // OS explorer and no longer opens an editor tab at `toolLines.start`.
+    // THE LINE JUMP IS GONE WITH IT — the range is still shown, but nothing on
+    // the card now navigates to it. That is a deliberate consequence of the
+    // round-3 decision, not an oversight, and it is flagged for the owner.
     renderReadCard();
     expect(screen.getByText('(lines 26-61)')).toBeInTheDocument();
-    const pathEl = screen.getByTitle('Open src/tool/read.ts');
+    const pathEl = document.querySelector('[data-tip="Reveal src/tool/read.ts in the file explorer"]') as HTMLElement;
     expect(pathEl).toHaveTextContent('src/tool/read.ts');
 
     await fireEvent.click(pathEl);
     expect(post()).toHaveBeenCalledWith({
-      type: 'openAbsoluteFile',
+      type: 'revealInExplorer',
       path: 'src/tool/read.ts',
-      line: 26,
     });
   });
 
@@ -102,15 +106,26 @@ describe('ToolCard ← origami ToolCall fixture (lilinyx_tool_name decoration)',
     expect(container.querySelector('.tool-lines')?.textContent).toBe('(lines 26-61)');
   });
 
-  it('does not open the file when the range suffix itself is clicked', async () => {
-    // The suffix is deliberately inert — it carries no stopPropagation, so a
-    // click on it must bubble to the header and only toggle the card. Wiring it
-    // to openAbsoluteFile as well would make the whole header row a file link.
+  it('the header carries THREE controls that do three different things', async () => {
+    // The suffix used to be inert, bubbling to the header so a click on it only
+    // toggled the card. t-qmzegs reversed that on the owner's ruling: the range
+    // is the control that opens the file AT its line, which is the capability
+    // the path lost when the path became a reveal. So the header now holds
+    // three separate jobs, and this asserts they stay separate — the failure
+    // this guards is one click doing two of them.
     const container = renderReadCard();
     const lines = container.querySelector('.tool-lines') as HTMLElement;
 
     await fireEvent.click(lines);
+    expect(post().mock.calls.map((c) => c[0])).toEqual([
+      { type: 'openAbsoluteFile', path: 'src/tool/read.ts', line: 26 },
+    ]);
+    // ...and it does NOT also toggle the card, the way an inert suffix did.
+    expect(container.querySelector('.expand-arrow.open')).toBeNull();
 
+    // The title is still the expand control, and posts nothing.
+    post().mockClear();
+    await fireEvent.click(container.querySelector('.tool-title') as HTMLElement);
     expect(post()).not.toHaveBeenCalled();
     expect(container.querySelector('.expand-arrow.open')).not.toBeNull();
   });

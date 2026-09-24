@@ -83,6 +83,12 @@ describe('handleProviderUsageMessage — exactly one answer, on every path', () 
     expect(posted[0]!.plan).toBe('plus');
     expect((posted[0]!.lines as string[])[0]).toMatch(/^5-hour: 12% used, resets in 2h \d+m$/);
     expect((posted[0]!.lines as string[])[1]).toBe('Weekly: 48% used');
+    // The structured twin of `lines`, same order, for the pill's own tightest-window
+    // pick and its tooltip — t-d942yi.
+    expect(posted[0]!.windows).toEqual([
+      { label: '5-hour', pct: 12, resetsAt: expect.any(Number) },
+      { label: 'Weekly', pct: 48, resetsAt: 0 },
+    ]);
   });
 
   it('CALLS ONCE — the fold asks on open, and nothing here re-asks or polls', async () => {
@@ -162,9 +168,11 @@ describe('handleProviderUsageMessage — exactly one answer, on every path', () 
     expect(PROVIDER_USAGE_MESSAGE_TYPES.has('providerUsageRequest')).toBe(true);
   });
 
-  // OpenCode GO reports three lanes at once. The model-bar pill renders only the
-  // FIRST line, so the order the engine sends is the order the user reads — and
-  // the WEEKLY cap is the budget a user actually manages.
+  // OpenCode GO reports three lanes at once. `lines` keeps the engine's order
+  // (Weekly first, the budget a user actually manages) — the model-bar pill's
+  // OWN number now picks the tightest window instead (t-d942yi), but `lines`
+  // itself, and the parallel `windows` array below, both stay index-aligned
+  // in the order the engine sent.
   it('a GO answer keeps the engine\'s lane order, Weekly first', async () => {
     const { host, posted } = hostOf({
       extMethod: async () => ({
@@ -189,6 +197,14 @@ describe('handleProviderUsageMessage — exactly one answer, on every path', () 
       'Weekly: 12% used, resets in 3d 11h',
       '5-hour: 30% used, resets in 2h 30m',
       'Monthly: 6% used',
+    ]);
+    // `windows` names the TIGHTEST one — Monthly at 6% here is the smallest,
+    // Weekly at 12% is the biggest — proving the array is a real percentage
+    // twin of `lines`, not a copy of the labels alone.
+    expect(posted[0]!.windows).toEqual([
+      { label: 'Weekly', pct: 12, resetsAt: NOW + 300_000_000 },
+      { label: '5-hour', pct: 30, resetsAt: NOW + 9_000_000 },
+      { label: 'Monthly', pct: 6, resetsAt: 0 },
     ]);
   });
 });

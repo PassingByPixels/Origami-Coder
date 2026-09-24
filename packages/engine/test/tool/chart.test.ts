@@ -252,13 +252,16 @@ describe("tool.chart registration", () => {
   )
 })
 
-// A tool offered where nothing can draw its output is the silent failure this
-// tool exists to end, relocated: the call completes ok:true, no picture appears,
-// and nothing says so. The renderer (renderChartBlock) lives in exactly one
-// place — packages/vscode/webview/shared/chartBlock.ts — and only the VS Code
-// shell mounts it, over `origami acp`. packages/tui and packages/ui carry no
-// chart code, so on every other client the tool must not be on the menu at all.
-describe("tool.chart reach — offered only where a chart can be drawn", () => {
+// The chart tool is offered to EVERY client. The renderer (renderChartBlock)
+// lives in exactly one place — packages/vscode/webview/shared/chartBlock.ts —
+// and only the VS Code shell mounts it, over `origami acp`. The original client
+// gate was removed deliberately in 6f1e3cea1450f3a42837b835a7c55a93a152564b
+// ("fix: remove client gate on chart tool — offer to every client, not just
+// acp"): on a TUI/CLI client the call still completes with SVG text output
+// (ok:true, no picture card), which was judged better than the tool being
+// invisible. src/tool/registry.ts:406 carries that rationale. This test tracked
+// the old gate and went stale at that commit.
+describe("tool.chart reach — offered to every client", () => {
   registryAs("acp").instance("is offered to the ACP client, which owns the renderer", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
@@ -269,13 +272,13 @@ describe("tool.chart reach — offered only where a chart can be drawn", () => {
   // "cli" is also the DEFAULT (Flag.ORIGAMI_CLIENT falls back to it), so this
   // is the plain TUI/CLI session as well as an unset environment.
   for (const client of ["cli", "app", "desktop"]) {
-    registryAs(client).instance(`is withheld from ${client}, which has no renderer`, () =>
+    registryAs(client).instance(`is offered to ${client}, which falls back to SVG text`, () =>
       Effect.gen(function* () {
         const registry = yield* ToolRegistry.Service
         const ids = yield* registry.ids()
-        expect(ids, `a ${client} session cannot draw a chart, so it must not be offered one`).not.toContain("chart")
-        // The gate must be the chart's alone — withholding it from a client is
-        // not licence to thin that client's toolset.
+        expect(ids, `a ${client} session still gets the chart tool, rendered or not`).toContain("chart")
+        // No client may be thinned on the way past: the registry is the same
+        // menu everywhere, so its neighbours must survive too.
         expect(ids).toContain("browser")
         expect(ids).toContain("todowrite")
       }),

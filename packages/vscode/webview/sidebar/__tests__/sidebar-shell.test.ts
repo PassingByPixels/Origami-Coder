@@ -18,6 +18,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tick } from 'svelte';
 import ChatView from '../../chat/ChatView.svelte';
 import ControlStrip from '../ControlStrip.svelte';
 
@@ -32,10 +33,12 @@ afterEach(() => {
 });
 
 describe('ChatView — sidebar mounts the launcher, solo mounts the thread', () => {
-  it('the plain sidebar mounts SidebarLauncher (Settings + Chats), not a chat thread', () => {
+  it('the plain sidebar mounts SidebarLauncher (Connections + Chats), not a chat thread', () => {
     render(ChatView);
-    // SidebarLauncher's section labels + new-chat action.
-    expect(screen.getByText('Settings')).toBeInTheDocument();
+    // SidebarLauncher's section labels + the dock's new-chat action. The
+    // `Settings` label reads `Connections` since t-q8zfo7: what is under it is
+    // a row of providers, and "Settings" sent people looking for preferences.
+    expect(screen.getByText('Connections')).toBeInTheDocument();
     expect(screen.getByText('Chats')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /New chat/ })).toBeInTheDocument();
   });
@@ -131,6 +134,32 @@ describe('ControlStrip — connections only (pills + folds, no model selection)'
     await screen.findByPlaceholderText('http://127.0.0.1:1234/v1');
     const save = screen.getByTitle('Save endpoint + reconnect origami-acp') as HTMLButtonElement;
     expect(save.disabled).toBe(true);
+  });
+
+  // The chat pane's picker cannot add a connection and must not try (its own
+  // suite pins that). Its empty state posts `openConnections`; the host focuses
+  // this view and relays `openProviderSetup`. If this receiving end is missing,
+  // the button reveals a sidebar with the fold still shut and the user is back
+  // to hunting for it — the exact dead end the empty state exists to remove.
+  it('a relayed openProviderSetup opens the SAME fold the + Add provider button does', async () => {
+    render(ControlStrip);
+    expect(screen.queryByLabelText(/Model provider/i)).toBeNull();
+    postFromHost({ type: 'openProviderSetup' });
+    expect(await screen.findByLabelText(/Model provider/i)).toBeInTheDocument();
+    // A relay, not a write: nothing was sent back for merely opening the form.
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setupProvider' }),
+    );
+  });
+
+  it('the HOST still answers the openConnections message the picker posts', () => {
+    // The webview half is proven above; this is the other end of the same wire,
+    // read from source because DashboardPanel needs a real VS Code host to run.
+    const panel = readFileSync(join(__dirname, '..', '..', '..', 'src', 'dashboard', 'DashboardPanel.ts'), 'utf8');
+    const line = panel.split(/\r?\n/).find((l) => l.includes("case 'openConnections'")) ?? '';
+    expect(line, "DashboardPanel handles no 'openConnections' case").not.toBe('');
+    expect(line).toContain("origami.chatView.focus");
+    expect(line).toContain("openProviderSetup");
   });
 
   it('Add provider opens the setup fold and Connect posts the REAL setupProvider message', async () => {
@@ -253,24 +282,34 @@ describe('ControlStrip — provider grid is the layout from the first provider',
     }));
   }
 
+  // Scoped to `.provider-grid`: the Claude Code square wears the SAME class (it
+  // is the same component — ConnectionPill.svelte) but is NOT a configured
+  // connection, so an unscoped count reads one too many. Left unscoped, the
+  // one-provider case below also passed for the wrong reason: waitFor settled
+  // on the lone CC square before providerStatus had rendered anything.
+  // :not(.dotted) as well as the scope, since t-qhzy4k: the Claude Code card
+  // now rides INSIDE the track with the providers, and it is still not one of
+  // them. Dotted is what says "a different kind of connection" here.
+  const squares = (c: HTMLElement) => c.querySelectorAll('.provider-grid .grid-square:not(.dotted)');
+
   it('a single configured provider renders as a grid square, not a pill', async () => {
     const { container } = render(ControlStrip);
     postFromHost({ type: 'providerStatus', providers: providers(1) });
-    await waitFor(() => expect(container.querySelectorAll('.grid-square').length).toBe(1));
+    await waitFor(() => expect(squares(container).length).toBe(1));
     expect(container.querySelectorAll('.pill').length).toBe(0);
   });
 
   it('two configured providers render as a grid, not pills', async () => {
     const { container } = render(ControlStrip);
     postFromHost({ type: 'providerStatus', providers: providers(2) });
-    await waitFor(() => expect(container.querySelectorAll('.grid-square').length).toBe(2));
+    await waitFor(() => expect(squares(container).length).toBe(2));
     expect(container.querySelectorAll('.pill').length).toBe(0);
   });
 
   it('5 configured providers render as a grid of squares, with NO pills', async () => {
     const { container } = render(ControlStrip);
     postFromHost({ type: 'providerStatus', providers: providers(5) });
-    await waitFor(() => expect(container.querySelectorAll('.grid-square').length).toBe(5));
+    await waitFor(() => expect(squares(container).length).toBe(5));
     expect(container.querySelectorAll('.pill').length).toBe(0);
   });
 
@@ -291,7 +330,125 @@ describe('ControlStrip — provider grid is the layout from the first provider',
     ];
     postFromHost({ type: 'providerStatus', providers: provs });
     const square = await screen.findByRole('button', { name: 'OpenRouter — 401 invalid key' });
-    expect(square).toHaveAttribute('title', 'OpenRouter — 401 invalid key');
+    expect(square).toHaveAttribute('data-tip', 'OpenRouter — 401 invalid key');
+  });
+});
+
+// t-qmzz3q (change 30) — the in-use accent. `modelStatus`'s `providerId`
+// already names the active session's provider (DashboardPanel.ts's
+// sessionModelStatus); `engineUrl` is present ONLY on that active-session
+// post (see ControlStrip.svelte's own comment), which is the signal used to
+// tell it apart from a background session's modelStatus. No new host field.
+describe('ControlStrip — the in-use tile carries the accent border (change 30)', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  it('the active session\'s provider gets .inuse; the others do not', async () => {
+    const { container } = render(ControlStrip);
+    postFromHost({
+      type: 'providerStatus',
+      providers: [
+        { id: 'lmstudio', name: 'LM Studio', live: true, kind: 'local' as const },
+        { id: 'openrouter', name: 'OpenRouter', live: true, kind: 'compat' as const },
+      ],
+    });
+    await waitFor(() => expect(container.querySelectorAll('.provider-grid .grid-square:not(.dotted)').length).toBe(2));
+    postFromHost({ type: 'modelStatus', sessionId: 's1', providerId: 'openrouter', engineUrl: 'http://127.0.0.1:1234/v1' });
+
+    await waitFor(() => {
+      const or = screen.getByRole('button', { name: 'OpenRouter' });
+      expect(or.classList.contains('inuse')).toBe(true);
+    });
+    expect(screen.getByRole('button', { name: 'LM Studio' }).classList.contains('inuse')).toBe(false);
+  });
+
+  it('a background session\'s modelStatus (no engineUrl) does not move the accent', async () => {
+    const { container } = render(ControlStrip);
+    postFromHost({
+      type: 'providerStatus',
+      providers: [
+        { id: 'lmstudio', name: 'LM Studio', live: true, kind: 'local' as const },
+        { id: 'openrouter', name: 'OpenRouter', live: true, kind: 'compat' as const },
+      ],
+    });
+    await waitFor(() => expect(container.querySelectorAll('.provider-grid .grid-square:not(.dotted)').length).toBe(2));
+    postFromHost({ type: 'modelStatus', sessionId: 's1', providerId: 'openrouter', engineUrl: 'http://127.0.0.1:1234/v1' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'OpenRouter' }).classList.contains('inuse')).toBe(true));
+
+    // A different, background session's own status — no engineUrl on it.
+    postFromHost({ type: 'modelStatus', sessionId: 's2', providerId: 'lmstudio' });
+    await tick();
+    expect(screen.getByRole('button', { name: 'OpenRouter' }).classList.contains('inuse')).toBe(true);
+    expect(screen.getByRole('button', { name: 'LM Studio' }).classList.contains('inuse')).toBe(false);
+  });
+});
+
+// The Claude Code entry in the connection strip. It is the SAME square as the
+// provider ones — that is the whole point of ConnectionPill.svelte, so the row
+// reads as a row — marked out as a different KIND of connection by a dotted
+// crane-toned border rather than by being a differently-shaped control.
+describe('ControlStrip — the Claude Code passthrough square', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const detected = { type: 'claudeCodeStatus', installed: true, version: '2.1.198', binary: 'C:\\claude.exe' };
+
+  it('is a two-character square, dotted, sharing the provider squares\' class', async () => {
+    const { container } = render(ControlStrip);
+    postFromHost(detected);
+    const pill = await screen.findByRole('button', { name: /Claude Code 2\.1\.198 — passthrough/ });
+    expect(pill.textContent?.trim()).toBe('CC');
+    // Same component as a provider square (identical box), plus the dotted mark.
+    expect(pill.classList.contains('grid-square')).toBe(true);
+    expect(pill.classList.contains('dotted')).toBe(true);
+    // …and NOT one of the configured connections.
+    expect(container.querySelectorAll('.provider-grid .grid-square').length).toBe(0);
+  });
+
+  it('carries the version and "passthrough" in its tooltip', async () => {
+    render(ControlStrip);
+    postFromHost(detected);
+    const pill = await screen.findByRole('button', { name: /passthrough/ });
+    expect(pill.getAttribute('data-tip')).toContain('Claude Code 2.1.198 — passthrough');
+  });
+
+  it('opens a Claude Code chat on click — the same message the old card sent', async () => {
+    render(ControlStrip);
+    postFromHost(detected);
+    const pill = await screen.findByRole('button', { name: /passthrough/ });
+    await fireEvent.click(pill);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'newClaudeCodeSession' });
+  });
+
+  it('stays silent when the CLI was not detected, rather than opening a chat that cannot start', async () => {
+    render(ControlStrip);
+    postFromHost({ type: 'claudeCodeStatus', installed: false, version: '', binary: '' });
+    const pill = await screen.findByRole('button', { name: /Claude Code — passthrough not available/ });
+    await fireEvent.click(pill);
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith({ type: 'newClaudeCodeSession' });
+  });
+
+  // The work-PC round. The old undetected tooltip said only "install the
+  // CLI, then reload the window", which is unfalsifiable from another
+  // machine: it names nothing that was tried. The host composes the whole
+  // sentence now (claudeCode/discoveryReport.ts), so the pill must RENDER
+  // what it is given rather than keep composing its own.
+  it('shows the host\'s probe list verbatim when the CLI was not found', async () => {
+    render(ControlStrip);
+    const tooltip = 'Claude Code — not found. Probed: PATH (missing), npm global (missing), '
+      + 'VS Code extension (missing). Set origamicoder.claudeCode.path to point at it.';
+    postFromHost({ type: 'claudeCodeStatus', installed: false, version: '', binary: '', tooltip });
+    const pill = await screen.findByRole('button', { name: /not found/ });
+    expect(pill.getAttribute('data-tip')).toBe(tooltip);
+  });
+
+  // "Reload the window" was the old advice because the answer was memoised
+  // for the life of the window. Clicking an undetected pill asks again.
+  it('asks the host to probe again when the undetected pill is clicked', async () => {
+    render(ControlStrip);
+    postFromHost({ type: 'claudeCodeStatus', installed: false, version: '', binary: '' });
+    const pill = await screen.findByRole('button', { name: /passthrough not available/ });
+    await fireEvent.click(pill);
+    expect(globalThis.__vscodeApiMock.postMessage)
+      .toHaveBeenCalledWith({ type: 'requestClaudeCodeStatus', refresh: true });
   });
 });
 
@@ -407,6 +564,69 @@ describe('ControlStrip — provider setup accordion (Local/Self Hosted, Provider
     // Other (compat, no flags) → all three generic fields appear.
     expect(screen.getByPlaceholderText('sk-…')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('model id')).toBeInTheDocument();
+  });
+});
+
+// The fold's read-only model list drew itself open — a MODELS (7) wall that
+// read as the model PICKER (screenshot evidence: users tried to pick a model
+// there, where nothing is clickable). It now hides behind a "See model list"
+// toggle (▸/▾, the accordion idiom), with the redirect note on the toggle row
+// so it is read BEFORE the list is ever opened. The list itself is unchanged.
+describe('ControlStrip — the fold model list hides behind "See model list"', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const openLmFold = async () => {
+    const { container } = render(ControlStrip);
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'lmstudio', name: 'LM Studio', live: true, kind: 'local' as const, baseURL: 'http://127.0.0.1:1234/v1', primary: true }] });
+    postFromHost({ type: 'modelOptions', options: [
+      { value: 'lmstudio/qwen-coder', name: 'qwen-coder' },
+      { value: 'lmstudio/glm-flash', name: 'glm-flash' },
+    ] });
+    await fireEvent.click(await screen.findByRole('button', { name: /LM Studio/i }));
+    await screen.findByPlaceholderText('http://127.0.0.1:1234/v1');
+    return container;
+  };
+
+  it('the list is COLLAPSED by default — models exist but none is on screen', async () => {
+    const container = await openLmFold();
+    // The data is there (the toggle counts it), yet no model row renders.
+    expect(screen.getByRole('button', { name: 'See model list (2)' })).toBeInTheDocument();
+    expect(container.querySelector('.model-list')).toBeNull();
+    expect(screen.queryByText('qwen-coder')).toBeNull();
+  });
+
+  it('the redirect note sits ON the toggle row, readable while collapsed', async () => {
+    await openLmFold();
+    expect(screen.getByText(/pick the active model in the chat pane/)).toBeInTheDocument();
+    // ...and the toggle says closed, not merely looks it.
+    expect(screen.getByRole('button', { name: /See model list/ })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('the toggle reveals the unchanged list, and collapses it again', async () => {
+    const container = await openLmFold();
+    await fireEvent.click(screen.getByRole('button', { name: /See model list/ }));
+    expect(screen.getByText('qwen-coder')).toBeInTheDocument();
+    expect(screen.getByText('glm-flash')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /See model list/ })).toHaveAttribute('aria-expanded', 'true');
+    // The list's own affordances came with it, untouched.
+    expect(screen.getByTitle('Refresh the list')).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole('button', { name: /See model list/ }));
+    expect(container.querySelector('.model-list')).toBeNull();
+    expect(screen.queryByText('qwen-coder')).toBeNull();
+  });
+
+  it('re-opening a fold starts collapsed again — the reveal is per visit, not sticky', async () => {
+    const container = await openLmFold();
+    await fireEvent.click(screen.getByRole('button', { name: /See model list/ }));
+    expect(screen.getByText('qwen-coder')).toBeInTheDocument();
+    // Close the fold (click the square again), then open it back up. Exact
+    // name: /LM Studio/i would also match the fold's "Remove LM Studio".
+    await fireEvent.click(screen.getByRole('button', { name: 'LM Studio' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'LM Studio' }));
+    await screen.findByPlaceholderText('http://127.0.0.1:1234/v1');
+    expect(container.querySelector('.model-list')).toBeNull();
+    expect(screen.queryByText('qwen-coder')).toBeNull();
   });
 });
 

@@ -1,0 +1,5 @@
+List the artifacts in the local artifact store: id, title, latest version number and when each was last changed.
+
+Scoped to the current project by default. Pass `all: true` for every artifact on this machine, whichever project or chat it came from.
+
+Use it to find the id of an artifact you want to read with artifact_get, compare with artifact_diff, or publish a new version of with artifact_publish.

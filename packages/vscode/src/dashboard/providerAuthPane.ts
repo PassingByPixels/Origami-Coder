@@ -1,35 +1,14 @@
-// OAuth connections — host side. Routed out of DashboardPanel.ts the same way
-// the Plugins and Tools panes are, so the monolith carries only the one-line
-// dispatch.
+// OAuth connections, host side — routed out of DashboardPanel.ts like Plugins/Tools. The extension
+// talks ACP over stdio with no HTTP channel to the engine's own /provider/auth/* routes, so three
+// ACP ext methods bridge that.
 //
-// WHAT THIS IS FOR. The engine has had complete OAuth support for a while:
-// `plugin/openai/codex.ts` (ChatGPT Plus/Pro, PKCE on loopback :1455) and
-// `plugin/xai.ts` (SuperGrok, PKCE on :56121) implement the flows, and
-// `provider/auth.ts` orchestrates and persists them. The CLI drives it with
-// `origami providers login`. The EXTENSION could not: it talks ACP over stdio
-// and has no HTTP channel to the engine, so the engine's `/provider/auth/*`
-// routes were unreachable. Three ACP ext methods now bridge that, and this
-// file drives them.
+// providerAuthStart -> provider_auth_authorize answers immediately with a URL to open in the
+// browser; for an "auto" method the extension then awaits provider_auth_callback, which parks until
+// the browser redirects — this does NOT stall the ACP channel, since the SDK dispatches requests
+// without awaiting each handler. providerAuthSubmitCode is the "code" variant; the engine holds the
+// pending flow between the two messages.
 //
-// THE FLOW, and why it is split across two messages rather than one:
-//
-//   providerAuthStart  -> `provider_auth_authorize` answers IMMEDIATELY with a
-//                         URL (the plugin is already listening at that point),
-//                         we open it in the user's browser, and the pane shows
-//                         a waiting state.
-//                         For an "auto" method we then await
-//                         `provider_auth_callback`, which parks until the
-//                         browser redirects — minutes, potentially. That does
-//                         NOT stall the ACP channel: the SDK dispatches
-//                         requests without awaiting each handler
-//                         (pinned by the engine's provider-auth.test.ts).
-//   providerAuthSubmitCode -> the "code" variant. The engine holds the pending
-//                         flow, so nothing has to be remembered here between
-//                         the two messages.
-//
-// ON SUCCESS the provider's config block is written WITHOUT an apiKey. See
-// oauthConnections.ts for why the block is required at all and where its
-// model list comes from.
+// On success the provider's config block is written WITHOUT an apiKey — see oauthConnections.ts.
 
 import * as vscode from 'vscode';
 import { OAUTH_PROVIDERS, oauthMethods } from './oauthConnections';
@@ -43,7 +22,7 @@ export const PROVIDER_AUTH_MESSAGE_TYPES = new Set([
 
 interface ListResult {
   methods?: Record<string, Array<{ type: string; label: string }>>;
-  connected?: Record<string, { type: string; expires?: number }>;
+  connected?: Record<string, { type: string; expires?: number; needsReauth?: string }>;
 }
 interface AuthorizeResult {
   ok: boolean;
@@ -90,7 +69,7 @@ async function listPayload(host: ProviderAuthHost): Promise<Record<string, unkno
   try {
     const result = (await host.client.extMethod('provider_auth_list', {})) as unknown as ListResult;
     const methods: Record<string, Array<{ index: number; label: string }>> = {};
-    const connected: Record<string, { type: string; expires?: number }> = {};
+    const connected: Record<string, { type: string; expires?: number; needsReauth?: string }> = {};
     for (const id of Object.keys(OAUTH_PROVIDERS)) {
       methods[id] = oauthMethods(result?.methods?.[id]);
       const cred = result?.connected?.[id];
@@ -106,11 +85,9 @@ async function listPayload(host: ProviderAuthHost): Promise<Record<string, unkno
   }
 }
 
-/** Which providers hold an OAUTH credential, for the LIVENESS read: a signed-in
- *  block has no baseURL/apiKey, so it used to read "not configured" and wear a
- *  false "unreachable" banner. `undefined` = COULD NOT ASK (no engine client, or
- *  the call failed) — NOT an empty set (asked; nobody signed in), which cached
- *  a false verdict. Degrades, never throws. Tested: oauthLiveness.test.ts. */
+/** Which providers hold an OAUTH credential, for liveness: a signed-in block has no baseURL/apiKey
+ *  and used to read "not configured". undefined = COULD NOT ASK, never an empty set (which would
+ *  cache a false "nobody signed in" verdict). Degrades, never throws. */
 export async function oauthConnectedIds(client: ProviderAuthClient | undefined): Promise<Set<string> | undefined> {
   if (!client) return undefined;
   try {
@@ -179,16 +156,10 @@ async function start(host: ProviderAuthHost, providerId: unknown, methodIndex: u
     return;
   }
 
-  // Open the sign-in page for them. Both plugins' "headless" methods also
-  // answer with a URL (a device page carrying the user code in its
-  // instructions), so this is right for every method the pane offers — and the
-  // URL is shown in the pane too, for a machine where opening a browser is not
-  // what the user wants.
-  // A malformed URL throws out of Uri.parse. The flow must NOT be abandoned
-  // there: the engine is already holding a pending sign-in for this provider
-  // and only the callback releases it, so bailing here would lock the provider
-  // out until the engine restarted. The pane shows the URL either way, so the
-  // user can open it by hand and the flow still completes.
+  // Opens the sign-in page for them — both plugins' headless methods also answer with a URL, and
+  // it's shown in the pane too for a machine where opening a browser isn't wanted. A malformed URL
+  // must not abandon the flow: the engine already holds a pending sign-in that only the callback
+  // releases, so the pane shows the URL for the user to open by hand instead.
   let launchNote = '';
   try {
     host.openExternal(authorized.url);

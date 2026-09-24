@@ -1,24 +1,10 @@
-// Does this collab NEED the user right now? (report F12 / 1.13)
+// Does this collab NEED the user right now?
 //
-// A collab tab's title was written once, at open, and never touched again — so a
-// room working behind three other editor tabs could block on a question and sit
-// there with nothing to say so. A chat tab has carried a waiting badge since 0.3
-// (`tabIcon.waitingTitleFor`); this is the same signal, for the other surface.
-//
-// THE RULE IS ITS OWN FILE, and pure. It reads a `collab_state` payload — the
-// same one every surface already gets — and answers one question, so the answer
-// is testable without a webview panel, a poll or an engine. `collabTab.ts` owns
-// the one line of VS Code state it drives.
-//
-// WHAT IT DELIBERATELY DOES NOT BADGE: "an agent is running". A working room is
-// the normal case, and a badge that is always on is a badge nobody reads. The
-// two things it does badge are the two the user is the ONLY one who can clear:
-// a tripped loop breaker (no agent will speak again until a human posts) and a
-// finished task sitting on the board waiting to be accepted or sent back.
-//
-// Every field is OPTIONAL by the wire contract — an older engine sends no tasks
-// and no statuses at all — and every absence reads as "nothing known to be
-// owed", never as a badge.
+// A collab tab's title was written once, at open, and never updated, so a
+// room could block on a question with nothing to say so. Reads a
+// `collab_state` payload and answers one question, pure and testable without
+// a webview, poll or engine. Does NOT badge "an agent is running" — only a
+// tripped loop breaker or a finished task, the two things only the user can clear.
 
 /** The slice of a `collab_state` payload the rule reads. Structural, so both
  *  the host's own poll and a webview payload satisfy it as they stand. */

@@ -1,37 +1,19 @@
-// t-kgtr6c — `vision_request`: the one tool a blind model gets so an image on
-// the turn is not simply lost.
+// `vision_request`: the one tool a blind model gets so an image on the turn is
+// not simply lost. It is a direct one-shot completion - the image parts plus
+// the question, sent once to the model the profile pins, over the same provider
+// layer a bare completion uses. What it does not do is the point:
 //
-// ROUND 4 CHANGED WHAT IT IS. Rounds 1-3 built it as a stripped-down task tool:
-// it created a child session and drove the profile through `ops.prompt`, which
-// meant resolving the profile against the live AGENT REGISTRY. That registry is
-// built once at engine start and rebuilt only by the collab paths (`rescan()`
-// is called from collab/acp.ts and collab/runner.ts, nowhere else), so a
-// profile file written AFTER the engine started was invisible to it. That is
-// exactly what the round-4 session export shows: `vision-qwen.md` present on
-// disk, and the tool answering "there is no agent by that name any more".
-//
-// It is now a DIRECT ONE-SHOT COMPLETION - the image parts plus the question,
-// sent once to the model the profile pins, over the same provider layer a bare
-// completion uses. Every thing it does not do is the point:
-//
-//  - no SESSION and no ops.prompt. There is no child session to create, no
-//    agent definition to resolve into permissions, tools and a step budget, and
-//    nothing for the user to be shown. A description is worth nothing after the
-//    turn that needed it.
-//  - no TOOLS on the call, so the deny-all floor rounds 1-3 had to pin on the
-//    child session is not a floor that has to be maintained any more: a bare
-//    completion has nothing to deny.
+//  - no session and no ops.prompt, so there is no agent definition to resolve
+//    into permissions, tools and a step budget, and nothing to show the user,
+//    and no deny-all floor to maintain because there are no tools to deny.
 //  - the profile is read from its DEFINITION FILE, fresh, on every call - the
-//    model ref and the instruction body, and nothing else off it. Fresh is the
-//    fix: a profile created a minute ago answers, where the registry snapshot
-//    did not.
+//    model ref and the instruction body, nothing else. The agent registry is
+//    built at engine start and would not see a profile written since.
 //  - the TARGET is fixed. It comes from the chat's vision profile, not from a
 //    tool argument, so the model cannot redirect the image at a model the user
 //    never opted into.
 //  - the parent model NEVER receives pixels. The images go on THIS request; the
-//    tool result is TEXT and carries no `attachments`, which is what keeps a
-//    picture out of a context that cannot read one and would be billed for it
-//    anyway.
+//    tool result is text and carries no `attachments`.
 //
 // It exists only for the turns `session/vision.ts` says it should: the profile
 // is set, the model cannot see, and an image is actually here.
@@ -71,14 +53,12 @@ const DESCRIPTION = [
 ].join(" ")
 
 /** The image mime types a vision model is offered. Same set `tool/read.ts`
- *  attaches, so a picture this tool refuses is a picture `read` would not have
- *  attached either. */
+ *  attaches, so a picture this refuses is one `read` would not attach either. */
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
 /** Everything `buildRequest` reads off an image. Loosened from
- *  `SessionV1.FilePart` because a path loaded here has no part identity - no
- *  id, no session, no message - and inventing one would put a fake part id in
- *  the request. */
+ *  `SessionV1.FilePart` because a path loaded here has no part identity, and
+ *  inventing one would put a fake part id in the request. */
 type Image = Pick<SessionV1.FilePart, "url" | "mime"> & { filename?: string | undefined }
 
 const result = (output: string, metadata: Record<string, unknown> = {}): Tool.ExecuteResult => ({
@@ -92,21 +72,12 @@ const result = (output: string, metadata: Record<string, unknown> = {}): Tool.Ex
 const refuse = (output: string): Tool.ExecuteResult => result(output, { refused: true })
 
 /**
- * The DESCRIBE FLOOR, and the whole of it (t-kgtr6c round 3).
- *
- * It is a floor, not a persona. A profile's own instruction is a file the user
- * owns: it can be edited to anything, and every profile created before round 3
- * was seeded from the collab OBSERVER text, which instructs the agent to review
- * rather than to look. This rides every request underneath that instruction, so
- * the one behaviour the feature depends on does not depend on what is in that
- * file.
- *
- * Deliberately SHORT — the detail belongs in the profile's own instruction
- * (webview/dashboard/components/visionPersonaSeed.ts); repeating a paragraph of
- * it here would spend the vision model's context saying the same thing twice.
- *
- * It carries no question: round 4 puts the question in the USER message, beside
- * the pixels, which is where a model looks for the thing it is being asked.
+ * The describe floor: a floor, not a persona. A profile's own instruction is a
+ * file the user owns and can edit to anything, so this rides every request
+ * underneath it and the one behaviour the feature depends on does not depend on
+ * that file. Kept short — the detail belongs in the profile's own instruction
+ * (webview/dashboard/components/visionPersonaSeed.ts). It carries no question:
+ * the question goes in the USER message, beside the pixels.
  */
 export const DESCRIBE_PERSONA = [
   "Another agent cannot see images and has asked you to look at an attached image for it.",
@@ -120,19 +91,17 @@ export const DESCRIBE_PERSONA = [
  * The one request the tool sends, as a pure value.
  *
  * SYSTEM is the profile's own instruction with the describe floor under it, in
- * that order: the user's words first, then the guarantee that survives whatever
- * they wrote. USER is the question and the pixels TOGETHER in one message —
- * splitting them across two messages is how a model ends up answering about the
- * wrong image when more than one is attached.
+ * that order. USER is the question and the pixels TOGETHER in one message —
+ * split across two, a model answers about the wrong image when more than one is
+ * attached.
  *
  * The image part is built in the shape `convertToModelMessages` produces for a
  * user file part (`{ type: "file", data: <url>, mediaType }`, ai@6), so the
- * pixels take the same route to the provider as they would on an ordinary turn
- * with a seeing model. No `ProviderTransform.message` is applied on the way:
- * its `unsupportedParts` step swaps an image out for an ERROR line whenever the
- * registry does not declare `input.image`, and a locally served model (LM
- * Studio, Ollama) usually has no registry entry at all — running it here would
- * blind the exact profiles this feature exists for.
+ * pixels take the provider route they would on an ordinary turn. No
+ * `ProviderTransform.message` is applied: its `unsupportedParts` step swaps an
+ * image out for an error line whenever the registry does not declare
+ * `input.image`, and a locally served model usually has no registry entry at
+ * all — which would blind the exact profiles this feature exists for.
  */
 export function buildRequest(input: {
   question: string
@@ -162,20 +131,13 @@ export function buildRequest(input: {
 /**
  * The images named by `paths`, loaded here, or the refusal text to answer with.
  *
- * THE ASK RUNS ON THE PARENT'S ctx, and that is the whole reason this loads
- * files rather than handing the paths to the profile to read. The profile is a
- * bare completion with no session and no tools; a permission prompt raised
- * inside it would surface in a session the user is not looking at, or nowhere
- * at all. `ctx` here is the PARENT's tool context, so the external-directory
- * bar appears in the chat the user is typing in — the same bar `read` raises.
- *
- * A PATH CHOOSES WHICH PICTURE, NEVER WHICH MODEL. The fixed-target invariant
- * (the profile comes from the chat, not from a tool argument) is untouched: the
- * model can point this at any file it is allowed to read, and the answer still
- * comes from the one agent the user opted into.
- *
- * Every failure is a string, not a throw: a bad path should cost the model a
- * sentence telling it what went wrong, not the turn.
+ * The permission ask runs on the PARENT's `ctx`, which is why this loads the
+ * files rather than handing the paths to the profile: the profile is a bare
+ * completion with no session, so a prompt raised inside it would surface
+ * nowhere. Here the external-directory bar appears in the chat the user is
+ * typing in — the same bar `read` raises. A path chooses which picture, never
+ * which model. Every failure is a string, not a throw: a bad path costs the
+ * model a sentence, not the turn.
  */
 function loadPaths(paths: readonly string[], ctx: Tool.Context) {
   return Effect.gen(function* () {
@@ -215,22 +177,17 @@ function loadPaths(paths: readonly string[], ctx: Tool.Context) {
  * The tool, built for ONE turn against the images that turn carries.
  *
  * `images` is passed in rather than re-derived from `ctx.messages` inside
- * `execute` for one reason: the caller has already decided this turn qualifies
- * (session/vision.ts), and re-deriving would let the two answers drift — a tool
- * that was registered because an image was present, then finds none.
- *
- * Round 5: the list may now be EMPTY. Arming no longer requires an attachment,
- * so an armed turn with no picture is the ordinary case and `paths` is what
- * fills it.
+ * `execute`: the caller (session/vision.ts) has already decided this turn
+ * qualifies, and re-deriving would let the two answers drift. The list may be
+ * empty — arming does not require an attachment, and `paths` fills it.
  */
 export const defs = (input: { profile: string; images: readonly SessionV1.FilePart[] }) =>
   Effect.gen(function* () {
     const agents = yield* Agent.Service
     const provider = yield* Provider.Service
     // A provider retry can re-drive a finished stream and re-execute a tool
-    // call that already ran (the same guard flock-tools.ts's `ask` carries).
-    // Without it the user pays for a second vision call to be told the same
-    // thing.
+    // call that already ran; without this the user pays for a second vision
+    // call to be told the same thing.
     const memo = new Map<string, Tool.ExecuteResult>()
 
     return [
@@ -256,12 +213,11 @@ export const defs = (input: { profile: string; images: readonly SessionV1.FilePa
 
     function run(args: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) {
       return Effect.gen(function* () {
-        // Resolved HERE, not when the option was set, and off the FILE rather
-        // than the agent registry: `definitionFile` re-scans the config
-        // directories on every call, so a profile written since the engine
-        // started is found. Nothing else is read off the def — no permissions,
-        // no step budget, no tools — because none of them apply to a single
-        // completion.
+        // Resolved here, and off the FILE rather than the agent registry:
+        // `definitionFile` re-scans the config directories on every call, so a
+        // profile written since the engine started is found. Nothing else is
+        // read off the def — no permissions, no step budget, no tools — because
+        // none of them apply to a single completion.
         const file = yield* agents.definitionFile(input.profile)
         if (!file) {
           return refuse(
@@ -278,20 +234,18 @@ export const defs = (input: { profile: string; images: readonly SessionV1.FilePa
           )
         }
 
-        // A profile with no pinned model would have nothing to send the image
-        // to. Rounds 1-3 fell back to the chat's own model here, which returned
-        // a confident description of an image it never received — worse than no
-        // description at all — so this is a refusal, not a fallback.
+        // A refusal, not a fallback to the chat's own model: that model cannot
+        // see, and it answers with a confident description of an image it never
+        // received — worse than no description at all.
         const ref = typeof def.data?.["model"] === "string" ? def.data["model"].trim() : ""
         if (!ref) {
           return refuse(
             `The vision profile "@${input.profile}" has no model pinned, so there is nothing to send the image to. Tell the user to pin a vision-capable model on that profile, and answer without the image.`,
           )
         }
-        // THE ATTACHMENT WINS. An image already on the turn is the one the user
-        // put there; `paths` is the fallback for the turn that carries none, so
-        // a model that passes both cannot redirect the question away from what
-        // the user actually attached.
+        // The attachment wins: `paths` is only the fallback for a turn that
+        // carries no image, so a model that passes both cannot redirect the
+        // question away from what the user attached.
         const loaded =
           input.images.length > 0
             ? { ok: true as const, images: input.images as readonly Image[] }
@@ -305,12 +259,11 @@ export const defs = (input: { profile: string; images: readonly SessionV1.FilePa
         }
 
         // catchCause, not catch: only `NoSuchModelError` is refined into a typed
-        // `ModelNotFoundError` by `EffectPromise.refineRejection`
-        // (provider.ts:2072) — a provider that is simply not configured, or an
-        // SDK that will not load, arrives as a DEFECT. That is the everyday case
-        // here (LM Studio not running, a model renamed in the server), and a
-        // defect would kill the parent turn instead of letting it answer
-        // without the image.
+        // `ModelNotFoundError` by `EffectPromise.refineRejection` in
+        // provider.ts. A provider that is not configured, or an SDK that will
+        // not load, arrives as a DEFECT — the everyday case here — and a defect
+        // would kill the parent turn instead of letting it answer without the
+        // image.
         const parsed = Provider.parseModel(ref)
         const model = yield* provider
           .getModel(parsed.providerID, parsed.modelID)
@@ -335,15 +288,14 @@ export const defs = (input: { profile: string; images: readonly SessionV1.FilePa
               model: language,
               system: request.system,
               messages: request.messages,
-              // ONE request. A retry here is a second image upload the user
-              // pays for, to be told the same thing; the model can simply call
-              // the tool again if it wants another look.
+              // One request: a retry is a second image upload the user pays
+              // for. The model can call the tool again if it wants another look.
               maxRetries: 0,
               abortSignal: ctx.abort,
             }).then((generated) => ({ ok: true as const, text: generated.text })),
           catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
         }).pipe(Effect.catch((message) => Effect.succeed({ ok: false as const, message })))
-        // A provider failure is a REFUSAL, not a thrown error: the parent turn
+        // A provider failure is a refusal, not a thrown error: the parent turn
         // has already spent its own request, and killing it here would lose the
         // answer the model could still give without the image.
         if (!reply.ok) {
@@ -354,9 +306,8 @@ export const defs = (input: { profile: string; images: readonly SessionV1.FilePa
         if (!text) {
           return refuse(`The vision model returned nothing. Answer without the image, and say so.`)
         }
-        // METADATA carries the facts a card would want to show; the OUTPUT is
-        // the description alone. No `attachments` on either — that field is the
-        // only route pixels have back into the parent's context.
+        // No `attachments` on the result — that field is the only route pixels
+        // have back into the parent's context.
         return result(text, {
           profile: input.profile,
           images: images.length,

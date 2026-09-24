@@ -1,29 +1,18 @@
-// CORRIDOR as a MINIMAP — the WHOLE run on one screen, at once, no scrolling.
+// CORRIDOR as a MINIMAP: the whole run on one screen, no scrolling.
 //
-// Why the old corridor had to go: a boustrophedon snake spends BOTH axes on
-// sequence (left->right, then right->left one row down). Thread can show
-// branches because it reserves x for lanes and spends only y on order; the
-// snake has no spare axis, so a sub-agent branch had nowhere to go and fell
-// back to colour alone. The fix is not a fourth axis, it is a different JOB:
-// corridor stops trying to be readable step-by-step and becomes the view that
-// shows the SHAPE of a whole run — where the failures are, where the work was
-// delegated — in one glance.
+// The old per-step corridor had no spare axis for branches (it already
+// spends both axes on sequence), so it fell back to colour alone. The
+// minimap trades step-by-step readability for showing the shape of a whole
+// run — where failures are, where work was delegated — in one glance.
 //
-// Two consequences follow, and they are the whole design:
-//  1. The canvas is FIXED. Marker size and row pitch are derived from the step
-//     count, never the other way round; a box that grew with the run would just
-//     be the old corridor again. Everything is placed inside CONTENT by
-//     construction, so "does a 336-step run fit?" is arithmetic, not hope.
-//  2. NO PER-STEP CAPTIONS. Density comes from dropping prose; kind is carried
-//     by the existing stepGlyph tone (labyrinthLanes.ts) plus, on the MAIN
-//     THREAD only, the one-character kind mark in labyrinthMarks.ts. A chamber
-//     cell stays bare — labelling the inside of a chamber would spend exactly
-//     the density the chamber exists to buy.
+// Two consequences: the canvas is fixed (marker size and row pitch derive
+// from the step count, never the other way round, so fit is arithmetic, not
+// hope), and there are no per-step captions — density comes from dropping
+// prose, with kind carried by the existing glyph tone plus, on the main
+// thread only, the kind mark in labyrinthMarks.ts.
 //
-// A delegated stretch is an INSET CHAMBER: a nested block of small markers in
-// a reserved span of cells at the spawn point, drawn off the corridor line
-// rather than inline with the main thread. The labyrinth's side-chamber
-// reading is the point — you can see that work was delegated from the shape.
+// A delegated stretch draws as an inset chamber: a nested block of small
+// markers off the corridor line, so delegated work reads as a side-chamber.
 
 import { isThreshold, normDepth, type LaneStep } from './labyrinthLanes';
 
@@ -33,14 +22,10 @@ export interface MinimapStep extends LaneStep {
 }
 
 /**
- * The FIXED canvas. Not a function of the step count — that is the point.
- *
- * 420 -> 620 (owner's UAT): the map was leaving most of the panel's vertical
- * space empty. Height is the only axis raised — the width is what the panel
- * itself is narrowest in, and a wider box would scroll on a small board. More
- * height at the same step count means FEWER, WIDER columns (the column count is
- * chosen against the content aspect below), so 336 steps go from a 27.5-unit
- * cell to a 34.1-unit one, which is the room the kind marks need.
+ * The fixed canvas. Not a function of the step count — that is the point.
+ * Height is the axis raised, since width is capped by the panel; a taller
+ * box at the same step count means fewer, wider columns and more room for
+ * kind marks.
  */
 export const MINIMAP_WIDTH = 760;
 export const MINIMAP_HEIGHT = 620;
@@ -54,8 +39,7 @@ const MICRO_COLS = 2;
 const R_FRAC = 0.2;
 const PAD_FRAC = 0.12;
 const MICRO_R_FRAC = 0.28;
-/** A failure is drawn BIGGER as well as differently toned — spotting one is
- *  the job, and at this density colour alone is a lot to ask of a 5px dot. */
+/** A failure is drawn bigger, not just a different colour — subtle at this density. */
 const FAIL_SCALE = 1.45;
 
 export interface MinimapPoint<S> {
@@ -105,13 +89,10 @@ function groupsOf(steps: readonly MinimapStep[]): Array<{ delegated: boolean; id
 const cellsFor = (n: number): number => Math.max(1, Math.ceil(n / PER_CELL));
 
 /**
- * The whole run placed inside the fixed canvas.
- *
- * The column count is chosen so the cells tile the content box at roughly its
- * own aspect, then the row pitch is capped by BOTH the cell width and the
- * height actually available — which is what makes the fit a guarantee rather
- * than a tuning exercise. A chamber never straddles a row end: it is pushed to
- * the next row instead, so its block stays one readable rectangle.
+ * The whole run placed inside the fixed canvas. Column count tiles the
+ * content box at its own aspect; row pitch is capped by both cell width and
+ * available height, so the fit is a guarantee, not a tuning exercise. A
+ * chamber never straddles a row end — it is pushed to the next row instead.
  */
 export function minimapLayout<S extends MinimapStep>(steps: readonly S[]): Minimap<S> {
   const groups = groupsOf(steps);

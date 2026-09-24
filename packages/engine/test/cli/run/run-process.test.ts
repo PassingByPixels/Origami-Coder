@@ -199,16 +199,34 @@ describe("origami run (non-interactive subprocess)", () => {
 
         expect(result.exitCode).toBe(0)
         const events = origami.parseJsonEvents(result.stdout)
+        // `--format json` is a log of parts as they COMPLETE, not as the model
+        // opened them: `tool_use` is written when the call reaches completed or
+        // error, `text` when the part gets its `time.end`. The model wrote
+        // "before" ahead of the call, and the tool still lands first, because
+        // the native runtime flushes settled tool results ahead of every
+        // content-closing event - `step-finish`, `reasoning-end` AND `text-end`
+        // (CLOSES_CONTENT in src/session/llm/native-runtime.ts, since
+        // b83c58e3e2), so that a stream which ends on a block end cannot drop a
+        // result. The order below is that guard's consequence and it is the
+        // right one to pin: a completion log cannot hold a finished tool back
+        // for a text block that has not closed, and no stream order could put a
+        // long tool ahead of text that closed while it ran. Creation order is
+        // not lost - each record carries the part, and part ids ascend in the
+        // order the parts were opened, which the assertion below pins.
         expect(events.map((event) => event.type)).toEqual([
           "step_start",
           "reasoning",
-          "text",
           "tool_use",
+          "text",
           "step_finish",
           "step_start",
           "text",
           "step_finish",
         ])
+        // Transcript order is still recoverable from the records themselves.
+        const textPart = events.find((event) => event.type === "text")?.part as { id: string }
+        const toolPart = events.find((event) => event.type === "tool_use")?.part as { id: string }
+        expect(textPart.id < toolPart.id).toBe(true)
         expect(events.find((event) => event.type === "reasoning")?.part).toEqual(
           expect.objectContaining({ type: "reasoning", text: "reasoning" }),
         )
@@ -246,13 +264,16 @@ describe("origami run (non-interactive subprocess)", () => {
         const events = origami.parseJsonEvents(result.stdout)
         expect(result.exitCode).toBe(0)
         // The first step is untouched by the retry machinery — pin it exactly.
+        // `tool_use` before `text` is the completion order the JSON log is
+        // written in; see the ordering case above for why that is the order to
+        // pin and not a regression.
         expect(events.slice(0, 4).map((event) => event.type)).toEqual([
           "step_start",
-          "text",
           "tool_use",
+          "text",
           "step_finish",
         ])
-        expect(events[1]?.part).toEqual(expect.objectContaining({ type: "text", text: "partial json" }))
+        expect(events[2]?.part).toEqual(expect.objectContaining({ type: "text", text: "partial json" }))
         // The failed step retries a bounded number of times, and each retry
         // writes a "Stream dropped" notice text event — the tail's exact event
         // count depends on how many attempts the stub burns, so assert the

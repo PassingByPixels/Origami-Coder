@@ -1,47 +1,47 @@
-// sessionAnnounce.ts — WHEN a new session may be shown to the user.
+// sessionAnnounce.ts — when a new session may be shown to the user.
+// A bot chat's creation is a REQUEST the engine can refuse; showing a chat panel that then vanishes
+// on refusal is a worse report than the Bots pane's own refusal message. So a bot session is
+// provisional: nothing is shown until the engine accepts it. An ordinary chat keeps today's
+// behaviour (shown immediately, failure reported inside it).
 //
-// THE FLASH (W8-L1, live UAT): "Start session" on a bot opened a chat panel
-// that vanished a moment later. Nothing was wrong with the disposal — the
-// engine refused the agent and the half-built session was correctly torn down.
-// The defect is the ORDER. `createSession` posts `sessionCreated` while the ACP
-// client is still connecting, the webview mounts a chat from it (ChatPane's
-// `sessionCreated` case pushes it onto `sessions` and activates it), and the
-// refusal path's `sessionClosed` then filters it straight back out.
-//
-// For an ORDINARY chat that order is right: the engine is expected to come up,
-// the panel carries the "Connected. Session …" line when it does, and a spawn
-// failure belongs in the chat that failed. A BOT chat is the opposite case. Its
-// creation is a REQUEST that the engine can legitimately refuse — an agent
-// definition it has not loaded — and the refusal already has a home: the Bots
-// pane renders it from the thrown message (botsManager.ts's `botSessionResult`).
-// A chat panel is not the report; it is a second, wrong report that appears and
-// leaves.
-//
-// So a bot session is PROVISIONAL: nothing is shown until the engine has
-// accepted it. Pure and dependency-free — the rule is testable without an
-// extension host, which is the point of it living here rather than inline.
+// A SURFACE is two things, and both belong here (t-hb1b7e): the posts that tell the
+// webview a chat exists (`announce`), and the editor tab that chat lives in (`open`).
+// The tab used to be opened after the awaited `start()`, which is why a new chat's pane
+// took the whole engine start-up to appear — measured at 2.4-2.5 s of engine alone on
+// this PC — and why on a slower machine it could look like it never appeared at all.
+// Opening the tab HERE, beside the announce, makes that impossible by construction: the
+// pane's existence depends on the click, never on a post landing or an engine answering.
 
 /**
- * Start a session's engine connection and announce the session, in the order
- * that never leaves a surface behind.
- *
- * `provisional` sessions announce only on success, so a refused start shows
- * NOTHING. Everything else announces first and keeps today's behaviour, where a
- * chat is on screen while its engine connects and a failure is reported inside
- * it.
- *
- * `announce` runs at most once, and never after `start` rejected while
- * provisional. `start`'s result and its rejection both pass through untouched:
- * the caller's own error handling — including the tear-down that deletes the
- * half-built session — is unchanged by this.
+ * Start a session's engine connection and show it, in the order that never
+ * leaves a surface behind. `provisional` sessions show only on success;
+ * everything else shows first, so the pane is up while the engine starts.
+ * `announce`/`open` run at most once, `settled` runs exactly once whether
+ * `start` resolved or rejected, and `start`'s result/rejection pass through
+ * untouched.
  */
 export async function startThenAnnounce<T>(input: {
   provisional: boolean;
   announce: () => void;
+  /** Create (or reveal) the chat's own editor tab. Optional: a headless agent
+   *  session has no tab, and the Agent Manager board is its surface. */
+  open?: () => void;
   start: () => Promise<T>;
+  /** The engine is no longer starting — resolved or rejected. Both settle the
+   *  pane's "starting engine…" state; a rejection has already reported itself
+   *  inside the pane that `open` put on screen. */
+  settled?: () => void;
 }): Promise<T> {
-  if (!input.provisional) input.announce();
-  const result = await input.start();
-  if (input.provisional) input.announce();
-  return result;
+  const show = () => {
+    input.announce();
+    input.open?.();
+  };
+  if (!input.provisional) show();
+  try {
+    const result = await input.start();
+    if (input.provisional) show();
+    return result;
+  } finally {
+    input.settled?.();
+  }
 }

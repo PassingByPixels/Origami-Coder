@@ -12,7 +12,7 @@
   // What this file must never do is cry wolf. `ok: false` means BOTH "asked and
   // got nothing" and "have not asked yet", and only the first is the user's
   // problem — modelBanner.ts owns that split, this file only dresses it.
-  import { bannerState, probingText } from './modelBanner';
+  import { bannerState, probingText, NO_CONNECTIONS_TEXT } from './modelBanner';
 
   interface Props {
     /** A model answered for this chat. With one, there is no strip at all. */
@@ -30,12 +30,17 @@
 </script>
 
 {#if banner !== 'ok'}
-  <div class="model-warning" class:probing={banner === 'probing'}
-    title={banner === 'probing' ? 'Waiting for the provider to answer — this settles on its own.' : (reason || 'No model reported by the harness yet.')}>
+  <!-- NO-CONNECTIONS is not an alarm either: nothing is broken, setup has not
+       happened. It borrows the probing tone (no amber wash, muted dot) so the
+       first thing a new install sees is an instruction, not a warning. -->
+  <div class="model-warning" class:probing={banner === 'probing' || banner === 'no-connections'}
+    title={banner === 'probing' ? 'Waiting for the provider to answer — this settles on its own.' : banner === 'no-connections' ? 'Nothing is configured yet — open the Origami sidebar and add a provider.' : (reason || 'No model reported by the harness yet.')}>
     <span class="warn-dot"></span>
     <span class="warn-text">
       {#if banner === 'probing'}
         {probingText(providerLabel)}
+      {:else if banner === 'no-connections'}
+        {NO_CONNECTIONS_TEXT}
       {:else if providerIsLocal}
         No model detected yet — start LM Studio and type a message to retry.
       {:else}

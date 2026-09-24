@@ -1,13 +1,6 @@
 // Chat-section messages, routed out of DashboardPanel.ts's inline switch —
-// mirrors collabManager.ts's own dispatcher shape (a MESSAGE_TYPES set the
-// panel checks BEFORE its own switch, plus a handle() the panel delegates
-// to), the SAME move made when that switch first grew big enough to bite
-// DashboardPanel.ts's cap. Extracted here at t-kgserq v2 for the identical
-// reason: the section-CRUD additions (create/delete alongside the existing
-// set/toggle/rename) would otherwise have pushed the panel over its own.
-//
-// Every case here is wiring only — load, mutate via one of chatSections.ts's
-// pure functions, save, echo. The state machine itself lives there.
+// mirrors collabManager.ts's dispatcher shape (a MESSAGE_TYPES set plus a
+// handle()). Every case here is wiring only; the state machine lives in chatSections.ts.
 
 import type { Memento } from 'vscode';
 import {
@@ -44,10 +37,8 @@ export function handleChatSectionMessage(
   const memento = host.workspaceState();
   switch (m.type) {
     case 'setChatSection': {
-      // Any string names a section (a sections[].id); null (or anything
-      // else) means Main. No existence check against the
-      // live section list here — loadChatSections's own validation is what
-      // catches a dangling id on the NEXT load.
+      /** Any string names a section id; null (or anything else) means Main. No
+       *  existence check here — loadChatSections validates on the next load. */
       const targetId = sid ?? '';
       const section = typeof m.section === 'string' && m.section.trim() ? m.section.trim() : null;
       if (!targetId) return;

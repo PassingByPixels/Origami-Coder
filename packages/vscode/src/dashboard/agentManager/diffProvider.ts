@@ -1,10 +1,6 @@
-// Agent Manager - diffProvider.ts (S4): the read-only LEFT side of a Done card's
-// native VS Code diff. `vscode.diff(left, right, title)` needs a document for the
-// base content; the worktree's working file is the right (a real file: URI), and
-// this provider serves `git -C <worktree> show <base>:<path>` as the left under a
-// synthetic readonly scheme. A file absent at the base (an added file) shows as
-// empty, so the diff reads as an all-add. Uri args ride in the query (JSON,
-// encodeURIComponent) so one provider serves every worktree/base/path triple.
+// Read-only left side of a Done card's native VS Code diff: `vscode.diff` needs a document
+// for the base content, served via `git show <base>:<path>` under a synthetic readonly
+// scheme. A file absent at the base renders as an all-add.
 
 import * as vscode from 'vscode';
 import { runGit } from './worktrees';

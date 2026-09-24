@@ -3,6 +3,7 @@ import { Command } from "@/command"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { InstanceStore } from "@/project/instance-store"
+import { cachedInvalidateForever } from "@origami/core/effect/cached"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
@@ -179,7 +180,7 @@ const layer = Layer.effect(
         Effect.fnUntraced(function* (items) {
           const current = items.get(directory)
           if (current) return [current, items] as const
-          const next = yield* Effect.cached(
+          const [next] = yield* cachedInvalidateForever(
             loader.load(directory).pipe(
               Effect.tapError(() =>
                 SynchronizedRef.update(snapshots, (state) => {
@@ -203,7 +204,10 @@ const layer = Layer.effect(
       return yield* SynchronizedRef.modifyEffect(
         snapshots,
         Effect.fnUntraced(function* (items) {
-          const next = yield* Effect.cached(
+          // Runs on the caller's fiber, so the model switch's timeout stops the
+          // load. The memo drops that interrupt: the next `get` loads again
+          // (t-tc1tnk).
+          const [next] = yield* cachedInvalidateForever(
             loader.load(directory).pipe(
               Effect.tapError(() =>
                 SynchronizedRef.update(snapshots, (state) => {

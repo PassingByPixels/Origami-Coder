@@ -75,15 +75,25 @@
     background: rgba(0, 0, 0, 0.78);
     animation: il-fade 120ms ease-out;
   }
-  /* `contain`, never `cover`: a cropped screenshot is a different picture from
-     the one that was sent — the same rule the thumbnails already follow. */
+  /* `contain`, never `cover`. t-l1sovi: lighthouse = enlarge + enhance — no
+     dim/opacity on the image itself (that stays on the backdrop), crisp
+     rendering, brief glow on entry. */
   .il-image {
     max-width: 92vw;
     max-height: 92vh;
     object-fit: contain;
     border-radius: 6px;
     border: 1px solid var(--og-border);
+    image-rendering: crisp-edges;
+    filter: none;
+    opacity: 1;
+    animation: il-enhance 220ms ease-out;
   }
+  @keyframes il-enhance {
+    from { transform: scale(0.97); box-shadow: 0 0 0 rgba(0, 0, 0, 0); }
+    to { transform: scale(1); box-shadow: 0 0 32px rgba(255, 255, 255, 0.08); }
+  }
+  @media (prefers-reduced-motion: reduce) { .il-image { animation: none; } }
   .il-close {
     position: absolute;
     top: 12px;

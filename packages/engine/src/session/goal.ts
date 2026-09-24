@@ -2,36 +2,25 @@
  * GOAL MODE — a durable per-session completion condition that keeps a chat
  * working across turns until an independent reviewer says the condition is met.
  *
- * THE SHAPE OF IT. The goal itself is one record on the session row's metadata
- * bag (`Session.goal` / `Session.withGoal`). At the end of every turn of a
- * PRIMARY session that carries an active goal, this module:
+ * The goal is one record on the session row's metadata bag. At the end of every
+ * turn of a PRIMARY session that carries an active goal, this module:
  *
  *   1. lets the turn end normally — the check is FORKED from `SessionPrompt.loop`,
  *      never inline in `runLoop`, so the UI stays live and the user can interject;
- *   2. spawns a BLIND critic child session (`goal-critic`) which is told the
- *      condition and nothing else, and must verify it with its own evidence -
- *      it never sees the parent transcript, because a critic that reads the
- *      narrative grades the narrative. It may WRITE TO VALIDATE (the missing
- *      test, a probe) but never to repair the work; that contract is stated in
- *      its prompt, which is the only place able to state it;
+ *   2. spawns a BLIND critic child session (`goal-critic`) told the condition and
+ *      nothing else — it never sees the parent transcript, because a critic that
+ *      reads the narrative grades the narrative. It may write to VALIDATE but
+ *      never to repair the work; that contract lives in its prompt;
  *   3. on NOT MET with rounds left, injects ONE synthetic continuation turn
  *      carrying the critic's evidence verbatim;
  *   4. on any TERMINAL outcome, announces it on `origami/turnEnd` (turn-end.ts).
  *
- * WHY THE CRITIC IS A CHILD SESSION AND NOT A `task` CALL. The check must not
- * depend on the model deciding to run it, so the engine spawns the child itself.
- * The spawn MIRRORS `tool/task.ts` rather than reusing it: `runTask` is closed
- * over the task tool's own parameters, permission ask and flock routing, none of
- * which apply here. What is reused is the machinery that matters — the same
- * `TaskPromptOps` (`prompt` / `busy`), the same `deriveSubagentSessionPermission`,
- * and the same synthetic-text-part injection shape the background task drainer
- * uses to start a turn in an idle parent.
- *
- * WHAT IS DELIBERATELY NOT HERE. No mid-loop verdicts: the `turnEnd` taxonomy is
- * TERMINAL labels only (see turn-end.ts), and a still-working round has no
- * honest label in it. No goal for a subagent: only a session with no `parentID`
- * runs the loop, which also stops the critic child from starting a loop of its
- * own.
+ * The critic is a child session, not a `task` call, so the check cannot depend on
+ * the model deciding to run it; the spawn MIRRORS `tool/task.ts` rather than
+ * reusing it. Deliberately absent: mid-loop verdicts, because the `turnEnd`
+ * taxonomy is TERMINAL labels only; and a goal for a subagent, since only a
+ * session with no `parentID` runs the loop — which also stops the critic child
+ * from starting a loop of its own.
  */
 import { PermissionV1 } from "@origami/core/v1/permission"
 import { SessionV1 } from "@origami/core/v1/session"
@@ -44,6 +33,8 @@ import type { TaskPromptOps } from "@/tool/task"
 import { Session } from "./session"
 import { MessageID, SessionID } from "./schema"
 import { publishTurnEnd, type StopReason } from "./turn-end"
+import { SessionUsageLimit } from "./usage-limit"
+import type { Err } from "./retry"
 
 /** The hidden native subagent that does the verifying (agent/agent.ts). */
 export const CRITIC_AGENT = "goal-critic"
@@ -57,15 +48,10 @@ export type Verdict = "met" | "not_met"
 /**
  * The verdict a critic run produced, or undefined when it produced none.
  *
- * LENIENT ON PURPOSE, in one direction only. Models wrap the line in bold, in
- * a code fence, or after a bullet, and refusing those would turn a correct
- * verdict into an error. What it will NOT do is guess: a run with no readable
- * line answers undefined, which the caller counts as an ERROR and never as met
- * — the expensive failure here is declaring a goal done that is not.
- *
- * Last match wins: a critic that restates the instruction at the top and gives
- * its real answer at the bottom is the common shape, and the bottom one is the
- * answer.
+ * Lenient in one direction only: wrappers (bold, code fence, bullet) are read,
+ * but nothing is guessed — a run with no readable line answers undefined, which
+ * the caller counts as an ERROR and never as met. Last match wins, because a
+ * critic that restates the instruction at the top answers at the bottom.
  */
 export function parseVerdict(text: string): Verdict | undefined {
   const pattern = /VERDICT\s*[:\-]\s*[*_`"'\s]*(NOT[\s_-]+MET|MET)\b/gi
@@ -77,17 +63,11 @@ export function parseVerdict(text: string): Verdict | undefined {
 }
 
 /**
- * Did this turn end with a question to the user still outstanding?
- *
- * The engine has exactly one machine-readable "waiting on a human" state: an
- * UNSETTLED `question` tool call on the turn's last assistant message. A turn
- * that ends that way was interrupted or cancelled with the ask still on screen,
- * which is the client's `parked: awaiting your answer` verdict exactly.
- *
- * It does NOT try to detect a question asked in prose. That is not machine
- * readable without a second model call, and the cost of guessing wrong is the
- * loop either burning a round on a genuinely blocked agent or stalling on one
- * that only sounded blocked. Out of scope; named here so the limit is visible.
+ * Did this turn end with a question to the user still outstanding? The engine
+ * has exactly one machine-readable "waiting on a human" state: an UNSETTLED
+ * `question` tool call on the turn's last assistant message. A question asked in
+ * prose is deliberately not detected — not machine readable without a second
+ * model call.
  */
 export function askedUser(last: SessionV1.WithParts | undefined): boolean {
   if (!last) return false
@@ -101,8 +81,8 @@ export function askedUser(last: SessionV1.WithParts | undefined): boolean {
 
 /**
  * The critic's whole briefing. BLIND BY CONSTRUCTION: the condition, the
- * worktree, and the rules. No transcript, no plan, no summary of what the agent
- * says it did — those are the very claims under review.
+ * worktree and the rules — no transcript, no plan, no summary of what the agent
+ * says it did, because those are the claims under review.
  */
 export function criticPrompt(input: { condition: string; worktree: string }): string {
   return [
@@ -171,6 +151,19 @@ export function exhaustedText(input: { condition: string; maxRounds: number; evi
   ].join("\n")
 }
 
+/** The synthetic turn injected when a critic run failed but the goal survives it,
+ *  so the loop never stalls silently with nothing in the transcript. */
+export function criticRetryFailedText(input: { condition: string; reason: string }): string {
+  return [
+    `[goal] Goal check failed (${input.reason}); the goal stays armed, next round in 1.`,
+    "",
+    `CONDITION: ${input.condition}`,
+    "",
+    "This is a verification hiccup, not a verdict on the work. Continue toward the condition above;",
+    "the goal will be checked again after the next round.",
+  ].join("\n")
+}
+
 /** The synthetic turn that ends a goal whose critic could not be run or read. */
 export function criticFailedText(input: { condition: string; reason: string }): string {
   return [
@@ -182,6 +175,21 @@ export function criticFailedText(input: { condition: string; reason: string }): 
     "",
     "Tell the user honestly and briefly: what is done, what is unverified, and what you would do next.",
   ].join("\n")
+}
+
+/**
+ * The hard usage-limit error the last turn ended on, read with the same
+ * detector `retry.ts` already uses on the SAME turn (`session/usage-limit.ts`)
+ * - no repeat inside the window can change the answer, so this is a fact
+ * about the turn that just ended, not a new classifier.
+ */
+function usageLimit(
+  last: SessionV1.WithParts | undefined,
+): { limit: SessionUsageLimit.Limit; provider: string } | undefined {
+  if (!last || last.info.role !== "assistant" || !last.info.error) return undefined
+  const limit = SessionUsageLimit.detect(last.info.error)
+  if (!limit) return undefined
+  return { limit, provider: last.info.providerID }
 }
 
 /** A one-line goal report, for the `goal` tool's `status` action. */
@@ -199,12 +207,10 @@ export function describe(goal: Session.Goal | undefined): string {
 
 /**
  * Sessions with a check in flight. A turn that ends while its predecessor's
- * check is still running must NOT start a second critic — two of them would
- * each read the round count, each find room, and each inject.
- *
- * The claim is released BEFORE the continuation is injected, deliberately: the
- * injected turn ends by forking its OWN check, and a claim held across the
- * injection would silently stop the loop after exactly one round.
+ * check is still running must NOT start a second critic — both would read the
+ * round count, find room, and inject. The claim is released BEFORE the
+ * continuation is injected, deliberately: the injected turn forks its OWN check,
+ * and a claim held across the injection would stop the loop after one round.
  */
 const inFlight = new Set<string>()
 
@@ -214,15 +220,13 @@ export function resetInFlight(): void {
 }
 
 export type CheckDeps = {
-  // The exact slice each service is used through, rather than the whole
-  // interface. It is the honest contract - this module reads three session
-  // methods and one agent method - and it is what lets a test build a real
+  // The exact slice each service is used through, so a test can build a real
   // fake instead of casting a stub at a thirty-method interface.
   sessions: Pick<Session.Interface, "get" | "create" | "setMetadata">
   agents: Pick<Agent.Interface, "get">
   ops: Pick<TaskPromptOps, "prompt" | "busy">
   worktree: string
-  /** The chat's live model. The critic runs on it — no small-model routing in v1. */
+  /** The chat's live model. The critic runs on it — no small-model routing. */
   model: Effect.Effect<{ providerID: ProviderV2.ID; modelID: ModelV2.ID }>
   /** The turn that just ended, for the `asked_user` test. */
   lastAssistant: Effect.Effect<SessionV1.WithParts | undefined>
@@ -235,34 +239,17 @@ export type CriticOutcome =
   | { kind: "error"; reason: string }
 
 /**
- * Spawn the blind critic and read its verdict.
- *
- * Mirrors `tool/task.ts`'s child-session path: create a child under the parent
- * with the subagent-derived permission ruleset, prompt it through the same
- * `TaskPromptOps.prompt`, take the LAST text part as the answer, and treat an
- * error recorded ON the assistant message as a real failure rather than a
- * hollow success (a context overflow does not throw).
- */
-/**
  * The critic child's SESSION ruleset.
  *
- * `deriveSubagentSessionPermission` alone is not enough here, and finding that
- * out is what this function exists for. It deliberately carries the parent
- * chat's auto-approve PRESET through to the child - a user who pressed YOLO
- * means it for the whole chat - so a bypassed chat would hand its verifier a
- * `"*": "allow"`, and with it everything the definition denied.
- *
- * WHAT THAT COSTS CHANGED when the critic gained write-to-validate: `edit` is
- * now the definition's own decision, so a preset granting it grants nothing new.
- * What a preset must still never re-open is `task` and `send_message` - a critic
- * that can delegate hands the judgement to something with fewer restrictions,
- * and one that can message the agent under review can be argued with.
- *
- * So the agent's OWN ruleset is re-appended last. `Permission.evaluate` takes
- * the LAST matching rule, so the definition wins over the chat's preset. It is
- * written as "reassert the definition" rather than as a list of denied tool
- * names on purpose: a list would silently fail to cover the next mutating tool
- * anyone adds.
+ * `deriveSubagentSessionPermission` alone is not enough: it carries the parent
+ * chat's auto-approve PRESET through to the child, so a bypassed chat would hand
+ * its verifier a `"*": "allow"` and with it everything the definition denied. A
+ * preset must never re-open `task` or `send_message` — a critic that can
+ * delegate hands the judgement to something less restricted, and one that can
+ * message the agent under review can be argued with. So the agent's OWN ruleset
+ * is re-appended last: `Permission.evaluate` takes the LAST matching rule, so
+ * the definition wins. Written as "reassert the definition" rather than a list
+ * of denied tool names, which would miss the next mutating tool anyone adds.
  */
 export function criticPermission(input: {
   parentSessionPermission: PermissionV1.Ruleset
@@ -275,6 +262,21 @@ export function criticPermission(input: {
     }),
     ...input.critic.permission,
   ]
+}
+
+/**
+ * The critic's error text, for the WARN log line and `criticRetryFailedText` /
+ * `criticFailedText`. `failure.name` alone (`"UnknownError"`, `"APIError"`)
+ * told nobody what actually happened - three WARNs in one burst carried only
+ * that (t-tauw49 B#8). Names the provider and model the critic ran on (its
+ * own model call, same as the parent's), the HTTP status when the provider
+ * gave one, and the provider's own sentence rather than the error's class name.
+ */
+function criticFailureReason(model: { providerID: ProviderV2.ID; modelID: ModelV2.ID }, failure: Err): string {
+  const isAPIError = SessionV1.APIError.isInstance(failure)
+  const status = isAPIError && failure.data.statusCode !== undefined ? ` (status ${failure.data.statusCode})` : ""
+  const sentence = isAPIError ? failure.data.message : failure.name
+  return `${model.providerID}/${model.modelID}${status}: ${sentence}`
 }
 
 export const runCritic = Effect.fn("SessionGoal.runCritic")(function* (
@@ -307,16 +309,18 @@ export const runCritic = Effect.fn("SessionGoal.runCritic")(function* (
       model,
       parts: [{ type: "text", text: criticPrompt({ condition, worktree: deps.worktree }) }],
     })
-    // Exit, not ignore: `ops.prompt` is `Effect.catch(Effect.die)`, so EVERY
-    // failure it has arrives as a defect, and a defect escaping here would take
-    // down the forked check with nothing recorded about why.
+    // Exit, not ignore: `ops.prompt` is `Effect.catch(Effect.die)`, so every
+    // failure arrives as a defect, and one escaping here would take down the
+    // forked check with nothing recorded about why.
     .pipe(Effect.exit)
   if (Exit.isFailure(exit))
     return { kind: "error", reason: `the critic run failed: ${Cause.pretty(exit.cause)}` } satisfies CriticOutcome
 
   const result = exit.value
+  // An error recorded ON the assistant message is a real failure, not a hollow
+  // success: a context overflow does not throw.
   const failure = result.info.role === "assistant" ? result.info.error : undefined
-  if (failure) return { kind: "error", reason: `the critic run failed: ${failure.name}` } satisfies CriticOutcome
+  if (failure) return { kind: "error", reason: `the critic run failed: ${criticFailureReason(model, failure)}` } satisfies CriticOutcome
 
   const evidence = result.parts.findLast((part) => part.type === "text")?.text ?? ""
   const verdict = parseVerdict(evidence)
@@ -324,11 +328,8 @@ export const runCritic = Effect.fn("SessionGoal.runCritic")(function* (
   return { kind: verdict, evidence } satisfies CriticOutcome
 })
 
-/**
- * One post-turn goal check for one session. Safe to call after every turn of
- * every session: it answers immediately for the overwhelming majority that
- * carry no goal.
- */
+/** One post-turn goal check. Safe to call after every turn of every session: it
+ *  answers immediately for the majority that carry no goal. */
 export const check = Effect.fn("SessionGoal.check")(function* (deps: CheckDeps, sessionID: SessionID) {
   const found = yield* deps.sessions.get(sessionID).pipe(Effect.option)
   if (Option.isNone(found)) return
@@ -339,17 +340,36 @@ export const check = Effect.fn("SessionGoal.check")(function* (deps: CheckDeps, 
   const goal = Session.goal(session)
   if (!goal?.active) return
 
-  // Parked on a human beats everything below it: no round is spent and nothing
-  // is injected, because the agent is not the thing that is stuck.
-  if (askedUser(yield* deps.lastAssistant)) {
+  const lastAssistant = yield* deps.lastAssistant
+
+  // Parked on a human beats everything below: no round spent, nothing injected.
+  if (askedUser(lastAssistant)) {
     yield* write(deps, sessionID, { ...goal, lastVerdict: "asked_user" })
     publishTurnEnd(sessionID, "asked_user")
     return
   }
 
-  // A turn already running means the user (or a background result) got there
-  // first. That turn ends with a check of its own, so this one steps aside
-  // rather than talking over it.
+  // A hard usage limit beats everything below too, and for the same reason a
+  // parked question does: nothing here can make the next call succeed. Before
+  // this check, `check` ran straight into `settle`, which spent a critic call
+  // (retried once) against the SAME spent window, then injected a continuation
+  // that started the build turn again - seven requests in seven seconds against
+  // a window that would not reset for another 2.9 hours (t-tauw49 B#8). No round
+  // is spent and nothing is injected: injecting a turn here would only place
+  // another call against the same limit.
+  const limit = usageLimit(lastAssistant)
+  if (limit) {
+    yield* write(deps, sessionID, {
+      ...goal,
+      active: false,
+      lastVerdict: SessionUsageLimit.notice(limit.limit, limit.provider),
+    })
+    publishTurnEnd(sessionID, "error_during_execution")
+    return
+  }
+
+  // A turn already running ends with a check of its own, so this one steps
+  // aside rather than talking over it.
   const busy = yield* deps.ops.busy(sessionID).pipe(Effect.catchCause(() => Effect.succeed(false)))
   if (busy) return
 
@@ -359,8 +379,7 @@ export const check = Effect.fn("SessionGoal.check")(function* (deps: CheckDeps, 
   if (!notice) return
 
   // Re-read: the critic run took real time, and a user message that landed
-  // during it owns the session now. Injecting on top of that would be the goal
-  // loop talking over the human.
+  // during it owns the session now.
   const stillIdle = yield* deps.ops.busy(sessionID).pipe(
     Effect.catchCause(() => Effect.succeed(true)),
     Effect.map((b) => !b),
@@ -373,9 +392,8 @@ export const check = Effect.fn("SessionGoal.check")(function* (deps: CheckDeps, 
       messageID: MessageID.ascending(),
       sessionID,
       ...(agent ? { agent } : {}),
-      // Synthetic, exactly like the background task drainer's injected result:
-      // the model must read it, and the user must not be shown an instruction
-      // written on their behalf as if they had typed it.
+      // Synthetic, like the background task drainer's injected result: the model
+      // must read it, but it must not appear as if the user typed it.
       parts: [{ type: "text", synthetic: true, text: notice }],
     })
     .pipe(
@@ -400,7 +418,11 @@ export const check = Effect.fn("SessionGoal.check")(function* (deps: CheckDeps, 
  * persisted before the turn it pays for is started, never after.
  */
 const settle = Effect.fn("SessionGoal.settle")(function* (deps: CheckDeps, session: Session.Info, goal: Session.Goal) {
-  const outcome = yield* runCritic(deps, session, goal.text)
+  let outcome = yield* runCritic(deps, session, goal.text)
+  // One retry, immediately, before a failed run counts against the goal at all.
+  if (outcome.kind === "error") {
+    outcome = yield* runCritic(deps, session, goal.text)
+  }
 
   if (outcome.kind === "met") {
     yield* write(deps, session.id, {
@@ -416,16 +438,16 @@ const settle = Effect.fn("SessionGoal.settle")(function* (deps: CheckDeps, sessi
 
   if (outcome.kind === "error") {
     const errors = (goal.criticErrors ?? 0) + 1
-    // ONE bad critic run is not a broken feature — a provider hiccup, a model
-    // that forgot the line. Two in a row is, and carrying on would mean paying
-    // for a verifier that cannot verify.
+    // One bad critic run is a hiccup; two in a row is a verifier that cannot.
     if (errors < 2) {
       yield* write(deps, session.id, { ...goal, criticErrors: errors })
       yield* Effect.logWarning("goal critic run failed; goal left active", {
         "session.id": session.id,
         reason: outcome.reason,
       })
-      return undefined
+      // Visible, not silent: a round with nothing injected here is a round the
+      // user never sees end.
+      return criticRetryFailedText({ condition: goal.text, reason: outcome.reason })
     }
     yield* write(deps, session.id, {
       ...goal,

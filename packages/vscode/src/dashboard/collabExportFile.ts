@@ -1,13 +1,6 @@
-// "Export collab" — the save dialog and the write, and the ONLY part of a
-// collab tab that talks to the user through VS Code chrome. Extracted from
-// DashboardPanel.ts's `exportCollab` case, which sat exactly on its cap.
-//
-// The same split mapExport.ts documents, with the Labyrinth's direction rather
-// than the map's: the WEBVIEW renders the markdown, because only it holds the
-// polled snapshot and the roster names that make a multi-agent transcript
-// readable, and the host owns the dialog and the file. So the text arrives
-// finished here and is written verbatim — nothing is re-rendered host-side,
-// which is what keeps the exported file identical to what the room showed.
+// "Export collab" — the save dialog and the write, the only part of a
+// collab tab that talks to VS Code chrome. The webview renders the markdown
+// (it holds the polled snapshot and roster); the host writes it verbatim.
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!-- README screenshot host. The same page DashboardPanel.renderHtml writes, with
+     the REAL built bundle (../../out/webview/chat.js + chat.css). The globals and
+     the acquireVsCodeApi stub are installed by shoot.cjs (addInitScript) before
+     this page runs, so each shot picks its view (sidebar, solo chat, board,
+     memory graph, repo map) the way the extension host does.
+     The --vscode-* values are what VS Code sets on Windows for its webviews. -->
+<html lang="en" data-theme="meadow">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Origami Chat</title>
+  <link rel="stylesheet" href="../../out/webview/chat.css" />
+  <style>
+    html {
+      --vscode-font-family: "Segoe WPC", "Segoe UI", sans-serif;
+      --vscode-font-size: 13px;
+      --vscode-editor-font-family: Consolas, "Courier New", monospace;
+      --vscode-input-foreground: #cccccc;
+      --vscode-input-background: #313131;
+      --vscode-focusBorder: #0078d4;
+    }
+    body { display: flex; flex-direction: column; }
+    #app { height: auto; flex: 1 1 auto; min-height: 0; }
+    #permModeBanner { display: none; flex: 0 0 auto; }
+  </style>
+</head>
+<body>
+  <div id="permModeBanner" data-mode="default"></div>
+  <div id="app"></div>
+  <script src="../../out/webview/chat.js"></script>
+</body>
+</html>

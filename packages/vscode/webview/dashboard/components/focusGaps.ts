@@ -1,37 +1,23 @@
-// focusGaps.ts — WHAT FOCUS VIEW HID, counted, between the rows it kept.
+// focusGaps.ts — what focus view hid, counted, between the rows it kept.
 //
-// chatFocus.ts decides WHICH rows survive focus view. This file decides what
-// the user is told about the ones that did not. Hiding forty tool cards is the
-// whole point of the view, but a transcript that jumps from one answer to the
-// next leaving no mark says nothing about the work between them — which reads
-// as lost context rather than as a clean read.
+// chatFocus.ts decides which rows survive focus view; this file decides what
+// the user is told about the ones that didn't. A run of consecutive hidden
+// rows folds into one gap carrying a count per family: "38 tools · 16 file
+// reads · 2 thoughts". Runs at the start, middle and end all fold, and a run
+// of one folds too — a view that marks some gaps and not others is worse
+// than one that marks none.
 //
-// So a RUN of consecutive hidden rows folds into ONE gap carrying a count per
-// family: "38 tools · 16 file reads · 2 thoughts". Runs at the start, in the
-// middle and at the end all fold, and a run of ONE folds too: a lone hidden row
-// is still a hidden row, and a view that marks some gaps and not others is
-// worse than one that marks none.
+// A pure leaf, so the counting and wording are testable with nothing
+// rendered (focusGaps.test.ts). The counts are disjoint and sum to the run
+// length: a family that double-counted would report more work than the
+// agent did.
 //
-// A pure leaf (no DOM, no Svelte, no `vscode`) for the reason chatFocus.ts is
-// one: the counting and the wording are the only things here that can be WRONG,
-// so focusGaps.test.ts asserts them with nothing rendered.
-//
-// THE COUNTS ARE DISJOINT AND THEY SUM to the run length. Every hidden row
-// lands in exactly one family, so "38 tools" means 38 calls that were NOT the
-// 16 file reads beside it. A family that double-counted would report more work
-// than the agent did, on a divider whose entire job is to be trusted at a
-// glance.
-//
-// THE FAMILIES MIRROR ToolCard's DISPATCH, deliberately — an explicit tool NAME
-// wins and the ACP `kind` is the fallback, exactly as TOOLCARD_REGISTRY then
-// KIND_REGISTRY do in ToolCard.svelte. The names are the ones that actually
-// arrive on the wire (that registry, plus the engine tool ids mirrored in
-// src/dashboard/botTools.ts). The fallback is not decoration: `toolName` is
-// optional on the row (pre-Pillar-2 sessions and non-Origami ACP servers omit
-// it), and without the kind every one of those rows would read as a plain
-// "tool" — the exact context loss this file exists to stop.
+// The families mirror ToolCard's dispatch deliberately: an explicit tool
+// name wins and the ACP `kind` is the fallback. `toolName` is optional on
+// the row (older sessions and non-Origami ACP servers omit it), and without
+// the kind fallback every one of those rows would read as a plain "tool".
 
-import { visibleInFocus } from './chatFocus';
+import { isEmptyAgentTurn, visibleInFocus } from './chatFocus';
 import type { Message } from '../panes/chatMessage';
 
 /** The families a hidden row can land in. `tools` is the catch-all, so an
@@ -42,8 +28,7 @@ export type GapCategory = 'tools' | 'reads' | 'edits' | 'commands' | 'searches' 
 export interface FocusGap {
   /** The discriminant `Message` does not have — what `isFocusGap` reads. */
   gap: true;
-  /** Keyed `{#each}` identity: the FIRST hidden row's id. Stable across a
-   *  re-render because the run's head does not move while the run grows. */
+  /** Keyed `{#each}` identity: the first hidden row's id, stable while the run grows. */
   key: string;
   /** Every family, zeros included, so a caller can assert the sum. */
   counts: Readonly<Record<GapCategory, number>>;
@@ -77,9 +62,8 @@ const TOOL_FAMILY: Readonly<Record<string, GapCategory>> = {
   list_dir: 'searches',
 };
 
-/** ACP `kind` → family, used only when the name is missing or unknown — the
- *  same order of preference ToolCard's dispatch already applies. `bash` is a
- *  kind as well as a name (ToolCard's kindIcons names both). */
+/** ACP `kind` → family, used only when the name is missing or unknown, the
+ *  same preference order ToolCard's dispatch applies. */
 const KIND_FAMILY: Readonly<Record<string, GapCategory>> = {
   read: 'reads',
   edit: 'edits',
@@ -88,9 +72,8 @@ const KIND_FAMILY: Readonly<Record<string, GapCategory>> = {
   search: 'searches',
 };
 
-/** Rendered order, singular, plural. The ARRAY is the fixed order — a caller
- *  reads "38 tools · 16 file reads" the same way every time, and a family with
- *  no rows in this run is omitted rather than printed as a zero. */
+/** Rendered order, singular, plural. Fixed order, so a family with no rows
+ *  in this run is omitted rather than printed as a zero. */
 const FAMILY_WORDS: ReadonlyArray<readonly [GapCategory, string, string]> = [
   ['tools', 'tool', 'tools'],
   ['reads', 'file read', 'file reads'],
@@ -101,14 +84,11 @@ const FAMILY_WORDS: ReadonlyArray<readonly [GapCategory, string, string]> = [
   ['steps', 'step', 'steps'],
 ];
 
-/**
- * Which family ONE hidden row belongs to.
- *
- * `steps` is the quiet tail: a verdict, a todo snapshot and a compaction marker
- * are turn BOOKKEEPING, not calls the agent made, so folding them into "tools"
- * would inflate the one number a reader takes as work done.
- */
-function familyOf(msg: Message): GapCategory {
+/** Which family one hidden row belongs to. `steps` is the quiet tail: a
+ *  verdict, todo snapshot or compaction marker is turn bookkeeping, not a
+ *  call the agent made, so folding it into "tools" would inflate the one
+ *  number a reader takes as work done. */
+export function familyOf(msg: Message): GapCategory {
   if (msg.kind === 'thought') return 'thoughts';
   if (msg.kind !== 'tool') return 'steps';
   const byName = msg.toolName ? TOOL_FAMILY[msg.toolName] : undefined;
@@ -134,16 +114,19 @@ function gapOf(run: readonly Message[]): FocusGap {
   return { gap: true, key: `gap-${run[0].id}`, counts, label: labelOf(counts) };
 }
 
-/**
- * The row list a focused transcript draws: every visible message BY IDENTITY
- * (never a copy — the renderer keys on `msg.id` and the pane still owns the
- * object), with each run of hidden rows replaced by one `FocusGap`.
+/** The row list a focused transcript draws: every visible message by
+ *  identity (never a copy), with each run of hidden rows replaced by one
+ *  `FocusGap`. `visibleInFocus` fails open, so a message kind added later
+ *  passes through as a row rather than into a gap nobody can expand.
  *
- * Nothing is filtered away silently: a hidden row is either counted into the
- * gap that replaced it or it was never hidden. `visibleInFocus` fails open, so
- * a message kind added later passes through as a row rather than being counted
- * into a gap nobody can expand.
- */
+ *  An empty agent turn (t-di3a0w) is neither hidden nor a message: `agent`
+ *  is VISIBLE by kind, so without this check it would flush whatever run
+ *  came before it, splitting one tool run either side of a blank Tsuru
+ *  bubble into two dividers — the owner's screenshot. It carries no prose
+ *  and no images, so there is nothing to keep and nothing to count: it is
+ *  skipped outright, joining its neighbouring hidden runs into one gap
+ *  rather than being folded INTO the run (which would count it and inflate
+ *  the total beyond the tool calls the agent actually made). */
 export function foldForFocus(messages: readonly Message[]): FocusRow[] {
   const rows: FocusRow[] = [];
   let run: Message[] = [];
@@ -152,6 +135,9 @@ export function foldForFocus(messages: readonly Message[]): FocusRow[] {
     run = [];
   };
   for (const msg of messages) {
+    if (isEmptyAgentTurn(msg)) continue;
+    // A read that produced a picture is a `tool` row like any other (t-h4o65t):
+    // it folds into the reads gap with the text reads, never kept on its own.
     if (visibleInFocus(msg)) {
       flush();
       rows.push(msg);

@@ -1,21 +1,10 @@
-// Flock M4 wave X1 — the SIX new `collab_*` host leaves: lead, objective, the
-// task board's two mutations, the cost ledger, and stop. A SIBLING of
-// collabData.ts, not an addition to it — that file sits at 247/250 lines and
-// the ratchet's remedy is a new module, never a raised cap.
+// Flock — the SIX `collab_*` host leaves: lead, objective, the task board's
+// two mutations, the cost ledger, and stop. A sibling of collabData.ts, not
+// an addition to it, since that file is at its own cap.
 //
-// Same house pattern collabData.ts already established: a no-session guard, a
-// throw turned into an `error` FIELD (never a rejected promise), a defensive
-// read of a reply that crossed the JSON-RPC wire, and `collabId` self-carried
-// on every payload — `post` fans every reply out to EVERY attached webview, so
-// a payload with no id of its own would leave a collab-scoped view unable to
-// tell whether a reply is its own.
-//
-// The engine does not carry these methods yet (E1/E2 land them in a later
-// wave) — every call here reaches the wire once it does; until then each is
-// exercised only by its own tests.
-//
-// No `vscode` import, so every decision below is exercised without an
-// extension host.
+// Same house pattern: a no-session guard, a throw turned into an `error`
+// field, a defensive wire read, and `collabId` self-carried on every payload
+// since `post` fans out to every attached webview.
 import type { CollabCostTotal, LedgerEntry, TaskEntry } from '../acpExtTypes';
 // `message` is collabData.ts's own — shared rather than re-duplicated, so a
 // refusal (an archived room, a blank title…) reads honestly here too.
@@ -85,10 +74,8 @@ export const collabStop = (
   cwd?: string,
 ): Promise<CollabOkPayload> => collabOk(client, 'collab_stop', collabId, {}, cwd);
 
-/** Reopen an archived collab (collab-resume) — the inverse of collabData's
- *  collabArchive. Clears `archivedAt`; the room resumes exactly where it left
- *  off, since each participant's own session and last-seen position were
- *  never touched by archiving in the first place. */
+/** Reopen an archived collab — the inverse of collabArchive. Clears
+ *  `archivedAt`; nothing else about the room was touched by archiving. */
 export const collabUnarchive = (
   client: CollabSource | null | undefined,
   collabId: string,
@@ -122,9 +109,7 @@ export async function collabTaskAdd(
 }
 
 /** Advance a task (claim/done/accept/reopen). Legal-transition and
- *  required-field enforcement (owner on claim, result on done, note on
- *  reopen) is the ENGINE's — this leaf passes through whatever the caller
- *  supplied rather than guessing one. */
+ *  required-field enforcement is the ENGINE's, not this leaf's. */
 export async function collabTaskUpdate(
   client: CollabSource | null | undefined,
   collabId: string,
@@ -146,9 +131,8 @@ export async function collabTaskUpdate(
   }
 }
 
-/** The turn-cost ledger, newest-first. `limit` is sent only when it is a
- *  positive number — the engine's own default (100) applies otherwise, so
- *  this leaf invents nothing. */
+/** The turn-cost ledger, newest-first. `limit` is sent only when positive —
+ *  the engine's own default applies otherwise. */
 export async function collabLedger(
   client: CollabSource | null | undefined,
   collabId: string,

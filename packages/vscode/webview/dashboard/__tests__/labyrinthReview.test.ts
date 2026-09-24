@@ -81,7 +81,7 @@ describe('Labyrinth spend — the header is a TABLE, two rows, value before labe
 
   it('row two carries the raw components, value first, in engine order', async () => {
     const { container } = await withRun({ steps: PARENT, truncated: false, total: 4 });
-    expect(Array.from(container.querySelectorAll('.raw-cell')).map((c) => flat(c.textContent)))
+    expect(Array.from(container.querySelectorAll('.stat-cell')).map((c) => flat(c.textContent)))
       .toEqual(['147 in', '32 out', '5 reasoning', '900 cache read', '0 cache write']);
   });
 
@@ -90,7 +90,7 @@ describe('Labyrinth spend — the header is a TABLE, two rows, value before labe
       steps: [step(0, { kind: 'reply', title: 'x', agent: 'build', tokens: { input: 8, output: 2, reasoning: 0, cache: { read: 4, write: 1 } } })],
       truncated: false, total: 1,
     });
-    const cells = Array.from(container.querySelectorAll('.raw-cell')).map((c) => flat(c.textContent));
+    const cells = Array.from(container.querySelectorAll('.stat-cell')).map((c) => flat(c.textContent));
     expect(cells).toEqual(['8 in', '2 out', '4 cache read', '1 cache write']);
     // Every OTHER measured zero is still on screen: an absent count and a
     // counted zero are different facts everywhere but reasoning.
@@ -176,20 +176,26 @@ describe('Labyrinth highlight — a spend chip says where on the map its work is
     expect(container.querySelector('.chamber.is-dim')).not.toBeNull();
   });
 
-  it('FLIGHT fades the swimlanes of the branches the chip is not about', async () => {
+  it('FLIGHT fades the delegate ROW the chip is not about', async () => {
     const { container } = await withRun({ steps: PARENT, truncated: false, total: 4 });
     await setMode(container, 'Flight');
-    expect(container.querySelectorAll('.swim-lane')).toHaveLength(1);
+    // The analytics view draws the delegate as a row in the sub-agent band; the
+    // requirement is unchanged from the swimlane strip it replaced — a chip must
+    // fade the delegated work it is not about, or the map and the strip are
+    // describing two different runs.
+    expect(container.querySelectorAll('.fl-span')).toHaveLength(1);
     const build = Array.from(container.querySelectorAll('.spend-chip'))
       .find((c) => flat(c.textContent).startsWith('build'))!;
     await fireEvent.mouseEnter(build);
     await tick();
-    expect(container.querySelectorAll('.swim-lane.is-dim')).toHaveLength(1);
-    // ...and the branch's own chip leaves its lane alone.
+    expect(container.querySelectorAll('.fl-span.dim')).toHaveLength(1);
+    // The whole row goes with it — label, departure and rejoin, not the bar alone.
+    expect(container.querySelectorAll('.fl-agent-label.dim')).toHaveLength(1);
+    // ...and the branch's own chip leaves its row alone.
     await fireEvent.mouseLeave(build);
     await fireEvent.mouseEnter(container.querySelector('.spend-chip.branch')!);
     await tick();
-    expect(container.querySelectorAll('.swim-lane.is-dim')).toHaveLength(0);
+    expect(container.querySelectorAll('.fl-span.dim')).toHaveLength(0);
   });
 
   it('THREAD fades the branch RAIL the chip is not about', async () => {

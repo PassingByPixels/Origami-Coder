@@ -1,32 +1,16 @@
-/**
- * The per-model VISION PIN — the third bit that tells Auto from a manual choice.
- *
- * WHY A THIRD BIT IS NEEDED. A model's vision lives in origami.json as
- * `modalities.input` carrying "image" plus `attachment: true`, and
- * `readModelVision` reads it back as ONE boolean. visionDetect's reconcile pass
- * writes that SAME boolean. So the config alone can never say whether `true`
- * means "LM Studio called this model a vlm" or "the owner said so" — and
- * without that difference every manual choice is silently reverted by the next
- * reconcile. The pin is that difference. It is kept OUT of the config (which
- * belongs to the engine and is rewritten by detection) and in VS Code's GLOBAL
- * state, because a pin is a fact about the owner, not about a workspace.
- *
- * SEMANTICS.
- *   absent -> AUTO. Detection owns the flag; reconcile writes it, as today.
- *   'on'   -> the owner says this model sees. Written to the config ONCE, at
- *             pin time, and reconcile skips the model from then on.
- *   'off'  -> the owner says it does not. The same, mirrored.
- * Unpinning restores AUTO and asks for one immediate reconcile pass, so the
- * detected answer comes back without waiting for the next panel.
- *
- * THE CONFIG IS NOT THE LIVE ANSWER. The engine freezes model capabilities when
- * it builds a provider instance — there is no TTL and no fs watch — so a pin
- * changes what the NEXT engine reads, not what the running one believes. The
- * control says so; this module does not pretend otherwise.
- *
- * NO `vscode` IMPORT. `PinStore` is the structural shape of a Memento, so
- * `context.globalState` satisfies it and every branch here runs against a Map.
- */
+// The per-model VISION PIN — the third bit that tells Auto from a manual choice.
+// A model's vision lives in origami.json as one boolean (`modalities.input`), and visionDetect's
+// reconcile pass writes that same boolean — so config alone can't say whether `true` means "LM
+// Studio called this a vlm" or "the owner said so", and without that distinction a manual choice
+// gets silently reverted on the next reconcile. The pin is that difference, kept in VS Code's
+// GLOBAL state (a fact about the owner, not a workspace) rather than in the engine-owned config.
+// Semantics: absent = AUTO (detection owns the flag); 'on'/'off' = the owner's choice, written to
+// config once at pin time and skipped by reconcile from then on. Unpinning restores AUTO and asks
+// for one immediate reconcile pass.
+// The pin is LIVE: the panel wires `writeVision` through `refreshingWriter` (providerRefresh.ts),
+// which fires `provider_refresh` after the write, dropping the running engine's provider memo so
+// the model is rebuilt from the new config on the next step — no window reload needed.
+// No vscode import — `PinStore` is the structural shape of a Memento.
 
 /** A manual choice. The absence of one is AUTO — never a third enum value. */
 export type VisionPin = 'on' | 'off';
@@ -44,21 +28,15 @@ export interface PinStore {
 
 const PREFIX = 'origami.visionPin.';
 
-/**
- * `origami.visionPin.<providerId>/<modelId>`.
- *
- * The provider is part of the key because one model id is served by more than
- * one box — an `lmstudio` and a `spark` both offering `qwen3-vl` — and a pin set
- * on the local copy must not speak for the remote one, which may be a different
- * quant with a different projector.
- */
+/** `origami.visionPin.<providerId>/<modelId>` — the provider is part of the key because one model
+ *  id can be served by more than one box, and a pin on the local copy must not speak for a remote
+ *  one with a different quant. */
 export function visionPinKey(providerId: string, modelId: string): string {
   return `${PREFIX}${providerId}/${modelId}`;
 }
 
-/** The pin, or `undefined` for AUTO. Anything unrecognised in the store reads as
- *  AUTO rather than throwing: a stale value must degrade to detection, never
- *  strand a model on a state the UI cannot show. */
+/** The pin, or undefined for AUTO. An unrecognised stored value reads as AUTO too, rather than
+ *  throwing. */
 export function readVisionPin(store: PinStore, providerId: string, modelId: string): VisionPin | undefined {
   if (!providerId || !modelId) return undefined;
   const raw = store.get<string>(visionPinKey(providerId, modelId));
@@ -75,26 +53,17 @@ export function writeVisionPin(
   return store.update(visionPinKey(providerId, modelId), pin);
 }
 
-/**
- * Split the engine's `provider/model` string.
- *
- * FIRST slash only — model ids carry slashes of their own (`lmstudio/qwen/qwen3-vl`).
- * A bare id belongs to the local provider, which is the only provider the engine
- * can serve an unqualified model from.
- */
+/** Split the engine's `provider/model` string on the FIRST slash only — model ids carry slashes of
+ *  their own. A bare id belongs to the local provider, the only one the engine can serve
+ *  unqualified. */
 export function splitModel(current: string, localId: string | undefined): { providerId: string; modelId: string } {
   const i = current.indexOf('/');
   if (i > 0) return { providerId: current.slice(0, i), modelId: current.slice(i + 1) };
   return { providerId: current ? (localId ?? '') : '', modelId: current };
 }
 
-/**
- * What the control must show for one model: the pin when there is one, else the
- * config flag the next engine will read.
- *
- * `readVision` is injected rather than imported so this stays free of fs — the
- * caller passes firstFold's `readModelVision`.
- */
+/** What the control must show for one model: the pin when there is one, else the config flag the
+ *  next engine will read. `readVision` is injected, not imported, to keep this fs-free. */
 export function visionStateFor(
   store: PinStore,
   model: { providerId: string; modelId: string },
@@ -106,15 +75,31 @@ export function visionStateFor(
 }
 
 /**
- * The reconcile pass's write plan — the loop that used to sit inline in
- * DashboardPanel, now with the pin rule in it and testable without a panel.
- *
- * Two skips, for two different reasons, and neither may be collapsed into the
- * other. A model ABSENT from `seen` is UNKNOWN (visionDetect's one rule: the
- * server did not answer, so writing `false` would blind a hand-configured VLM).
- * A PINNED model is known and deliberately overruled — detection may be right
- * and is still not allowed to win, or the pin would last exactly until the next
- * panel opened.
+ * The same answer for a LIST of `provider/model` rows — the model picker's
+ * per-row vision chips. Needed because the engine flattens capabilities away
+ * when it builds the ACP model list, so both halves of the answer live on
+ * this side. A leaf beside `visionStateFor`, not a `.map` inside the panel,
+ * so one model and forty rows answer the same question the same way.
+ * Generic over the row so a caller's other fields travel through untouched.
+ */
+export function visionStatesFor<T extends { value: string }>(
+  store: PinStore,
+  rows: readonly T[],
+  localId: string | undefined,
+  readVision: (providerId: string, modelId: string) => boolean,
+): Array<T & { visionState: VisionState }> {
+  return rows.map((row) => ({
+    ...row,
+    visionState: visionStateFor(store, splitModel(row.value, localId), readVision),
+  }));
+}
+
+/**
+ * The reconcile pass's write plan, now testable without a panel. Two skips
+ * for two different reasons: a model ABSENT from `seen` is UNKNOWN (writing
+ * false would blind a hand-configured VLM); a PINNED model is known and
+ * deliberately overruled, since detection winning would make the pin last
+ * only until the next panel opened.
  */
 export function visionWrites(input: {
   models: readonly string[];
@@ -149,16 +134,12 @@ export interface VisionPinHost {
 }
 
 /**
- * Apply a click on Auto / On / Off.
- *
- * ORDER MATTERS. The config write goes first, because it is the half that can
- * fail (a hand-edited origami.json that no longer parses). Storing the pin only
- * after it lands means a failed write leaves the model on AUTO — visibly
- * unchanged — rather than pinned to a value the config never took, which
- * reconcile would then be forbidden to correct.
- *
- * Reconcile is asked for ONLY on the way back to Auto. That is the one
- * transition whose answer this module does not already hold.
+ * Apply a click on Auto / On / Off. Order matters: the config write goes
+ * first, since it's the half that can fail (a hand-edited origami.json that
+ * no longer parses) — storing the pin only after it lands keeps a failed
+ * write on AUTO rather than pinned to a value the config never took.
+ * Reconcile is asked for only on the way back to Auto, the one transition
+ * this module doesn't already hold the answer to.
  */
 export async function applyVisionPin(host: VisionPinHost, mode: string): Promise<void> {
   const { providerId, modelId } = splitModel(host.current, host.localId);

@@ -180,6 +180,7 @@ const FakeProtocol = Protocol.make<FakeBody, string, string, void>({
   id: "fake-echo",
   body: {
     schema: FakeBody,
+    structure: ["model", "input"],
     from: (request) =>
       Effect.succeed({
         model: request.model.id,

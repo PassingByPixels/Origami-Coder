@@ -1,48 +1,23 @@
 // browserTools.ts — the VS Code integrated-browser CONTRACT, on its own.
 //
-// Split out of browserBridge.ts (which sits against its architecture cap)
-// along the line the two halves already had: this file is pure and answers
-// "what does VS Code publish, and what can this bridge SAY"; that file keeps
-// the ext-method plumbing and the invocations. The per-tool INPUT left for
-// browserDrive.ts at 309/310, when four more verbs were mapped: a builder
-// belongs beside the case that calls it, and that is where the drive now lives.
-// Reading what VS Code answers back — page lists, page ids, tool results and
-// their failure signals — went to browserResult.ts when this file ran out of
-// cap; the two exchange TYPES only — DrivenAction one way, Checked the other,
-// both erased at build time, so neither file gains a runtime dependency on the
-// other. The response constructors live here because a response is a thing this
-// bridge SAYS; the check that gates them lives there because it is a reading.
-//
-// Every id below was read off the SHIPPED bundle (VS Code 1.132.0, re-read on
-// 1.133.0, out/vs/workbench/workbench.desktop.main.js), not inferred
-// from a name. The first version of this bridge inferred, and matched
-// `/browser/i` against `vscode.lm.tools[].name`. Only two ids in the whole
-// family carry that word — `open_browser_page` and `list_browser_pages` — so
-// the five tools that actually DRIVE a page were never found, and every page
-// verb had been dead since the day it shipped.
+// This file is pure and answers "what does VS Code publish, and what can this
+// bridge SAY". It and browserResult.ts exchange TYPES only, both erased at build
+// time, so neither gains a runtime dependency on the other. Every id below was read
+// off the SHIPPED bundle (VS Code 1.132.0, re-read on 1.133.0 and 1.135.0 — the
+// same eleven, unchanged), not inferred from a name: the first version inferred,
+// matching `/browser/i` against tool names, and only two ids carry that word, so
+// the five tools that DRIVE a page were never found.
 
 import type { Checked } from './browserResult';
 
-/**
- * What this bridge ANSWERS, and the only two things that can build one.
+/** What this bridge ANSWERS, and the only two things that can build one.
  *
- * TWO false greens have now shipped out of browserBridge.ts, and both were the
- * same shape: a SECOND return path writing `{ ok: true, … }` by hand on a tool
- * result whose failure signals nobody had read. The first was the driven verbs
- * — a click on a selector that is not on the page painted green. The second was
- * `open`, which asserted a page opened, at the requested url, with no message
- * at all, on the user's own refusal. Each was fixed where it was found, which
- * is exactly why there was a second.
- *
- * So the verdict is no longer something a return statement can state. The type
- * carries a brand that is a symbol with no runtime value: the only expressions
- * of it are `failed` and `succeeded`, and `return { ok: true, url, tools }`
- * written by hand does not type-check anywhere in this feature. `succeeded`
- * then asks for a `Checked`, which only browserResult's `check` produces, and
- * `check` reads the failure signals before it hands one over. Success is
- * therefore unreachable except on the far side of the check — structurally,
- * not by discipline and not by review.
- */
+ *  Two false greens shipped, both the same shape: a second return path writing
+ *  `{ ok: true, … }` by hand on a tool result whose failure signals nobody had read.
+ *  So the type carries a brand that is a symbol with no runtime value: the only
+ *  expressions of it are `failed` and `succeeded`, and `succeeded` asks for a
+ *  `Checked`, which only browserResult's `check` produces after reading the failure
+ *  signals. Success is unreachable except on the far side of the check. */
 declare const ANSWERED: unique symbol;
 
 export interface BrowserResponse {
@@ -53,6 +28,12 @@ export interface BrowserResponse {
   pageText?: string;
   imageBase64?: string;
   imageMime?: string;
+  /** The page viewport the picture was taken at (t-qn0lpl). A screenshot's own
+   *  bytes do not say what size the PAGE was, and the chat strip's caption has
+   *  to; browserViewport.ts's `measuredSize` is where the pair comes from. Only
+   *  the screenshot path sets it. */
+  width?: number;
+  height?: number;
   tools?: string[];
 }
 
@@ -99,20 +80,17 @@ export const ACTION_TOOLS = {
 
 export type DrivenAction = keyof typeof ACTION_TOOLS;
 
-/** Raw Playwright. A verb since the `raw` action shipped, and STILL the last
- *  rung of the click ladder (browserForce.ts) — the alias keeps that one call
- *  site reading as what it is rather than as an ordinary action lookup. */
+/** Raw Playwright. Also the last rung of the click ladder (browserForce.ts) — the
+ *  alias keeps that one call site reading as what it is. */
 export const PLAYWRIGHT_TOOL = ACTION_TOOLS.raw;
 
 const FAMILY: ReadonlySet<string> = new Set<string>([OPEN_TOOL, LIST_TOOL, ...Object.values(ACTION_TOOLS)]);
 
-/** The fallback, for a build that renamed something. The shipped family names
- *  its members after what they act ON — `..._page`, `..._pages`, `..._element` —
- *  so that segment, not the word "browser", is what a rename would most likely
- *  keep. Matched as a whole SEGMENT, so a suffixed `read_page_v2` still counts
- *  while `fetch_webpage` and `read_file` do not. `playwright` is named outright
- *  because `run_playwright_code` is the one member that follows neither shape.
- *  Used only AFTER an exact id match misses, so a stock build never reaches it. */
+/** The fallback, for a build that renamed something. The shipped family names its
+ *  members after what they act ON — `..._page`, `..._pages`, `..._element` — so
+ *  that SEGMENT is matched, not the word "browser": a suffixed `read_page_v2` still
+ *  counts while `fetch_webpage` and `read_file` do not. `playwright` is named
+ *  outright. Used only after an exact id match misses. */
 const FAMILY_SHAPE = /browser|playwright|_(?:page|pages|element)(?:_|$)/i;
 
 export function isBrowserTool(name: string): boolean {
@@ -143,18 +121,12 @@ export function pickTool(published: readonly string[], action: DrivenAction): st
 /** Named ONLY where it is genuinely the cause — see `missingToolError`. */
 const ENABLE_SETTING = 'workbench.browser.enableChatTools';
 
-/**
- * Why an action has no tool. Three different causes, three different answers.
- *
- * The setting appears in exactly one of them, and it is checkable rather than
- * guessed at: VS Code registers the browser tools in an if/else, and the
- * sharing-unavailable branch publishes `open_browser_page` ALONE. So
- * open-without-list IS that branch, and the setting is one of the conditions
- * that puts it there. Any other shape means the full branch ran and the setting
- * is already on, which is why the third case does not mention it at all —
- * naming it there is what sent the last session to change a setting that had
- * been true the whole time.
- */
+/** Why an action has no tool. Three different causes, three different answers. The
+ *  setting appears in exactly one of them, and it is checkable rather than guessed
+ *  at: VS Code registers the browser tools in an if/else and the
+ *  sharing-unavailable branch publishes `open_browser_page` ALONE, so
+ *  open-without-list IS that branch. Any other shape means the full branch ran and
+ *  the setting is already on, which is why the third case never mentions it. */
 export function missingToolError(action: string, published: readonly string[], openCommand?: string): string {
   const wanted = ACTION_TOOLS[action as DrivenAction] ?? action;
   if (published.length === 0) {
@@ -182,14 +154,10 @@ export function missingToolError(action: string, published: readonly string[], o
   );
 }
 
-/** VS Code ran the tool and reported the action FAILED. Its own message is the
- *  whole answer — a click on a selector that is not on the page says exactly
- *  that, and the model can act on it.
- *
- *  `screen` is where the page WAS when it ran (browserPage.ts). Spent only
- *  here, on the failure, because it is the one moment the difference between a
- *  hidden tab and a wrong selector changes what to try next — and two UAT
- *  rounds were spent not knowing which of the two it was. */
+/** VS Code ran the tool and reported the action FAILED. Its own message is the whole
+ *  answer. `screen` is where the page WAS when it ran (browserPage.ts), spent only
+ *  here because it is the one moment the difference between a hidden tab and a wrong
+ *  selector changes what to try next. */
 export function driveFailedError(action: string, tool: string, message: string, screen?: string): string {
   const where = screen ? `\n${screen}` : '';
   return `The VS Code browser ran "${tool}" for "${action}" and it failed: ${message}${where}`;
@@ -252,11 +220,9 @@ export function noPageError(action: string, unshared: number, published: readonl
   return `No page is open in the VS Code integrated browser, so "${action}" has nothing to work on. Open one first.`;
 }
 
-/** `type_in_page` guards `!text && !key`, so an empty string ALONE is refused by
- *  VS Code — clearing a field is not expressible through the published contract.
- *  Refused here, with the real reason, rather than sent to come back as a
- *  message about `key`. An empty text WITH a key is a keypress and never gets
- *  here. */
+/** `type_in_page` guards `!text && !key`, so an empty string ALONE is refused by VS
+ *  Code — clearing a field is not expressible through the published contract.
+ *  Refused here, with the real reason. An empty text WITH a key is a keypress. */
 export const EMPTY_TEXT_ERROR =
   'The VS Code browser cannot type an empty string: its "type_in_page" tool refuses text that is empty, ' +
   'so a field cannot be cleared this way. Select the existing text and type over it instead.';
@@ -268,12 +234,10 @@ export const DIALOG_ACCEPT_ERROR =
   '"dialog" needs accept: true to accept the dialog, false to dismiss it. VS Code\'s "handle_dialog" refuses a ' +
   'call that says neither.';
 
-/** `raw` is code execution, gated the way the forced click is and for the same
- *  reason: `run_playwright_code` carries `confirmationMessages`, this extension
- *  invokes with `toolInvocationToken: undefined` (the no-chat-context branch,
- *  which raises a modal itself unless global auto-approve is on — browserForce
- *  .ts has the bundle reading), and an unanswered modal holds the turn until the
- *  engine's 30s timeout. So the code is not sent at all. */
+/** `raw` is code execution, gated the way the forced click is: `run_playwright_code`
+ *  carries `confirmationMessages`, this extension invokes with
+ *  `toolInvocationToken: undefined`, and an unanswered modal holds the turn until
+ *  the engine's 30s timeout. So the code is not sent at all. */
 export function rawBlockedError(): string {
   return (
     `"raw" runs Playwright code through "${ACTION_TOOLS.raw}", which VS Code confirms with a modal dialog ` +
@@ -282,10 +246,9 @@ export function rawBlockedError(): string {
   );
 }
 
-/** The residual that setting cannot suppress: the FIRST time global
- *  auto-approve is used VS Code raises its own opt-in warning, and declining it
- *  arrives here as a cancellation. Reported as the refusal it is, never as a
- *  snippet that ran. */
+/** The residual that setting cannot suppress: the FIRST time global auto-approve is
+ *  used VS Code raises its own opt-in warning, and declining it arrives here as a
+ *  cancellation. Reported as the refusal it is, never as a snippet that ran. */
 export function rawDismissedError(): string {
   return (
     `VS Code raised its own confirmation for "${ACTION_TOOLS.raw}" and it was dismissed, so the code did not run. ` +
@@ -293,11 +256,9 @@ export function rawDismissedError(): string {
   );
 }
 
-/** The throw VS Code produces when `open_browser_page` is declined — a
- *  cancellation that is structurally different from a timed-out navigation or
- *  a disposed view. Every throw that is NOT a cancellation is a capability
- *  failure where the open COMMAND must stand as the fallback; this one is a
- *  refusal by the user and is reported as the answer. */
+/** The throw VS Code produces when `open_browser_page` is declined — structurally
+ *  different from a timed-out navigation or a disposed view. Every throw that is NOT
+ *  a cancellation is a capability failure where the open COMMAND is the fallback. */
 export function isCancellation(error: unknown): boolean {
   return error instanceof Error && (error.name === 'Canceled' || /cancel/i.test(error.message));
 }

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "metadata": {
+    "name": "openai-compatible/opencode-go-tool-loop",
+    "recordedAt": "2026-09-02T22:27:43.484Z",
+    "family": "openai-compatible",
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "scenario": "tool-loop",
+    "recordedWith": "ai-sdk"
+  },
+  "interactions": [
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "url": "https://opencode.ai/zen/go/v1/chat/completions",
+        "headers": {
+          "accept": "*/*",
+          "authorization": "[REDACTED]",
+          "content-type": "application/json",
+          "user-agent": "origami/local ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+        },
+        "body": "{\"model\":\"deepseek-v4-flash\",\"max_tokens\":256,\"temperature\":0,\"frequency_penalty\":0,\"messages\":[{\"role\":\"system\",\"content\":\"Answer using tools when appropriate.\\nUse the get_weather tool exactly once to look up Paris, then reply with exactly: Paris is sunny.\"},{\"role\":\"user\",\"content\":\"What is the weather in Paris?\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}],\"tool_choice\":\"auto\",\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/event-stream"
+        },
+        "body": "data: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\"The\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":1,\"total_tokens\":418,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" user asks\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":3,\"total_tokens\":420,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" about\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":4,\"total_tokens\":421,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" the weather in Paris. I\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":10,\"total_tokens\":427,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" need to use the get\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":15,\"total_tokens\":432,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\"_weather tool exactly\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":19,\"total_tokens\":436,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" once to\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":21,\"total_tokens\":438,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" look up Paris, then reply\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":27,\"total_tokens\":444,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" with exactly \\\"\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":30,\"total_tokens\":447,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\"Paris is sunny.\\\"\"}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":35,\"total_tokens\":452,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":null,\"content\":null,\"reasoning_content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_31aead9d1d5348058e22f217\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":53,\"total_tokens\":470,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":null,\"content\":null,\"reasoning_content\":null,\"tool_calls\":[{\"index\":0,\"id\":null,\"type\":\"function\",\"function\":{\"name\":null,\"arguments\":\"{\"}}]}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":65,\"total_tokens\":482,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":null,\"content\":null,\"reasoning_content\":null,\"tool_calls\":[{\"index\":0,\"id\":null,\"type\":\"function\",\"function\":{\"name\":null,\"arguments\":\"\\\"city\\\": \\\"Paris\\\"}\"}}]}}],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":77,\"total_tokens\":494,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"logprobs\":null,\"delta\":{\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-8150bdb8d93689795f5ecbce2db6924d\",\"object\":\"chat.completion.chunk\",\"created\":1788384505,\"model\":\"deepseek-v4-flash\",\"choices\":[],\"usage\":{\"prompt_tokens\":417,\"completion_tokens\":80,\"total_tokens\":497,\"prompt_tokens_details\":{}}}\n\ndata: [DONE]\n\ndata: {\"choices\":[],\"cost\":\"0\"}\n\n"
+      }
+    },
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "url": "https://opencode.ai/zen/go/v1/chat/completions",
+        "headers": {
+          "accept": "*/*",
+          "authorization": "[REDACTED]",
+          "content-type": "application/json",
+          "user-agent": "origami/local ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+        },
+        "body": "{\"model\":\"deepseek-v4-flash\",\"max_tokens\":256,\"temperature\":0,\"frequency_penalty\":0,\"messages\":[{\"role\":\"system\",\"content\":\"Answer using tools when appropriate.\\nUse the get_weather tool exactly once to look up Paris, then reply with exactly: Paris is sunny.\"},{\"role\":\"user\",\"content\":\"What is the weather in Paris?\"},{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_31aead9d1d5348058e22f217\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}],\"reasoning_content\":\"The user asks about the weather in Paris. I need to use the get_weather tool exactly once to look up Paris, then reply with exactly \\\"Paris is sunny.\\\"\"},{\"role\":\"tool\",\"tool_call_id\":\"call_31aead9d1d5348058e22f217\",\"content\":\"{\\\"temperature\\\":22,\\\"condition\\\":\\\"sunny\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city.\",\"parameters\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}],\"tool_choice\":\"auto\",\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/event-stream"
+        },
+        "body": "data: {\"id\":\"router-f0df531abd051644e9e1ca8cdb6b7a79\",\"object\":\"chat.completion.chunk\",\"created\":1788384506,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-f0df531abd051644e9e1ca8cdb6b7a79\",\"object\":\"chat.completion.chunk\",\"created\":1788384506,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":null,\"content\":\"Paris is sunny.\",\"reasoning_content\":null,\"tool_calls\":null}}],\"usage\":{\"prompt_tokens\":518,\"completion_tokens\":6,\"total_tokens\":524,\"prompt_tokens_details\":{\"cached_tokens\":256}}}\n\ndata: {\"id\":\"router-f0df531abd051644e9e1ca8cdb6b7a79\",\"object\":\"chat.completion.chunk\",\"created\":1788384506,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"logprobs\":null,\"delta\":{\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-f0df531abd051644e9e1ca8cdb6b7a79\",\"object\":\"chat.completion.chunk\",\"created\":1788384506,\"model\":\"deepseek-v4-flash\",\"choices\":[],\"usage\":{\"prompt_tokens\":518,\"completion_tokens\":6,\"total_tokens\":524,\"prompt_tokens_details\":{\"cached_tokens\":256}}}\n\ndata: [DONE]\n\ndata: {\"choices\":[],\"cost\":\"0\"}\n\n"
+      }
+    }
+  ]
+}

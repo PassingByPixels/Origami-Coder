@@ -1,45 +1,30 @@
 <script lang="ts">
-  // ONE chip's supervision controls (W3 wave 3, report 2.4 / F7).
+  // One chip's supervision controls: stop one agent, and correct one agent —
+  // narrower than the room-wide `collab_stop`, which kills the whole chain.
   //
-  // Until wave 1 the only interrupt was `collab_stop` — the whole room's chain
-  // killed and the hop budget spent — so steering one agent meant stopping
-  // everyone. These are the two narrow methods that replaced that: stop ONE
-  // agent, and correct ONE agent.
+  // Its own component rather than more props on CollabRosterChip.svelte.
   //
-  // ITS OWN COMPONENT, not four more props' worth of markup in
-  // CollabRosterChip.svelte, which had 20 lines under its cap when the error
-  // ring and these arrived together. Same extraction the chip itself made out
-  // of CollabRoster at X2.
+  // Stop is offered only where it does something: `collab_stop_agent` on an
+  // idle agent interrupts and dequeues nothing, so the button is absent
+  // rather than disabled — a disabled control implies "you may do this later".
   //
-  // STOP IS OFFERED ONLY WHERE IT DOES SOMETHING. `collab_stop_agent` on an
-  // idle agent answers `{interrupted:false, dequeued:false}` — there is nothing
-  // to end — so the button is absent rather than disabled: a disabled control
-  // says "you may do this, later", which is not what idle means.
+  // Redirect is always offered while the room is live: it is a message, not
+  // a control, so it is as legitimate for an idle agent as a running one.
   //
-  // REDIRECT IS OFFERED ALWAYS (while the room is live). It is a MESSAGE, not a
-  // control — a human post addressed to one agent, which the engine also moves
-  // to the front of that agent's queue — so it is as legitimate for an idle
-  // agent as for a running one.
-  //
-  // THE OUTCOME IS THE ENGINE'S WORDS, not "Stopped.". The wording rule is
-  // collabSupervision.ts, pure and tested with no DOM: a stop that interrupted
-  // nothing and dequeued nothing has to read as already-idle.
+  // The outcome shows the engine's own words, not "Stopped.": the wording
+  // rule lives in collabSupervision.ts, pure and tested with no DOM.
 
   interface Props {
-    /** The SHORT name the chip shows — every label here names the agent, so a
-     *  roster of four does not offer four identical "Stop" buttons. */
+    /** The short name the chip shows, so a roster of four is not four identical buttons. */
     name: string;
     /** Whether a turn exists to end (collabSupervision: canStopAgent). */
     canStop: boolean;
     onStop: () => void;
     onRedirect: (text: string) => void;
-    /** What the last stop of THIS agent did, already worded. '' for nothing to
-     *  say — never a placeholder, which would leave a dead line under a chip. */
+    /** What the last stop of this agent did, already worded; '' means nothing to say. */
     outcome: string;
-    /** Whether this chip's correction box is the open one. The ROSTER owns it,
-     *  because "one box at a time" is a fact about the roster: two open boxes
-     *  would be two drafts, and the second Send would be aimed at whichever the
-     *  user last looked at. */
+    /** Whether this chip's correction box is the open one. The roster owns
+     *  it: "one box at a time" means two open boxes would be two drafts. */
     open: boolean;
     onToggle: (open: boolean) => void;
   }
@@ -49,9 +34,8 @@
 
   function send() {
     const text = draft.trim();
-    // The engine refuses an empty correction outright ("an empty correction
-    // corrects nothing and would wake the target to read a blank line"), so
-    // the box does not offer to send one either.
+    // The engine refuses an empty correction outright, so the box does not
+    // offer to send one either.
     if (!text) return;
     draft = '';
     onToggle(false);

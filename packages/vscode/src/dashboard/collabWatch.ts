@@ -1,25 +1,11 @@
-// The HOST-side collab poll — one slow timer for the whole workspace, so a
-// collab keeps reporting while its editor tab is shut (report F1 / plan 2.1).
+// The host-side collab poll: one slow timer for the whole workspace, so a collab keeps reporting
+// while its editor tab is shut — a mounted CollabPane was previously the only producer of a ring
+// update.
 //
-// WHY THE HOST HAS TO OWN ONE. The sidebar's per-collab ring has exactly one
-// input: a `collabStateData` payload. Until this file existed, only a mounted
-// CollabPane ever produced one, so closing a room's tab took its ring with it
-// and a collab working in the background was invisible. CollabsList.svelte says
-// so in its own comment ("a ring only lives while some pane for that collab is
-// polling"). This is that honest limit removed, not worked around.
-//
-// IT DOES NOT REPLACE THE PANE'S POLL. An open tab still runs its own faster
-// loop (collabPollLoop.ts, 1.2 s busy / 4 s idle) because that is the surface a
-// lag is felt on. This one is deliberately slower and unconditional: it is the
-// floor, not the ceiling.
-//
-// MODULE STATE, ON PURPOSE. Collabs are workspace-scoped, one engine answers
-// for all of them, and the payloads are fanned out to every view — so a second
-// watch would be a second set of identical round trips. The panel calls
-// stopCollabWatch() when it goes away, and nothing else may leave a timer
-// running behind a disposed webview.
-//
-// No `vscode` import, so the whole lifecycle is exercised with fake timers.
+// Does not replace the pane's own faster poll (collabPollLoop.ts) — this is the floor,
+// unconditional and slower, not the ceiling. Module state on purpose: collabs are workspace-scoped
+// and one engine answers for all of them, so a second watch would duplicate every round trip; the
+// panel must call stopCollabWatch() on dispose.
 import { collabState, type CollabSource } from './collabData';
 
 /** The slice of CollabManagerHost this needs — structurally satisfied by it,

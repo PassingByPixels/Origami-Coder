@@ -1,50 +1,27 @@
 <script lang="ts">
-  // The PERMISSIONS + MEMORY half of the agent-def editor, extracted from
-  // CollabAgentForm.svelte at birth (264 of its 280-line cap). The form keeps
-  // identity (name, description, model, glyph, persona); this owns what the bot
-  // may DO and what it carries between sessions.
+  // The PERMISSIONS + MEMORY half of the agent-def editor: what the bot may DO and
+  // what it carries between sessions. The form itself keeps identity (name,
+  // description, model, glyph, persona).
   //
-  // W6 OWNER RULINGS REBUILT THIS FILE. What it used to show — an Engine
-  // default / Strict / Standard / Open tier row, a Worker/Observer block row
-  // under it, a Skills allowlist and a model-preference chain — is gone. In its
-  // place: A CHECKBOX PER TOOL, and nothing else.
+  // ONE CHECKBOX PER GATE, NOT PER TOOL ID. `edit`, `write` and `apply_patch` share
+  // a single permission key, so three boxes would offer two decisions that do not
+  // exist. botTools.ts collapses them and this lists what it returns, naming every
+  // tool a box governs. The ticks ARE the permission block the engine reads
+  // (Permission.disabled removes a denied tool from the map the model is handed),
+  // so there is one control and it says exactly what happens.
   //
-  //   "Nobody cares what skills a bot has, only what tools."
+  // THE LIST IS LIVE WHEN THERE IS AN ENGINE TO ASK. `toolCatalog` holds the ids
+  // from the Tools pane's own `list_tools` wire — so a user-file or plugin tool is
+  // tickable the moment the engine reports it — and the shipped mirror is the
+  // fallback when no chat is open to read one through.
   //
-  // WHY THAT IS ALSO THE HONEST SHAPE. The tier and the block were two controls
-  // for one question, stacked in precedence order, and the answer to "what may
-  // this bot do" was the composition of them — readable only by knowing which
-  // beat which. The ticks ARE the block, and the block is what the engine reads
-  // (Permission.disabled removes a denied tool from the map the model is
-  // handed), so there is now one control and it says exactly what happens.
+  // THEMED (architecture.test.ts's THEMED_FILES): which preset is picked and which
+  // tools are ticked are carried by border and fill alone, so a colour literal here
+  // is a permission choice that goes invisible in whichever theme it clashes with.
   //
-  // W9 TOOK THE LAST TWO BUTTONS. Worker and Observer survived W6 as PRE-TICK
-  // shortcuts, and they were the last thing on this pane that answered "what may
-  // this bot do" with a name instead of with the list. A new bot is now born
-  // with EVERY gate ticked (`allToolKeys`) and the user unticks — one direction,
-  // one control, and the starting state is the one the checklist can actually
-  // draw. The only button left is the hand-tuned block's escape hatch below,
-  // which is not a preset: it does exactly what a new bot does.
-  //
-  // ONE CHECKBOX PER GATE, NOT PER TOOL ID. `edit`, `write` and `apply_patch`
-  // share a single permission key, so three boxes would offer two decisions
-  // that do not exist. botTools.ts collapses them and this lists what it
-  // returns, naming every tool a box governs.
-  //
-  // THE LIST IS LIVE WHEN THERE IS AN ENGINE TO ASK. `toolCatalog` is the ids
-  // from the Tools pane's own `list_tools` wire — so a user-file or plugin tool
-  // is tickable the moment the engine reports it — and the shipped mirror is
-  // the fallback when no chat is open to read one through.
-  //
-  // THEMED (architecture.test.ts's THEMED_FILES): which preset is picked and
-  // which tools are ticked are carried by border and fill alone, so a literal
-  // here is a permission choice that goes invisible in whichever of the five
-  // themes it clashes with.
-  //
-  // W7-L2: the GRID scrolls on its own (`.bc-picks-scroll`), the presets and
-  // the summary line above it never do. The catalog is engine-reported and
-  // only grows, so a flat inline block would eventually push the persona box
-  // off the pane — Passing flagged it before that day arrived.
+  // The GRID scrolls on its own (`.bc-picks-scroll`), the presets and the summary
+  // line above it never do: the engine-reported catalog only grows, and a flat
+  // inline block would eventually push the persona box off the pane.
   import { toolsSummary, type BotContract } from './botContractView';
   import { allToolKeys, gatesFor, TOOL_IDS, type ToolGate } from '../../../src/dashboard/botTools';
   import type { CollabPreset } from '../../../src/dashboard/agentManager/collabPresets';
@@ -55,18 +32,15 @@
      *  block at all; picking a preset is what gives it one. */
     tools: string[] | undefined;
     /** Which preset the tick set currently IS — a READING of the ticks, not a
-     *  control. It is here only so the summary line can name a set that happens
-     *  to be one; nothing on this pane sets it. */
+     *  control. It is here only for the summary line; nothing here sets it. */
     preset: CollabPreset | undefined;
-    /** True when the def carries a permission block no tick set can describe —
-     *  one that scopes a tool to a pattern. Its ticks are `undefined`, and
-     *  saying "no block" about it would be a lie in the dangerous direction. */
+    /** True when the def carries a permission block no tick set can describe — one
+     *  that scopes a tool to a pattern. Saying "no block" would lie dangerously. */
     handTuned?: boolean;
     /** Live tool ids from the engine (`list_tools`). Empty falls back to the
      *  shipped mirror, which still writes exactly the same block. */
     toolCatalog?: string[];
-    /** Facts already in this bot's store, so the memory row can offer to show
-     *  or wipe something that exists rather than an empty affordance. */
+    /** Facts already in this bot's store, so the memory row can offer a real action. */
     memoryFacts?: number;
     onViewMemory?: () => void;
     onClearMemory?: () => void;
@@ -82,9 +56,8 @@
     onClearMemory,
   }: Props = $props();
 
-  /** The rows. Live ids when the engine answered, the shipped mirror otherwise,
-   *  plus any key this def already ticks that neither list knows — a line the
-   *  user wrote by hand is theirs, and a row is how they can untick it again. */
+  /** The rows. Live ids when the engine answered, the shipped mirror otherwise, plus
+   *  any key this def already ticks that neither list knows — so it can be unticked. */
   const gates = $derived.by<ToolGate[]>(() => {
     const known = gatesFor(toolCatalog.length > 0 ? toolCatalog : TOOL_IDS);
     const extra = (tools ?? []).filter((key) => !known.some((g) => g.key === key));
@@ -93,9 +66,8 @@
   const live = $derived(toolCatalog.length > 0);
   const summary = $derived(toolsSummary({ tools }, preset ?? ''));
 
-  /** The hand-tuned block's ONE way out: start from what a new bot starts from.
-   *  Deliberately the same call `blank()` makes, so "replace it" and "make a new
-   *  one" cannot mean two different starting sets. */
+  /** The hand-tuned block's ONE way out: deliberately the same call `blank()` makes,
+   *  so "replace it" and "make a new one" cannot mean two different starting sets. */
   function useTickList() {
     tools = allToolKeys(toolCatalog);
   }
@@ -104,22 +76,20 @@
     tools = have.includes(key) ? have.filter((k) => k !== key) : [...have, key];
   }
 
-  /** Assign through a fresh object: the parent binds `draft.bot`, and mutating
-   *  in place would not re-run its own derivations. */
+  /** Assign through a fresh object: the parent binds `draft.bot`, and mutating in
+   *  place would not re-run its own derivations. */
   function set(patch: Partial<BotContract>) {
     bot = { ...bot, ...patch };
   }
-  /** Remove a key outright — "the file says nothing", which is NOT the same as
-   *  any value the key could hold. */
+  /** Remove a key outright — "the file says nothing", not any value the key could hold. */
   function clear(key: keyof BotContract) {
     const next = { ...bot };
     delete next[key];
     bot = next;
   }
 
-  // `memory: true` is the engine's own default, so ON is stored as SILENCE
-  // rather than as the word `true` — the serializer would drop it anyway, and
-  // storing it would make an untouched def look edited.
+  // `memory: true` is the engine's own default, so ON is stored as SILENCE rather
+  // than the word `true`: storing it would make an untouched def look edited.
   const memoryOn = $derived(bot.memory !== false);
   function setMemory(on: boolean) {
     if (on) clear('memory');
@@ -130,9 +100,8 @@
 <div class="bc-field">
   <span class="bc-label">Permissions</span>
   <div class="bc-row">
-    <!-- The ONLY button left, and only where the checklist cannot be drawn at
-         all. It is not a preset: it writes the same all-ticked set a brand-new
-         bot is born with, which the user then unticks. -->
+    <!-- The ONLY button left, and only where the checklist cannot be drawn at all.
+         It is not a preset: it writes the same all-ticked set a new bot is born with. -->
     {#if handTuned && !tools}
       <button class="bc-btn" onclick={useTickList}>Replace with a tick list</button>
     {/if}
@@ -147,17 +116,15 @@
       : 'This def carries no permission block, so the engine offers it every tool. Tick the tools you want to write one.'}
 </div>
 
-<!-- NO CHECKLIST over a hand-tuned block. Every box would draw unticked, which
-     would say the bot has no tools while the file grants it several — and one
-     click would silently replace a block the hint has just promised to keep.
-     The button above is the explicit way out, and it is the only one offered. -->
+<!-- NO CHECKLIST over a hand-tuned block. Every box would draw unticked, saying the
+     bot has no tools while the file grants it several, and one click would silently
+     replace a block the hint has just promised to keep. -->
 {#if !handTuned || tools}
 <div class="bc-field">
   <span class="bc-label bc-sub">Tools</span>
   <span class="bc-note">{live ? 'read from the running engine' : 'no chat open — this build’s own list'}</span>
 </div>
-<!-- The tick GRID scrolls on its own; the preset buttons and the summary line
-     above it never do — see the ".bc-picks-scroll" rule below for why. -->
+<!-- The tick GRID scrolls on its own — see the ".bc-picks-scroll" rule below. -->
 <div class="bc-picks-scroll">
   <div class="bc-picks">
     {#each gates as g (g.key)}

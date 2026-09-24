@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { SessionV1 } from "@origami/core/v1/session"
+import type { PermissionV1 } from "@origami/core/v1/permission"
 import { FSUtil } from "@origami/core/fs-util"
 import { Effect, Layer } from "effect"
 import type { Agent } from "@/agent/agent"
@@ -235,10 +236,21 @@ describe("SessionReminders task_list polling", () => {
       expect(reminder).toBeDefined()
       expect(reminder!).toContain("called task_list 3 times in a row")
       // Why polling is pointless, in mechanism terms rather than as an order.
-      expect(reminder!).toContain("<task_result>")
+      // origami_change (t-41dz9f): this used to assert the literal `<task_result>`
+      // tag, which named the SUB-AGENT shape only. Background shell jobs now
+      // push their endings too, in a `<shell>` block, so the sentence names the
+      // mechanism instead of one of its two spellings - and the claim it makes
+      // is finally true of both.
+      expect(reminder!).toContain("background task or command settles")
+      expect(reminder!).toContain("writes its output into this conversation by itself")
+      expect(reminder!).toContain("mid-turn it reaches you at your next tool call")
       // The ways out, so ending the turn is never the model's only option.
       expect(reminder!).toContain("does not touch the running task's files")
-      expect(reminder!).toContain("end your turn")
+      // origami_change (t-46a74d): the menu option is the same - hand back to
+      // the user - but it no longer spells it "end your turn" inside a reminder
+      // injected exactly when the model is already idling.
+      expect(reminder!).toContain("hand back to the user now")
+      expect(reminder!).not.toContain("end your turn")
       expect(reminder!).toContain("task_stop")
     }))
 
@@ -428,5 +440,277 @@ describe("SessionReminders todo list", () => {
       })
       expect(todoReminders(applied.reminders)).toHaveLength(1)
       expect(messages[0]!.parts).toHaveLength(1)
+    }))
+})
+
+// THE TWO NUDGES. Both are about a list that is NOT being kept: the reconcile
+// nudge for a stored list the model walked past, the creation nudge for a
+// session that never wrote one. Neither restates the list - the reminder above
+// does that - so neither can be recognised by TODO_REMINDER_HEAD.
+describe("SessionReminders todo nudges", () => {
+  const open: Todo.Info[] = [
+    { content: "ship the export button", status: "in_progress", priority: "high", depth: 0 },
+    { content: "wire the click handler", status: "pending", priority: "high", depth: 1 },
+  ]
+  const closed: Todo.Info[] = [
+    { content: "ship the export button", status: "completed", priority: "high", depth: 0 },
+    { content: "wire the click handler", status: "cancelled", priority: "high", depth: 1 },
+  ]
+
+  const todoCall = (todos: readonly Todo.Info[]) => toolCall("todowrite", { todos: [...todos] }, "2 todos")
+  const work = () => toolCall("read", { filePath: "/tmp/x" })
+
+  const reconciles = (texts: readonly string[]) =>
+    texts.filter((text) => text.includes("you did not update it in your previous turn"))
+  const creations = (texts: readonly string[]) => texts.filter((text) => text.includes("No todo list exists for this session"))
+
+  /** `messages` verbatim, so a test can end the window on the user's own turn
+   *  (step 1) or on an assistant message (step 2+). */
+  const applyTo = (messages: SessionV1.WithParts[], todos: readonly Todo.Info[]) =>
+    Effect.gen(function* () {
+      const applied = yield* SessionReminders.apply({
+        messages,
+        agent: { name: "build" } as Agent.Info,
+        session: {} as Session.Info,
+        todos,
+      })
+      // NEITHER nudge may be written into a stored message: they are recomputed
+      // every step and the user's turn is the head of the request.
+      for (const message of messages) {
+        for (const part of message.parts) {
+          const text = (part as { text?: string }).text ?? ""
+          expect(text).not.toContain("you did not update it in your previous turn")
+          expect(text).not.toContain("No todo list exists for this session")
+        }
+      }
+      return applied.reminders
+    })
+
+  /** Step 1 of a turn, with `before` as the PREVIOUS turn's assistant message.
+   *  The window ends on the user's message because the step loop calls apply()
+   *  before it creates that step's assistant message. With no `before` there is
+   *  no previous user message either: the first turn of a session. */
+  const firstStep = (todos: readonly Todo.Info[], before?: unknown[]) =>
+    applyTo(before ? [userMessage(), assistantMessage(before), userMessage()] : [userMessage()], todos)
+
+  it("asks for a reconcile when the previous turn left the list alone", () =>
+    Effect.gen(function* () {
+      const [nudge] = reconciles(yield* firstStep(open, [work(), work()]))
+      expect(nudge).toBeDefined()
+      expect(nudge!).toContain("your todo list still has open items")
+      // The three things to check, and the order: reconcile, then resume.
+      expect(nudge!).toContain("done, stale, or need new sub-steps")
+      expect(nudge!).toContain("update the list with todowrite")
+      expect(nudge!).toContain("then resume with the user's request")
+    }))
+
+  // THE CLAIM AND THE CHECK MUST NAME THE SAME SPAN. Reading the CURRENT turn
+  // instead made this fire on every new turn with anything open: on step 1 the
+  // current turn is empty by definition, so "nothing touched the list" was true
+  // of every first step there has ever been - including one that follows a turn
+  // which did update the list, where the words are simply false.
+  it("stays quiet when the previous turn did write the list", () =>
+    Effect.gen(function* () {
+      expect(reconciles(yield* firstStep(open, [todoCall(open), work()]))).toHaveLength(0)
+    }))
+
+  it("still asks when the previous turn's todowrite never finished", () =>
+    Effect.gen(function* () {
+      // A call that did not return wrote nothing, so the list is as stale as if
+      // it had never been called.
+      const before = [work(), runningToolCall("todowrite", { todos: [...open] })]
+      expect(reconciles(yield* firstStep(open, before))).toHaveLength(1)
+    }))
+
+  it("stays quiet on the first turn of a session", () =>
+    Effect.gen(function* () {
+      // No previous turn, so there is no write the model can have skipped. A
+      // list can be stored before the first turn (a resumed or seeded session).
+      expect(reconciles(yield* firstStep(open))).toHaveLength(0)
+    }))
+
+  it("stays quiet when the model wrote the list earlier in this same turn", () =>
+    Effect.gen(function* () {
+      // Step 2+: the window holds this turn's assistant message, so the model is
+      // mid-answer and was already asked at the top of the turn.
+      const messages = [userMessage(), assistantMessage([todoCall(open), work()])]
+      expect(reconciles(yield* applyTo(messages, open))).toHaveLength(0)
+    }))
+
+  it("stays quiet on the second step of the same turn", () =>
+    Effect.gen(function* () {
+      // Step 2: the step-1 assistant message is back in the window. The model is
+      // mid-answer - it was asked once at the top of the turn and that is enough.
+      const messages = [userMessage(), assistantMessage([work()])]
+      expect(reconciles(yield* applyTo(messages, open))).toHaveLength(0)
+    }))
+
+  it("stays quiet when every item is completed or cancelled", () =>
+    Effect.gen(function* () {
+      expect(reconciles(yield* firstStep(closed, [work()]))).toHaveLength(0)
+    }))
+
+  // `failed` is terminal in packages/core/src/session/todo-reconcile.ts, where a
+  // failed child does NOT hold its parent open. Counting it as open work here
+  // would nudge forever over an item nothing intends to work again.
+  it("treats a failed item as closed, not as open work", () =>
+    Effect.gen(function* () {
+      const failed: Todo.Info[] = [
+        { content: "ship the export button", status: "completed", priority: "high", depth: 0 },
+        { content: "wire the click handler", status: "failed", priority: "high", depth: 1 },
+      ]
+      expect(reconciles(yield* firstStep(failed, [work()]))).toHaveLength(0)
+    }))
+
+  it("stays quiet when the session has no list at all", () =>
+    Effect.gen(function* () {
+      expect(reconciles(yield* firstStep([], [work()]))).toHaveLength(0)
+    }))
+
+  it("asks for a list once the turn is four tool calls deep with none stored", () =>
+    Effect.gen(function* () {
+      const deep = (count: number) =>
+        applyTo([userMessage(), assistantMessage(Array.from({ length: count }, () => work()))], [])
+
+      expect(creations(yield* deep(3))).toHaveLength(0)
+      const [nudge] = creations(yield* deep(4))
+      expect(nudge).toBeDefined()
+      expect(nudge!).toContain("several tool calls into this task")
+      // The shape it must write, and the way out if the work really is small.
+      expect(nudge!).toContain("waves at the top level, steps beneath")
+      expect(nudge!).toContain("genuinely single-step")
+      // ...and it keeps asking while the list stays empty, unlike the streak
+      // reminders, which go quiet between multiples.
+      expect(creations(yield* deep(5))).toHaveLength(1)
+    }))
+
+  it("stops asking the moment a todowrite call lands in the turn", () =>
+    Effect.gen(function* () {
+      const parts = [work(), work(), work(), work(), todoCall(open)]
+      expect(creations(yield* applyTo([userMessage(), assistantMessage(parts)], []))).toHaveLength(0)
+      // Even while that call is still running - the model is answering.
+      const running = [work(), work(), work(), work(), runningToolCall("todowrite", { todos: [] })]
+      expect(creations(yield* applyTo([userMessage(), assistantMessage(running)], []))).toHaveLength(0)
+    }))
+
+  it("counts only the current turn, so calls before the user spoke do not add up", () =>
+    Effect.gen(function* () {
+      const messages = [
+        userMessage(),
+        assistantMessage([work(), work(), work(), work()]),
+        userMessage(),
+        assistantMessage([work()]),
+      ]
+      expect(creations(yield* applyTo(messages, []))).toHaveLength(0)
+    }))
+
+  // A finished background sub-agent injects a whole turn through `ops.prompt`,
+  // so it lands as a real user message whose one part is `synthetic: true`.
+  // Nothing here filters on `synthetic` - the coarse `role === "user"` rule is
+  // what `apply` already uses - and that is deliberate: a result arriving is a
+  // new instruction, and the best moment to reconcile a list against it.
+  it("treats an injected task-result turn as the user speaking", () =>
+    Effect.gen(function* () {
+      const injected = {
+        info: { id: "msg_u2", sessionID, role: "user", time: { created: 3_000 } },
+        parts: [{ ...partIds("msg_u2"), type: "text", synthetic: true, text: "<task_result>done</task_result>" }],
+      } as unknown as SessionV1.WithParts
+
+      // The turn before it went four calls deep with no list; the injected turn
+      // starts a fresh one, so the count restarts...
+      const messages = [userMessage(), assistantMessage([work(), work(), work(), work()]), injected]
+      expect(creations(yield* applyTo(messages, []))).toHaveLength(0)
+      // ...and an open list untouched since that turn began earns the reconcile.
+      expect(reconciles(yield* applyTo(messages, open))).toHaveLength(1)
+    }))
+
+  it("does not count a tool call that has not finished", () =>
+    Effect.gen(function* () {
+      const parts = [work(), work(), work(), runningToolCall("read", { filePath: "/tmp/x" })]
+      expect(creations(yield* applyTo([userMessage(), assistantMessage(parts)], []))).toHaveLength(0)
+    }))
+
+  it("never fires both, and answers the same bytes twice for the same step", () =>
+    Effect.gen(function* () {
+      const messages = () => [userMessage(), assistantMessage([work(), work(), work(), work()])]
+      const withList = yield* applyTo(messages(), open)
+      expect(creations(withList)).toHaveLength(0)
+      const withoutList = yield* applyTo(messages(), [])
+      expect(reconciles(withoutList)).toHaveLength(0)
+      // The trailing lane is rebuilt every step; identical state must render
+      // identical text or the block moves for free.
+      expect(yield* applyTo(messages(), [])).toEqual(yield* applyTo(messages(), []))
+    }))
+})
+
+// t-di2u7z. THE TOOL THE TEXT NAMES HAS TO EXIST FOR THE READER. A sub-agent is
+// denied `todowrite` by agent/subagent-permissions.ts unless its own definition
+// names it, and the native `general` agent denies it outright - so every text
+// above was being sent to children that cannot act on it. The window fixtures
+// are the SAME ones the suites above use; only the ruleset differs.
+describe("SessionReminders when todowrite is denied", () => {
+  const open: Todo.Info[] = [
+    { content: "ship the export button", status: "in_progress", priority: "high", depth: 0 },
+    { content: "wire the click handler", status: "pending", priority: "high", depth: 1 },
+  ]
+  const work = () => toolCall("read", { filePath: "/tmp/x" })
+  const deny = (permission: string): PermissionV1.Rule[] => [{ permission, pattern: "*", action: "deny" }]
+
+  /** One step's reminders for an agent/session pair, over `messages` verbatim. */
+  const applyAs = (
+    messages: SessionV1.WithParts[],
+    todos: readonly Todo.Info[],
+    agent: Partial<Agent.Info>,
+    session: Partial<Session.Info> = {},
+  ) =>
+    Effect.gen(function* () {
+      const applied = yield* SessionReminders.apply({
+        messages,
+        agent: { name: "general", ...agent } as Agent.Info,
+        session: session as Session.Info,
+        todos,
+      })
+      return applied.reminders
+    })
+
+  const mentionsTodo = (texts: readonly string[]) => texts.filter((text) => text.includes("todowrite"))
+
+  it("says nothing about todowrite to a child whose AGENT ruleset denies it", () =>
+    Effect.gen(function* () {
+      // The exact window that earns the creation nudge: four finished calls, no list.
+      const messages = [userMessage(), assistantMessage([work(), work(), work(), work()])]
+      expect(mentionsTodo(yield* applyAs(messages, [], { permission: deny("todowrite") }))).toEqual([])
+      // ...and the same window still earns it when the tool is there.
+      expect(mentionsTodo(yield* applyAs(messages, [], { permission: [] }))).toHaveLength(1)
+    }))
+
+  it("says nothing when the SESSION row denies it, agent ruleset silent", () =>
+    Effect.gen(function* () {
+      // deriveSubagentSessionPermission writes the deny onto the child SESSION,
+      // not onto the agent, so this is the shape the UAT child actually ran with.
+      const messages = [userMessage(), assistantMessage([work(), work(), work(), work()])]
+      expect(
+        mentionsTodo(yield* applyAs(messages, [], { permission: [] }, { permission: deny("todowrite") })),
+      ).toEqual([])
+    }))
+
+  it("withholds the stored list and the reconcile nudge too", () =>
+    Effect.gen(function* () {
+      const session = { permission: deny("todowrite") }
+      // A stored list the window cannot show would normally be re-injected...
+      const stale = [userMessage(), assistantMessage([work()])]
+      expect(mentionsTodo(yield* applyAs(stale, open, { permission: [] }, session))).toEqual([])
+      // ...and a previous turn that never wrote would normally earn a reconcile.
+      const step1 = [userMessage(), assistantMessage([work(), work()]), userMessage()]
+      expect(mentionsTodo(yield* applyAs(step1, open, { permission: [] }, session))).toEqual([])
+    }))
+
+  it("leaves the unrelated reminders alone", () =>
+    Effect.gen(function* () {
+      // A wait-loop streak still fires under the same deny: this gate is about
+      // one tool, not about silencing the lane.
+      const messages = [userMessage(), assistantMessage([sleepCall(), sleepCall(), sleepCall()])]
+      const texts = yield* applyAs(messages, [], { permission: deny("todowrite") })
+      expect(texts.filter((text) => text.includes("blocking shell calls in a row"))).toHaveLength(1)
     }))
 })

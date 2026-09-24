@@ -12,10 +12,9 @@ import { errorMessage } from "@/util/error"
 /**
  * The MCP management pane's read (`mcp_list`) and its writes (`mcp_add`,
  * `mcp_remove`, `mcp_set_enabled`, `mcp_connect`, `mcp_disconnect`,
- * `mcp_authenticate`, `mcp_auth_remove`) — the ACP channel for what
- * `cli/cmd/mcp.ts` and the instance HTTP API already do. The extension talks
- * ACP over stdio and has no HTTP route to the engine, so those surfaces were
- * unreachable from it.
+ * `mcp_authenticate`, `mcp_auth_remove`) - the ACP channel for what
+ * `cli/cmd/mcp.ts` and the instance HTTP API already do, which the extension
+ * cannot reach because it talks ACP over stdio with no HTTP route to the engine.
  *
  * THE MERGE RULE THIS PANE EXISTS TO MAKE VISIBLE (`mcp/index.ts`'s state
  * builder): the runtime server map is `{ ...pluginServers, ...cfg.mcp }`, so a
@@ -23,11 +22,10 @@ import { errorMessage } from "@/util/error"
  * source and the shadow marker on every row, "I disabled it and it is still
  * running" cannot be explained from the UI.
  *
- * A `mcp` value with NO `type` is legal config (core `config.ts` allows
- * `{ enabled: boolean }`): it is the marker that turns off a plugin-provided
- * server. `mcp/index.ts` skips those, so they carry no live status — they are
- * reported here with `type: "unknown"` rather than dropped, because a row the
- * user cannot see is a row they cannot undo.
+ * A `mcp` value with NO `type` is legal config: it is the marker that turns off a
+ * plugin-provided server. Those carry no live status, so they are reported here
+ * with `type: "unknown"` rather than dropped - a row the user cannot see is a row
+ * they cannot undo.
  */
 
 export type ServerType = "local" | "remote" | "unknown"
@@ -59,12 +57,9 @@ export type WriteResult =
 
 type Entry = McpConfigWrite.Entry
 
-/**
- * The pure projection: the `mcp` config record, the plugin-provided servers and
- * the live status map, into one row per name. Pure, so the merge/shadow rules
- * above are testable without booting an engine instance — the same split
- * `ACPAgentPlugins.project` uses.
- */
+/** The pure projection: the `mcp` config record, the plugin-provided servers and
+ *  the live status map, into one row per name. Pure, so the merge/shadow rules
+ *  above are testable without an engine - the split `ACPAgentPlugins.project` uses. */
 export function project(
   cfg: Record<string, Entry>,
   pluginServers: Record<string, ConfigMCPV1.Info>,
@@ -95,11 +90,8 @@ export function project(
   })
 }
 
-/**
- * Runs against the process-wide AppRuntime for the reason `ACPAgentPlugins.list`
- * states: a private layer stack here would stand up a SECOND instance and
- * deadlock against the live one.
- */
+/** Runs against the process-wide AppRuntime for the reason `ACPAgentPlugins.list`
+ *  states: a private layer stack would stand up a SECOND instance and deadlock. */
 const inInstance = <A, E, R>(directory: string, body: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const store = yield* InstanceStore.Service
@@ -145,13 +137,10 @@ const statusOf = (directory: string, name: string) =>
     MCP.Service.use((mcp) => mcp.status()),
   ).pipe(Effect.map((all) => all[name]))
 
-/**
- * Add a server: validate the shape against the SAME schema the config file is
- * read with, PERSIST it, then `MCP.add` it so it connects without a session
- * restart. Both halves matter — `MCP.add` is in-memory only (mcp/index.ts), so
- * a runtime-only add vanishes on the next restart, and a config-only add looks
- * inert until one.
- */
+/** Add a server: validate the shape against the SAME schema the config file is read
+ *  with, PERSIST it, then `MCP.add` it so it connects without a session restart.
+ *  `MCP.add` is in-memory only, so a runtime-only add vanishes on the next restart,
+ *  and a config-only add looks inert until one. */
 export const add = Effect.fn("ACPMcp.add")(function* (
   directory: string,
   name: string,
@@ -261,15 +250,14 @@ export const disconnect = Effect.fn("ACPMcp.disconnect")(function* (directory: s
 })
 
 /**
- * Run the OAuth flow. BLOCKS until the loopback callback arrives — safe for the
+ * Run the OAuth flow. BLOCKS until the loopback callback arrives - safe for the
  * same reason `ACPProviderAuth.callback` is: the ACP SDK's read loop calls
  * `processMessage` WITHOUT awaiting it, so a slow handler does not stall the
  * channel.
  *
- * The engine opens the browser itself (`McpBrowser`), but `onAuthorization`
- * fires with the URL FIRST, and `onUrl` forwards it. Without that, a failed
- * `open` leaves the pane waiting on a window that never appeared, with no link
- * to fall back to.
+ * The engine opens the browser itself (`McpBrowser`), but `onAuthorization` fires
+ * with the URL FIRST and `onUrl` forwards it, so a failed `open` still leaves a
+ * link to fall back to.
  */
 export const authenticate = Effect.fn("ACPMcp.authenticate")(function* (
   directory: string,

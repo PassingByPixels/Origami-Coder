@@ -28,9 +28,19 @@ export const TaskStopTool = Tool.define<typeof Parameters, Metadata, BackgroundJ
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof Parameters>, _ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
-          const info = yield* background.cancel(params.task_id)
+          const info = yield* background.cancel(params.task_id, "task_stop")
+          // t-fijy8a F12. The DESCENDANTS too: a sub-agent job is keyed by the
+          // child's own session id, so a grandchild names it as its parent and
+          // cancelling the one job left the generations below it running with
+          // nobody to report to. The same walk run-state.ts and the expiry
+          // watchdog use; `includeRoot: false` because the root is settled
+          // above, and detached work is NOT spared - task_stop is the
+          // deliberate way to end it (core/background-job.ts cancelTree).
+          if (info)
+            yield* BackgroundJob.cancelTree(background, params.task_id, { includeRoot: false, reason: "task_stop" })
           if (!info) {
             return {
               title: "Task not found",

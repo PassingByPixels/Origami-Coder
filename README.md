@@ -18,6 +18,18 @@
 
 ---
 
+## What's new in 0.4.175
+
+- **Big chats open fast.** A large chat opens in about a second, and a long chat no longer pauses at the end of a reply.
+- **Nests** (off by default): start a chat on one computer and continue it on another, over Origami's own relay.
+- **Artifacts**: your agent can make a page, a plan or a report for you, and every version is kept.
+- **Your Claude subscription** (experimental): use it as a model, with Origami's own tools, sub-agents and undo.
+- **Fork**: make a copy of a chat, next to the original, to try a different direction.
+- **Find**: search the whole chat, not just what is on screen.
+- **Schedules**: Crons and Loops are now one item, with one place to see every scheduled run.
+
+---
+
 This harness is built from the ground up on the following foundations:
 
 | | |
@@ -188,6 +200,24 @@ project.
 - Same files, same repo, your call which one gets the job.
 
 ![Origami and Claude Code side by side in one VS Code window](packages/vscode/images/side-by-side-claude.png)
+
+### Nests — one chat on all your computers
+
+- Join your computers ("desks") over Origami's own relay, and start a chat on one desk, then continue it on another.
+- Add a desk with a QR code or a key you paste. Both desks check the same 6-digit code before they join.
+- The relay only ever sees encrypted data. It has no accounts and stores nothing.
+- Nests is off by default. Nothing dials the relay until you turn it on.
+
+![The Nests view with three desks and their storage](packages/vscode/images/nests.png)
+
+### Artifacts — pages your agent makes for you
+
+- An agent can publish an artifact: a page with its own styles and scripts, a plan or a report.
+- The chat shows an artifact card with Open, and the page opens in the VS Code browser, in a sandbox, on your own computer.
+- Every version is kept, so you can go back to an earlier one.
+- The Artifacts pane lists all your artifacts and their versions, with when each one last changed and which desk made it.
+
+![The Artifacts pane with a list of artifacts and their versions](packages/vscode/images/artifacts.png)
 
 ## Getting started
 

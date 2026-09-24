@@ -1,23 +1,11 @@
 // acpNotify.ts — the `origami/*` notification payloads: wire frame in, handler
-// args out.
+// args out. Extracted from acpClient.ts's `extNotification` switch; nothing here
+// reads the client's mutable state.
 //
-// Extracted from acpClient.ts's `extNotification` switch, which had accreted
-// four inline decoders inside one dispatch and pushed the file past its
-// architecture cap — the same READER-out / WIRING-stays split acpTaskMeta.ts,
-// acpTodoWrite.ts and acpToolContent.ts already made from that file. Nothing
-// here reads the client's mutable state, so every rule below is exercisable
-// against a plain object with no connection and no session.
-//
-// Two obligations these readers carry, and the reason they are readers rather
-// than pass-throughs:
-//   - the engine's payloads are snake_case (`winner_index`, `sub_tasks`) while
-//     the handlers are camelCase, so the rename happens once, in one place;
-//   - a malformed payload must not poison the webview, so every field is
-//     coerced and every open-ended string the UI BRANCHES on is narrowed to a
-//     value it can actually render.
-//
-// The dispatch itself stays in acpClient.ts: which notification arrived, and
-// which handler it belongs to, is wiring.
+// Two obligations: the engine's payloads are snake_case (`winner_index`,
+// `sub_tasks`) while the handlers are camelCase, so the rename happens once; and a
+// malformed payload must not poison the webview, so every field is coerced and
+// every open-ended string the UI BRANCHES on is narrowed to a renderable value.
 
 import type { TodoRow } from './acpTodoWrite';
 
@@ -152,5 +140,48 @@ export function arbiterDecisionFrom(p: NotifyParams): ArbiterDecision {
   return {
     decision,
     reason: String(p.reason ?? ''),
+  };
+}
+
+/** `origami/flockMailbox` — the Front Desk mailbox, pushed because `flock.json`
+ *  moved on disk. THE SAME SHAPE `flock_mailbox` RETURNS, so the panel posts the
+ *  pane the message its poll already posts. Rows are passed through UNREAD: they
+ *  are the store's own `Thread` objects and the pane owns what they mean. The
+ *  COUNTS are coerced, because the badge does arithmetic with them. */
+export interface FlockMailboxPush {
+  threads: unknown[];
+  waiting: number;
+  unread: number;
+}
+
+function count(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+export function flockMailboxFrom(p: NotifyParams): FlockMailboxPush {
+  return {
+    threads: Array.isArray(p.threads) ? p.threads : [],
+    waiting: count(p.waiting),
+    unread: count(p.unread),
+  };
+}
+
+/** `origami/cacheState` — is this session's prompt prefix still in the provider's
+ *  cache (engine `session/cache-state.ts`). `unmeasured` is NOT a polite `cold`: the
+ *  provider reports no cache tokens, so nothing is known. `until`/`ttlSeconds` are
+ *  OMITTED, never zeroed, when the provider publishes no window — a zero would read
+ *  as a countdown that already ran out, which is why only a POSITIVE number survives
+ *  the decode, and why the type is read off the decoder rather than declared twice. */
+export type CacheStatePush = ReturnType<typeof cacheStateFrom>;
+
+export function cacheStateFrom(p: NotifyParams) {
+  const state = String(p.state ?? '');
+  const win = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined);
+  return {
+    sessionId: String(p.sessionId ?? ''),
+    state: state === 'warm' || state === 'cold' ? state : ('unmeasured' as const),
+    ...(win(p.until) === undefined ? {} : { until: win(p.until) }),
+    ...(win(p.ttlSeconds) === undefined ? {} : { ttlSeconds: win(p.ttlSeconds) }),
+    source: String(p.source ?? 'request'),
   };
 }

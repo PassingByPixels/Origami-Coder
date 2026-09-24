@@ -2,7 +2,7 @@
 //
 // This drives the real `runFirstFold` against a real temp directory rather than
 // asserting over the exported string map: the map being right is not the claim —
-// the claim is that twelve SKILL.md files land where the engine's discovery glob
+// the claim is that every SKILL.md file lands where the engine's discovery glob
 // (`{skill,skills}/**/SKILL.md` under `.origami/`, see packages/engine/src/skill)
 // will find them, each carrying the frontmatter that decides how it is grouped and
 // whether it appears in the / palette.
@@ -49,6 +49,23 @@ const EXPECTED: Record<string, { category: string; slash: boolean }> = {
   wayfinder: { category: 'planning', slash: false },
   handoff: { category: 'workflow', slash: true },
   'optimize-code': { category: 'quality', slash: true },
+  // The engineering + productivity half: the start of a job (ask-tsuru), the
+  // build step between tickets and review (implement), and the standing habits
+  // around the work. Categories are lowercase like every row above; SkillsPane
+  // uppercases the chip, so the files stay consistent and the UI is unchanged.
+  'ask-tsuru': { category: 'engineering', slash: true },
+  grilling: { category: 'productivity', slash: false },
+  'grill-with-docs': { category: 'engineering', slash: true },
+  implement: { category: 'engineering', slash: true },
+  prototype: { category: 'engineering', slash: true },
+  research: { category: 'engineering', slash: true },
+  teach: { category: 'productivity', slash: true },
+  setup: { category: 'engineering', slash: true },
+  'domain-modeling': { category: 'engineering', slash: false },
+  'codebase-design': { category: 'engineering', slash: false },
+  'improve-codebase-architecture': { category: 'engineering', slash: true },
+  'resolving-merge-conflicts': { category: 'engineering', slash: false },
+  'writing-great-skills': { category: 'productivity', slash: false },
 };
 
 /** The frontmatter block only — never the body, which legitimately talks ABOUT
@@ -116,7 +133,7 @@ beforeAll(async () => {
 }, 120_000);
 
 describe('/firstfold seeds the default skill library', () => {
-  it('writes exactly the twelve expected skills, and nothing else', () => {
+  it('writes exactly the expected skills, and nothing else', () => {
     expect(Object.keys(afterFirst).sort()).toEqual(Object.keys(EXPECTED).sort());
   });
 
@@ -131,10 +148,15 @@ describe('/firstfold seeds the default skill library', () => {
       .filter(([, md]) => field(md, 'slash') === 'true')
       .map(([n]) => n)
       .sort();
-    // Model-invoked skills (tdd, diagnosing-bugs, code-review, wayfinder) must NOT
-    // be here — a / entry for them advertises a command that does nothing a user
-    // needs to type.
-    expect(withSlash).toEqual(['grill-me', 'handoff', 'optimize-code', 'to-spec', 'to-tickets', 'triage', 'wrap']);
+    // Model-invoked skills (tdd, diagnosing-bugs, code-review, wayfinder,
+    // grilling, domain-modeling, codebase-design, resolving-merge-conflicts,
+    // writing-great-skills) must NOT be here — a / entry for them advertises a
+    // command that does nothing a user needs to type.
+    expect(withSlash).toEqual([
+      'ask-tsuru', 'grill-me', 'grill-with-docs', 'handoff', 'implement',
+      'improve-codebase-architecture', 'optimize-code', 'prototype', 'research',
+      'setup', 'teach', 'to-spec', 'to-tickets', 'triage', 'wrap',
+    ]);
   });
 
   it('names each skill after the folder it sits in, so the engine registry and the path agree', () => {
@@ -163,7 +185,7 @@ describe('/firstfold seeds the default skill library', () => {
   });
 
   it('reports how many skills it created rather than naming a single sample one', () => {
-    expect(firstNarration.some((l) => l.includes('12 skills'))).toBe(true);
+    expect(firstNarration.some((l) => l.includes(`${Object.keys(EXPECTED).length} skills`))).toBe(true);
   });
 
   it('keeps the /wrap HANDOFF marker and its four block anchors intact', () => {
@@ -223,10 +245,10 @@ describe('/firstfold run again in a folded workspace', () => {
 });
 
 describe('the default skill library module', () => {
-  it('holds the ten skills firstFold does not own itself', () => {
+  it('holds every skill firstFold does not own itself', () => {
     // wrap + example-skill stay in firstFold.ts beside the HANDOFF stub; the
     // count guards against a body being added to the map but never seeded.
-    expect(Object.keys(DEFAULT_SKILLS)).toHaveLength(10);
+    expect(Object.keys(DEFAULT_SKILLS)).toHaveLength(Object.keys(EXPECTED).length - 2);
     expect(Object.keys(DEFAULT_SKILLS)).not.toContain('wrap');
     expect(Object.keys(DEFAULT_SKILLS)).not.toContain('example-skill');
   });
@@ -281,6 +303,32 @@ describe('the default skill library module', () => {
     const body = DEFAULT_SKILLS['optimize-code']!;
     expect(body).toContain('saurabhkumar8112/cyclomatic-complexity-skill');
     expect(body).toContain('Apache-2.0');
+  });
+
+  // ask-tsuru is the front door: its whole job is to name the skill that fits the
+  // situation. A route to a skill nobody seeded sends the agent to load a file
+  // that is not there, and the user gets "no such skill" from the one command
+  // they typed BECAUSE they did not know which command to type.
+  it('routes ask-tsuru only at skills the library actually seeds', () => {
+    const seeded = new Set([...Object.keys(DEFAULT_SKILLS), 'wrap', 'example-skill']);
+    const spans = [...DEFAULT_SKILLS['ask-tsuru']!.matchAll(/`\/?([a-z][a-z-]*[a-z])`/g)].map((m) => m[1]!);
+    expect(spans.length).toBeGreaterThan(10); // the routing table is really being read
+    for (const name of new Set(spans)) {
+      expect(seeded.has(name), `ask-tsuru routes to "${name}", which nothing seeds`).toBe(true);
+    }
+  });
+
+  // The two halves of the split must agree: `slash: true` says a USER types it,
+  // and the H1 is where the user sees whether it is typeable. A model-invoked
+  // skill whose heading opens `# /name` advertises a command the frontmatter
+  // says does not exist — the exact confusion the flag is meant to remove.
+  it('opens each heading with a slash if, and only if, the skill is user-invoked', () => {
+    for (const [name, body] of Object.entries(DEFAULT_SKILLS)) {
+      const userInvoked = /^slash:\s*true$/m.test(frontmatter(body));
+      const heading = /^#\s+(\S+)/m.exec(body)?.[1];
+      expect(heading, `${name} has no H1`).toBeDefined();
+      expect(heading!.startsWith('/'), `${name}: H1 "${heading}" disagrees with slash: ${userInvoked}`).toBe(userInvoked);
+    }
   });
 
   it('lets the project\'s own complexity threshold win over the skill\'s defaults', () => {

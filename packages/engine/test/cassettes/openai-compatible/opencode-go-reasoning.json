@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "metadata": {
+    "name": "openai-compatible/opencode-go-reasoning",
+    "recordedAt": "2026-09-02T22:27:44.863Z",
+    "family": "openai-compatible",
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "scenario": "reasoning",
+    "recordedWith": "ai-sdk"
+  },
+  "interactions": [
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "url": "https://opencode.ai/zen/go/v1/chat/completions",
+        "headers": {
+          "accept": "*/*",
+          "authorization": "[REDACTED]",
+          "content-type": "application/json",
+          "user-agent": "origami/local ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+        },
+        "body": "{\"model\":\"deepseek-v4-flash\",\"max_tokens\":256,\"temperature\":0,\"frequency_penalty\":0,\"messages\":[{\"role\":\"system\",\"content\":\"Answer using tools when appropriate.\\nThink step by step, then answer with only the final number.\"},{\"role\":\"user\",\"content\":\"What is 17 * 23?\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/event-stream"
+        },
+        "body": "data: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\"We\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":1,\"total_tokens\":111,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" need answer arithmetic\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":4,\"total_tokens\":114,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\". Need compute 17\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":9,\"total_tokens\":119,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\"*23 = 391\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":14,\"total_tokens\":124,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\".\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":15,\"total_tokens\":125,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\" Need final only number\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":19,\"total_tokens\":129,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"reasoning_content\":\".\"}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":22,\"total_tokens\":132,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"logprobs\":null,\"delta\":{\"content\":\"391\",\"reasoning_content\":null}}],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":22,\"total_tokens\":132,\"prompt_tokens_details\":{}}}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[{\"index\":0,\"finish_reason\":\"stop\",\"logprobs\":null,\"delta\":{\"reasoning_content\":null}}]}\n\ndata: {\"id\":\"router-35b6ed5c075d94643fac0f80e990ac27\",\"object\":\"chat.completion.chunk\",\"created\":1788384507,\"model\":\"deepseek-v4-flash\",\"choices\":[],\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":23,\"total_tokens\":133,\"prompt_tokens_details\":{}}}\n\ndata: [DONE]\n\ndata: {\"choices\":[],\"cost\":\"0\"}\n\n"
+      }
+    }
+  ]
+}

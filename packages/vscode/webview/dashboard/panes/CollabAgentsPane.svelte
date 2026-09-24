@@ -1,33 +1,21 @@
 <script lang="ts">
-  // Collabs M2 — the Agents board's agent-definition views. Since t-kgtr6c this
-  // pane is a TWO-TAB shell rather than one list:
+  // The Agents board's agent-definition views: a two-tab shell — Bots (the agent
+  // defs a collab can be built from) and Vision (the profile a chat hands an image
+  // to when its own model cannot see one). The tabs are INTERNAL rather than two
+  // more entries on the board's nav rail: both are agent definitions in one
+  // directory, and the rail would put two sibling views a rail-width apart.
   //
-  //   Collab      — the agent defs a collab can be built from (unchanged)
-  //   Vision      — vision profiles: the agent a chat hands an image to when its
-  //                 own model cannot see one
-  //
-  // The tabs are INTERNAL, not two more entries on the board's nav rail. Both
-  // are "agent definitions in one directory"; splitting them across the rail
-  // would put two sibling views a rail-width apart and make the rail the place
-  // you learn that vision profiles exist.
-  //
-  // A THIRD TAB, SubAgents, shipped in round 2 and was REMOVED in round 3: it
-  // MIRRORED the chat model picker's sub-agent override, and wrote to the ACTIVE
-  // chat rather than to the board you were looking at — the one surface that
-  // felt global was the one that could not be. The chat's picker is the SOLE
-  // surface now; visionAgents.test.ts guards that no second sender comes back.
+  // There is deliberately no SubAgents tab: it mirrored the chat model picker's
+  // sub-agent override and wrote to the ACTIVE chat rather than to the board on
+  // screen. The chat's picker is the sole surface; visionAgents.test.ts guards
+  // that no second sender comes back.
   //
   // THE LIST READS THE FILESYSTEM (collabAgentCrud), not `collab_agents`: the
   // wire only carries slug/displayName/model and the form needs persona,
   // permission and steps too. The engine re-scans defs on every collab-facing
-  // call (collab/acp.ts): saved defs are live at once; only DELETES need a restart.
-  //
-  // The FORM left this file for CollabAgentForm.svelte when the tabs arrived —
-  // the pane was at 378 of its 380-line cap, and the ratchet's remedy is
-  // extraction. It paid immediately: the Vision tab edits a profile with the
-  // SAME form rather than a second copy of it. D7: the Collab roster also
-  // carries ARCHETYPE REFS (architect/ask/...) as read-only cards after the
-  // collab ones; editing lives in the card itself.
+  // call (collab/acp.ts), so saved defs are live at once; only DELETES need a
+  // restart. The form itself lives in CollabAgentForm.svelte, and the Vision tab
+  // edits a profile with the SAME form rather than a second copy of it.
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import { onMount } from 'svelte';
   import CollabAgentCard from '../components/CollabAgentCard.svelte';
@@ -43,11 +31,8 @@
   interface ProviderStat { id: string; name: string; live: boolean; flavor?: 'lmstudio' | 'ollama' | 'other' }
 
   type Tab = 'collab' | 'vision';
-  // BOTS is this section's name as of W4 — a def IS a bot, and "collab agent"
-  // named it after one of the three places it can run. The tab id stays
-  // `collab` and the wire keeps every `collabAgentDef*` message type: the
-  // rename is DISPLAY, and renaming either would reset saved state and break a
-  // contract the host and three other panes already speak.
+  // "Bots" is DISPLAY only: the tab id stays `collab` and the wire keeps every
+  // `collabAgentDef*` message type, a contract the host and three panes speak.
   const TABS: { id: Tab; label: string; title: string }[] = [
     { id: 'collab', label: 'Bots', title: 'Bots — the agent definitions a session, a collab or a bot chat can run' },
     { id: 'vision', label: 'Vision Agents', title: 'Vision profiles — the agent a chat hands an image to when its own model cannot see one' },
@@ -65,41 +50,33 @@
   /** Live tool ids for the bot's tool checklist, off the Tools pane's own
    *  `list_tools` wire. Empty falls back to this build's shipped mirror. */
   let toolCatalog = $state<string[]>([]);
-  /** The open memory viewer, or null. Read-only — a bot's store is written by
-   *  the bot, and the only edit this board offers is the whole-store wipe. */
+  /** The open memory viewer, or null. Read-only — a bot's store is written by the bot. */
   let memoryView = $state<{ slug: string; facts: number; text: string; dir: string } | null>(null);
   let error = $state('');
   let loaded = $state(false);
-  /** Slugs being started now. A bot chat is PROVISIONAL (sessionAnnounce.ts) and
-   *  the wait is a ~5s engine boot, so the card is the click's only answer; a
-   *  LIST because two may start at once and the reply names which one it is. */
+  /** Slugs being started now. A bot chat is PROVISIONAL (sessionAnnounce.ts) and the
+   *  wait is a ~5s engine boot; a LIST because two may start at once. */
   let starting = $state<string[]>([]);
 
-  /** '' = closed, 'new' = the create form, anything else = editing that slug.
-   *  Cleared on every tab switch: an open editor is about ONE list, and leaving
-   *  it mounted under another tab is a Save that writes into the wrong one. */
+  /** '' = closed, 'new' = the create form, anything else = editing that slug. Cleared
+   *  on every tab switch: an editor left mounted saves into the wrong list. */
   let editing = $state('');
   let draft = $state<CollabAgentDef>(blank('collab'));
   const creating = $derived(editing === 'new');
   const kind = $derived<'collab' | 'vision'>(tab === 'vision' ? 'vision' : 'collab');
   const list = $derived(tab === 'vision' ? visionDefs : defs);
 
-  // Reference agents render COLLAPSED on every mount (UAT: "make reference
-  // agents collapsible and grouped by default, they look cluttered") — six
-  // file-backed definitions with no live state of their own, so a header with
-  // just the count is the whole story. Local view state only, like `editing`:
-  // no getState round-trip, so it resets collapsed next time too.
+  // Reference agents render COLLAPSED on every mount: six file-backed definitions
+  // with no live state of their own, so a header with just the count is the whole
+  // story. Local view state only, like `editing`, so it resets collapsed next time.
   let referenceOpen = $state(false);
 
   function blank(of: 'collab' | 'vision'): CollabAgentDef {
-    // EVERY TOOL TICKED (W9 owner ruling, replacing the W6 Worker default): a new
-    // bot starts able and the user takes away, because taking away is the edit a
-    // checklist can actually show. `toolCatalog` and not the shipped mirror — a
-    // bot born on the mirror while the engine offers a newer tool would open with
-    // a row already unticked, contradicting the state on screen.
-    // A VISION PROFILE is `vision: true` from the start — it is the one def kind
-    // where the blind default would be silently useless — and it carries no bot
-    // contract and no tick set: it takes no turn, so neither would mean anything.
+    // EVERY TOOL TICKED: a new bot starts able and the user takes away, because
+    // taking away is the edit a checklist can actually show. `toolCatalog` and not
+    // the shipped mirror — a bot born on the mirror while the engine offers a newer
+    // tool would open with a row already unticked. A VISION PROFILE is `vision: true`
+    // from the start and carries no bot contract and no tick set: it takes no turn.
     return of === 'vision'
       ? { slug: 'vision-', description: '', model: '', glyph: '', persona: '', preset: 'observer', customPermission: '', steps: '', vision: true, visionProfile: true, bot: {} }
       : { slug: 'collab-', description: '', model: '', glyph: '', persona: '', preset: 'worker', customPermission: '', tools: allToolKeys(toolCatalog), steps: '', vision: false, visionProfile: false, bot: {} };
@@ -119,27 +96,22 @@
     editing = d.slug;
     error = '';
     // A COPY, and `bot`/`tools` copied TOO — a shallow spread would share those
-    // objects with the list behind the form, so an abandoned edit would already
-    // have changed the card it was opened from.
+    // objects with the list behind the form, so an abandoned edit would still bite.
     draft = { ...d, bot: { ...(d.bot ?? {}) }, ...(d.tools ? { tools: [...d.tools] } : {}) };
   }
   /**
-   * `$state.snapshot`, and it is the whole of W6's model-pin bug. `draft` is a
-   * `$state` rune, so every nested value read off it is a PROXY; `{ ...draft }`
-   * flattened only the top level, which was fine until the def grew objects
-   * (`bot`, `tools`). A webview postMessage STRUCTURED-CLONES, and that throws
-   * DataCloneError on a Proxy — so the post never left the webview and the card
-   * came back still warning about the model that had just been picked. The
-   * autopsy, and the test that catches it, are in botsPane.test.ts. */
+   * `$state.snapshot` is load-bearing. `draft` is a `$state` rune, so every nested
+   * value read off it is a PROXY; `{ ...draft }` flattens only the top level, and a
+   * webview postMessage STRUCTURED-CLONES, which throws DataCloneError on a Proxy —
+   * the post then never leaves the webview. botsPane.test.ts catches it. */
   function save() {
     if (!draft.slug) return;
     vscode.postMessage({ type: 'saveCollabAgentDef', def: $state.snapshot(draft) });
     editing = '';
   }
-  /** A chat running AS one bot — its permissions, its skills, its model, its
-   *  own memory. The host owns session creation; this only names the bot, with
-   *  BOTH names: the slug the engine knows it by, and the name the card draws,
-   *  which is what the chat tab reads. */
+  /** A chat running AS one bot — its permissions, skills, model and memory. The host
+   *  owns session creation; this names the bot with BOTH the slug the engine knows
+   *  it by and the name the card draws, which is what the chat tab reads. */
   function startSession(slug: string, displayName: string) {
     if (starting.includes(slug)) return; // one engine child per start — a second click is a second engine
     error = ''; starting = [...starting, slug];
@@ -164,13 +136,12 @@
       } else if (msg.type === 'providerStatus') {
         providerStatus = Array.isArray(msg.providers) ? msg.providers : [];
       } else if (msg.type === 'toolsData') {
-        // The Tools pane's own wire, reused rather than a second one: this is
-        // the ENGINE's list, so a user-file or plugin tool is tickable the
-        // moment the engine reports it. An empty answer (no chat open) falls
-        // back to the form's shipped mirror.
+        // The Tools pane's own wire, reused rather than a second one: this is the
+        // ENGINE's list, so a user-file or plugin tool is tickable the moment the
+        // engine reports it. An empty answer falls back to the shipped mirror.
         toolCatalog = Array.isArray(msg.tools) ? msg.tools.map((t: { id?: string }) => String(t?.id ?? '')).filter(Boolean) : [];
       } else if (msg.type === 'botSessionResult') {
-        // A refusal must SAY so: a Start button that silently does nothing is
+        // A refusal must SAY so: a Start that silently does nothing is
         // indistinguishable from an engine that is still starting.
         error = typeof msg.error === 'string' ? msg.error : '';
         // BOTH outcomes end the wait (the host posts this on ok too), so the button comes back and a refusal can be retried.
@@ -178,7 +149,7 @@
       } else if (msg.type === 'botMemoryData') {
         memoryView = { slug: String(msg.slug ?? ''), facts: Number(msg.facts ?? 0), text: String(msg.text ?? ''), dir: String(msg.dir ?? '') };
         // A clear answers with the SAME payload, so the count the cards show is
-        // corrected from the store the host actually read back, not optimistically.
+        // corrected from the store the host read back, not optimistically.
         memoryFacts = { ...memoryFacts, [String(msg.slug ?? '')]: Number(msg.facts ?? 0) };
       }
     };
@@ -222,10 +193,8 @@
     <BotMemoryPanel {...memoryView} onClose={() => (memoryView = null)} />
   {/if}
 
-  <!-- KEYED on which def is open: the form seeds a new agent's persona at
-       MOUNT, so switching from the create form straight to an Edit (or back)
-       has to be a new mount or the next form opens showing the last one's
-       seed state. -->
+  <!-- KEYED on which def is open: the form seeds a new agent's persona at MOUNT, so
+       switching between the create form and an Edit has to be a new mount. -->
   {#if editing}
     {#key editing}
       <CollabAgentForm bind:draft {creating} {kind} {modelOptions} {providerStatus} {toolCatalog}
@@ -246,19 +215,16 @@
           : 'No bots yet. Create one above — it can then take a chat of its own, or join a collab.'}
       </div>
     {:else}
-      <!-- CARDS in a GRID: a def is CHOSEN from this list by comparing it with
-           its neighbours, and the single column this replaces turned that
-           comparison into a scroll. Each card still labels its own facts. -->
-      <!-- `onStart` only on the Bots tab: a vision profile takes no turn, so a
-           session running "as" one would have nothing to run. -->
+      <!-- CARDS in a GRID: a def is CHOSEN from this list by comparing it with its
+           neighbours, and the single column this replaces turned that into a scroll.
+           `onStart` only on the Bots tab: a vision profile takes no turn. -->
       {#each list as d (d.slug)}
         <CollabAgentCard def={d} memoryFacts={memoryFacts[d.slug] ?? 0} onEdit={startEdit}
           onDelete={(slug) => vscode.postMessage({ type: 'deleteCollabAgentDef', slug })}
           starting={starting.includes(d.slug)} onStart={tab === 'vision' ? undefined : startSession} />
       {/each}
       {#if tab === 'collab' && archetypes.length > 0}
-        <!-- Collapsed by default: a single header row (label + count), never
-             auto-expanded — see `referenceOpen` above for why. -->
+        <!-- Collapsed by default: a single header row — see `referenceOpen` for why. -->
         <button class="ca-section ca-section-toggle" aria-expanded={referenceOpen}
           onclick={() => (referenceOpen = !referenceOpen)}>
           <span class="ca-section-chev" aria-hidden="true">{referenceOpen ? '▾' : '▸'}</span>

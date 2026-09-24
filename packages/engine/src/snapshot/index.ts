@@ -25,6 +25,14 @@ const limit = 2 * 1024 * 1024
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
 const cfg = ["-c", "core.autocrlf=false", ...core]
 const quote = [...cfg, "-c", "core.quotepath=false"]
+// How long a snapshot add waits for another git process's index.lock on the
+// same snapshot gitdir, and the backoff between tries.
+const LOCK_WAIT_MS = 5_000
+const LOCK_RETRY_MS = 25
+const LOCK_RETRY_MAX_MS = 400
+// Retries of one add after a listed path vanished before git read it.
+const VANISHED_RETRIES = 5
+const UNMATCHED = /pathspec ':\(top,literal\)(.*)' did not match any files/
 interface GitResult {
   readonly code: ChildProcessSpawner.ExitCode
   readonly text: string
@@ -37,7 +45,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly cleanup: () => Effect.Effect<void>
   readonly track: () => Effect.Effect<string | undefined>
-  readonly patch: (hash: string) => Effect.Effect<Patch>
+  readonly patch: (hash: string, to?: string) => Effect.Effect<Patch>
   readonly restore: (snapshot: string) => Effect.Effect<void>
   readonly revert: (patches: Patch[]) => Effect.Effect<void>
   readonly diff: (hash: string) => Effect.Effect<string>
@@ -45,6 +53,58 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@origami/Snapshot") {}
+
+/** t-tc2rlo #10: the lease file name inside the SNAPSHOT gitdir (engine-owned,
+ *  never the user's repo), one per (project, worktree). */
+export const GC_LEASE_FILE = "gc.lease"
+/**
+ * How long a claim blocks other engines before it counts as abandoned. Just
+ * under the hourly schedule (`Schedule.spaced(Duration.hours(1))` below), so a
+ * live claim from THIS engine's own run still blocks a same-window duplicate
+ * from another engine, but a claim that outlived its run (a crash mid-gc)
+ * never holds the NEXT hourly tick hostage.
+ */
+export const GC_LEASE_TTL_MS = Duration.toMillis(Duration.minutes(55))
+
+function parseClaimedAt(text: string): number | undefined {
+  try {
+    const value = JSON.parse(text) as { claimedAt?: unknown }
+    return typeof value.claimedAt === "number" ? value.claimedAt : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * t-tc2rlo #10. Cross-process gc ownership for ONE gitdir. The `locked()`
+ * semaphore below only serializes calls inside a SINGLE engine process; the
+ * hourly `cleanup()` schedule is per-instance, so N engines open on the same
+ * repo each ran their own `git gc --prune`, on the same gitdir, independently.
+ *
+ * An atomic exclusive create (`{ flag: "wx" }`) of a lease file is the claim:
+ * the first engine to reach it in a window wins, every other one sees EEXIST
+ * and skips. A claim older than `GC_LEASE_TTL_MS` is retaken rather than left
+ * to permanently block gc because its claimant crashed or was killed mid-run —
+ * the worst case of two engines racing a stale claim is one extra gc, never
+ * worse than today.
+ */
+export const claimGcLease = Effect.fn("Snapshot.claimGcLease")(function* (
+  fs: FSUtil.Interface,
+  gitdir: string,
+  now: () => number = Date.now,
+) {
+  const leasePath = path.join(gitdir, GC_LEASE_FILE)
+  const claim = JSON.stringify({ pid: process.pid, claimedAt: now() })
+  const claimed = yield* fs
+    .writeFileString(leasePath, claim, { flag: "wx" })
+    .pipe(Effect.as(true), Effect.catch(() => Effect.succeed(false)))
+  if (claimed) return true
+  const existing = yield* fs.readFileString(leasePath).pipe(Effect.catch(() => Effect.succeed("")))
+  const age = now() - (parseClaimedAt(existing) ?? 0)
+  if (age < GC_LEASE_TTL_MS) return false
+  yield* fs.writeFileString(leasePath, claim).pipe(Effect.catch(() => Effect.void))
+  return true
+})
 
 const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | Config.Service> = Layer.effect(
   Service,
@@ -143,20 +203,56 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const stage = Effect.fnUntraced(function* (files: string[]) {
-          if (!files.length) return
-          const result = yield* git(
-            [...cfg, ...args(["add", "--all", "--sparse", "--pathspec-from-file=-", "--pathspec-file-nul"])],
-            {
-              cwd: state.worktree,
-              stdin: encodeTopLevelLiteralPathspecs(files),
-            },
-          )
-          if (result.code === 0) return
-          yield* Effect.logWarning("failed to add snapshot files", {
-            exitCode: result.code,
-            stderr: result.stderr,
-          })
+        // `git add` stages all of its paths or none of them. Two causes are
+        // transient: a listed path that is gone by the time git reads it (an
+        // atomic-write temp file), and another engine's `git add` on this same
+        // snapshot gitdir holding index.lock. Returns false only when the index
+        // could not be brought up to date: a tree written after that would be
+        // stale, and a revert against a stale tree deletes files.
+        const stage = Effect.fnUntraced(function* (files: string[], untracked: Set<string>) {
+          let list = files
+          let wait = LOCK_RETRY_MS
+          const deadline = Date.now() + LOCK_WAIT_MS
+          for (let vanished = 0; ; ) {
+            if (!list.length) return true
+            const result = yield* git(
+              [...cfg, ...args(["add", "--all", "--sparse", "--pathspec-from-file=-", "--pathspec-file-nul"])],
+              {
+                cwd: state.worktree,
+                stdin: encodeTopLevelLiteralPathspecs(list),
+              },
+            )
+            if (result.code === 0) return true
+
+            const missing = UNMATCHED.exec(result.stderr)?.[1]
+            if (missing !== undefined && vanished < VANISHED_RETRIES) {
+              vanished += 1
+              // Git names only the first path it could not match. Drop it, and
+              // every other untracked candidate that is gone too. A tracked path
+              // stays: it matches its index entry, and staging it records the delete.
+              const gone = new Set<string>([missing])
+              for (const item of list) {
+                if (untracked.has(item) && !(yield* exists(path.join(state.worktree, item)))) gone.add(item)
+              }
+              yield* Effect.logInfo("snapshot path vanished before git add, retrying without it", {
+                files: Array.from(gone),
+              })
+              list = list.filter((item) => !gone.has(item))
+              continue
+            }
+
+            if (result.stderr.includes("index.lock") && Date.now() < deadline) {
+              yield* Effect.sleep(Duration.millis(wait))
+              wait = Math.min(wait * 2, LOCK_RETRY_MAX_MS)
+              continue
+            }
+
+            yield* Effect.logError("failed to add snapshot files", {
+              exitCode: result.code,
+              stderr: result.stderr,
+            })
+            return false
+          }
         })
 
         const exists = (file: string) => fs.exists(file).pipe(Effect.orDie)
@@ -169,11 +265,17 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           return (yield* config.get()).snapshot !== false
         })
 
+        // The source repo's exclude path does not change for this worktree, so
+        // it is resolved once (a git spawn) rather than on every add pass.
+        let excludePath: string | undefined
         const excludes = Effect.fnUntraced(function* () {
-          const result = yield* git(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], {
-            cwd: state.worktree,
-          })
-          const file = result.text.trim()
+          if (excludePath === undefined) {
+            const result = yield* git(["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"], {
+              cwd: state.worktree,
+            })
+            if (result.code === 0) excludePath = result.text.trim()
+          }
+          const file = excludePath
           if (!file) return
           if (!(yield* exists(file))) return
           return file
@@ -232,6 +334,8 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           }
         })
 
+        // True when the snapshot index now matches the worktree. False when it
+        // still holds an older state, so a tree written from it would be stale.
         const add = Effect.fnUntraced(function* () {
           yield* sync()
           const [diff, other] = yield* Effect.all(
@@ -246,19 +350,19 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             { concurrency: 2 },
           )
           if (diff.code !== 0 || other.code !== 0) {
-            yield* Effect.logWarning("failed to list snapshot files", {
+            yield* Effect.logError("failed to list snapshot files", {
               diffCode: diff.code,
               diffStderr: diff.stderr,
               otherCode: other.code,
               otherStderr: other.stderr,
             })
-            return
+            return false
           }
 
           const tracked = diff.text.split("\0").filter(Boolean)
           const untracked = other.text.split("\0").filter(Boolean)
           const all = Array.from(new Set([...tracked, ...untracked]))
-          if (!all.length) return
+          if (!all.length) return true
 
           // Resolve source-repo ignore rules against the exact candidate set.
           // --no-index keeps this pattern-based even when a path is already tracked.
@@ -272,7 +376,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           }
 
           const allow = all.filter((item) => !ignored.has(item))
-          if (!allow.length) return
+          if (!allow.length) return true
 
           const large = new Set(
             (yield* Effect.all(
@@ -292,9 +396,13 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             )).filter((item): item is string => Boolean(item)),
           )
           const block = new Set(untracked.filter((item) => large.has(item)))
-          yield* sync(Array.from(block))
+          // The sync at the top already wrote the exclude file with no blocks.
+          if (block.size) yield* sync(Array.from(block))
           // Stage only the allowed candidate paths so snapshot updates stay scoped.
-          yield* stage(allow.filter((item) => !block.has(item)))
+          return yield* stage(
+            allow.filter((item) => !block.has(item)),
+            new Set(untracked),
+          )
         })
 
         const cleanup = Effect.fnUntraced(function* () {
@@ -302,6 +410,13 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             Effect.gen(function* () {
               if (!(yield* enabled())) return
               if (!(yield* exists(state.gitdir))) return
+              // t-tc2rlo #10: cross-process gc ownership. locked() above only
+              // stops this ONE process from overlapping its own add/gc; this
+              // stops every OTHER engine on the same repo from also running it.
+              if (!(yield* claimGcLease(fs, state.gitdir))) {
+                yield* Effect.logInfo("cleanup skipped: another engine holds the gc lease", { git: state.gitdir })
+                return
+              }
               const result = yield* git(args(["gc", `--prune=${prune}`]), { cwd: state.directory })
               if (result.code !== 0) {
                 yield* Effect.logWarning("cleanup failed", {
@@ -337,7 +452,15 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 yield* seed()
                 yield* Effect.logInfo("initialized")
               }
-              yield* add()
+              // No tree rather than a stale one: a step whose start tree lacks
+              // files that were on disk would have its revert delete them.
+              if (!(yield* add())) {
+                yield* Effect.logError("snapshot not taken: the index could not be updated", {
+                  cwd: state.directory,
+                  git: state.gitdir,
+                })
+                return
+              }
               const result = yield* git(args(["write-tree"]), { cwd: state.directory })
               const hash = result.text.trim()
               yield* Effect.logInfo("tracking", { hash, cwd: state.directory, git: state.gitdir })
@@ -346,12 +469,25 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const patch = Effect.fnUntraced(function* (hash: string) {
+        // With `to` (a tree `track()` returned after `hash`), the file list is
+        // the diff of the two trees and no add pass runs. Without it, the
+        // worktree is staged first and compared with `hash`.
+        const patch = Effect.fnUntraced(function* (hash: string, to?: string) {
           return yield* locked(
             Effect.gen(function* () {
-              yield* add()
+              if (to === hash) return { hash, files: [] }
+              if (to === undefined && !(yield* add())) {
+                yield* Effect.logError("snapshot patch may miss files: the index could not be updated", { hash })
+              }
               const result = yield* git(
-                [...quote, ...args(["diff", "--cached", "--no-ext-diff", "--name-only", hash, "--", "."])],
+                [
+                  ...quote,
+                  ...args(
+                    to === undefined
+                      ? ["diff", "--cached", "--no-ext-diff", "--name-status", hash, "--", "."]
+                      : ["diff", "--no-ext-diff", "--name-status", hash, to, "--", "."],
+                  ),
+                ],
                 {
                   cwd: state.directory,
                 },
@@ -360,14 +496,20 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 yield* Effect.logWarning("failed to get diff", { hash, exitCode: result.code })
                 return { hash, files: [] }
               }
-              const files = result.text
+              // "<status>\t<path>", or "<status>\t<old>\t<new>" for a rename: the
+              // last field is the path --name-only prints.
+              const rows = result.text
                 .trim()
                 .split("\n")
-                .map((x) => x.trim())
-                .filter(Boolean)
+                .map((line) => line.trim().split("\t"))
+                .filter((fields) => fields.length > 1)
+                .map((fields) => ({ status: fields[0]!, file: fields[fields.length - 1]! }))
+              const files = rows.map((row) => row.file)
 
-              // Hide ignored-file removals from the user-facing patch output.
-              const ignored = yield* ignore(files)
+              // Hide ignored-file removals from the user-facing patch output. A
+              // removal is the only way an ignored file enters this diff: add()
+              // drops ignored paths from the index and never stages them.
+              const ignored = yield* ignore(rows.filter((row) => row.status.startsWith("D")).map((row) => row.file))
 
               return {
                 hash,
@@ -733,8 +875,14 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               }
 
               const step = 100
+              // t-tc1mhl: hunks with 3 lines of context, not the whole file. A
+              // whole-file patch made one edit to a 32 MB file into a 33 MB
+              // message row. A side over the snapshot size limit gets no patch
+              // (the field is optional); its stats still count.
               const patch = (file: string, before: string, after: string) =>
-                formatPatch(structuredPatch(file, file, before, after, "", "", { context: Number.MAX_SAFE_INTEGER }))
+                before.length > limit || after.length > limit
+                  ? undefined
+                  : formatPatch(structuredPatch(file, file, before, after, "", "", { context: 3 }))
 
               for (let i = 0; i < rows.length; i += step) {
                 const run = rows.slice(i, i + step)
@@ -743,9 +891,10 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 for (const row of run) {
                   const hit = text?.get(row.file) ?? { before: "", after: "" }
                   const [before, after] = row.binary ? ["", ""] : text ? [hit.before, hit.after] : yield* show(row)
+                  const body = row.binary ? "" : patch(row.file, before, after)
                   result.push({
                     file: row.file,
-                    patch: row.binary ? "" : patch(row.file, before, after),
+                    ...(body === undefined ? {} : { patch: body }),
                     additions: row.additions,
                     deletions: row.deletions,
                     status: row.status,
@@ -779,8 +928,8 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       track: Effect.fn("Snapshot.track")(function* () {
         return yield* InstanceState.useEffect(state, (s) => s.track())
       }),
-      patch: Effect.fn("Snapshot.patch")(function* (hash: string) {
-        return yield* InstanceState.useEffect(state, (s) => s.patch(hash))
+      patch: Effect.fn("Snapshot.patch")(function* (hash: string, to?: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.patch(hash, to))
       }),
       restore: Effect.fn("Snapshot.restore")(function* (snapshot: string) {
         return yield* InstanceState.useEffect(state, (s) => s.restore(snapshot))

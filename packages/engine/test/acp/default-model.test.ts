@@ -70,4 +70,23 @@ describe("defaultModelFromConfig", () => {
   test("returns undefined when there is nothing to choose from", () => {
     expect(defaultModelFromConfig(undefined, providers([]))).toBeUndefined()
   })
+
+  // A fresh install whose config still names a provider that was removed (or
+  // that was never enabled -- Zen, before the fork stopped autoloading it) used
+  // to get that name handed back as the session's model. It resolves to nothing,
+  // so it is a phantom: the picker and the composer footer showed a model the
+  // session could never reach. The empty state is the honest answer.
+  test("a configured model that resolves against NO provider is not handed back", () => {
+    expect(defaultModelFromConfig("opencode/big-pickle", providers([]))).toBeUndefined()
+  })
+
+  // The mirror case, so the rule above cannot be read as "configured is ignored":
+  // it still WINS whenever the provider really is there.
+  test("a configured model that DOES resolve still wins", () => {
+    const result = defaultModelFromConfig(
+      "anthropic/zzz-model",
+      providers([provider("anthropic", ["zzz-model"])]),
+    )
+    expect(result).toEqual(expected("anthropic", "zzz-model"))
+  })
 })

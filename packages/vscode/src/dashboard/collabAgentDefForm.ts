@@ -1,25 +1,15 @@
-// One rule, given its own file: WHICH fields of a save-def message actually
-// reach the writer. Extracted from the `saveCollabAgentDef` case (then in
-// collabManager.ts, now in botsManager.ts) at that dispatcher's cap.
+// WHICH fields of a save-def message actually reach the writer.
 //
-// The rule is "stated only", and it is not a formality. A def crosses the
-// message boundary as loose JSON, and the writer resolves an ABSENT field from
-// the file already on disk. So forwarding a field the form never stated would
-// overwrite a real value with a default — exactly how a hand-added `vision:`
-// line used to vanish on the first save. Six fields are forwarded only when the
-// form carried them (preset, customPermission/steps, the tool ticks, vision/
-// visionProfile, the bot contract); the five plain strings always go.
-// Pure — no fs, no `vscode` — so every branch runs on an object literal.
+// "Stated only": the writer resolves an ABSENT field from disk, so
+// forwarding a field the form never stated would overwrite a real value with
+// a default. Pure — no fs, no vscode.
 import { BOT_TIERS, type BotContract, type BotTier } from './botContract';
 import type { CollabAgentDef } from './collabAgentCrud';
 
-/** A permission key the tool checklist could have written. Anything else is
- *  DROPPED: a key with a space or a colon would corrupt the block into YAML. */
+/** A permission key the tool checklist could have written; anything else is dropped. */
 const keys = (v: unknown): string[] =>
   (v as unknown[]).filter((s): s is string => typeof s === 'string' && /^[A-Za-z0-9_-]+$/.test(s));
-/** The BOT CONTRACT, re-read rather than trusted — the one field that is an
- *  OBJECT. A field of the wrong shape is DROPPED, so a malformed message
- *  narrows the contract instead of writing a permission tier nobody chose. */
+/** The bot contract, re-read rather than trusted. A malformed field is dropped. */
 function contractFromForm(raw: unknown): BotContract | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const b = raw as Record<string, unknown>;

@@ -1,5 +1,5 @@
-// Reads Origami workspace data from disk and sends it to the webview.
-// Sources: settings.toml, BOARD.md, goals/, projects/, cron/jobs.json, wiki/pages/
+// Reads Origami workspace data from disk: settings.toml, BOARD.md, goals/, projects/,
+// cron/jobs.json, wiki/pages/
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -10,12 +10,7 @@ export interface WorkspaceData {
     model: string;
     activeAgent: string;
     apiBase: string;
-    /**
-     * Phase 8 of the 2026-04-26 collapse — active mode + per-mode
-     * default models. Surfaced in the dashboard header so the user can
-     * see which mode is in force at a glance, alongside the active
-     * model name. `'normal'` if missing (matches Rust-side default).
-     */
+    /** Active mode, surfaced in the dashboard header. `'normal'` if missing. */
     activeMode: 'normal' | 'game';
     defaultModelNormal: string;
     defaultModelGame: string;
@@ -26,13 +21,7 @@ export interface WorkspaceData {
   cronJobs: CronJob[];
   wikiPages: WikiPage[];
   agents: AgentProfile[];
-  /**
-   * Phase 3.5 of the Endeavors PM overhaul — orphan plans queued
-   * in `Endeavors/_inbox/plans/` waiting for adoption. Each entry
-   * carries the optional path-overlap hint the adoption cron
-   * uses to score candidate parents; the BoardPane reuses it for
-   * the per-project inbox badge.
-   */
+  /** Orphan plans queued in `Endeavors/_inbox/plans/` waiting for adoption. */
   inboxPlans: InboxPlan[];
 }
 
@@ -47,10 +36,7 @@ export interface InboxPlan {
   ageDays: number;
   /** Hint about the entity kind that should adopt this plan. */
   suggestedParentKind?: 'project' | 'goal' | 'task';
-  /**
-   * File-path prefixes the plan would touch. Compared against
-   * each project's declared `paths:` to score candidate parents.
-   */
+  /** File-path prefixes the plan would touch; scored against a project's `paths:`. */
   suggestedPaths: string[];
 }
 
@@ -61,12 +47,8 @@ export interface AgentProfile {
 }
 
 /**
- * TaskItem mirrors the canonical Rust
- * `wiki::Task` schema. Status is a 5-state projection of the 12-state
- * Rust enum (Pending / Planning / InProgress / Blocked / Done) so the
- * dashboard can render distinct state colours without exposing the
- * full lifecycle to the UI; the source-of-truth status is preserved
- * via `rawStatus` for tooltip / detail views.
+ * Mirrors the Rust `wiki::Task` schema. `status` is a 5-state projection of the
+ * 12-state Rust enum; the source-of-truth value is preserved in `rawStatus`.
  */
 export interface TaskItem {
   id: string;
@@ -107,12 +89,8 @@ export interface GoalItem {
 }
 
 /**
- * Slice B.0 — ProjectItem carries the additive frontmatter fields
- * (`parent_goal`, `phase`, `paths`) plus the structured task list
- * read directly from the project's YAML frontmatter (instead of
- * the legacy `[x]`/`[ ]` checklist count). `done` / `total` are
- * derived from the task list for backward-compat with existing
- * BoardPane render code.
+ * Carries the additive frontmatter (`parent_goal`, `phase`, `paths`) plus the
+ * task list read from YAML frontmatter. `done` / `total` derive from that list.
  */
 export interface ProjectItem {
   id: string;
@@ -158,18 +136,14 @@ export interface WikiPage {
   tags: string[];
   content: string;
   /**
-   * Raw outbound link targets parsed from the page body — `[[wikilinks]]`
-   * (with optional `|alias` / `#anchor`) and relative markdown links to other
-   * `.md` files. Left unresolved here; the memory graph resolves them to page
-   * ids against the full page set so page↔page edges survive content
-   * truncation. Empty when the page links nowhere.
+   * Raw outbound link targets parsed from the page body — `[[wikilinks]]` and
+   * relative markdown links to other `.md` files. Left unresolved here; the
+   * memory graph resolves them to page ids against the full page set.
    */
   links: string[];
 }
 
-/**
- * Find the workspace path from ~/.origami/settings.toml
- */
+/** Find the workspace path from ~/.origami/settings.toml */
 export function findWorkspacePath(): string | null {
   const settingsPath = path.join(os.homedir(), '.origami', 'settings.toml');
   if (!fs.existsSync(settingsPath)) return null;
@@ -178,9 +152,7 @@ export function findWorkspacePath(): string | null {
   return match ? match[1] : null;
 }
 
-/**
- * Read settings.toml for model name, active agent, etc.
- */
+/** Read settings.toml for model name, active agent, etc. */
 export function readSettings(): WorkspaceData['settings'] {
   const settingsPath = path.join(os.homedir(), '.origami', 'settings.toml');
   const defaults: WorkspaceData['settings'] = {
@@ -197,8 +169,7 @@ export function readSettings(): WorkspaceData['settings'] {
   const model = content.match(/^model\s*=\s*"([^"]+)"/m);
   const agent = content.match(/^active_agent\s*=\s*"([^"]+)"/m);
   const api = content.match(/^api_base\s*=\s*"([^"]+)"/m);
-  // Phase 8 — mode-centric fields. Tolerate missing keys (legacy
-  // settings.toml that hasn't been re-saved since the migration).
+  // Mode-centric fields. Tolerate missing keys in a legacy settings.toml.
   const mode = content.match(/^active_mode\s*=\s*"([^"]+)"/m);
   const normal = content.match(/^default_model_normal\s*=\s*"([^"]+)"/m);
   const game = content.match(/^default_model_game\s*=\s*"([^"]+)"/m);
@@ -213,9 +184,7 @@ export function readSettings(): WorkspaceData['settings'] {
   };
 }
 
-/**
- * Read cron/jobs.json — returns up to 10 jobs sorted by next_run_at
- */
+/** Read cron/jobs.json — up to 10 jobs sorted by next_run_at. */
 export function readCronJobs(workspacePath: string): CronJob[] {
   const jobsPath = path.join(workspacePath, 'cron', 'jobs.json');
   if (!fs.existsSync(jobsPath)) return [];
@@ -256,9 +225,7 @@ export function readCronJobs(workspacePath: string): CronJob[] {
   }
 }
 
-/**
- * Read BOARD.md — parse markdown task sections
- */
+/** Read BOARD.md — parse markdown task sections. */
 export function readBoard(workspacePath: string): TaskItem[] {
   const boardPath = path.join(workspacePath, 'BOARD.md');
   if (!fs.existsSync(boardPath)) return [];
@@ -275,7 +242,6 @@ export function readBoard(workspacePath: string): TaskItem[] {
     else if (line.startsWith('- ')) {
       const text = line.slice(2).trim();
       if (text && !text.startsWith('_')) {
-        // Extract optional [project: X] / [goal: Y] / #project/X / #goal/Y tags
         const projectBracket = text.match(/\[project:\s*([^\]]+)\]/i)?.[1]?.trim();
         const goalBracket = text.match(/\[goal:\s*([^\]]+)\]/i)?.[1]?.trim();
         const projectHash = text.match(/(?:^|\s)#project\/([\w.-]+)/i)?.[1];
@@ -299,24 +265,15 @@ export function readBoard(workspacePath: string): TaskItem[] {
 }
 
 /**
- * Read `goals/<slug>/goal.md` files.
+ * Read `goals/<slug>/goal.md` — the subdirectory-per-goal shape Rust's
+ * `wiki::ops::goal_create` writes; the slug is the goal's stable id.
  *
- * Switched from the legacy flat
- * `goals/*.md` layout to the subdirectory-per-goal shape that
- * Rust's `wiki::ops::goal_create` actually writes. Each goal lives
- * at `<workspace>/goals/<slug>/goal.md` with a sibling
- * `progress.md`. The slug is the goal's stable id.
- *
- * Phase chip lines (the `- [x] Phase A1: name (5/5 tasks)` format
- * BoardPane renders as gates) are emitted into the `## Phases`
- * section by `wiki::ops::goal_set_phases` + auto-recomputed by
- * `wiki::ops::goal_recompute_chips` whenever a project task
- * mutation lands. The regex here matches the Rust-side writer
- * exactly — both sides MUST stay in lockstep.
+ * The phase-chip regex here matches the Rust-side writer
+ * (`wiki::ops::goal_set_phases` / `goal_recompute_chips`) exactly. Both sides
+ * MUST stay in lockstep.
  */
 export function readGoals(workspacePath: string): GoalItem[] {
   const goals: GoalItem[] = [];
-  // Endeavors PM overhaul — read the new layout first.
   const endeavorsDir = path.join(workspacePath, 'Endeavors', 'goals');
   if (fs.existsSync(endeavorsDir)) {
     for (const entry of fs.readdirSync(endeavorsDir, { withFileTypes: true })) {
@@ -345,7 +302,6 @@ export function readGoals(workspacePath: string): GoalItem[] {
         10,
       );
 
-      // Phase chip gates from body.
       const gates: GoalGate[] = [];
       const gateRegex = /^- \[([ x])\]\s+(.+?)\s+\((\d+)\/(\d+)\s+tasks?\)/gm;
       let gm;
@@ -378,8 +334,7 @@ export function readGoals(workspacePath: string): GoalItem[] {
     }
   }
 
-  // Legacy layout — surface any goals not yet migrated. Skip slugs
-  // already represented from the Endeavors pass.
+  // Legacy layout — surface goals not yet migrated; skip seen slugs.
   const seenSlugs = new Set(goals.map(g => g.id));
   const goalsDir = path.join(workspacePath, 'goals');
   if (!fs.existsSync(goalsDir)) return goals;
@@ -404,9 +359,8 @@ export function readGoals(workspacePath: string): GoalItem[] {
         'active') as GoalItem['status'];
     const owner = content.match(/^Owner:\s*(.+)/m)?.[1]?.trim() || 'coder';
 
-    // Parse phase-chip gates: lines like
-    // `- [x] Phase A1: Core runtime scaffold (5/5 tasks)`. Matches
-    // the Rust-side writer in `wiki::ops::format_chip_line`.
+    // Phase-chip gates: `- [x] Phase A1: Core runtime scaffold (5/5 tasks)`,
+    // matching the Rust writer in `wiki::ops::format_chip_line`.
     const gates: GoalGate[] = [];
     const gateRegex = /^- \[([ x])\]\s+(.+?)\s+\((\d+)\/(\d+)\s+tasks?\)/gm;
     let gm;
@@ -419,9 +373,8 @@ export function readGoals(workspacePath: string): GoalItem[] {
       });
     }
 
-    // Roll percentage from the chips when available — sum of
-    // task counts is more authoritative than a hand-typed
-    // `Progress:` line. Fall back to that line if no chips.
+    // Roll percentage from the chips when available — summed task counts beat a
+    // hand-typed `Progress:` line. Fall back to that line if no chips.
     let pct = 0;
     if (gates.length > 0) {
       const total = gates.reduce((acc, g) => acc + g.total, 0);
@@ -446,27 +399,22 @@ export function readGoals(workspacePath: string): GoalItem[] {
   return goals;
 }
 
-/**
- * Read wiki/pages/*.md files
- */
+/** Read wiki/pages/*.md files. */
 export function readWikiPages(workspacePath: string): WikiPage[] {
   return readWikiPagesFromDir(path.join(workspacePath, 'wiki', 'pages'), path.join(workspacePath, 'wiki'));
 }
 
 /**
- * The folder the memory graph sources by default: `<workspace>/wiki/pages`.
- * The workspace is the open project folder, whose wiki firstfold creates and
- * wrap writes to — so the wiki is ALWAYS the direct `wiki/pages`, empty or not
- * (it fills as wrap runs). Callers pass the open VS Code folder as the base.
+ * The folder the memory graph sources by default: `<workspace>/wiki/pages`. The
+ * wiki is ALWAYS the direct `wiki/pages`, empty or not. Callers pass the open
+ * VS Code folder as the base.
  */
 export function resolveDefaultWikiPages(workspacePath: string): string {
   return path.join(workspacePath, 'wiki', 'pages');
 }
 
-/**
- * Read .md files recursively from an arbitrary directory. Used when the user
- * picks a custom memory-graph folder.
- */
+/** Read .md files recursively from an arbitrary directory. Used when the user
+ *  picks a custom memory-graph folder. */
 export function readWikiPagesFromDir(pagesDir: string, relRoot?: string): WikiPage[] {
   if (!fs.existsSync(pagesDir)) return [];
   const root = relRoot ?? pagesDir;
@@ -479,7 +427,6 @@ export function readWikiPagesFromDir(pagesDir: string, relRoot?: string): WikiPa
     const title = content.match(/^#\s+(.+)/m)?.[1] || path.basename(filePath, '.md');
     const stat = fs.statSync(filePath);
 
-    // Extract tags from YAML frontmatter if present
     const tags: string[] = [];
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     if (fmMatch) {
@@ -506,9 +453,8 @@ export function readWikiPagesFromDir(pagesDir: string, relRoot?: string): WikiPa
 }
 
 /**
- * Parse outbound link targets from a page body. Content-agnostic — matches the
- * two conventions any wiki uses and returns raw targets (resolved to page ids
- * downstream):
+ * Parse outbound link targets from a page body — raw targets, resolved to page
+ * ids downstream:
  *   - `[[Target]]`, `[[Target|alias]]`, `[[Target#anchor]]`
  *   - markdown links to a local `.md` file: `[text](path/to/page.md)`
  * Skips external `http(s)` links. Deduped, in first-seen order.
@@ -541,32 +487,21 @@ function listMdFilesRecursive(dir: string): string[] {
 }
 
 /**
- * Slice B.0 — read project pages from
- * `<workspace>/wiki/pages/projects/*.md` (the canonical Rust path
- * that `wiki::ops::project_create` writes to). The legacy reader
- * scanned `<workspace>/projects/` and counted body checkboxes; this
- * version reads the YAML frontmatter directly so structured Task
- * fields (priority / status / depends_on / plan_link / etc.) come
- * through faithfully.
- *
- * The frontmatter is a constrained shape (it's emitted by `serde_yaml`
- * with a stable schema) so the parser below handles the fields we
- * need without pulling in a full YAML library. Anything it can't
- * parse degrades gracefully to defaults — bad/legacy pages still
- * render, just with empty task lists.
+ * Read project pages from `<workspace>/wiki/pages/projects/*.md` — the path
+ * `wiki::ops::project_create` writes to. Reads the YAML frontmatter directly so
+ * structured Task fields come through faithfully. The frontmatter is a
+ * constrained serde_yaml shape, so the parser below handles the needed fields
+ * without a YAML library; anything it cannot parse degrades to defaults.
  */
 export function readProjects(workspacePath: string): ProjectItem[] {
   const projects: ProjectItem[] = [];
 
-  // V8 close (cozy-lantern) — load every per-task file once, group
-  // by project_id. Each project's reader reaches into this map first;
-  // inline tasks: are only consulted as a fallback for genuinely
-  // un-migrated projects (zero per-task files for that project_id).
+  // Load every per-task file once, grouped by project_id. Inline `tasks:` is a
+  // fallback only for projects with zero per-task files.
   const tasksByProjectId = readPerTaskFilesByProject(workspacePath);
 
-  // Endeavors PM overhaul — read the new layout first.
-  // Each project lives at `Endeavors/projects/<P-ULID>/project.md`
-  // and carries `id` + `slug` in YAML frontmatter.
+  // Read the Endeavors layout first: each project lives at
+  // `Endeavors/projects/<P-ULID>/project.md` with `id` + `slug` in frontmatter.
   const endeavorsDir = path.join(workspacePath, 'Endeavors', 'projects');
   if (fs.existsSync(endeavorsDir)) {
     for (const entry of fs.readdirSync(endeavorsDir, { withFileTypes: true })) {
@@ -581,10 +516,7 @@ export function readProjects(workspacePath: string): ProjectItem[] {
       const slug = (fm as { slug?: string }).slug || projectId;
       const relPath = `Endeavors/projects/${projectId}/project.md`;
 
-      // V8 close (cozy-lantern): prefer per-task files when available.
-      // Source priority: per-task files > inline fm.tasks. Inline is
-      // a fallback for un-migrated projects only — zero per-task files
-      // for this project_id means nothing has been migrated yet.
+      // Prefer per-task files; inline `fm.tasks` is the un-migrated fallback.
       let tasks: TaskItem[];
       const perTask = tasksByProjectId.get(projectId);
       if (perTask && perTask.length > 0) {
@@ -623,8 +555,7 @@ export function readProjects(workspacePath: string): ProjectItem[] {
     }
   }
 
-  // Legacy fallback — surface any project not yet migrated. Skip
-  // slugs already represented from the Endeavors pass.
+  // Legacy fallback — surface projects not yet migrated; skip seen slugs.
   const seenSlugs = new Set(projects.map(p => p.id));
   const projDir = path.join(workspacePath, 'wiki', 'pages', 'projects');
   if (!fs.existsSync(projDir)) return projects;
@@ -673,16 +604,10 @@ export function readProjects(workspacePath: string): ProjectItem[] {
 }
 
 /**
- * Slice B.0 — minimal YAML frontmatter parser shaped for the
- * `wiki::ProjectFrontmatter` write format. Handles the scalar fields
- * + `tasks:` block list + simple string arrays. Returns `null` when
- * there is no `---` fence (page malformed or no frontmatter).
- *
- * Why hand-rolled instead of pulling `js-yaml`: the input shape is
- * fixed by serde_yaml output and the dashboard is a
- * latency-sensitive read path. A 70-line targeted parser keeps the
- * dep tree small and avoids surprises from yaml-spec edge cases
- * we don't need.
+ * Minimal YAML frontmatter parser shaped for the `wiki::ProjectFrontmatter`
+ * write format: scalar fields, the `tasks:` block list and simple string arrays.
+ * Returns `null` when there is no `---` fence. Hand-rolled rather than js-yaml
+ * because the input shape is fixed by serde_yaml and this is a read path.
  */
 interface ParsedTaskFm {
   /** Endeavors PM overhaul — durable T-<ULID>. Empty on legacy tasks. */
@@ -712,14 +637,9 @@ interface ParsedProjectFm {
 }
 
 /**
- * V8 close (cozy-lantern) — walk `Endeavors/tasks/*.md` once and
- * group every per-task file by its `project: P-XXX` backlink.
- * Returns a Map keyed by project_id; values are the tasks
- * belonging to that project, in directory-listing order (callers
- * should sort by status/priority if needed).
- *
- * Cheap to call on every refresh — typical workspaces have ≤ a few
- * hundred tasks. Skips malformed files silently rather than failing.
+ * Walk `Endeavors/tasks/*.md` once and group every per-task file by its
+ * `project: P-XXX` backlink. Values are in directory-listing order. Cheap on
+ * every refresh; skips malformed files silently rather than failing.
  */
 function readPerTaskFilesByProject(workspacePath: string): Map<string, ParsedTaskFm[]> {
   const out = new Map<string, ParsedTaskFm[]>();
@@ -741,23 +661,10 @@ function readPerTaskFilesByProject(workspacePath: string): Map<string, ParsedTas
 }
 
 /**
- * V8 close — parse a single per-task file. Frontmatter shape (from
- * `task_save_to_file` in crates/wiki/src/endeavors.rs):
- *
- * ```yaml
- * project: P-XXXX
- * id: T-XXXX
- * name: ...
- * status: pending
- * assigned_to: ...
- * priority: ...
- * depends_on: [...]
- * acceptance_criteria: ...
- * plan_link: ...
- * ```
- *
- * Returns `null` when the YAML frontmatter is missing or doesn't
- * carry the required `project:` and `name:` fields.
+ * Parse a single per-task file. Frontmatter (from `task_save_to_file` in
+ * crates/wiki/src/endeavors.rs): `project`, `id`, `name`, `status`,
+ * `assigned_to`, `priority`, `depends_on`, `acceptance_criteria`, `plan_link`.
+ * Returns `null` when `project:` or `name:` is missing.
  */
 function parsePerTaskFile(content: string): { projectId: string; task: ParsedTaskFm } | null {
   const fenceMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -816,9 +723,8 @@ function parsePerTaskFile(content: string): { projectId: string; task: ParsedTas
 }
 
 /**
- * V8 close — shared finalisation step for TaskItem rows. Both the
- * per-task-file path AND the inline fallback path go through this
- * so the visible shape stays identical regardless of source.
+ * Shared finalisation for TaskItem rows: both the per-task-file path and the
+ * inline fallback go through it, so the visible shape stays identical.
  */
 function finalizeTaskItem(
   t: ParsedTaskFm,
@@ -852,7 +758,6 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    // Top-level scalar key.
     const scalarMatch = line.match(/^([a-z_]+)\s*:\s*(.*)$/);
     if (!scalarMatch) {
       i++;
@@ -862,7 +767,6 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
     const rawValue = scalarMatch[2];
 
     if (rawValue && rawValue !== '~' && rawValue !== 'null') {
-      // Inline scalar value.
       const value = unquoteYamlScalar(rawValue);
       switch (key) {
         case 'id': out.id = value; break;
@@ -878,7 +782,6 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
       continue;
     }
 
-    // Empty value → block list or empty container.
     if (key === 'paths' || key === 'assigned_agents') {
       const items: string[] = [];
       i++;
@@ -896,13 +799,10 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
       const tasks: ParsedTaskFm[] = [];
       i++;
       while (i < lines.length && /^\s*-\s+/.test(lines[i])) {
-        // Each task block starts with `- name: ...` (or
-        // `-` then `  name: ...` on the next line). Collect
-        // every line that's part of this task — the task
-        // ends at the next `-` at the same indent.
+        // A task block starts with `- name: ...` and ends at the next `-` at the
+        // same indent.
         const taskLines: string[] = [];
         const startIndent = lines[i].match(/^(\s*)-/)?.[1].length ?? 0;
-        // First line: include text after `- ` for inline first field.
         taskLines.push(lines[i].replace(/^\s*-\s+/, ''));
         i++;
         while (i < lines.length) {
@@ -911,7 +811,6 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
             break;
           }
           if (/^\S/.test(cur)) {
-            // Top-level key — task list ended.
             break;
           }
           taskLines.push(cur.replace(/^\s{2,}/, ''));
@@ -924,7 +823,6 @@ function parseProjectFrontmatter(content: string): ParsedProjectFm | null {
       continue;
     }
 
-    // Anything else: skip and advance.
     i++;
   }
   return out;
@@ -963,7 +861,6 @@ function parseTaskBlock(lines: string[]): ParsedTaskFm | null {
       i++;
       continue;
     }
-    // Block list under task.
     if (key === 'depends_on') {
       i++;
       while (i < lines.length && /^\s*-\s+/.test(lines[i])) {
@@ -999,10 +896,8 @@ function unquoteYamlScalar(raw: string): string {
 }
 
 /**
- * Slice B.0 — project the 12-state Rust `TaskStatus` down to the
- * 5 distinct visual states the dashboard renders. `null`/unknown
- * status defaults to `pending` so legacy / hand-edited tasks still
- * render.
+ * Project the 12-state Rust `TaskStatus` down to the 5 visual states the
+ * dashboard renders. Unknown status defaults to `pending`.
  */
 function projectTaskStatus(raw: string): TaskItem['status'] {
   switch (raw) {
@@ -1029,22 +924,17 @@ function projectTaskStatus(raw: string): TaskItem['status'] {
 }
 
 /**
- * V1 is single-agent: there is no multi-agent roster. Identity is a fixed
- * fact, not a filesystem-sourced roster. The brand identity is Tsuru (the
- * crane). `archetype` stays the internal `coder` body the bridge scaffolds
- * from; `name` is the display label the UI shows.
+ * V1 is single-agent: identity is a fixed fact, not a filesystem roster. The
+ * brand identity is Tsuru; `archetype` stays the internal `coder` body.
  */
 export function readAgents(_workspacePath: string): AgentProfile[] {
   return [{ id: 'tsuru', name: 'Tsuru', archetype: 'coder' }];
 }
 
 /**
- * Resolve an internal agent value (a settings.toml `active_agent`, an
- * archetype body name like `coder`, or a roster id like `tsuru`) to the
- * user-visible display label from the fixed roster. The bridge / settings
- * may still carry the internal `coder` archetype, but NOTHING the user
- * sees should read `coder` — every label resolves to the brand identity
- * Tsuru (the crane). Unknown values fall back to the brand default.
+ * Resolve an internal agent value (settings.toml `active_agent`, an archetype
+ * like `coder`, or a roster id like `tsuru`) to the display label. NOTHING the
+ * user sees should read `coder`. Unknown values fall back to the brand default.
  */
 export function displayAgentName(internal?: string): string {
   const roster = readAgents('');
@@ -1054,9 +944,8 @@ export function displayAgentName(internal?: string): string {
       (a) => a.id.toLowerCase() === v || a.archetype.toLowerCase() === v || a.name.toLowerCase() === v,
     );
     if (hit) return hit.name;
-    // S6e honest labels: an UNKNOWN agent id renders as ITSELF (capitalised), not
-    // collapsed to the brand default - a typed agent shows its real id instead of
-    // masquerading as Tsuru.
+    // An UNKNOWN agent id renders as ITSELF (capitalised) rather than
+    // masquerading as the brand default.
     if (v) return v.charAt(0).toUpperCase() + v.slice(1);
   }
   // Empty / unset — brand default is the first roster entry (Tsuru).
@@ -1064,10 +953,8 @@ export function displayAgentName(internal?: string): string {
 }
 
 /**
- * S8 V16 (bright-muffin) — read just the agent's `profile/art.txt`
- * for the chat-banner ASCII art. Returns null when the file is
- * missing or empty so callers can render the banner conditionally
- * without parsing a full agent detail payload.
+ * Read the agent's `profile/art.txt` for the chat-banner ASCII art. Null when
+ * missing or empty, so callers can render the banner conditionally.
  */
 export function readAgentArt(workspacePath: string, agentId: string): string | null {
   if (!agentId) return null;
@@ -1081,9 +968,7 @@ export function readAgentArt(workspacePath: string, agentId: string): string | n
   }
 }
 
-/**
- * Read all workspace data at once
- */
+/** Read all workspace data at once. */
 export function readWorkspaceData(workspacePath: string): WorkspaceData {
   return {
     settings: readSettings(),
@@ -1098,12 +983,9 @@ export function readWorkspaceData(workspacePath: string): WorkspaceData {
 }
 
 /**
- * Phase 3.5 of the Endeavors PM overhaul — read every orphan plan
- * file at `Endeavors/_inbox/plans/<X-ULID>.md`. Cold-stored
- * (discarded) plans live at `Endeavors/_inbox/cold/` and are
- * deliberately not surfaced — the BoardPane only cares about
- * orphans waiting for a parent. Returns an empty array when the
- * inbox doesn't exist (un-migrated workspace).
+ * Read every orphan plan at `Endeavors/_inbox/plans/<X-ULID>.md`. Cold-stored
+ * plans at `Endeavors/_inbox/cold/` are deliberately not surfaced. Empty array
+ * when the inbox does not exist.
  */
 export function readInboxPlans(workspacePath: string): InboxPlan[] {
   const inboxDir = path.join(workspacePath, 'Endeavors', '_inbox', 'plans');
@@ -1124,18 +1006,9 @@ export function readInboxPlans(workspacePath: string): InboxPlan[] {
     if (!fmMatch) continue;
     const yaml = fmMatch[1];
 
-    // The inbox plan YAML is a flat shape — id / title / status /
-    // created / suggested_parent_kind / suggested_paths array.
-    // Hand-roll a tiny parser to keep this file dep-free, mirroring
-    // `parseProjectFrontmatter`.
-    //
-    // V11 close (bright-muffin, 2026-05-06) — read the canonical
-    // `id:` from frontmatter rather than deriving it from the
-    // filename stem. Plans now write under generated label
-    // filenames, so the stem is
-    // not the X-ULID. Falls back to the stem only when the
-    // frontmatter is missing the field entirely (legacy plans
-    // saved before the X-ULID field landed).
+    // The inbox plan YAML is a flat shape; hand-roll a tiny parser mirroring
+    // `parseProjectFrontmatter`. Read the canonical `id:` from frontmatter and
+    // fall back to the filename stem only for legacy plans that lack the field.
     const idFromFm =
       yaml.match(/^id:\s*(.+)$/m)?.[1]?.trim().replace(/['"]/g, '');
     const id = idFromFm && idFromFm.length > 0 ? idFromFm : filenameStem;
@@ -1152,7 +1025,6 @@ export function readInboxPlans(workspacePath: string): InboxPlan[] {
         ? (kindRaw.replace(/['"]/g, '') as InboxPlan['suggestedParentKind'])
         : undefined;
 
-    // suggested_paths — block list under the key.
     const suggestedPaths: string[] = [];
     const lines = yaml.split(/\r?\n/);
     let i = 0;
@@ -1194,11 +1066,9 @@ export function readInboxPlans(workspacePath: string): InboxPlan[] {
 }
 
 /**
- * Phase 3.5 — score how well an orphan plan fits a candidate
- * project. A plan's `suggestedPaths` are matched against the
- * project's declared `paths:`; each suggested-path prefix that is
- * fully contained by one of the project paths counts as +1. Pure
- * count, not normalised — the BoardPane uses it for ordering only.
+ * Score how well an orphan plan fits a candidate project: each `suggestedPaths`
+ * prefix fully contained by one of the project's `paths:` counts as +1. Pure
+ * count, not normalised — used for ordering only.
  */
 export function scoreInboxMatch(plan: InboxPlan, projectPaths: string[]): number {
   if (!plan.suggestedPaths || plan.suggestedPaths.length === 0) return 0;

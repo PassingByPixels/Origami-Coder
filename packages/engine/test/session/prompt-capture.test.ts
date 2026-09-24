@@ -256,6 +256,198 @@ describe("the tool inventory", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// The prefix digest — the instrument behind "the cache dropped and nobody knows
+// why". 69.6% of measured cache drops happened within 300s on the SAME model,
+// so the prefix moved; these tests fix what "moved" means, because a digest
+// that changes for a reason the provider does not see would blame the wrong
+// thing, and one that holds through a real change would hide the defect.
+// ---------------------------------------------------------------------------
+
+describe("the prefix digest", () => {
+  const tool = (description: string, schema: Parameters<typeof jsonSchema>[0] = { type: "object" }) => ({
+    description,
+    inputSchema: jsonSchema(schema),
+  })
+
+  const prepared = (input: { session: string; system: string[]; tools?: Record<string, unknown> }) => {
+    SessionPromptCapture.draft(input.session, [staged("env", "env text")])
+    SessionPromptCapture.record({
+      sessionID: input.session,
+      capturedAt: "2026-09-02T00:00:00.000Z",
+      model: "anthropic/claude",
+      base: ["base"],
+      finalSystem: input.system,
+      tools: (input.tools ?? {}) as never,
+    })
+    return SessionPromptCapture.prefixDigest(input.session)
+  }
+
+  test("a session that never prepared a request has NO digest — not an empty one", () => {
+    expect(SessionPromptCapture.prefixDigest("ses_never")).toBeUndefined()
+  })
+
+  test("a request that staged no draft records nothing, so there is still no digest", () => {
+    SessionPromptCapture.record({
+      sessionID: "ses_compaction",
+      capturedAt: "2026-09-02T00:00:00.000Z",
+      model: "anthropic/claude",
+      base: ["base"],
+      finalSystem: ["a whole different prompt"],
+      tools: {},
+    })
+
+    expect(SessionPromptCapture.prefixDigest("ses_compaction")).toBeUndefined()
+  })
+
+  test("a compaction between two turns DROPS the reading rather than reusing it", () => {
+    // The trap this guards: compaction sends its own prompt. Carrying the last
+    // turn's digest across it would let compaction's step-finish parts claim a
+    // prefix they never had, and a reader would see two matching hashes across
+    // a call that really did change everything.
+    const first = prepared({ session: "ses_mixed", system: ["S"], tools: { grep: tool("Search") } })
+    expect(first).toBeDefined()
+
+    SessionPromptCapture.record({
+      sessionID: "ses_mixed",
+      capturedAt: "2026-09-02T00:00:01.000Z",
+      model: "anthropic/claude",
+      base: [],
+      finalSystem: [],
+      tools: {},
+    })
+    expect(SessionPromptCapture.prefixDigest("ses_mixed")).toBeUndefined()
+
+    // ...and the next real turn measures again, back to the same prefix.
+    const third = prepared({ session: "ses_mixed", system: ["S"], tools: { grep: tool("Search") } })
+    expect(third).toEqual(first)
+  })
+
+  test("identical system text and tools hash identically across two prepared requests", () => {
+    // This is the property the whole item exists to assert: nothing in the
+    // digest is derived from the clock, the session, or the call count.
+    const system = ["You are Origami.", "<env>\n  Today's date: Tue Sep 02 2026\n</env>"]
+    const tools = { bash: tool("Run a command"), grep: tool("Search files") }
+
+    const first = prepared({ session: "ses_stable_a", system, tools })
+    const second = prepared({ session: "ses_stable_a", system: [...system], tools: { ...tools } })
+
+    expect(first).toBeDefined()
+    expect(second).toEqual(first)
+    expect(first!.system).toMatch(/^[0-9a-f]{16}$/)
+    expect(first!.tools).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  test("changing the system text moves the system hash and leaves the tool hash alone", () => {
+    const tools = { grep: tool("Search files") }
+    const before = prepared({ session: "ses_sys", system: ["Today is Tuesday"], tools })
+    const after = prepared({ session: "ses_sys", system: ["Today is Wednesday"], tools })
+
+    expect(after!.system).not.toBe(before!.system)
+    expect(after!.tools).toBe(before!.tools)
+  })
+
+  test("the hash follows the BYTES SENT, not the block structure that produced them", () => {
+    // Deliberate, and worth pinning: the request layer joins the blocks before
+    // they go on the wire, so two splittings that join to the same text are the
+    // same prefix and a provider's cache would hit on both. A digest that told
+    // them apart would report a drop the provider never saw.
+    const one = prepared({ session: "ses_join", system: ["alpha\nbeta"] })
+    const two = prepared({ session: "ses_join", system: ["alpha", "beta"] })
+
+    expect(two!.system).toBe(one!.system)
+  })
+
+  test("changing a tool DESCRIPTION moves the tool hash and leaves the system hash alone", () => {
+    const system = ["You are Origami."]
+    const before = prepared({ session: "ses_desc", system, tools: { grep: tool("Search files") } })
+    const after = prepared({ session: "ses_desc", system, tools: { grep: tool("Search files fast") } })
+
+    expect(after!.tools).not.toBe(before!.tools)
+    expect(after!.system).toBe(before!.system)
+  })
+
+  test("changing a tool SCHEMA moves the tool hash even when every description is identical", () => {
+    // The 65 KB of tool schemas is the largest single block in the prefix and
+    // the one most likely to drift under a lazy-catalog change, so a digest
+    // that only watched descriptions would miss the real cache drop.
+    const system = ["You are Origami."]
+    const before = prepared({
+      session: "ses_schema",
+      system,
+      tools: { grep: tool("Search", { type: "object", properties: { q: { type: "string" } } }) },
+    })
+    const after = prepared({
+      session: "ses_schema",
+      system,
+      tools: { grep: tool("Search", { type: "object", properties: { q: { type: "number" } } }) },
+    })
+
+    expect(after!.tools).not.toBe(before!.tools)
+  })
+
+  test("ADDING a tool moves the tool hash", () => {
+    const system = ["You are Origami."]
+    const before = prepared({ session: "ses_add", system, tools: { grep: tool("Search") } })
+    const after = prepared({
+      session: "ses_add",
+      system,
+      tools: { grep: tool("Search"), bash: tool("Run") },
+    })
+
+    expect(after!.tools).not.toBe(before!.tools)
+  })
+
+  test("REORDERING the tools moves the tool hash — a reordered block is a real cache miss", () => {
+    const system = ["You are Origami."]
+    const before = prepared({
+      session: "ses_order",
+      system,
+      tools: { bash: tool("Run"), grep: tool("Search") },
+    })
+    const after = prepared({
+      session: "ses_order",
+      system,
+      tools: { grep: tool("Search"), bash: tool("Run") },
+    })
+
+    expect(after!.tools).not.toBe(before!.tools)
+  })
+
+  test("the repair-only `invalid` tool is outside the digest — the model is never offered it", () => {
+    const system = ["You are Origami."]
+    const without = prepared({ session: "ses_repair", system, tools: { grep: tool("Search") } })
+    const with_ = prepared({
+      session: "ses_repair",
+      system,
+      tools: { grep: tool("Search"), invalid: tool("Do not use") },
+    })
+
+    expect(with_!.tools).toBe(without!.tools)
+  })
+
+  test("a NUL-separated field boundary cannot be forged from a description", () => {
+    // Without a separator no description could impersonate, a tool named "a"
+    // described "b" would hash the same as a tool named "ab" with no
+    // description, and the instrument would report a stable prefix across a
+    // renamed tool.
+    const system = ["S"]
+    const split = prepared({ session: "ses_nul", system, tools: { a: tool("b") } })
+    const joined = prepared({ session: "ses_nul", system, tools: { ab: tool("") } })
+
+    expect(joined!.tools).not.toBe(split!.tools)
+  })
+
+  test("the digest store is bounded like the captures it rides with", () => {
+    for (let index = 0; index <= SessionPromptCapture.LIMIT; index++) {
+      prepared({ session: `ses_bounded_${index}`, system: [`system ${index}`] })
+    }
+
+    expect(SessionPromptCapture.prefixDigest("ses_bounded_0")).toBeUndefined()
+    expect(SessionPromptCapture.prefixDigest(`ses_bounded_${SessionPromptCapture.LIMIT}`)).toBeDefined()
+  })
+})
+
 // The end-to-end proof: the capture is taken from the REAL prepared request,
 // after the plugin hook that can reshape it. Mirrors the prepare() harness in
 // test/provider/transform.test.ts.

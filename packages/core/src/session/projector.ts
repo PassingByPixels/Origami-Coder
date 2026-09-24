@@ -13,6 +13,7 @@ import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
 import { SessionContextEpoch } from "./context-epoch"
+import { SessionSteps } from "./steps"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
@@ -47,6 +48,10 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     project_id: info.projectID,
     workspace_id: info.workspaceID ?? null,
     parent_id: info.parentID,
+    // t-uhxos2. `undefined` when the info has no fork, so an update from an info that
+    // does not carry it (an older engine's event) never clears a stored link.
+    fork_session_id: info.fork?.sessionID,
+    fork_time: info.fork?.time,
     slug: info.slug,
     directory: info.directory,
     path: info.path,
@@ -107,6 +112,54 @@ function applyUsage(
     .where(eq(SessionTable.id, sessionID))
     .run()
     .pipe(Effect.orDie)
+}
+
+/** `steps + delta`. A NULL row (not backfilled yet) stays NULL, see SessionSteps. */
+function applySteps(
+  db: DatabaseService,
+  sessionID: (typeof SessionV1.Event.MessageUpdated.Type)["data"]["sessionID"],
+  delta: number,
+) {
+  return db
+    .update(SessionTable)
+    .set({ steps: sql`${SessionTable.steps} + ${delta}`, time_updated: sql`${SessionTable.time_updated}` })
+    .where(eq(SessionTable.id, sessionID))
+    .run()
+    .pipe(Effect.orDie)
+}
+
+/** The stored message a step count needs: its session and its rule shape. */
+function stepMessage(db: DatabaseService, messageID: (typeof MessageTable.$inferSelect)["id"]) {
+  return db
+    .select({ sessionID: MessageTable.session_id, data: MessageTable.data })
+    .from(MessageTable)
+    .where(eq(MessageTable.id, messageID))
+    .get()
+    .pipe(
+      Effect.orDie,
+      Effect.map((row) => (row ? { sessionID: row.sessionID, shape: SessionSteps.shape(row.data) } : undefined)),
+    )
+}
+
+/**
+ * One counting part joins (`sign` 1) or leaves (-1) its message. The message
+ * adds max(counting parts, fallback), so the session changes by one unless the
+ * message has the fallback and this part is its only counting part: then the
+ * message adds 1 either way.
+ */
+function partStep(
+  db: DatabaseService,
+  messageID: (typeof MessageTable.$inferSelect)["id"],
+  partID: string,
+  sign: 1 | -1,
+) {
+  return Effect.gen(function* () {
+    const message = yield* stepMessage(db, messageID)
+    if (!message?.shape.eligible) return
+    if (message.shape.fallback && !(yield* SessionSteps.otherCountingPart(db, messageID, partID).pipe(Effect.orDie)))
+      return
+    yield* applySteps(db, message.sessionID, sign)
+  })
 }
 
 function run(db: DatabaseService, event: SessionEvent.Event) {
@@ -216,7 +269,10 @@ const layer = Layer.effectDiscard(
       Effect.gen(function* () {
         const stored = yield* db
           .insert(SessionTable)
-          .values(sessionRow(event.data.info))
+          // A new session has no messages yet, so its step count is a known 0,
+          // not NULL. `sessionRow` leaves `steps` out so that Updated, which
+          // writes a whole row read earlier, never overwrites the running count.
+          .values({ ...sessionRow(event.data.info), steps: 0 })
           .onConflictDoNothing()
           .returning({ sessionID: SessionTable.id })
           .get()
@@ -265,12 +321,22 @@ const layer = Layer.effectDiscard(
         const id = event.data.info.id
         const sessionID = event.data.info.sessionID
         const data = messageData(event.data.info)
+        const stored = yield* stepMessage(db, id)
         yield* db
           .insert(MessageTable)
           .values({ id, session_id: sessionID, time_created, data })
           .onConflictDoUpdate({ target: MessageTable.id, set: { data } })
           .run()
           .pipe(Effect.orDie)
+        // Steps: only a change of role, source or message tokens can change what
+        // this message adds. In practice that is its first write.
+        const before = stored?.shape ?? SessionSteps.NONE
+        const after = SessionSteps.shape(data)
+        if (before.eligible !== after.eligible || before.fallback !== after.fallback) {
+          const parts = yield* SessionSteps.countingParts(db, id).pipe(Effect.orDie)
+          const delta = SessionSteps.contribution(after, parts) - SessionSteps.contribution(before, parts)
+          if (delta !== 0) yield* applySteps(db, stored?.sessionID ?? sessionID, delta)
+        }
       }),
     )
     yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
@@ -285,6 +351,11 @@ const layer = Layer.effectDiscard(
           const previous = usage(row.data)
           if (previous) yield* applyUsage(db, event.data.sessionID, previous, -1)
         }
+        const message = yield* stepMessage(db, event.data.messageID)
+        const steps = message
+          ? SessionSteps.contribution(message.shape, rows.filter((row) => SessionSteps.counts(row.data)).length)
+          : 0
+        if (message && steps > 0) yield* applySteps(db, message.sessionID, -steps)
         yield* db
           .delete(MessageTable)
           .where(and(eq(MessageTable.id, event.data.messageID), eq(MessageTable.session_id, event.data.sessionID)))
@@ -302,6 +373,7 @@ const layer = Layer.effectDiscard(
           .pipe(Effect.orDie)
         const previous = row && usage(row.data)
         if (previous) yield* applyUsage(db, event.data.sessionID, previous, -1)
+        if (row && SessionSteps.counts(row.data)) yield* partStep(db, row.message_id, row.id, -1)
         yield* db
           .delete(PartTable)
           .where(and(eq(PartTable.id, event.data.partID), eq(PartTable.session_id, event.data.sessionID)))
@@ -326,6 +398,11 @@ const layer = Layer.effectDiscard(
         const next = usage(event.data.part)
         if (previous) yield* applyUsage(db, row.session_id, previous, -1)
         if (next) yield* applyUsage(db, sessionID, next)
+        // The upsert keeps a part's first message_id, so that is the message it
+        // counts in. A replace that keeps the part counting changes nothing.
+        const counted = row !== undefined && SessionSteps.counts(row.data)
+        const counts = SessionSteps.counts(event.data.part)
+        if (counted !== counts) yield* partStep(db, row?.message_id ?? messageID, id, counts ? 1 : -1)
       }),
     )
     yield* events.project(SessionEvent.AgentSwitched, (event) =>
@@ -452,6 +529,10 @@ const layer = Layer.effectDiscard(
         yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
+    // Rows older than the `steps` column are counted in the background, not in
+    // the migration (see SessionSteps.backfill). The projectors above are in
+    // place first, so a row counted from here on is kept current.
+    yield* Effect.forkScoped(SessionSteps.backfill(db))
   }),
 )
 

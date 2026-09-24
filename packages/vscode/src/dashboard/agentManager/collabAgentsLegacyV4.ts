@@ -1,21 +1,8 @@
-// collabAgentsLegacyV4.ts - the FROZEN v4 seed pair, exactly as it shipped.
-// Same standing rule as collabAgentsLegacy.ts, whose family this joins: DO NOT
-// EDIT. Editing a payload here would make an untouched install read as
-// user-edited and the pane would stop offering it the reseed note.
-//
-// ITS OWN FILE, not a fourth const in collabAgentsLegacy.ts, for the ordinary
-// reason: that file stood at 204 of its 210-line cap and a frozen generation is
-// ~55 lines. The ratchet's remedy is a module, never a raised number - and this
-// is the split that will keep paying, because every future generation is one
-// more file rather than one more 200-line block in a file already at its limit.
-//
-// WHAT V4 WAS. The first UNPINNED generation (no `model:` line), and the last
-// one whose personas were written for a ROOM: both bodies said "in this collab"
-// and both carried the shared `COLLAB_DISCIPLINE` block. W9's owner ruling
-// retired that shape - a bot runs alone, in a room and as a sub-agent alike, and
-// the room's own rules are injected by the runner at turn time
-// (collab/collab-agent-base.txt), so a persona naming the room was wrong two
-// times in three. The live generation is v5 in collabAgents.ts.
+// FROZEN v4 seed pair. Same DO-NOT-EDIT rule as collabAgentsLegacy.ts, split into its own
+// file since that one was at its line cap. V4 was the first unpinned generation but still
+// wrote room-worded personas (shared COLLAB_DISCIPLINE block); a later ruling retired that
+// shape since the room's rules are now injected by the runner at turn time. Live generation
+// is v5 in collabAgents.ts.
 
 import { OBSERVER_PERMISSION_BLOCK, OBSERVER_STEPS, WORKER_PERMISSION_BLOCK, WORKER_STEPS } from './collabPresets';
 

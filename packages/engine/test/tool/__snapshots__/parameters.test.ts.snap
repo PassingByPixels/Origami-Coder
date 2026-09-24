@@ -648,3 +648,123 @@ exports[`tool parameters JSON Schema (wire shape) board_worktrees 1`] = `
   "type": "object",
 }
 `;
+
+exports[`tool parameters JSON Schema (wire shape) webmcp_list 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {},
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) webmcp_launch 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "site": {
+      "description": "Registered site name (or its address), as listed by webmcp_list.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "site",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) webmcp_note 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "notes": {
+      "description": "What a later session should know about this site: the tools it exposed, how they wanted to be called, what did not work. REPLACES the stored note, so restate anything still true. Empty clears it.",
+      "type": "string",
+    },
+    "site": {
+      "description": "Registered site name (or its address), as listed by webmcp_list.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "site",
+    "notes",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) webmcp_tools 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "detail": {
+      "description": "Return full descriptions and full input schemas instead of the clipped summary. Needed when a site publishes more tools than the summary will describe.",
+      "type": "boolean",
+    },
+    "site": {
+      "description": "Registered site name (or its address), as listed by webmcp_list.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "site",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) webmcp_call 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "args": {
+      "description": "Arguments object matching that tool's input schema. Omit for a tool that takes none.",
+      "type": "object",
+    },
+    "site": {
+      "description": "Registered site name (or its address), as listed by webmcp_list.",
+      "type": "string",
+    },
+    "tool": {
+      "description": "Name of one of the tools the site publishes, exactly as webmcp_launch or webmcp_tools listed it.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "site",
+    "tool",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) side_quest 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "instructions": {
+      "description": "The brief a fresh agent would start from - scope, files, and what done looks like.",
+      "type": "string",
+    },
+    "rationale": {
+      "description": "Optional. Why you think this is worth doing, to help the owner triage it quickly.",
+      "type": "string",
+    },
+    "summary": {
+      "description": "One to three sentences: what the work is.",
+      "type": "string",
+    },
+    "title": {
+      "description": "One line naming the follow-up work.",
+      "type": "string",
+    },
+  },
+  "required": [
+    "title",
+    "summary",
+    "instructions",
+  ],
+  "type": "object",
+}
+`;

@@ -22,10 +22,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { AcpClient, type AcpEventHandlers } from '../../../src/acpClient';
-import { archiveLog, logSubagentDone, logToolCall, logToolResult, type SessionMessage } from '../../../src/dashboard/sessionLog';
+import { archiveLog, logSubagentDone, logSubagentTokens, logToolCall, logToolResult, type SessionMessage } from '../../../src/dashboard/sessionLog';
 import { restoreLog, type RestoredEntry } from '../panes/chatRestore';
 import { subagentRows } from '../panes/subagentRows';
 import { elapsedText } from '../panes/subagentFormat';
+import { tokensTotalText } from '../panes/subagentTokens';
+import { mapTree } from '../panes/subagentMapNodes';
 
 type Notification = { sessionId: string; update: Record<string, unknown> };
 
@@ -332,5 +334,100 @@ describe('reload defect 2 — the reopened chat learns its stored title', () => 
     // RED before the engine fix: the replay contained NO session_info_update at
     // all, so this array was empty and the row fell back to the agent name.
     expect(titles).toEqual(['E2E Title']);
+  });
+});
+
+// reload defect 6 — every restored sub-agent row and map card showed NO tokens.
+//
+// The counters only ever arrive on the child's side channel (a background
+// launcher's tool call completed at SPAWN, so the engine can no longer write
+// its metadata), and the host logged neither the live posts ("transient
+// progress") nor the settling chunk's final total — `logSubagentDone` stamped
+// the marker and the end time alone. So the message log a reload is rebuilt
+// from carried no spend at all, which is what the owner's six done rows showed.
+//
+// The fix writes the total ONTO THE CARD in the log (one field, never an
+// appended entry) from both sources, and the restore's existing write-if-present
+// rider merge (taskRiders.ts) carries it back to the roster.
+describe('reload defect 6 — a sub-agent`s token total survives a reload', () => {
+  // 54_210 + 96 = 54_306 -> '54.3k tokens' (subagentTokens.ts).
+  const SPEND = { input: 54_210, output: 96, reasoning: 58, cacheRead: 0, cacheWrite: 0, cost: 0.1234 };
+  const LIVE = { input: 30_000, output: 40, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0.05 };
+
+  /** The host's log for a background `task`, exactly as a reload rebuilds it:
+   *  the replayed tool frames, and nothing else. The launcher call carries NO
+   *  tokens — that is the whole reason this defect exists. */
+  const spawnedLog = (): SessionMessage[] => {
+    const log: SessionMessage[] = [];
+    logToolCall(log, { toolCallId: 'call_task', title: 'task', toolName: 'task' });
+    logToolResult(log, {
+      toolCallId: 'call_task', toolName: 'task', status: 'completed', contentText: 'spawned',
+      taskSessionId: 'child-a', taskBackground: true, taskStartedAt: 1_700_000_000_000,
+    });
+    return log;
+  };
+
+  const restoredRows = (log: SessionMessage[]) => {
+    const messages = restoreLog<any>([], log as RestoredEntry[], (() => { let n = 1; return () => n++; })(), 'Tsuru');
+    return subagentRows(messages, 1_700_000_100_000);
+  };
+
+  it('the done marker`s total reaches the drawer row AND the map card', () => {
+    const log = spawnedLog();
+    logSubagentDone(log, 'child-a', 'completed', 1_700_000_050_000, SPEND);
+
+    const row = restoredRows(log)[0];
+    expect(row.state).toBe('done');
+    // RED before the fix: undefined — nothing ever wrote a token figure to the log.
+    expect(row.tokens).toEqual(SPEND);
+    expect(tokensTotalText(row.tokens)).toBe('54.3k tokens');
+    // The map draws from the same roster, and is the owner's second blank surface.
+    expect(mapTree([row]).nodes[0].tokens).toBe('54.3k tokens');
+  });
+
+  it('a child still RUNNING at the reload keeps its latest live figure', () => {
+    // No marker: the only figure that exists is the last `subagentTokens` post,
+    // which is now overwritten in place on the card rather than dropped.
+    const log = spawnedLog();
+    logSubagentTokens(log, 'child-a', { input: 10, output: 1 });
+    logSubagentTokens(log, 'child-a', LIVE); // latest wins, and no entry is appended
+    expect(log).toHaveLength(1);
+
+    const row = restoredRows(log)[0];
+    expect(row.state).toBe('running');
+    expect(row.tokens).toEqual(LIVE);
+    expect(tokensTotalText(row.tokens)).toBe('30k tokens');
+  });
+
+  it('a done marker WITHOUT tokens keeps the last live figure instead of blanking it', () => {
+    // An older engine rides the marker but no counters. Losing the figure at the
+    // last moment would be worse than never showing one.
+    const log = spawnedLog();
+    logSubagentTokens(log, 'child-a', LIVE);
+    logSubagentDone(log, 'child-a', 'completed', 1_700_000_050_000);
+
+    const row = restoredRows(log)[0];
+    expect(row.state).toBe('done');
+    expect(row.tokens).toEqual(LIVE);
+  });
+
+  it('an OLD log with no tokens at all restores BLANK, never `0 tokens`', () => {
+    // Fail-open, the same rule as acpTaskTokens.ts: nothing told us, so the row
+    // says nothing. `0 tokens` would claim the agent spent nothing.
+    const log = spawnedLog();
+    logSubagentDone(log, 'child-a', 'completed', 1_700_000_050_000);
+
+    const row = restoredRows(log)[0];
+    expect(row.tokens).toBeUndefined();
+    expect(tokensTotalText(row.tokens)).toBe('');
+    expect(mapTree([row]).nodes[0].tokens).toBe('');
+  });
+
+  it('a token post for an unknown child changes nothing', () => {
+    // Same rule as the marker: stamping the newest card instead would put one
+    // agent's spend on another's row.
+    const log = spawnedLog();
+    logSubagentTokens(log, 'child-nobody', LIVE);
+    expect(restoredRows(log)[0].tokens).toBeUndefined();
   });
 });

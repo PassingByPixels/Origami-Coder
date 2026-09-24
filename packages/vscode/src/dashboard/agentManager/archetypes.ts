@@ -1,109 +1,44 @@
-// Agent Manager - archetypes.ts (S9/S11/S12): the Kilo-style predefined agent
-// ARCHETYPES, shipped as engine agent-definition files so they surface in the
-// board picker with ZERO extra plumbing. The engine loads {agent,agents}/**/*.md
-// from every config dir (config/agent.ts load()); the FIRST config dir is
-// Global.Path.config = (XDG_CONFIG_HOME || ~/.config)/origami. So writing
-// architect/ask/debug/orchestrator/scout .md into <that>/agent makes them real
-// agents. mode !== subagent + not hidden => an agent rides the ACP mode roster
-// (acp/directory.ts:126 filter), which the S6a harvest unions into the board
-// picker. File name (minus .md) is the agent id; none collide with the built-ins
-// (build/plan/general/explore/compaction/title/summary).
-//
-// SCOUT + the laundering fix (S12). ask/architect ran read-only at their OWN
-// permission layer, but their v2 task allowlist let them delegate to the built-in
-// 'explore' subagent - and a child subagent runs under ITS OWN ruleset, not the
-// parent's (tool/task.ts:155 derives the child session from the parent SESSION
-// permission, which is empty for a top-level run; subagent-permissions.ts only
-// forwards parent DENY + external_directory rules). 'explore' has bash: allow
-// (agent.ts:222-243), so an Ask run could LAUNDER a write/command through explore.
-// The fix is config-only: a NEW 5th archetype 'scout' - mode: subagent (so it is
-// NOT on the board picker, but IS a valid task target) with deny-by-default, the
-// read tools, bash: deny and NO task re-grant (a scout cannot re-delegate). Then
-// ask/architect retarget their task allowlist to {"*": deny, scout: allow}, so
-// explore is now DENIED to them and the only delegate they can reach is the
-// read-only scout. task's per-subagent gate (ctx.ask patterns:[subagent_type],
-// tool/task.ts:135) evaluates that allowlist by delegate name.
-//
-// Read-only is enforced at the PERMISSION layer, not just prose: deny-by-default
-// ("*": deny flips the permissive base default, like explore/plan in agent.ts),
-// re-grant only the read tools, deny bash, and (architect) allow edits to markdown
-// only. Precedence is findLast over [...defaults, ...user, ...agentOwn]
-// (permission/index.ts:43 + agent.ts:319), so the agent's own block wins; a
-// config-level "deny" short-circuits with DeniedError before any ACP permission
-// request is emitted (permission/index.ts:86), so the board's host-side
-// auto-approve never sees it. The md globs use BOTH "*.md" and "**/*.md": the
-// wildcard matcher compiles * to .* with the /s flag and no slash boundary
-// (util/wildcard.ts), so "*.md" alone already matches markdown at any depth
-// INCLUDING the worktree root, while "**/*.md" requires a literal "/" and misses
-// root files - both together read as "markdown anywhere" and stay correct.
-//
-// UPGRADE (generalized at S12). Prior shipping sets are frozen in archetypesLegacy
-// (ARCHETYPES_V1 = S9, ARCHETYPES_V2 = S11). A NEW marker key gates a one-time
-// pass: per file, absent -> write current (v3); byte-identical to ANY prior
-// shipped payload -> overwrite with v3 (a pristine install is safe to upgrade);
-// otherwise (user-modified) -> untouched. scout.md is the exception - it is
-// engine-MANAGED (ask/architect delegate to it by NAME, task.ts has no identity
-// check), so a foreign scout.md is RECONCILED to the read-only agent (a bash-
-// capable one would reopen the laundering hole). The pass can re-seed a file the user
-// DELETED under an older marker (the v3 marker was never set, so absent writes it
-// once), then the v3 marker guards it forever. Failures are non-fatal - the board
-// must boot.
+// Ships Kilo-style predefined agent ARCHETYPES as .md files in the engine's global agent
+// config dir, so they appear on the board picker automatically.
+// SECURITY: ask/architect run read-only, but could previously delegate to the built-in
+// bash-allowed 'explore' subagent, laundering a write/command through a read-only agent. Fix:
+// a new deny-by-default, no-bash, no-redelegate 'scout' archetype is the only delegate their
+// task allowlist permits. Enforced at the permission layer (deny-by-default + explicit
+// re-grants), so a config-level deny short-circuits before any ACP permission request fires.
+// Install/upgrade is versioned by a one-time marker: absent -> write; byte-identical to a
+// prior shipped payload -> upgrade; user-modified -> left alone, except scout.md, which is
+// engine-managed and always reconciled since ask/architect trust it by name. Non-fatal.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ARCHETYPES_V1, ARCHETYPES_V2 } from './archetypesLegacy';
+import { ARCHETYPES_V4 } from './archetypesV4';
+import { frontmatterBlocks } from './archetypeToolMatrix';
 
 // One import site for the frozen prior-generation payloads (the pristine-check
 // data lives in archetypesLegacy.ts; re-exported so tests keep a single origin).
-export { ARCHETYPES_V1, ARCHETYPES_V2 };
+export { ARCHETYPES_V1, ARCHETYPES_V2, ARCHETYPES_V4 };
 
-/** The install-once marker the panel backs with globalState (faked in tests):
- *  get() = "already installed"; set() records it after a successful write pass.
- *  S15: the panel now backs this with the 'origami.flock.archetypes.v4' key -
- *  bumped from v3 so the new cartographer.md write-if-missing pass runs once (the
- *  existing five re-ship byte-identical, so the pass is harmless for them). */
+/** The install-once marker (globalState-backed, faked in tests): get() = already installed,
+ *  set() records a successful write pass. */
 export interface ArchetypeMarker {
   get(): boolean;
   set(): void;
 }
 
-/** The archetype agent-definition files as shipped NOW (v4). architect/ask/debug/
- *  orchestrator/cartographer carry `mode: all` so they ride the board picker; scout
- *  is `mode: subagent` (off the picker, on as a task target). cartographer (S15) is
- *  deny-by-default read-only + bash-denied + task scout-only, with an edit allowlist
- *  confined to the map dir (.origami/map/*) so it can write ONLY the architecture
- *  map. ask/architect carry a
- *  deny-by-default read-only block (bash denied) and a task allowlist that permits
- *  ONLY scout (explore denied - the S12 laundering fix); architect also allows
- *  edits to markdown only; orchestrator denies edit and bash (it delegates - its
- *  subagents own their edits and commands); scout denies everything but the read
- *  tools and holds NO task grant (it cannot re-delegate). Key order is precedence:
- *  "*": deny first (flips the permissive base default), then the re-grants, so
- *  findLast resolves each read tool to allow and everything else to deny. */
+/** The shipped archetype definitions. architect/ask/debug/orchestrator/cartographer ride the
+ *  board picker (mode: all); scout is mode: subagent (task-target only). Each is
+ *  deny-by-default read-only with a narrow re-grant (cartographer: map-dir edits only;
+ *  architect: markdown edits; orchestrator: no edit/bash since it delegates; scout: read tools
+ *  only, no task grant). Key order matters: `"*": deny` first, so findLast resolves correctly. */
 export const ARCHETYPES: Array<{ file: string; content: string }> = [
   {
     file: 'architect.md',
     content: `---
 description: "Designs before code: architecture, trade-offs, and a written implementation plan."
 mode: all
-permission:
-  "*": deny
-  read: allow
-  grep: allow
-  glob: allow
-  list: allow
-  webfetch: allow
-  websearch: allow
-  question: allow
-  bash: deny
-  task:
-    "*": deny
-    scout: allow
-  edit:
-    "*": deny
-    "*.md": allow
-    "**/*.md": allow
+${frontmatterBlocks('architect')}
 ---
 
 You are the Architect. You design before a line of code is written, and you hand back a plan someone else can execute without guessing.
@@ -130,19 +65,7 @@ Close every plan with two sections: the open questions that still need a decisio
     content: `---
 description: "Answers questions about the codebase; explains, never edits."
 mode: all
-permission:
-  "*": deny
-  read: allow
-  grep: allow
-  glob: allow
-  list: allow
-  webfetch: allow
-  websearch: allow
-  question: allow
-  bash: deny
-  task:
-    "*": deny
-    scout: allow
+${frontmatterBlocks('ask')}
 ---
 
 You are Ask, a read-only investigator. Your job is to explain the codebase accurately, never to change it.
@@ -161,6 +84,7 @@ Give a direct answer first, then the supporting detail. When a question is ambig
     content: `---
 description: "Systematic diagnosis: reproduce, narrow causes, verify the fix."
 mode: all
+${frontmatterBlocks('debug')}
 ---
 
 You are Debug. You find the real cause of a defect and prove the fix, in that order - no guessing, no shotgun edits.
@@ -189,11 +113,7 @@ Report the whole chain: the repro, the root cause, the fix, and the commands you
     content: `---
 description: "Decomposes big tasks and delegates to subagents; synthesizes results."
 mode: all
-permission:
-  edit: deny
-  bash: deny
-  task: allow
-  question: allow
+${frontmatterBlocks('orchestrator')}
 ---
 
 You are the Orchestrator. You take a large goal, break it into independent pieces, delegate them, and assemble the results - you do not do the work yourself.
@@ -219,15 +139,7 @@ Synthesize the accepted results into one coherent outcome, resolving conflicts b
     content: `---
 description: "Read-only recon subagent: finds files, searches code, reads and reports with citations - cannot run commands or edit."
 mode: subagent
-permission:
-  "*": deny
-  read: allow
-  grep: allow
-  glob: allow
-  list: allow
-  webfetch: allow
-  websearch: allow
-  bash: deny
+${frontmatterBlocks('scout')}
 ---
 
 You are Scout, a read-only reconnaissance specialist. A larger agent delegates a question to you; you find the answer in the code and hand back a dense, factual report it can act on without re-checking.
@@ -244,21 +156,7 @@ Return one report: the direct answer first, then the citations that support it, 
     content: `---
 description: "Maps the repository: packages, pillars, flows — writes the architecture map agents read for context."
 mode: all
-permission:
-  "*": deny
-  read: allow
-  grep: allow
-  glob: allow
-  list: allow
-  question: allow
-  bash: deny
-  task:
-    "*": deny
-    scout: allow
-  edit:
-    "*": deny
-    ".origami/map/*": allow
-    ".origami/map/**": allow
+${frontmatterBlocks('cartographer')}
 ---
 
 You are the Cartographer. A cartographer surveys before it draws: you read the repository broadly, then write ONE file — the architecture map that every other agent in this repo reads for context.
@@ -321,18 +219,17 @@ A map in shape:
   },
 ];
 
-/** The engine's Global.Path.config + "/agent", mirrored exactly: xdg-basedir's
- *  xdgConfig is (XDG_CONFIG_HOME || ~/.config), the app dir is "origami", and the
- *  agent loader scans an "agent" subdir. No effect/Global import - just the path. */
+/** Mirrors the engine's Global.Path.config + "/agent" resolution (XDG_CONFIG_HOME ||
+ *  ~/.config, app dir "origami"). */
 export function globalAgentDir(): string {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   return path.join(base, 'origami', 'agent');
 }
 
-/** All prior-generation payloads per file (v1 + v2). A file byte-identical to ANY
- *  of these is a pristine older install, safe to overwrite with the current v3. */
+/** All prior-generation payloads per file (v1 + v2 + v4). A file byte-identical to ANY
+ *  of these is a pristine older install, safe to overwrite with the current generation. */
 const PRIOR_BY_FILE = new Map<string, string[]>();
-for (const gen of [ARCHETYPES_V1, ARCHETYPES_V2]) {
+for (const gen of [ARCHETYPES_V1, ARCHETYPES_V2, ARCHETYPES_V4]) {
   for (const a of gen) {
     const list = PRIOR_BY_FILE.get(a.file);
     if (list) list.push(a.content);
@@ -340,15 +237,20 @@ for (const gen of [ARCHETYPES_V1, ARCHETYPES_V2]) {
   }
 }
 
-/** Install/upgrade the archetype files, once per marker generation. `get()`
- *  short-circuits a completed pass. For each file: absent -> write current
- *  (v3); present AND byte-identical to ANY prior shipped payload (v1 or v2) ->
- *  overwrite with v3 (a pristine older install is safe to upgrade); present but
- *  modified -> leave it (user edits always win) - EXCEPT scout.md, which is
- *  engine-managed: a foreign file there is overwritten with the shipped read-only
- *  agent (ask/architect trust it by name). `dir` defaults to the real global agent dir;
- *  tests pass a temp dir. Non-fatal: any error is logged and swallowed so a
- *  failed pass never blocks the board (and leaves the marker unset, so it retries). */
+/** Is this on-disk text a payload WE shipped - the current generation or any prior one -
+ *  rather than something the user wrote? The single definition of "not user-edited",
+ *  reused by the subagent-tools-v1 sweep in seedGlobal.ts so the two passes can never
+ *  disagree about whose file it is. */
+export function isPristineArchetype(file: string, existing: string): boolean {
+  const current = ARCHETYPES.find((a) => a.file === file);
+  if (current && existing === current.content) return true;
+  return (PRIOR_BY_FILE.get(file) ?? []).includes(existing);
+}
+
+/** Install/upgrade the archetype files once per marker generation: absent -> write current;
+ *  byte-identical to any prior shipped payload -> upgrade (pristine install); modified ->
+ *  left alone, except scout.md (engine-managed, always reconciled). Non-fatal: any error is
+ *  logged and swallowed, leaving the marker unset so it retries. */
 export function ensureArchetypes(opts: { marker: ArchetypeMarker; dir?: string; log?: (msg: string) => void }): void {
   const log = opts.log ?? ((m) => console.warn(m));
   try {

@@ -234,6 +234,53 @@ describe("tool.browser", () => {
     }),
   )
 
+  it.instance("gates back / forward / reload on the shared page, and sends the wire no url", () =>
+    Effect.gen(function* () {
+      const calls = useHandler({ ok: true, pageText: "moved" })
+      const { ctx, asks } = makeCtx()
+
+      yield* exec({ action: "back" }, ctx)
+      yield* exec({ action: "forward" }, ctx)
+      yield* exec({ action: "reload" }, ctx)
+
+      // These three move a page the user ALREADY has open, so they cost the
+      // same "page" approval as read and click. Gating them on a url would ask
+      // the user to allow an address the model never named and cannot know -
+      // and an Always answer to it would be permission for a site, not a page.
+      expect(asks.map((ask) => ask.patterns)).toEqual([["page"], ["page"], ["page"]])
+      expect(asks.every((ask) => ask.always[0] === "page")).toBe(true)
+      expect(asks.map((ask) => ask.metadata)).toEqual([
+        { action: "back" },
+        { action: "forward" },
+        { action: "reload" },
+      ])
+      // And nothing invents a url on the way out: the client turns these into
+      // `navigate_page` WITHOUT one, and a url here would be the thing it sent.
+      expect(calls.map((call) => call.action)).toEqual(["back", "forward", "reload"])
+      expect(calls.every((call) => call.url === undefined)).toBe(true)
+    }),
+  )
+
+  it.instance("refuses a url-less open or navigate, but never a history verb", () =>
+    Effect.gen(function* () {
+      useHandler({ ok: true, pageText: "moved" })
+      const { ctx } = makeCtx()
+
+      // The url guard is what separates the two families, so it is checked as
+      // one pair: adding "back" to `needsUrl` would refuse every history call.
+      for (const action of ["open", "navigate"] as const) {
+        const refusal = yield* exec({ action }, ctx)
+        expect(refusal.metadata).toMatchObject({ ok: false })
+        expect(refusal.output).toContain("needs a url")
+      }
+      for (const action of ["back", "forward", "reload"] as const) {
+        const moved = yield* exec({ action }, ctx)
+        expect(moved.metadata).toMatchObject({ ok: true })
+        expect(moved.output).not.toContain("needs a url")
+      }
+    }),
+  )
+
   it.instance("never reaches the browser when the permission ask is denied", () =>
     Effect.gen(function* () {
       const calls = useHandler({ ok: true, url: "https://example.com" })

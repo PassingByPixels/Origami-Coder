@@ -1,19 +1,10 @@
 // WHICH list a `todowrite` frame carries, and what shape its rows are.
 //
-// Lifted VERBATIM out of acpClient.ts's tryHandleTodoWrite so the audience
-// filter (acpAudience.ts) had room in a file sitting exactly on its cap — the
-// ratchet's own remedy, and the same split acpPeerMeta.ts / acpTaskMeta.ts made
-// before it. Only the extraction moved; the reading rules are unchanged.
-//
-// Two sources, in preference order, because ONE frame of the tool's lifecycle
-// does not carry the structured payload: the COMPLETED frame's title is the
-// tool's own summary ("3 todos") and its list arrives as JSON inside a text
-// content block. Reading `rawInput.todos` alone lost the final snapshot; reading
-// the text alone lost every in-progress update.
-//
-// Whether the frame IS a todowrite at all stays in acpClient.ts — that question
-// also needs the remembered toolCallId of a status-only frame, which is client
-// state, not a shaping rule.
+// Two sources, in preference order, because ONE frame of the lifecycle does not
+// carry the structured payload: the COMPLETED frame's title is the tool's own
+// summary ("3 todos") and its list arrives as JSON inside a text content block.
+// Whether the frame IS a todowrite stays in acpClient.ts — that question also needs
+// the remembered toolCallId, which is client state, not a shaping rule.
 
 /** One row of the live task strip, as the handlers declare it. */
 export interface TodoRow {
@@ -21,10 +12,9 @@ export interface TodoRow {
   content: string;
   activeForm: string;
   status: 'pending' | 'in_progress' | 'completed';
-  /** Nesting level as the model sent it — 0 for a top-level task. Carried RAW:
-   *  a jump or an over-deep value is clamped once, by the strip, against the
-   *  whole list (todoTree.ts). Clamping here as well would put the same rule in
-   *  two places and let them disagree. */
+  /** Nesting level as the model sent it — 0 for a top-level task. Carried RAW: a
+   *  jump or an over-deep value is clamped once, by the strip, against the whole
+   *  list (todoTree.ts). Clamping here too would let the two rules disagree. */
   depth: number;
 }
 
@@ -60,9 +50,8 @@ export function todosFromUpdate(upd: TodoWriteUpdate): TodoRow[] | null {
     const rawStatus = String(t?.status ?? 'pending');
     const status: TodoRow['status'] =
       rawStatus === 'in_progress' || rawStatus === 'completed' ? rawStatus : 'pending';
-    // Anything that is not a real number (absent, a string, NaN, Infinity) is a
-    // flat row — never a dropped row. A model that gets `depth` wrong should
-    // lose the indent, not the task.
+    // Anything that is not a real number (absent, a string, NaN, Infinity) is a flat
+    // row — never a dropped row.
     const rawDepth = t?.depth;
     return {
       id: i,

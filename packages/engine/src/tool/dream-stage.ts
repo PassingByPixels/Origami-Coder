@@ -17,24 +17,12 @@ import {
 } from "./memory-layout"
 
 /**
- * DREAM'S FOLDERED CURATION PASS.
- *
- * The flat store is one file, so dream could stage one candidate file and diff
- * it. A foldered store is a TREE (an index plus one file per topic), and the
- * curation the user actually wants is tree-shaped too: refile every inbox
- * bullet into a fitting topic, merge duplicate topics, rewrite a hook that no
- * longer describes its file, coin a topic for an unfiled theme.
- *
- * So the candidate is a DIRECTORY (`<origami>/memory.candidate/`), seeded by
- * MIRRORING the live store. The model then EDITS inside the mirror. Seeding by
- * mirror is the safety property: nothing is lost unless the model actively
- * removed it, and anything it did remove is recoverable by diffing the mirror
- * against the live store — which is exactly what `diffStore` reports.
- *
- * Everything here is either pure (mirror-free diffing and summary rendering) or
- * a narrow filesystem step, so the dangerous parts — what counts as a dropped
- * fact, what gets backed up before an overwrite — are testable without the
- * Database/Session/Question stack the tool itself needs.
+ * Dream's foldered curation pass. A foldered store is a tree (an index plus one
+ * file per topic), so the candidate is a directory
+ * (`<origami>/memory.candidate/`) seeded by MIRRORING the live store; the model
+ * then edits inside the mirror. Seeding by mirror is the safety property:
+ * nothing is lost unless the model actively removed it, and anything it did
+ * remove shows up in `diffStore`.
  */
 
 /** Word-overlap at or above this counts two bullets as the same fact reworded. */
@@ -52,22 +40,18 @@ export type TopicChange = {
   readonly added: number
   /** Bullets that arrived here from another topic (refiling). */
   readonly movedIn: number
-  /** Bullets that left this topic for another one. */
   readonly movedOut: number
-  /** Bullets kept but rewritten. */
   readonly reworded: number
-  /** Duplicate copies folded into a surviving twin. NOT a loss — the fact is
+  /** Duplicate copies folded into a surviving twin. Not a loss — the fact is
    *  still in the candidate, which is why these are not counted as dropped. */
   readonly merged: number
-  /** VERBATIM text of bullets this topic loses that survive nowhere else. */
+  /** Verbatim text of bullets this topic loses that survive nowhere else. */
   readonly dropped: readonly string[]
-  /** Full text of the topic's hook when the candidate adds or rewrites it. */
   readonly hook?: string
   /** Non-bullet text (frontmatter, prose, headings) differs. */
   readonly proseChanged: boolean
-  /** The file survives but the candidate's index no longer links it — the
-   *  facts are on disk yet invisible to a model that only loads the index, so
-   *  this is reported rather than passed over as "no bullet changes". */
+  /** The file survives but the candidate's index no longer links it — the facts
+   *  are on disk yet invisible to a model that only loads the index. */
   readonly unlisted: boolean
 }
 
@@ -113,14 +97,11 @@ function locate(snapshot: StoreSnapshot): Located[] {
 }
 
 /**
- * Pair up the live store's bullets with the candidate's.
- *
- * Exact key first (a bullet moved verbatim between topics is a MOVE, not a
- * drop plus an add), then a fuzzy pass so a reworded bullet is reported as a
- * reword rather than a scary "dropped". The fuzzy pass is deliberately
- * conservative: below the threshold a pair stays unmatched, which reports the
- * fact as DROPPED. Erring toward "dropped" is safe — a drop is listed verbatim
- * for the user to veto; a false "reworded" would hide a deletion.
+ * Pair up the live store's bullets with the candidate's: exact key first (a
+ * bullet moved verbatim between topics is a move, not a drop plus an add), then
+ * a fuzzy pass for rewords. Below the threshold a pair stays unmatched and the
+ * fact is reported as dropped — safe, because a drop is listed verbatim for the
+ * user to veto while a false "reworded" hides a deletion.
  */
 function pair(before: readonly Located[], after: readonly Located[]) {
   const takenAfter = new Set<number>()
@@ -133,8 +114,8 @@ function pair(before: readonly Located[], after: readonly Located[]) {
     else byKey.set(item.key, [index])
   })
 
-  // Pass 1, exact key. Same-topic candidates win so an unchanged bullet is
-  // never mis-read as "moved" just because a copy exists in another topic.
+  // Same-topic candidates win so an unchanged bullet is never mis-read as
+  // "moved" just because a copy exists in another topic.
   before.forEach((item, index) => {
     const candidates = byKey.get(item.key)?.filter((i) => !takenAfter.has(i)) ?? []
     if (candidates.length === 0) return
@@ -143,8 +124,8 @@ function pair(before: readonly Located[], after: readonly Located[]) {
     matchedBefore.set(index, { after: chosen, exact: true })
   })
 
-  // Pass 2, fuzzy. Greedy best-first over every remaining cross pair so the
-  // strongest reword pairing wins regardless of file order.
+  // Greedy best-first over every remaining cross pair so the strongest reword
+  // pairing wins regardless of file order.
   const restBefore = before.map((_, i) => i).filter((i) => !matchedBefore.has(i))
   const restAfter = after.map((_, i) => i).filter((i) => !takenAfter.has(i))
   const scored: { before: number; after: number; score: number }[] = []
@@ -165,11 +146,8 @@ function pair(before: readonly Located[], after: readonly Located[]) {
   return { matchedBefore, takenAfter }
 }
 
-/**
- * Per-topic change summary of a staged candidate against the live store.
- * Pure: both sides are already-read snapshots, so this is the one place the
- * meaning of "added / moved / reworded / dropped" is defined.
- */
+/** Per-topic change summary of a staged candidate against the live store. The
+ *  one place "added / moved / reworded / dropped" is given meaning. */
 export function diffStore(before: StoreSnapshot, after: StoreSnapshot): StoreDiff {
   const beforeBullets = locate(before)
   const afterBullets = locate(after)
@@ -181,9 +159,8 @@ export function diffStore(before: StoreSnapshot, after: StoreSnapshot): StoreDif
   const names = [...new Set([...before.topics.keys(), ...after.topics.keys()])].sort()
   const dropped: { topic: string; bullet: string }[] = []
   // Every key the candidate still holds anywhere. An unmatched live bullet
-  // whose key is in here was a DUPLICATE folded into its surviving twin, which
-  // is the merge dream exists to do — calling that a dropped fact would cry
-  // wolf on the one signal the user must be able to trust.
+  // whose key is in here was a duplicate folded into its surviving twin, so it
+  // must not be reported as a dropped fact.
   const afterKeys = new Set(afterBullets.map((item) => item.key))
 
   const topics = names.map((topic): TopicChange => {
@@ -218,7 +195,7 @@ export function diffStore(before: StoreSnapshot, after: StoreSnapshot): StoreDif
         added++
         return
       }
-      // Find the live bullet this one was matched to (the map is before->after).
+      // The map is before->after, so invert it to find the live bullet.
       for (const [beforeIndex, match] of matchedBefore) {
         if (match.after !== index) continue
         if (beforeBullets[beforeIndex].topic !== topic) movedIn++
@@ -229,8 +206,8 @@ export function diffStore(before: StoreSnapshot, after: StoreSnapshot): StoreDif
 
     const hookBefore = beforeHooks.get(topic)
     const hookAfter = afterHooks.get(topic)
-    // Only a hook the candidate ADDS or REWRITES is surfaced. An unchanged hook
-    // is noise, and `upsertIndexEntry` deliberately never clobbers one.
+    // Only a hook the candidate adds or rewrites is surfaced; an unchanged hook
+    // is noise.
     const hook = inAfter && hookAfter !== undefined && hookAfter !== hookBefore ? hookAfter : undefined
     const unlisted = inAfter && hookAfter === undefined
 
@@ -273,7 +250,7 @@ export function diffStore(before: StoreSnapshot, after: StoreSnapshot): StoreDif
   return { topics, dropped, changed }
 }
 
-/** Human-readable review summary. The user approves off THIS text. */
+/** Human-readable review summary. The user approves off this text. */
 export function summaryText(diff: StoreDiff): string {
   const lines: string[] = []
   const counted = (change: TopicChange) =>
@@ -325,11 +302,9 @@ export function summaryHeadline(diff: StoreDiff): string {
 }
 
 /**
- * Seed `<origami>/memory.candidate/` with a byte copy of the live store.
- *
- * Any previous candidate is removed first: a stale file from an abandoned pass
- * would otherwise read as a proposed change in the next review. Bytes, not
- * strings, so a topic file's exact encoding survives the round trip.
+ * Seed `<origami>/memory.candidate/` with a byte copy of the live store. Any
+ * previous candidate goes first, or a stale file from an abandoned pass reads as
+ * a proposed change. Bytes, not strings, so exact encoding survives.
  */
 export const mirrorStore = Effect.fn("Dream.mirrorStore")(function* (origamiDir: string) {
   const fs = yield* FSUtil.Service
@@ -365,21 +340,16 @@ export type ApplyResult = {
 }
 
 /**
- * Adopt the staged candidate as the live store.
- *
- * Order matters and is the whole safety story:
- *  1. BACK UP the live directory to `memory.bak-<stamp>/`, byte for byte. The
- *     name is probed until it is free, so a second dream in the same second
- *     can never overwrite the first pass's only copy of the old store.
- *  2. Replace the live files from the candidate — write every candidate file,
- *     then delete live files the candidate no longer has.
+ * Adopt the staged candidate as the live store. The order is the safety story:
+ *  1. Back up the live directory to `memory.bak-<stamp>/`, byte for byte. The
+ *     name is probed until free, so a second dream in the same second cannot
+ *     overwrite the first pass's only copy of the old store.
+ *  2. Write every candidate file, then delete live files the candidate dropped.
  *  3. Delete the candidate.
  *
- * Step 2 is file-by-file rather than a directory rename because a rename over
- * a directory whose files an editor holds open fails on Windows (the same
- * reason the flat path writes in place). With step 1 already on disk the
- * window between the first and last write is recoverable, which is what
- * "atomic as practical" buys here.
+ * Step 2 is file-by-file rather than a directory rename because a rename over a
+ * directory whose files an editor holds open fails on Windows. With step 1
+ * already on disk, the window between the first and last write is recoverable.
  */
 export const applyCandidate = Effect.fn("Dream.applyCandidate")(function* (origamiDir: string, now = new Date()) {
   const fs = yield* FSUtil.Service
@@ -416,13 +386,12 @@ export const applyCandidate = Effect.fn("Dream.applyCandidate")(function* (origa
     removed++
   }
 
-  // 3. the candidate has served its purpose
   yield* fs.remove(source, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void))
 
   return { backup, written, removed } satisfies ApplyResult
 })
 
-/** Markdown filenames in a directory, INDEX INCLUDED — the copy/replace unit. */
+/** Markdown filenames in a directory, index included — the copy/replace unit. */
 function listMarkdown(fs: FSUtil.Interface, dir: string) {
   return Effect.gen(function* () {
     const entries = yield* fs.readDirectoryEntries(dir).pipe(Effect.catch(() => Effect.succeed([])))
@@ -433,15 +402,9 @@ function listMarkdown(fs: FSUtil.Interface, dir: string) {
   })
 }
 
-/**
- * Refuse a candidate that would gut the store.
- *
- * The foldered sibling of the flat path's "normalises to zero bullets" guard.
- * A missing index or a candidate with no topic files at all is a staging
- * accident, not curation — adopting it would empty a store the user cannot get
- * back except from the backup. Returns the reason, or undefined when the
- * candidate is fit to review.
- */
+/** Refuse a candidate that would gut the store: a missing index, or no topic
+ *  files at all, is a staging accident rather than curation. Returns the
+ *  reason, or undefined when the candidate is fit to review. */
 export function rejectReason(live: StoreSnapshot, candidate: StoreSnapshot): string | undefined {
   if (candidate.topics.size === 0 && live.topics.size > 0)
     return "the candidate has no topic files at all, so adopting it would empty the store"

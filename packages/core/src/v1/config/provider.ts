@@ -6,6 +6,20 @@ import { PositiveInt } from "../../schema"
 export const ModelStatus = Schema.Literals(["alpha", "beta", "deprecated", "active"])
 
 /**
+ * origami_change: the wire protocol a custom provider speaks. Declaring this
+ * replaces the old `npm` package name, so the engine picks a BUILT-IN client
+ * instead of downloading an arbitrary package at model load.
+ */
+export const Protocol = Schema.Literals([
+  "openai-chat",
+  "openai-responses",
+  "anthropic-messages",
+  "gemini",
+  "bedrock-converse",
+])
+export type Protocol = Schema.Schema.Type<typeof Protocol>
+
+/**
  * origami_change: MIRROR of `ReasoningOption` in `packages/core/src/models-dev.ts`
  * - the same shape models.dev publishes, so a self-hosted endpoint can declare
  * its reasoning controls the way the catalog would. Declared here rather than
@@ -72,6 +86,10 @@ export const Model = Schema.Struct({
       context: Schema.Finite,
       input: Schema.optional(Schema.Finite),
       output: Schema.Finite,
+      images: Schema.optional(Schema.Finite).annotate({
+        description:
+          "Maximum images this endpoint accepts in ONE prompt. Match a self-hosted server's own cap (a vLLM server's --limit-mm-per-prompt image value). Older images beyond it are replaced with a short note instead of being sent. Omit to use the engine default.",
+      }),
     }),
   ),
   modalities: Schema.optional(
@@ -85,7 +103,14 @@ export const Model = Schema.Struct({
   experimental: Schema.optional(Schema.Boolean),
   status: Schema.optional(ModelStatus),
   provider: Schema.optional(
-    Schema.Struct({ npm: Schema.optional(Schema.String), api: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      npm: Schema.optional(Schema.String),
+      api: Schema.optional(Schema.String),
+      protocol: Schema.optional(Protocol).annotate({
+        description:
+          "Wire protocol this model speaks. Overrides the provider-level protocol. Do not set it together with npm.",
+      }),
+    }),
   ),
   options: Schema.optional(Schema.Record(Schema.String, Schema.Any)),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -108,6 +133,10 @@ export const Info = Schema.Struct({
   env: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   id: Schema.optional(Schema.String),
   npm: Schema.optional(Schema.String),
+  protocol: Schema.optional(Protocol).annotate({
+    description:
+      "Wire protocol every model of this provider speaks. Set this instead of npm: the engine has a built-in client for each protocol and no longer downloads provider packages. Do not set both.",
+  }),
   whitelist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   blacklist: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
   options: Schema.optional(
@@ -119,7 +148,8 @@ export const Info = Schema.Struct({
           description: "GitHub Enterprise URL for copilot authentication",
         }),
         setCacheKey: Schema.optional(Schema.Boolean).annotate({
-          description: "Enable promptCacheKey for this provider (default false)",
+          description:
+            "Send the per-session prompt cache key (and, on OpenAI models that document it, prompt_cache_retention) to this provider. ON by default for providers whose API documents the key - OpenAI, Azure, xAI, Mistral, DeepInfra, Cerebras, Venice and the OpenCode gateways. Set false to turn it off; set true to force it on for another provider.",
         }),
         timeout: Schema.optional(
           Schema.Union([PositiveInt, Schema.Literal(false)]).annotate({

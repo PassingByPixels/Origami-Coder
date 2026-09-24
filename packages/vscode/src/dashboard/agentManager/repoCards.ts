@@ -1,45 +1,34 @@
-// Agent Manager - repoCards.ts (Folds board, repo cards): the REPOSITORY, as
-// opposed to the registered path. The old top bar was one pill per registered
-// entry, which drew two pills for a repo checked out twice; a card is one
-// REPOSITORY - every entry sharing a git common dir - and selecting it reveals
-// that repository's worktrees with the three things you actually want to do to
-// one: open a terminal in it, start a chat in it, make it primary.
-//
-// Two halves. The IDENT cache answers "which repository is this path, and what
-// is it on" - git subprocesses, so it is refreshed on the same beats as the map
-// status (board request + poll tick) and read synchronously by the broadcast.
-// The MESSAGE half is the four am* routes; every one of them re-checks that the
-// path it was handed is really one of that repository's worktrees, because the
-// path arrives off a webview message and "make primary" writes it to a shared
-// file that other processes obey.
-//
-// Deliberately vscode-free (the host interface is the only seam), so it runs
-// against a throwaway `git worktree add` fixture in vitest.
+// The REPOSITORY, as opposed to the registered path: one card per repo (every entry
+// sharing a git common dir), replacing the old one-pill-per-registered-entry top bar. The
+// ident cache answers "which repository is this path, and what is it on" (refreshed on the
+// map-status beat); the message half is the four am* routes, each re-checking the path it
+// was handed really is one of that repository's worktrees, since "make primary" writes it
+// to a file other processes obey.
 
 import * as path from 'node:path';
 import { runGitStdout } from './gitRun';
 import { repoKey } from './registry';
 import { listWorktrees, WORKTREES_DIRNAME, type WorktreeListEntry } from './worktrees';
-import { foreignRoots, setPrimary, syncRepoFile, updateRepoFile } from './repoFile';
+import { foreignRoots, setPrimary, updateRepoFile } from './repoFile';
+import { fileLacksKnown, foreignLabels } from './repoRemovals';
 import type { ManagerHost } from './manager';
 
-/**
- * ADOPT-ON-READ, the other half of the merge model: repos.json is written by the
- * engine's board_register too, and an entry this window has never heard of is
- * invisible until its root joins the known list. Run on every board request, so
- * a repo registered from a chat shows up as a card on the next refresh without
- * the user re-adding it by hand. A no-op - and NO Memento write - when there is
- * nothing new, which is the ordinary case.
- */
+/** ADOPT-ON-READ: repos.json is now written by the engine's board_register too, so an entry
+ *  this window has never heard of is invisible until its root joins the known list. Run on
+ *  every board request; a no-op (no Memento write) when there's nothing new. A known root the
+ *  file lacks also syncs, so a removal made outside the window (repoRemovals.ts) shows now. */
 export function adoptForeign(host: ManagerHost): void {
   const known = host.knownRepos();
   const extra = foreignRoots(known, host.repoRoot());
-  if (extra.length > 0) host.saveKnownRepos([...known, ...extra]);
+  // A board label another writer set comes in with the repo. The overlay is saved FIRST: a
+  // sync with the root known and its label absent would clear the label from the file.
+  const labels = foreignLabels(extra);
+  if (Object.keys(labels).length > 0) host.saveRepoDisplayNames({ ...host.repoDisplayNames(), ...labels });
+  if (extra.length > 0 || fileLacksKnown(known)) host.saveKnownRepos([...known, ...extra]);
 }
 
-/** What a card needs to know about ONE checkout: which repository it belongs to
- *  and what it is currently on. `groupId` is the resolved git COMMON dir, so
- *  every worktree of one repository shares it. */
+/** What a card needs about one checkout: which repository it belongs to and what it's on;
+ *  `groupId` is the resolved git common dir. */
 export interface RepoIdent { groupId: string; branch: string }
 
 /** Ask git which repository a checkout belongs to and what it is on. Never
@@ -54,12 +43,8 @@ export async function readIdent(root: string): Promise<RepoIdent | undefined> {
   };
 }
 
-/**
- * Refresh the ident of every root that needs one. Returns true when anything
- * CHANGED, so the caller can broadcast only on a real move (the poll runs this
- * every tick). Roots that vanish from the list are dropped, so an unregistered
- * repo does not keep a stale card identity alive.
- */
+/** Refresh idents for every root that needs one; returns true on any real change, so the
+ *  poll only broadcasts on a real move. Roots that vanish from the list are dropped. */
 export async function refreshIdents(roots: string[], cache: Map<string, RepoIdent>): Promise<boolean> {
   let changed = false;
   const wanted = new Set(roots);
@@ -77,9 +62,8 @@ export async function refreshIdents(roots: string[], cache: Map<string, RepoIden
   return changed;
 }
 
-/** One row under an open repo card. `fold` marks an Origami-managed worktree
- *  (under the primary's .origami/worktrees/) so the user can tell their own
- *  checkouts from the board's. */
+/** One row under an open repo card. `fold` marks an Origami-managed worktree so the user
+ *  can tell their own checkouts apart. */
 export interface WorktreeCardRow {
   name: string;
   branch: string;
@@ -105,15 +89,9 @@ export function worktreeRows(entries: WorktreeListEntry[], primary: string): Wor
   return [...rows.filter((r) => r.primary), ...rows.filter((r) => !r.primary)];
 }
 
-/**
- * The repository's LOCAL branch names, read at the PRIMARY (every worktree of a
- * repository shares one common dir, so any of them would answer the same).
- * Read-only in the pane: which of them is checked out WHERE is derivable from
- * the worktree rows, so it is not sent a second time.
- *
- * Never throws. A repository git cannot read reports NO branches rather than
- * failing the whole reply, which still carries the checkouts.
- */
+/** The repository's local branch names, read at the PRIMARY (any worktree of a repository
+ *  answers the same). Never throws — a repository git cannot read reports no branches rather
+ *  than failing the whole reply. */
 export async function localBranches(primary: string): Promise<string[]> {
   const r = await runGitStdout(['for-each-ref', '--format=%(refname:short)', 'refs/heads'], primary);
   if (!r.ok) return [];
@@ -144,10 +122,9 @@ export async function handleRepoCardMessage(ctx: RepoCardCtx, m: { type?: string
     });
     return;
   }
-  // Every remaining route acts ON a path that arrived from the webview. It must
-  // be one of THIS repository's worktrees: "make primary" writes it to a file
-  // other processes obey, and the other two would otherwise open a shell or an
-  // agent session at any path a stray message named.
+  // Every remaining route acts on a path from the webview — it must be one of THIS
+  // repository's worktrees, since "make primary" writes it to a shared file and the others
+  // would otherwise open a shell/agent session at any path a stray message named.
   const target = rows.find((r) => repoKey(r.path) === repoKey(path.resolve(String(m.path ?? ''))));
   if (!target) { ctx.host.post({ type: 'amError', message: 'That worktree is no longer part of this repository.' }); return; }
   switch (m.type) {
@@ -165,14 +142,12 @@ export async function handleRepoCardMessage(ctx: RepoCardCtx, m: { type?: string
       return;
     }
     case 'amMakePrimary':
-      // Sync FIRST: setPrimary only ever edits an entry that already exists (a
-      // registration is a separate act), so a repo registered in this window but
-      // never yet written to the shared file would otherwise be a silent no-op.
-      // The sync is a merge, so it costs nothing when the entry is already there.
-      syncRepoFile(ctx.host.repoRoot(), ctx.host.knownRepos(), undefined, ctx.host.repoDisplayNames());
-      // Keyed by the ENTRY root: that is the entry repos.json holds, and the
-      // merge writer changes only its `primary`, leaving every other entry and
-      // every unknown field alone.
+      // Sync first: setPrimary only edits an entry that already exists, so a repo registered in
+      // this window but never yet synced would otherwise be a silent no-op. Through the host, so
+      // the sync runs the removal check (repoRemovals.ts) like every other write.
+      ctx.host.saveKnownRepos(ctx.host.knownRepos());
+      // Keyed by the ENTRY root: repos.json holds that, and the merge writer only changes its
+      // `primary`, leaving every other field alone.
       updateRepoFile((doc) => setPrimary(doc, String(m.root ?? ''), target.path));
       ctx.broadcast();
       return;

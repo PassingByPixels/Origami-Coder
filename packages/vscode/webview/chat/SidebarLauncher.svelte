@@ -7,10 +7,13 @@
   // sessions from the shared broadcasts and drives the global model.
   import { getVsCodeApi } from '../shared/vscodeApi';
   import ControlStrip from '../sidebar/ControlStrip.svelte';
+  import ConnectionsHeader from './ConnectionsHeader.svelte'; // t-ttmo5w: the Connections label + its Refresh button
   import ThemeEditor from '../dashboard/components/ThemeEditor.svelte';
   import WikiSearchPane from '../dashboard/panes/WikiSearchPane.svelte';
-  import ChatsList from './ChatsList.svelte';
+  import ChatsHereNest from './ChatsHereNest.svelte'; // t-s9k0q6: ChatsList.svelte + the Here | Nest control
   import CollabsList from './CollabsList.svelte';
+  import FrontDeskSection from './FrontDeskSection.svelte';
+  import SidebarDock from './SidebarDock.svelte';
   import CraneMark from '../shared/CraneMark.svelte';
   import { clampCollabsHeight } from './chatSections';
   import {
@@ -24,12 +27,20 @@
   import { onMount } from 'svelte';
 
   const vscode = getVsCodeApi();
+  let { flockEnabled = false }: { flockEnabled?: boolean } = $props(); // origamicoder.flock.enabled, mirrored down by ChatView
 
   let version = $state('');
 
   // Collapsible Memory section: the force-directed memory graph + search.
   // Default-collapsed so the graph's canvas rAF loop only runs when opened.
+  // The BRAIN in the dock is the only way in now (change 1): the Memory label
+  // and its toggle button are gone from the DOM, not hidden.
   let showMemory = $state(false);
+
+  // Front Desk: the dock draws its badge and opens it, so the flag is bound
+  // down into the section and the count is reported back up.
+  let frontDeskCollapsed = $state(true);
+  let frontDeskCount = $state(0);
 
   // Theme picker. Apply SILENTLY on mount (see onMount) and post a
   // themeChanged ONLY when the user cycles — a mount-running $effect would
@@ -68,6 +79,20 @@
   let collabsHeightPx = $state<number | null>(null);
   let resizing = $state(false);
   let splitEl: HTMLDivElement | undefined = $state();
+
+  // Collabs half — HIDDEN until the dock's Collabs item asks for it
+  // (t-qhzy4k), the same rule as the memory graph and the front desk. It used
+  // to default EXPANDED on the argument that it holds live state people watch;
+  // the owner's answer is that a block pinned to the bottom of every sidebar
+  // for a feature they had not opened is not a thing they were watching. Shut,
+  // the whole half leaves the DOM — label, divider and body — so Chats takes
+  // the panel. Host-persisted beside the dragged height (collabsSection.ts
+  // owns both), so an opened section survives a reload.
+  let collabsCollapsed = $state(true);
+  function toggleCollabs() {
+    collabsCollapsed = !collabsCollapsed;
+    vscode.postMessage({ type: 'setCollabsCollapsed', collapsed: collabsCollapsed });
+  }
 
   function startResize(e: PointerEvent) {
     e.preventDefault();
@@ -113,6 +138,7 @@
         case 'collabsHeight': {
           const h = msg.heightPx;
           collabsHeightPx = typeof h === 'number' && h > 0 ? h : null;
+          collabsCollapsed = msg.collapsed === true;
           break;
         }
       }
@@ -135,6 +161,8 @@
     {#if version}
       <span class="brand-version" title="Origami Code extension version (verify you're not on a stale build)">v{version}</span>
     {/if}
+    <!-- t-ru0p04 — Connections' section-label folded in here: one fewer 24px row. t-ttmo5w: with its Refresh button. -->
+    <ConnectionsHeader />
     <button
       class="theme-btn"
       onclick={cycleTheme}
@@ -151,10 +179,27 @@
     <ThemeEditor onClose={() => (showThemeEditor = false)} />
   {/if}
 
-  <!-- Settings + Engine Endpoint first — the global controls (connect /
-       status / model / context) that drive the model the chats run against. -->
-  <div class="section-label">Settings</div>
+  <!-- Connections + Engine Endpoint first — the global controls (connect /
+       status / model / context) that drive the model the chats run against.
+       The label reads CONNECTIONS, not Settings: what is under it is a row of
+       providers, and "Settings" sent people looking for preferences.
+       ControlStrip mounts directly again (t-qc1d69): the Browser card that
+       used to sit below it inside SettingsSection.svelte moved to the
+       Insights pane, and nothing else used that seam, so it is gone too. -->
   <ControlStrip />
+
+  <!-- THE DOCK (change 1). Below the connections block, not at the top: the
+       sidebar reads brand, connections, dock, then the lists. It replaces the
+       Chats toolbar and the Collabs / Front Desk / Memory toggles outright. -->
+  <SidebarDock
+    {frontDeskCount}
+    collabsOpen={!collabsCollapsed}
+    frontDeskOpen={!frontDeskCollapsed}
+    memoryOpen={showMemory}
+    onToggleCollabs={toggleCollabs}
+    onToggleFrontDesk={() => (frontDeskCollapsed = !frontDeskCollapsed)}
+    onToggleMemory={() => (showMemory = !showMemory)}
+  />
 
   <!-- Chats + Collabs share the rest of the panel 50/50 by default, each its
        own scroll region, divided by a now-DRAGGABLE .section-divider so the
@@ -166,7 +211,7 @@
     <div class="chats-half">
       <!-- Chats: each opens in its own movable editor tab. -->
       <div class="section-label">Chats</div>
-      <ChatsList />
+      <ChatsHereNest />
     </div>
 
     <!-- t-kgserq — draggable resizer. role=separator + tabindex so it is a
@@ -177,28 +222,42 @@
          why the a11y lint below is suppressed rather than followed — the
          generic rule assumes role=separator is never interactive, but the
          ARIA spec's own separator pattern says otherwise. -->
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="section-divider"
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label="Resize the Collabs section"
-      aria-valuetext={collabsHeightPx ? `${collabsHeightPx}px` : 'default'}
-      tabindex="0"
-      onpointerdown={startResize}
-      onkeydown={resizeKey}
-    ></div>
+    {#if !collabsCollapsed}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="section-divider"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the Collabs section"
+        aria-valuetext={collabsHeightPx ? `${collabsHeightPx}px` : 'default'}
+        tabindex="0"
+        onpointerdown={startResize}
+        onkeydown={resizeKey}
+      ></div>
+    {/if}
 
     <!-- Collabs: a shared stream several agents and you can all read; each one
          opens in its own editor tab, exactly like a chat. The half's own
          markup, wire and styles live in CollabsList.svelte (see the Collabs
-         comment in the script above for why it was extracted). -->
-    <div class="collabs-half" style={collabsHeightPx ? `flex: 0 0 ${collabsHeightPx}px;` : undefined}>
-      <div class="section-label">Collabs</div>
-      <CollabsList />
-    </div>
+         comment in the script above for why it was extracted). The header row is
+         a plain LABEL now: the dock's Collabs item is the collapse control
+         (t-q8zfo7). Collapsed, the half drops its dragged flex-basis with its
+         body, so Chats takes the whole split. -->
+    {#if !collabsCollapsed}
+      <div class="collabs-half" style={collabsHeightPx ? `flex: 0 0 ${collabsHeightPx}px;` : undefined}>
+        <div class="section-label">Collabs</div>
+        <CollabsList />
+      </div>
+    {/if}
   </div>
+
+  <!-- Front Desk: the contacts' questions parked on this Origami. Below Collabs,
+       shut by default, at its own natural height like Memory rather than inside the
+       50/50 split — a queue that is usually empty must not take a share of the space
+       Chats and Collabs fight over. Its wire, poll and collapse flag are its own
+       (FrontDeskSection.svelte). NOT MOUNTED while origamicoder.flock.enabled is off. -->
+  {#if flockEnabled}<FrontDeskSection bind:collapsed={frontDeskCollapsed} oncount={(n) => (frontDeskCount = n)} />{/if}
 
   <!-- Memory: a force-directed graph + search over the wiki/memory source
        folder. Collapsed by default so the graph canvas rAF loop only runs once
@@ -208,18 +267,11 @@
        either half. On a viewport too short for split + Memory both, the
        .launcher's own overflow-y:auto (not a pin) is what keeps Memory
        reachable: the whole panel scrolls, same as it always could. -->
-  <div class="memory-section">
-    <div class="section-label">Memory</div>
-    <button
-      class="chat-action memory-toggle"
-      class:active={showMemory}
-      onclick={() => (showMemory = !showMemory)}
-      title="Show the memory graph — a map of your wiki/memory pages, tags and namespaces. Defaults to your wiki folder; change it with Source…"
-    >{showMemory ? '▾ Hide memory graph' : '▸ Show memory graph'}</button>
-    {#if showMemory}
+  {#if showMemory}
+    <div class="memory-section">
       <div class="memory-host"><WikiSearchPane /></div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -286,19 +338,6 @@
     color: var(--og-text-muted);
   }
 
-  .chat-action {
-    font-size: 11px;
-    padding: 4px 8px;
-    background: var(--og-btn-bg);
-    color: var(--og-text-secondary);
-    border: 1px solid var(--og-border);
-    border-radius: 5px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .chat-action:hover { border-color: var(--og-chat); color: var(--og-text); }
-  .chat-action.active { background: color-mix(in srgb, var(--og-accent) 14%, transparent); color: var(--og-text); }
-
   /* Chats/Collabs 50/50 split: the only flex-growing item in .launcher's
      column, so it absorbs whatever room is left after the fixed header
      (brand/Settings) and Memory (natural height, below) take theirs.
@@ -328,7 +367,6 @@
     overflow-y: auto;
     overflow-x: hidden;
   }
-
   /* Memory sits below the split, at its own natural (content) height — not
      part of the 50/50, does not scroll with either half. flex-shrink:0 keeps
      it from being squeezed; if the panel is too short for split + Memory
@@ -340,7 +378,6 @@
 
   /* Collapsible graph host. Fixed height so the graph canvas resolves a size;
      the sidebar itself scrolls (overflow-y:auto). */
-  .memory-toggle { display: block; width: calc(100% - 20px); margin: 2px 10px 0; text-align: left; }
   .memory-host {
     height: 380px;
     flex-shrink: 0;

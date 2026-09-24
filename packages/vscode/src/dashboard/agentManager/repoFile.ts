@@ -1,14 +1,8 @@
-// Agent Manager - repoFile.ts (Folds board): the EXTENSION's half of the repo
-// registry at ~/.origami/repos.json. It is NO LONGER the only writer - the
-// engine's board_register writes entries this window has never seen - so every
-// rewrite goes through the merge rule in repoMerge.ts (change only what you
-// touched, keep everything else verbatim). This file is the fs half: where the
-// file lives, reading it, the atomic write, the sync, and the two lookups the
-// board asks it for (which checkout is primary, which entries to adopt).
-//
-// The write is atomic (tmp + rename), mirroring state.ts saveState, and BEST
-// EFFORT throughout: this file is a convenience for other processes, so a
-// read-only home dir must never break the board's boot.
+// The extension's half of the repo registry at ~/.origami/repos.json. No longer the only
+// writer — the engine's board_register writes entries this window has never seen — so every
+// rewrite goes through repoMerge.ts's merge rule (change only what you touched, keep
+// everything else verbatim). Atomic write, best-effort throughout, since this file is a
+// convenience other processes read.
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -20,10 +14,8 @@ import { adoptRoots, mergeRepoFile, primaryRoot, repoFileKey, type RepoFile, typ
 // file's line cap). Re-exported so long-standing importers stay unchanged.
 export { adoptRoots, dropEntry, mergeRepoFile, primaryRoot, setPrimary, type RepoFile, type RepoFileEntry } from './repoMerge';
 
-/** Where `.origami/repos.json` is rooted. `ORIGAMI_REPOS_HOME` overrides the
- *  real home the same way `XDG_CONFIG_HOME` overrides `~/.config` for
- *  globalConfig.ts - the test suite points it at a temp dir so no suite can
- *  read or write the developer's own registry. Unset in production. */
+/** Where repos.json is rooted; `ORIGAMI_REPOS_HOME` overrides the real home the same way
+ *  `XDG_CONFIG_HOME` does, so the test suite never touches the developer's own registry. */
 function repoHome(): string {
   return process.env.ORIGAMI_REPOS_HOME || os.homedir();
 }
@@ -47,13 +39,9 @@ export function writeRepoFile(file: string, doc: RepoFile): void {
   fs.renameSync(tmp, file);
 }
 
-/**
- * Refresh ~/.origami/repos.json from the board's own repo list (the workspace
- * repo, when it is one, plus every registered repo), MERGED onto whatever is
- * there. Called at AgentManager construction and on every saveKnownRepos, so the
- * file tracks the hub without anything else having to remember it exists. Never
- * throws - a failure here costs the engine its repo list, not the user their board.
- */
+/** Refresh repos.json from the board's own repo list, merged onto whatever is there. Called
+ *  at construction and every saveKnownRepos, so the file tracks the hub automatically. Never
+ *  throws — a failure costs the engine its repo list, not the user their board. */
 export function syncRepoFile(
   workspaceRoot: string | undefined,
   known: string[],
@@ -66,30 +54,34 @@ export function syncRepoFile(
   } catch { /* best effort - the board boots either way */ }
 }
 
-/** Re-read the file and hand ONE entry's doc to `edit`, then write the result -
- *  the read-modify-write every writer of this shared file owes the others. Best
- *  effort, like everything here: an unwritable home costs the setting, not the board. */
+/** Re-read the file, hand one entry's doc to `edit`, write the result — the read-modify-write
+ *  every writer of this shared file owes the others. A file that does not parse is left alone:
+ *  every edit here changes an existing entry, and an empty list would read as "all removed"
+ *  (repoRemovals.ts). */
 export function updateRepoFile(edit: (doc: RepoFile) => RepoFile, home?: string): void {
   try {
     const file = repoFilePath(home);
-    writeRepoFile(file, edit(readRepoFile(file) ?? { version: 1, repos: [] }));
+    const doc = readRepoFile(file);
+    if (doc) writeRepoFile(file, edit(doc));
   } catch { /* best effort */ }
 }
 
-/**
- * The checkout a repo's WORK happens in: tickets, fold branching and
- * apply-to-main all target this, not necessarily the registered root. Absent
- * `primary` - the default nobody has touched - returns `root` unchanged, so the
- * whole feature is a no-op until someone sets one. A primary whose folder has
- * since vanished degrades back to the root rather than pointing the board at
- * nothing.
- */
+/** The checkout a repo's work happens in — tickets, folds, apply-to-main all target this.
+ *  Absent `primary` returns `root` unchanged, so the feature is a no-op until set; a primary
+ *  whose folder vanished degrades back to root. */
 export function primaryFor(root: string, home?: string): string {
   const key = repoFileKey(root);
   const entry = readRepoFile(repoFilePath(home))?.repos.find((r) => repoFileKey(r.root) === key);
   const target = entry ? primaryRoot(entry) : root;
   if (target === root) return root;
   return fs.existsSync(target) ? target : root;
+}
+
+/** The name repos.json gives a root (the key the board_* tools resolve), when it has one. */
+export function registeredName(root: string, home?: string): string | undefined {
+  const key = repoFileKey(root);
+  const name = readRepoFile(repoFilePath(home))?.repos.find((r) => repoFileKey(r.root) === key)?.name;
+  return typeof name === 'string' && name ? name : undefined;
 }
 
 /** The registered roots repos.json knows and the extension does not (adopt-on-read). */

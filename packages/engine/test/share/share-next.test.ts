@@ -81,6 +81,13 @@ beforeEach(async () => {
   await resetDatabase()
 })
 
+// FORK STRIP: session share is hard-disabled (src/share/share-next.ts:23,
+// `const disabled = true`) so no transcript is posted anywhere. create/remove/
+// sync therefore no-op, and the tests below assert the live network behaviour
+// that used to exist. Kept (not deleted) as the contract to restore if share
+// is ever re-enabled. The `request(...)` URL-builder tests above still run.
+const strippedIt = it.live.skip
+
 describe("ShareNext", () => {
   it.live("request uses legacy share API without active org account", () =>
     provideTmpdirInstance(
@@ -135,7 +142,7 @@ describe("ShareNext", () => {
     ),
   )
 
-  it.live("create posts share, persists it, and returns the result", () =>
+  strippedIt("create posts share, persists it, and returns the result", () =>
     provideTmpdirInstance(
       () => {
         const createRequests: HttpClientRequest.HttpClientRequest[] = []
@@ -175,7 +182,7 @@ describe("ShareNext", () => {
     ),
   )
 
-  it.live("remove deletes the persisted share and calls the delete endpoint", () =>
+  strippedIt("remove deletes the persisted share and calls the delete endpoint", () =>
     provideTmpdirInstance(
       () => {
         const seen: HttpClientRequest.HttpClientRequest[] = []
@@ -210,7 +217,7 @@ describe("ShareNext", () => {
     ),
   )
 
-  it.live("create fails on a non-ok response and does not persist a share", () =>
+  strippedIt("create fails on a non-ok response and does not persist a share", () =>
     provideTmpdirInstance(() => {
       const client = HttpClient.make((req) => Effect.succeed(json(req, { error: "bad" }, 500)))
       return Effect.gen(function* () {
@@ -224,7 +231,7 @@ describe("ShareNext", () => {
     }),
   )
 
-  it.live("ShareNext coalesces rapid diff events into one delayed sync with latest data", () =>
+  strippedIt("ShareNext coalesces rapid diff events into one delayed sync with latest data", () =>
     provideTmpdirInstance(
       () => {
         const seen: Array<{ url: string; body: string }> = []

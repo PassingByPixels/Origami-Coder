@@ -34,6 +34,8 @@ export const SHELL_COMMANDS: SlashCommand[] = [
   { name: '/spend', description: 'Show cost — this chat + this month', category: 'Info' },
   { name: '/loop', description: 'Re-run a prompt on a timer (e.g. every 30m)', category: 'Mode' },
   { name: '/compose', description: 'Help me write a good /loop', category: 'Mode' },
+  // No `/btw` (t-v5qv6u): the composer's Fork button replaced it. The host still catches a
+  // typed /btw and only forks (DashboardPanel.handleSlashCommand), so it never prompts the engine.
 ];
 
 /** What the composer offers before the engine has said anything: the baseline
@@ -58,13 +60,20 @@ export function inferCategory(name: string): string {
 /** Build a `SlashCommand` from a runtime `availableCommands` entry.
  * Accepts the loose `any` shape from the message payload + coerces
  * defensively. Strips an existing leading `/` and re-adds it
- * canonically so display is consistent. */
-export function buildSlashCommand(raw: { name?: unknown; description?: unknown }): SlashCommand {
+ * canonically so display is consistent.
+ *
+ * A sender that STATES its category keeps it. `inferCategory` is a lookup
+ * table of the ENGINE's own command names, so re-deriving a foreign
+ * vocabulary through it buckets almost all of it as 'Other' — which is how a
+ * Claude Code session's 53 commands lost the one label that said where they
+ * came from. Only a sender that says nothing gets guessed at. */
+export function buildSlashCommand(raw: { name?: unknown; description?: unknown; category?: unknown }): SlashCommand {
   const rawName = String(raw?.name ?? '').replace(/^\//, '');
+  const stated = typeof raw?.category === 'string' ? raw.category.trim() : '';
   return {
     name: '/' + rawName,
     description: String(raw?.description ?? ''),
-    category: inferCategory(rawName),
+    category: stated || inferCategory(rawName),
   };
 }
 

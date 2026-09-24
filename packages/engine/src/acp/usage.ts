@@ -1,14 +1,17 @@
 import type { AgentSideConnection, Usage } from "@agentclientprotocol/sdk"
-import type { AssistantMessage as OrigamiAssistantMessage, Message } from "@origami/sdk/v2"
-import { InstanceRef } from "@/effect/instance-ref"
-import { InstanceBootstrap } from "@/project/bootstrap"
-import { InstanceStore } from "@/project/instance-store"
-import { makeGlobalNode, Node } from "@origami/core/effect/app-node"
-import { LayerNode } from "@origami/core/effect/layer-node"
+import type {
+  AssistantMessage as OrigamiAssistantMessage,
+  Message,
+  OrigamiClient,
+  Part,
+} from "@origami/sdk/v2"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { Provider } from "@/provider/provider"
-import { Context, Effect, Layer, SynchronizedRef } from "effect"
+import { Effect } from "effect"
+import { ACPComposition } from "./composition"
+import { SessionPromptCapture } from "@/session/prompt-capture"
+import type { ACPHistoryStore } from "./history-store"
 
 export type AssistantTokenCost = Pick<OrigamiAssistantMessage, "cost" | "tokens">
 
@@ -25,13 +28,9 @@ export type MessagesInput = {
   readonly directory: string
 }
 
-/**
- * The fields of a session row this module needs. The engine's projector keeps
- * `cost`/`tokens` as RUNNING TOTALS per session (core/session/projector.ts
- * applyUsage adds each step-finish onto the row), and a subagent's spend lands
- * on the subagent's OWN row - never the parent's - so summing descendant rows
- * cannot double count the parent's messages.
- */
+/** The fields of a session row this module needs. The engine's projector keeps
+ *  `cost`/`tokens` as RUNNING TOTALS per session, and a subagent's spend lands on
+ *  the subagent's OWN row, so summing descendant rows cannot double count. */
 export type SessionRow = {
   readonly id: string
   readonly parentID?: string
@@ -55,37 +54,10 @@ export type SubagentTotals = {
   readonly tokensOutput: number
 }
 
-export type SDK = {
-  readonly session: {
-    readonly messages: (
-      parameters: { readonly sessionID: string; readonly directory: string },
-      options: { readonly throwOnError: true },
-    ) => Promise<{ readonly data?: readonly SessionMessage[] | null }>
-    readonly list: (
-      parameters: { readonly directory: string; readonly roots: false },
-      options: { readonly throwOnError: true },
-    ) => Promise<{ readonly data?: readonly SessionRow[] | null }>
-  }
-}
-
-export interface MessageLoaderInterface {
-  readonly messages: (input: MessagesInput) => Effect.Effect<readonly SessionMessage[], unknown>
-  /**
-   * Session rows for a directory, used for the subagent rollup. OPTIONAL: a
-   * loader that cannot list sessions simply produces an update without the
-   * rollup rather than failing the whole usage report.
-   */
-  readonly sessions?: (input: { readonly directory: string }) => Effect.Effect<readonly SessionRow[], unknown>
-}
-
-export interface ContextLimitLoaderInterface {
-  readonly providers: (directory: string) => Effect.Effect<Record<ProviderV2.ID, Provider.Info>, unknown>
-}
-
 export type UsageConnection = Pick<AgentSideConnection, "sessionUpdate">
 
 export interface Interface {
-  readonly buildUsage: (message: AssistantTokenCost) => Usage
+  readonly buildUsage: (message: AssistantTokenCost, parts?: readonly Part[]) => Usage
   readonly latestAssistantMessage: (messages: readonly SessionMessage[]) => AssistantMessage | undefined
   readonly totalSessionCost: (messages: readonly SessionMessage[]) => number
   readonly contextLimit: (input: {
@@ -100,46 +72,73 @@ export interface Interface {
   }) => Effect.Effect<void>
 }
 
-export class MessageLoader extends Context.Service<MessageLoader, MessageLoaderInterface>()(
-  "@origami/ACPUsageMessageLoader",
-) {}
-
-export class ContextLimitLoader extends Context.Service<ContextLimitLoader, ContextLimitLoaderInterface>()(
-  "@origami/ACPUsageContextLimitLoader",
-) {}
-
-export class Service extends Context.Service<Service, Interface>()("@origami/ACPUsage") {}
-
-export function messageLoaderFromSDK(sdk: SDK): MessageLoaderInterface {
-  return MessageLoader.of({
-    messages: (input) =>
-      Effect.promise(() =>
-        sdk.session
-          .messages({ sessionID: input.sessionID, directory: input.directory }, { throwOnError: true })
-          .then((response) => response.data ?? []),
-      ),
-    // roots:false so subagent sessions - which is the entire point of the
-    // rollup - are in the listing at all.
-    sessions: (input) =>
-      Effect.promise(() =>
-        sdk.session
-          .list({ directory: input.directory, roots: false }, { throwOnError: true })
-          .then((response) => response.data ?? []),
-      ),
-  })
+/**
+ * A turn's tokens, summed over the assistant message's `step-finish` parts.
+ *
+ * WHY NOT THE MESSAGE. `message.tokens` is ASSIGNED at every step-finish rather
+ * than accumulated (session/processor.ts), because the context gauge needs "how
+ * full is the window right now". Read as a turn total it reports only the LAST
+ * step, which under-reports every tool loop. `undefined` when no part carried a
+ * usable measurement; the caller falls back to the message level.
+ */
+export function sumStepFinishTokens(parts: readonly Part[] | undefined): AssistantTokenCost["tokens"] | undefined {
+  let found = false
+  let input = 0
+  let output = 0
+  let reasoning = 0
+  let cacheRead = 0
+  let cacheWrite = 0
+  for (const part of parts ?? []) {
+    if (!part || part.type !== "step-finish") continue
+    // Widened rather than asserted: the SDK type says every member is a number,
+    // but these rows come off disk and an older one need not honour it.
+    const tokens: TokenView | undefined = part.tokens
+    // A step that reported neither input nor output measured nothing, so it
+    // contributes nothing rather than a fabricated zero.
+    const stepInput = tokens?.input
+    const stepOutput = tokens?.output
+    if (!finiteNumber(stepInput) || !finiteNumber(stepOutput)) continue
+    found = true
+    input += stepInput
+    output += stepOutput
+    const stepReasoning = tokens?.reasoning
+    if (finiteNumber(stepReasoning)) reasoning += stepReasoning
+    const read = tokens?.cache?.read
+    const write = tokens?.cache?.write
+    if (finiteNumber(read)) cacheRead += read
+    if (finiteNumber(write)) cacheWrite += write
+  }
+  if (!found) return undefined
+  return { input, output, reasoning, cache: { read: cacheRead, write: cacheWrite } }
 }
 
-export const messageLoaderLayer = (sdk: SDK) => Layer.succeed(MessageLoader, messageLoaderFromSDK(sdk))
+/** A step's `tokens`, read as "whatever is really there" rather than as typed. */
+type TokenView = {
+  readonly input?: unknown
+  readonly output?: unknown
+  readonly reasoning?: unknown
+  readonly cache?: { readonly read?: unknown; readonly write?: unknown }
+}
 
-export function buildUsage(message: AssistantTokenCost): Usage {
-  const cachedReadTokens = message.tokens.cache.read
-  const cachedWriteTokens = message.tokens.cache.write
-  const thoughtTokens = message.tokens.reasoning
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}
+
+/**
+ * The ACP `usage` payload for one assistant turn. `parts` is the message's own
+ * parts when the caller has them: given, the token counts are summed per step;
+ * omitted, the message-level totals are used, which under-report a multi-step turn.
+ */
+export function buildUsage(message: AssistantTokenCost, parts?: readonly Part[]): Usage {
+  const tokens = sumStepFinishTokens(parts) ?? message.tokens
+  const cachedReadTokens = tokens.cache.read
+  const cachedWriteTokens = tokens.cache.write
+  const thoughtTokens = tokens.reasoning
 
   return {
-    inputTokens: message.tokens.input,
-    outputTokens: message.tokens.output,
-    totalTokens: message.tokens.input + message.tokens.output + thoughtTokens + cachedReadTokens + cachedWriteTokens,
+    inputTokens: tokens.input,
+    outputTokens: tokens.output,
+    totalTokens: tokens.input + tokens.output + thoughtTokens + cachedReadTokens + cachedWriteTokens,
     ...(thoughtTokens > 0 ? { thoughtTokens } : {}),
     ...(cachedReadTokens > 0 ? { cachedReadTokens } : {}),
     ...(cachedWriteTokens > 0 ? { cachedWriteTokens } : {}),
@@ -162,13 +161,10 @@ export function totalSessionCost(messages: readonly SessionMessage[]): number {
  * Sum the spend of every session DESCENDED from `rootID` - the task tool's
  * children, their children, and so on - following `parentID`.
  *
- * Returns `undefined` when there are no descendants, so the caller OMITS the
- * field rather than publishing zeros: a client can then tell "this turn used no
- * subagents" from "subagents ran and cost nothing", which zeros would conflate.
- *
- * Cycle-safe (a corrupted parent link cannot spin) and root-exclusive (the
- * parent's own spend is already reported by the existing `cost` field, so
- * including it here would double count).
+ * Returns `undefined` when there are no descendants, so the caller OMITS the field
+ * rather than publishing zeros: a client can then tell "this turn used no
+ * subagents" from "subagents ran and cost nothing". Cycle-safe and root-exclusive
+ * (the parent's own spend is already reported by `cost`).
  */
 export function subagentTotals(rows: readonly SessionRow[], rootID: string): SubagentTotals | undefined {
   const children = new Map<string, SessionRow[]>()
@@ -226,14 +222,12 @@ function cacheTokensOf(row: SessionRow | undefined): SessionCacheTokens {
 
 /**
  * Cache-token accounting for the `cache_stats` ext method: THIS session's own
- * totals (its row - a running total the projector already keeps, same source
- * `subagentTotals` reads) alongside a LIFETIME sum over every row the caller
- * passed in. The caller reads with `roots: false` so a subagent's own cache
- * spend counts toward the lifetime the same way `sendUpdate`'s rollup already
- * includes it.
+ * totals (its row - the running total the projector keeps, the same source
+ * `subagentTotals` reads) alongside a LIFETIME sum over every row the caller passed
+ * in. The caller reads with `roots: false` so a subagent's own cache spend counts
+ * toward the lifetime.
  *
- * Same defensive `?? 0` destructuring as `subagentTotals`, but FLAT rather than
- * a parent-scoped tree walk: every row counts once, there is no "root" to
+ * FLAT rather than a parent-scoped tree walk: every row counts once, no root to
  * exclude.
  */
 export function cacheStatsFromRows(
@@ -258,22 +252,16 @@ export function cacheStatsFromRows(
 }
 
 /**
- * Build the `usage_update` payload. Shared by both `sendUpdate`
- * implementations (the Effect layer below and ACP's SDK-backed one in
- * service.ts) so the two can never disagree about what the client is told.
+ * Build the `usage_update` payload. The one place that shapes the wire frame -
+ * `makeUsageService.sendUpdate` below calls this and nothing else does (t-s93cw2:
+ * a second, unreachable `sendUpdate` used to build its own copy of this shape).
  *
- * `used`/`size`/`cost` keep their existing meaning - the PARENT session alone -
- * because clients already render them as the context gauge and this session's
- * bill. The subagent rollup and the cache breakdown are both strictly ADDITIVE
- * and ride `_meta` (the ACP-sanctioned extension bag, since `UsageUpdate` has
- * no typed slot for either), leaving the client free to add them in, show them
- * separately, or ignore them.
- *
- * `cacheReadTokens`/`cacheWriteTokens` mirror `buildUsage`'s own cache fields -
- * same source (`message.tokens.cache`), same "omit rather than publish a
- * fabricated zero" rule, bundled as ONE `_meta.cache` object (never one field
- * present without the other) so a consumer never has to guess whether a
- * missing write means zero or unmeasured.
+ * `used`/`size`/`cost` keep their existing meaning - the PARENT session alone. The
+ * subagent rollup and the cache breakdown are strictly ADDITIVE and ride `_meta`,
+ * the ACP-sanctioned extension bag, since `UsageUpdate` has no typed slot for
+ * either. `cacheReadTokens`/`cacheWriteTokens` mirror `buildUsage`'s cache fields
+ * and are bundled as ONE `_meta.cache` object, so a consumer never has to guess
+ * whether a missing write means zero or unmeasured.
  */
 export function buildUsageUpdate(input: {
   readonly used: number
@@ -282,11 +270,16 @@ export function buildUsageUpdate(input: {
   readonly subagents?: SubagentTotals
   readonly cacheReadTokens?: number
   readonly cacheWriteTokens?: number
+  /** What `used` is made of, when this session has a prompt capture to read it
+   *  from. Omitted rather than guessed - a client with no composition keeps
+   *  whatever it showed before. */
+  readonly composition?: ACPComposition.ContextComposition | undefined
 }) {
   const cacheRead = input.cacheReadTokens ?? 0
   const cacheWrite = input.cacheWriteTokens ?? 0
   const meta = {
     ...(input.subagents ? { subagents: input.subagents } : {}),
+    ...(input.composition ? { composition: input.composition } : {}),
     ...(cacheRead > 0 || cacheWrite > 0 ? { cache: { read: cacheRead, write: cacheWrite } } : {}),
   }
   return {
@@ -299,13 +292,10 @@ export function buildUsageUpdate(input: {
 }
 
 /**
- * Leading-edge rate limiter, keyed per session.
- *
- * `allow` returns true the FIRST time a key is seen and then at most once per
- * `intervalMs`. Leading-edge on purpose: the point of a mid-turn update is that
- * the gauge moves as soon as the first step finishes, so the first call must
- * never be the one that gets dropped. Time is injected rather than read from
- * `Date.now()` so throttle behaviour is testable without sleeping.
+ * Leading-edge rate limiter, keyed per session. `allow` returns true the FIRST time
+ * a key is seen and then at most once per `intervalMs`. Leading-edge on purpose:
+ * the point of a mid-turn update is that the gauge moves as soon as the first step
+ * finishes. Time is injected so throttle behaviour is testable without sleeping.
  */
 export function makeThrottle(intervalMs: number) {
   const last = new Map<string, number>()
@@ -330,139 +320,169 @@ export function findContextLimit(
   return providers[providerID]?.models[modelID]?.limit.context
 }
 
-export const contextLimitLoaderLayer = Layer.effect(
-  ContextLimitLoader,
-  Effect.gen(function* () {
-    const store = yield* InstanceStore.Service
-    const provider = yield* Provider.Service
+/**
+ * The ONE `Interface` builder. `acp/agent.ts` constructs `ACPService.make` with no
+ * `usage` injected, so this is what runs live - it is the sole source of every
+ * usage_update the product sends (t-s93cw2; before this, `acp/usage.ts` also built
+ * a second, Effect-Context-service version of `sendUpdate`/`contextLimit` that
+ * `ACPService.make` never received, so the breakdown card the OTHER builder
+ * populated shipped in 0.4.158 without ever sending data - t-s8ikm2).
+ *
+ * `readCapture` is injectable (defaults to `SessionPromptCapture.get`, see
+ * `service.ts`) so a test needs no engine. `contextLimit` caches a found limit
+ * per directory/provider/model for the lifetime of this instance, plain and
+ * uncoordinated - one instance per connection, so nothing else can race it.
+ */
+/** Messages per newest-first page when `sendUpdate` looks for the latest
+ *  assistant message. After a turn, and during one, the newest message IS that
+ *  assistant, so one page of one message is the usual whole read. */
+const TAIL_PAGE = 1
 
-    return ContextLimitLoader.of({
-      providers: Effect.fn("ACPUsageContextLimitLoader.providers")(function* (directory) {
-        const ctx = yield* store.load({ directory })
-        return yield* Effect.gen(function* () {
-          return yield* provider.list()
-        }).pipe(Effect.provideService(InstanceRef, ctx))
-      }),
-    })
-  }),
-)
+export function makeUsageService(
+  sdk: OrigamiClient,
+  readCapture: (sessionID: string) => SessionPromptCapture.Capture | null,
+  /** t-ucndru. The store reader for the subagent roll-up. Absent = no roll-up. */
+  history?: Pick<ACPHistoryStore.Reader, "descendants">,
+): Interface {
+  const limits = new Map<string, Promise<number | undefined>>()
 
-const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const messageLoader = yield* MessageLoader
-    const contextLimitLoader = yield* ContextLimitLoader
-    const limits = yield* SynchronizedRef.make(new Map<string, Effect.Effect<number | undefined>>())
+  const contextLimit: Interface["contextLimit"] = Effect.fn("ACP.usage.contextLimit")(function* (params) {
+    const key = `${params.directory}\u0000${params.providerID}\u0000${params.modelID}`
+    const current = limits.get(key)
+    if (current) return yield* Effect.promise(() => current)
 
-    const cachedLimit = Effect.fnUntraced(function* (input: {
-      readonly directory: string
-      readonly providerID: ProviderV2.ID
-      readonly modelID: ModelV2.ID
-    }) {
-      return yield* SynchronizedRef.modifyEffect(
-        limits,
-        Effect.fnUntraced(function* (items) {
-          const key = `${input.directory}\u0000${input.providerID}\u0000${input.modelID}`
-          const current = items.get(key)
-          if (current) return [current, items] as const
-          const next = yield* Effect.cached(
-            contextLimitLoader.providers(input.directory).pipe(
-              Effect.map((providers) => findContextLimit(providers, input.providerID, input.modelID)),
-              Effect.catch((error) =>
-                Effect.logError("failed to get providers for usage context limit", { error: error }).pipe(
-                  Effect.as(undefined),
-                ),
-              ),
-            ),
-          )
-          return [next, new Map(items).set(key, next)] as const
-        }),
-      )
-    })
-
-    const contextLimit = Effect.fn("ACPUsage.contextLimit")(function* (input: {
-      readonly directory: string
-      readonly providerID: ProviderV2.ID
-      readonly modelID: ModelV2.ID
-    }) {
-      return yield* yield* cachedLimit(input)
-    })
-
-    const sendUpdate = Effect.fn("ACPUsage.sendUpdate")(function* (input: {
-      readonly connection: UsageConnection
-      readonly sessionID: string
-      readonly directory: string
-    }) {
-      const messages = yield* messageLoader
-        .messages({ sessionID: input.sessionID, directory: input.directory })
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logError("failed to fetch messages for usage update", { error: error }).pipe(Effect.as(undefined)),
-          ),
-        )
-      if (!messages) return
-
-      const message = latestAssistantMessage(messages)
-      if (!message) return
-      if (!message.providerID || !message.modelID) return
-
-      // Skip the /compact summariser turn — its tokens describe reading the whole
-      // pre-compaction history, so neither input (spikes the gauge) nor output
-      // (omits the preserved tail + system/tools overhead) is honest. Compaction
-      // reduction is lazy, so hold the gauge and let the NEXT real turn report
-      // the true reduced footprint. (Mirror of service.ts makeUsageService.)
-      if ((message as { summary?: boolean }).summary === true) return
-
-      const size = yield* contextLimit({
-        directory: input.directory,
-        providerID: ProviderV2.ID.make(message.providerID),
-        modelID: ModelV2.ID.make(message.modelID),
+    const next = sdk.config
+      .providers({ directory: params.directory }, { throwOnError: true })
+      .then((response) => {
+        const providers = Object.fromEntries(
+          (response.data?.providers ?? []).map((provider) => [provider.id, provider]),
+        ) as Record<ProviderV2.ID, Provider.Info>
+        return findContextLimit(providers, params.providerID, params.modelID)
       })
-      if (!size) return
+      .catch(() => undefined)
+      .then((limit) => {
+        // Only a found limit is kept (t-tijhw6). A failed read, or one made
+        // before the provider started, is read again on the next call.
+        if (limit === undefined && limits.get(key) === next) limits.delete(key)
+        return limit
+      })
+    limits.set(key, next)
+    return yield* Effect.promise(() => next)
+  })
 
-      // A failed/absent session listing costs the rollup only - the gauge and
-      // the parent's own cost still go out.
-      const rows = messageLoader.sessions
-        ? yield* messageLoader
-            .sessions({ directory: input.directory })
-            .pipe(Effect.catch(() => Effect.succeed([] as readonly SessionRow[])))
-        : []
-
-      yield* Effect.promise(() =>
-        input.connection
-          .sessionUpdate({
-            sessionId: input.sessionID,
-            update: buildUsageUpdate({
-              used: message.tokens.input + message.tokens.cache.read,
-              size,
-              cost: totalSessionCost(messages),
-              subagents: subagentTotals(rows, input.sessionID),
-              cacheReadTokens: message.tokens.cache.read,
-              cacheWriteTokens: message.tokens.cache.write,
-            }),
-          })
-          .catch(() => {}),
+  // t-u1j4jm. The gauge needs the newest assistant message and the session's
+  // total cost, never the whole transcript: a full read of a 150 MB session
+  // froze the engine's one JS thread for seconds after every turn. So the
+  // messages are read newest first, TAIL_PAGE at a time, up to the first
+  // assistant (the same message `latestAssistantMessage` finds in a full read),
+  // and the cost comes from the session row, whose `cost` the projector keeps
+  // as the running sum of the same step-finish costs the messages carry
+  // (core/session/projector.ts `applyUsage`; a removed message subtracts).
+  const latestAssistant = async (params: MessagesInput) => {
+    let before: string | undefined
+    while (true) {
+      const response = await sdk.session.messages(
+        { sessionID: params.sessionID, directory: params.directory, limit: TAIL_PAGE, ...(before ? { before } : {}) },
+        { throwOnError: true },
       )
+      const page = (response.data ?? []) as readonly SessionMessage[]
+      const found = latestAssistantMessage(page)
+      if (found) return found
+      const next = response.response?.headers.get("x-next-cursor")
+      if (page.length === 0 || !next) return undefined
+      before = next
+    }
+  }
+
+  const sendUpdate: Interface["sendUpdate"] = Effect.fn("ACP.usage.sendUpdate")(function* (params) {
+    const read = yield* Effect.tryPromise({
+      try: () => latestAssistant(params).then((message) => ({ message })),
+      catch: (error) => error,
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("failed to fetch messages for usage update", { error: error }).pipe(Effect.as(undefined)),
+      ),
+    )
+    if (!read) return
+
+    const message = read.message
+    if (!message?.providerID || !message.modelID) return
+
+    // Skip the /compact summariser turn: its input describes reading the WHOLE
+    // pre-compaction history and would spike the gauge, while output alone under-reports.
+    // Compaction reduction is lazy anyway, so hold the gauge and let the NEXT real turn
+    // report the true reduced footprint.
+    if ((message as { summary?: boolean }).summary === true) return
+
+    const size = yield* contextLimit({
+      directory: params.directory,
+      providerID: ProviderV2.ID.make(message.providerID),
+      modelID: ModelV2.ID.make(message.modelID),
     })
+    if (!size) return
 
-    return Service.of({
-      buildUsage,
-      latestAssistantMessage,
-      totalSessionCost,
-      contextLimit,
-      sendUpdate,
-    })
-  }),
-)
+    const own = yield* Effect.tryPromise({
+      try: () =>
+        sdk.session
+          .get({ sessionID: params.sessionID, directory: params.directory }, { throwOnError: true })
+          .then((response) => response.data as SessionRow | undefined),
+      catch: (error) => error,
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("failed to fetch the session for usage update", { error: error }).pipe(Effect.as(undefined)),
+      ),
+    )
+    if (!own) return
 
-export const messageLoaderNode = LayerNode.unbound(MessageLoader, Node.tags.values.global)
+    // Subagent rollup, over EVERY descendant row: those rows already carry running
+    // cost/token totals. t-ucndru: one recursive store read with no limit, not
+    // `session.list`, which stops at the 100 newest rows, so an older child fell out
+    // of the sum. A failed read costs the rollup only - the gauge and the parent's
+    // own cost still go out.
+    const rows = history
+      ? yield* Effect.tryPromise(() => history.descendants(params.sessionID, null)).pipe(
+          Effect.map((tree) =>
+            tree.rows.map(
+              (row): SessionRow => ({
+                id: row.id,
+                parentID: row.parentId,
+                cost: row.cost,
+                tokens: { input: row.tokens.input, output: row.tokens.output },
+              }),
+            ),
+          ),
+          Effect.catch(() => Effect.succeed([] as readonly SessionRow[])),
+        )
+      : []
 
-export const contextLimitLoaderNode = makeGlobalNode({
-  service: ContextLimitLoader,
-  layer: contextLimitLoaderLayer,
-  deps: [Provider.node, InstanceStore.node],
-})
+    yield* Effect.promise(() =>
+      params.connection
+        .sessionUpdate({
+          sessionId: params.sessionID,
+          update: buildUsageUpdate({
+            used: message.tokens.input + message.tokens.cache.read,
+            size,
+            cost: own.cost ?? 0,
+            subagents: subagentTotals(rows, params.sessionID),
+            cacheReadTokens: message.tokens.cache.read,
+            cacheWriteTokens: message.tokens.cache.write,
+            composition: ACPComposition.contextComposition({
+              capture: readCapture(params.sessionID),
+              used: message.tokens.input + message.tokens.cache.read,
+            }),
+          }),
+        })
+        .catch(() => {}),
+    )
+  })
 
-export const node = makeGlobalNode({ service: Service, layer, deps: [messageLoaderNode, contextLimitLoaderNode] })
+  return {
+    buildUsage,
+    latestAssistantMessage,
+    totalSessionCost,
+    contextLimit,
+    sendUpdate,
+  }
+}
 
 export * as UsageService from "./usage"

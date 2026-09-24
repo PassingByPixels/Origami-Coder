@@ -12,7 +12,7 @@ import { EventSequenceTable, EventTable } from "@origami/core/event/sql"
 import { Location } from "@origami/core/location"
 import { AbsolutePath } from "@origami/core/schema"
 import { WorkspaceV2 } from "@origami/core/workspace"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -1075,6 +1075,118 @@ describe("EventV2", () => {
       expect(sequence).toEqual({ seq: 0, ownerID: "owner-1" })
       expect(received).toHaveLength(0)
     }),
+  )
+
+  // t-tjhmhw. Nests keeps this desk's id in `nest_setting` ('device', JSON). A
+  // chat whose owner row names ANOTHER desk is read only here, and that holds
+  // in the write transaction itself, so a turn that passed the ACP guard just
+  // before the owner flipped cannot write into it.
+  const withDesk = <A, E, R>(desk: string, body: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      yield* db.run(sql`CREATE TABLE IF NOT EXISTS nest_setting (key TEXT PRIMARY KEY, value TEXT NOT NULL)`)
+      yield* db.run(sql`INSERT OR REPLACE INTO nest_setting (key, value) VALUES ('device', ${JSON.stringify(desk)})`)
+      return yield* body.pipe(Effect.ensuring(db.run(sql`DROP TABLE nest_setting`).pipe(Effect.orDie)))
+    })
+
+  const journalOf = (aggregateID: string) =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const rows = yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+      return { seqs: rows.map((row) => row.seq), sequence }
+    }).pipe(Effect.orDie)
+
+  it.effect("refuses a local write into an aggregate another desk owns, in the write transaction", () =>
+    withDesk(
+      "desk-a",
+      Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        const projected = new Array<string>()
+        yield* events.project(DurableMessage, (event) => Effect.sync(() => void projected.push(event.data.messageID)))
+        // No owner row yet, then this desk's own: both land.
+        yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+        yield* events.claim(aggregateID, "desk-a")
+        yield* events.publish(DurableMessage, durableData(aggregateID, "mine"))
+        // The hand-over flips the owner to desk B.
+        yield* events.claim(aggregateID, "desk-b")
+
+        const late = yield* events.publish(DurableMessage, durableData(aggregateID, "late")).pipe(Effect.exit)
+        const transient = yield* events
+          .publish(DurableMessage, durableData(aggregateID, "transient"), { journal: false })
+          .pipe(Effect.exit)
+
+        expect(Exit.isFailure(late)).toBe(true)
+        expect(String(late)).toContain("EventV2.ForeignOwner")
+        expect(String(late)).toContain("desk-b")
+        expect(Exit.isFailure(transient)).toBe(true)
+        // Nothing of either write landed: no journal row, no sequence step, no projection.
+        expect(yield* journalOf(aggregateID)).toEqual({ seqs: [0, 1], sequence: { seq: 1, ownerID: "desk-b" } })
+        expect(projected).toEqual([
+          durableData(aggregateID, "seed").messageID,
+          durableData(aggregateID, "mine").messageID,
+        ])
+      }),
+    ),
+  )
+
+  it.effect("lets the owner's own chunks in: a replay with ownerID is the import path, not a local write", () =>
+    withDesk(
+      "desk-a",
+      Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        for (const [seq, text] of ["one", "two"].entries())
+          yield* events.replay(
+            {
+              id: EventV2.ID.create(),
+              type: EventV2.versionedType(DurableMessage.type, 1),
+              seq,
+              aggregateID,
+              data: durableData(aggregateID, text),
+            },
+            { ownerID: "desk-b", strictOwner: true },
+          )
+        expect(yield* journalOf(aggregateID)).toEqual({ seqs: [0, 1], sequence: { seq: 1, ownerID: "desk-b" } })
+        // ...while a local write into the same chat is still refused.
+        const local = yield* events.publish(DurableMessage, durableData(aggregateID, "local")).pipe(Effect.exit)
+        expect(String(local)).toContain("EventV2.ForeignOwner")
+      }),
+    ),
+  )
+
+  it.effect("leaves an owned aggregate writable while this store names no Nests desk", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = Session.ID.create()
+      yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+      // A control-plane workspace owner on a desk that never turned Nests on.
+      yield* events.claim(aggregateID, "wrk_other")
+      yield* events.publish(DurableMessage, durableData(aggregateID, "after"))
+      expect(yield* journalOf(aggregateID)).toEqual({ seqs: [0, 1], sequence: { seq: 1, ownerID: "wrk_other" } })
+    }),
+  )
+
+  it.effect("fails closed when the stored desk id cannot be read", () =>
+    withDesk(
+      "desk-a",
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+        yield* events.claim(aggregateID, "desk-b")
+        yield* db.run(sql`UPDATE nest_setting SET value = '{broken' WHERE key = 'device'`).pipe(Effect.orDie)
+        const exit = yield* events.publish(DurableMessage, durableData(aggregateID, "late")).pipe(Effect.exit)
+        expect(String(exit)).toContain("EventV2.ForeignOwner")
+        expect((yield* journalOf(aggregateID)).seqs).toEqual([0])
+      }),
+    ),
   )
 
   it.effect("claim updates the event sequence owner", () =>

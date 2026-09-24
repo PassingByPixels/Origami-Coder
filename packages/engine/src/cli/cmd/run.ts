@@ -22,6 +22,7 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
+import { SessionStreamDrop } from "@/session/stream-drop"
 import { createOrigamiClient, type OrigamiClient, type ToolPart } from "@origami/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
@@ -804,8 +805,13 @@ export const RunCommand = effectCmd({
               }
 
               if (part.type === "text" && part.time?.end) {
-                if (emit("text", { part })) continue
-                const text = part.text.trim()
+                // A stream-drop notice carries no prose (t-q90gj9): the chat draws a
+                // card from its metadata. This surface has no card, so it prints the
+                // one-line form, in both the plain and the JSON stream.
+                const drop = !part.text ? SessionStreamDrop.readNotice(part.metadata) : undefined
+                const shown = drop ? { ...part, text: SessionStreamDrop.describeNotice(drop) } : part
+                if (emit("text", { part: shown })) continue
+                const text = shown.text.trim()
                 if (!text) continue
                 if (!process.stdout.isTTY) {
                   process.stdout.write(text + EOL)

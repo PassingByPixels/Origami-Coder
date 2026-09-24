@@ -220,11 +220,7 @@ export type Replacer = (content: string, find: string) => Generator<string, void
 const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65
 const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65
 
-/**
- * Levenshtein distance algorithm implementation
- */
 function levenshtein(a: string, b: string): number {
-  // Handle empty strings
   if (a === "" || b === "") {
     return Math.max(a.length, b.length)
   }
@@ -309,7 +305,6 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
       continue
     }
 
-    // Look for the matching last line after this first line
     for (let j = i + 2; j < originalLines.length; j++) {
       if (originalLines[j].trim() === lastLineSearch) {
         const actualBlockSize = j - i + 1
@@ -321,7 +316,6 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
     }
   }
 
-  // Return immediately if no candidates
   if (candidates.length === 0) {
     return
   }
@@ -345,7 +339,6 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
         const distance = levenshtein(originalLine, searchLine)
         similarity += (1 - distance / maxLen) / linesToCheck
 
-        // Exit early when threshold is reached
         if (similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD) {
           break
         }
@@ -406,7 +399,6 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
     }
   }
 
-  // Threshold judgment
   if (maxSimilarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD && bestMatch) {
     const { startLine, endLine } = bestMatch
     let matchStartIndex = 0
@@ -435,7 +427,6 @@ export const WhitespaceNormalizedReplacer: Replacer = function* (content, find) 
     if (normalizeWhitespace(line) === normalizedFind) {
       yield line
     } else {
-      // Only check for substring matches if the full line doesn't match
       const normalizedLine = normalizeWhitespace(line)
       if (normalizedLine.includes(normalizedFind)) {
         // Find the actual substring in the original line that matches
@@ -526,7 +517,6 @@ export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
 
   const unescapedFind = unescapeString(find)
 
-  // Try direct match with unescaped find string
   if (content.includes(unescapedFind)) {
     yield unescapedFind
   }
@@ -567,7 +557,6 @@ export const TrimmedBoundaryReplacer: Replacer = function* (content, find) {
     return
   }
 
-  // Try to find the trimmed version
   if (content.includes(trimmedFind)) {
     yield trimmedFind
   }
@@ -592,7 +581,6 @@ export const ContextAwareReplacer: Replacer = function* (content, find) {
     return
   }
 
-  // Remove trailing empty line if present
   if (findLines[findLines.length - 1] === "") {
     findLines.pop()
   }
@@ -607,10 +595,8 @@ export const ContextAwareReplacer: Replacer = function* (content, find) {
   for (let i = 0; i < contentLines.length; i++) {
     if (contentLines[i].trim() !== firstLine) continue
 
-    // Look for the matching last line
     for (let j = i + 2; j < contentLines.length; j++) {
       if (contentLines[j].trim() === lastLine) {
-        // Found a potential context block
         const blockLines = contentLines.slice(i, j + 1)
         const block = blockLines.join("\n")
 

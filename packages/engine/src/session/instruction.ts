@@ -17,11 +17,9 @@ import type { MessageID } from "./schema"
 
 /**
  * The prefix every entry `system()` returns is formatted with. By the time
- * `input.system` reaches the request layer its labels are gone - one flat
- * array of strings - so this is the load-bearing signal a caller uses to tell
- * an instruction-file block apart from any other system-prompt text (env,
- * mcp, skills, the collab layers). Nothing else in the prompt pipeline
- * produces this exact prefix.
+ * `input.system` reaches the request layer its labels are gone - one flat array
+ * of strings - so this prefix is the only signal that tells an instruction-file
+ * block apart from any other system-prompt text. Nothing else produces it.
  */
 export const PREFIX = "Instructions from: "
 
@@ -30,13 +28,43 @@ export function isInstructionText(text: string): boolean {
   return text.startsWith(PREFIX)
 }
 
+/** Per-file cap on served instruction-file text, so one large AGENTS.md cannot
+ *  dominate the fixed system-prompt block on every call. */
+export const INSTRUCTION_CAP_BYTES = 16 * 1024
+
+/** Rewind `index` off a UTF-8 continuation byte (0x80-0xBF) so a cut never splits a multi-byte character. */
+function safeBoundary(buf: Buffer, index: number): number {
+  let i = index
+  while (i > 0 && (buf[i] & 0xc0) === 0x80) i--
+  return i
+}
+
+/**
+ * Cap `content` at INSTRUCTION_CAP_BYTES (UTF-8 bytes), cutting at the last line
+ * break inside the window so a truncated file never ends mid-line, then append a
+ * notice. Applied PER FILE, before `serve()`'s footer - a cap on the joined
+ * prompt would let one huge file crowd out the rest instead of surfacing the cut.
+ */
+export function truncate(filepath: string, content: string): string {
+  const buf = Buffer.from(content, "utf8")
+  if (buf.byteLength <= INSTRUCTION_CAP_BYTES) return content
+
+  const window = buf.subarray(0, INSTRUCTION_CAP_BYTES)
+  const lastNewline = window.lastIndexOf(0x0a)
+  const cutAt = safeBoundary(buf, lastNewline === -1 ? INSTRUCTION_CAP_BYTES : lastNewline + 1)
+
+  const kept = buf.subarray(0, cutAt).toString("utf8")
+  const omitted = buf.byteLength - cutAt
+  const notice = `[${path.basename(filepath)} truncated at 16 KB; ${omitted} bytes omitted — read the file for the rest]`
+  return kept.endsWith("\n") ? `${kept}${notice}` : `${kept}\n${notice}`
+}
+
 /**
  * Content as SERVED into the prompt. Only the memory index is transformed: it
  * gains the recall instruction + its directory's absolute path, so the model
- * knows a hook is a pointer and knows where to read the topic file from. The
- * footer is appended HERE, never written to MEMORY.md - the file on disk stays
- * a clean catalog that dream and a human can edit without stepping around
- * engine boilerplate.
+ * knows a hook is a pointer and where to read the topic file from. The footer is
+ * appended HERE, never written to MEMORY.md - the file on disk stays a clean
+ * catalog a human can edit.
  */
 export function serve(filepath: string, content: string): string {
   if (!MemoryLayout.isIndexPath(filepath)) return content
@@ -66,11 +94,10 @@ export interface Interface {
   /** The instruction FILES only - the memory store is served by `memory()`. */
   readonly system: () => Effect.Effect<string[], FSUtil.Error>
   /**
-   * The memory store, served exactly as `system()` used to serve it (same
-   * `PREFIX` line, same recall footer). Split out because the `remember` tool
-   * REWRITES these files mid-conversation, and anything the caller puts in the
-   * cached system prefix is invalidated wholesale when it changes - so the
-   * caller delivers this at the TAIL of the message list instead.
+   * The memory store, served with the same `PREFIX` line and recall footer as
+   * `system()`. Split out because the `remember` tool REWRITES these files
+   * mid-conversation, which invalidates the cached system prefix wholesale - so
+   * the caller delivers this at the TAIL of the message list instead.
    */
   readonly memory: () => Effect.Effect<string[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
@@ -127,7 +154,8 @@ const layer: Layer.Layer<
     })
 
     const read = Effect.fnUntraced(function* (filepath: string) {
-      return yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      const content = yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      return truncate(filepath, content)
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
@@ -145,23 +173,15 @@ const layer: Layer.Layer<
       s.claims.delete(messageID)
     })
 
-    // Agent-owned memory stores written by the `remember` tool. Loaded like
-    // instruction files but kept SEPARATE from AGENTS.md/CLAUDE.md so the
-    // agent's writes can never clobber human-authored rules. The path
-    // convention lives in tool/memory-layout.ts so reader and writer cannot
-    // drift: ~/.origami (cross-project) and <worktree>/.origami (this
-    // project).
+    // Agent-owned memory stores written by the `remember` tool, kept SEPARATE
+    // from AGENTS.md/CLAUDE.md so the agent's writes can never clobber
+    // human-authored rules. The path convention lives in tool/memory-layout.ts
+    // so reader and writer cannot drift.
     //
-    // Per scope, EXACTLY ONE file is loaded:
-    //   <origami>/memory/MEMORY.md  the index - the current layout, cheap:
-    //                               one hook line per topic, topic bodies
-    //                               read on demand by the model.
-    //   <origami>/memory.md         the LEGACY flat store - loaded only when
-    //                               there is no index, so an un-migrated
-    //                               machine keeps every fact it had.
-    // Never both: loading a flat file next to an index would re-import the
-    // bulk the index exists to avoid, and double-report facts already split
-    // into topics.
+    // Per scope, EXACTLY ONE file is loaded: the index
+    // (<origami>/memory/MEMORY.md), else the LEGACY flat <origami>/memory.md so
+    // an un-migrated machine keeps its facts. Never both - a flat file beside an
+    // index re-imports the bulk the index exists to avoid.
     const memoryPaths = Effect.fn("Instruction.memoryPaths")(function* () {
       const ctx = yield* InstanceState.context
       const paths = new Set<string>()
@@ -220,8 +240,7 @@ const layer: Layer.Layer<
       }
 
       // The memory store is part of the INVENTORY - `acp/instructions.ts`
-      // classifies its rows off this set - even though `system()` no longer
-      // serves it. See `memoryPaths` above.
+      // classifies its rows off this set - even though `system()` does not serve it.
       for (const item of yield* memoryPaths()) paths.add(item)
 
       return paths
@@ -239,9 +258,8 @@ const layer: Layer.Layer<
     const system = Effect.fn("Instruction.system")(function* () {
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
-      // The memory store is delivered separately by `memory()`, so it is
-      // subtracted here rather than never added: `systemPaths()` is the
-      // instruction INVENTORY and has to keep reporting it.
+      // Delivered separately by `memory()`, so it is subtracted here rather than
+      // never added: `systemPaths()` is the inventory and has to keep reporting it.
       for (const item of yield* memoryPaths()) paths.delete(item)
       const urls = (config.instructions ?? []).filter(
         (item) => item.startsWith("https://") || item.startsWith("http://"),

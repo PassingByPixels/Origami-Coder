@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "metadata": {
+    "name": "openai-compatible/vllm-text",
+    "recordedAt": "2026-09-02T12:49:32.314Z",
+    "family": "openai-compatible",
+    "provider": "vllm",
+    "model": "deepseek-v4-flash-vision-exp-ablit",
+    "scenario": "text",
+    "recordedWith": "ai-sdk"
+  },
+  "interactions": [
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "url": "http://192.0.2.10:8000/v1/chat/completions",
+        "headers": {
+          "accept": "*/*",
+          "content-type": "application/json"
+        },
+        "body": "{\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"max_tokens\":32000,\"temperature\":0,\"frequency_penalty\":0,\"messages\":[{\"role\":\"system\",\"content\":\"Answer using tools when appropriate.\\nReply with exactly the words: parity check\"},{\"role\":\"user\",\"content\":\"Go.\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "text/event-stream; charset=utf-8"
+        },
+        "body": "data: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}],\"prompt_token_ids\":null,\"prompt_text\":null}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"The\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" user said\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" \\\"Go.\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"\\\" and I\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" need to reply\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" with exactly the\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" words \\\"parity check\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"\\\". So my\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\" response should be just\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\",\"reasoning\":\" that.\"},\"logprobs\":null,\"finish_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ity check\"},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null,\"token_ids\":null}]}\n\ndata: {\"id\":\"chatcmpl-a86f2d70bde5c17b\",\"object\":\"chat.completion.chunk\",\"created\":1788349815,\"model\":\"deepseek-v4-flash-vision-exp-ablit\",\"choices\":[],\"usage\":{\"prompt_tokens\":99,\"total_tokens\":132,\"completion_tokens\":33,\"prompt_tokens_details\":{\"cached_tokens\":0}},\"system_fingerprint\":\"vllm-0.25.2.dev0+g752a3a504.d20260714-tp2-88ad6d91\"}\n\ndata: [DONE]\n\n"
+      }
+    }
+  ]
+}

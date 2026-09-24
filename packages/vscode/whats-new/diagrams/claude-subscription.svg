@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 196" role="img" aria-label="Origami runs the agent loop and the tools. For each step it asks the Claude Code program on your computer for one reply. The program holds your login and sends one request to Anthropic.">
+  <defs>
+    <marker id="wn-cs-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="wn-cs-head-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="box-hi" x="20" y="30" width="220" height="120" rx="8"/>
+  <text class="t-title" x="34" y="54">Origami</text>
+  <text class="t-small" x="34" y="76">runs the agent loop</text>
+  <text class="t-small" x="34" y="92">runs the tools</text>
+  <text class="t-small" x="34" y="108">sub-agents, undo, Nests</text>
+  <text class="t-small" x="34" y="124">memory, artifacts</text>
+  <text class="t-small" x="246" y="62">one step</text>
+  <path class="line-hi" d="M242 70 H296" marker-end="url(#wn-cs-head-hi)"/>
+  <path class="line-hi" d="M296 104 H244" marker-end="url(#wn-cs-head-hi)"/>
+  <text class="t-small" x="252" y="120">reply</text>
+  <rect class="box" x="300" y="40" width="150" height="90" rx="8"/>
+  <text class="t-title" x="314" y="64">Claude Code</text>
+  <text class="t-muted t-small" x="314" y="82">program on your PC</text>
+  <text class="t-muted t-small" x="314" y="98">holds your login</text>
+  <text class="t-muted t-small" x="314" y="114">is only the model</text>
+  <text class="t-small" x="458" y="62">request</text>
+  <path class="line" d="M452 70 H506" marker-end="url(#wn-cs-head)"/>
+  <path class="line" d="M506 104 H454" marker-end="url(#wn-cs-head)"/>
+  <text class="t-small" x="462" y="120">reply</text>
+  <rect class="box" x="510" y="40" width="110" height="90" rx="8"/>
+  <text class="t-title" x="524" y="64">Anthropic</text>
+  <text class="t-muted t-small" x="524" y="82">your Claude</text>
+  <text class="t-muted t-small" x="524" y="98">subscription</text>
+  <text class="t-muted t-small" x="20" y="178">Origami runs each tool call itself, then starts the next step. Your login stays in Claude Code.</text>
+</svg>

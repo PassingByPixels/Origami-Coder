@@ -22,13 +22,19 @@ import { describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import {
   ACPProviderUsage,
+  fetchAnthropicUsage,
   fetchChatgptUsage,
+  fetchCopilotUsage,
   fetchGoUsage,
   fetchGrokUsage,
+  parseAnthropicUsage,
   parseChatgptUsage,
+  parseCopilotUsage,
   parseGoUsage,
   parseGrokUsage,
   usageGate,
+  readClaudeCodeCredential,
+  type ClaudeCredential,
   type FetchLike,
 } from "@/acp/provider-usage"
 import { Auth } from "@/auth"
@@ -103,6 +109,58 @@ const goUsageBody = {
   },
 }
 
+// ANTHROPIC FIXTURES — the field names and the lane keys are read from the
+// shipped Claude Code CLI bundle's own list of recognised keys
+// (`["five_hour","seven_day","seven_day_oauth_apps","seven_day_opus","seven_day_sonnet",
+// "cinder_cove","extra_usage","limits"]`, grepped read-only out of
+// C:\Users\<user>\.local\bin\claude.exe 2.1.198 on 2026-09-09) and from this repo's
+// own reader, whose header records a live 200 on 2026-08-31
+// (packages/vscode/src/claudeCode/planUsage.ts). The percentages and the
+// timestamps below are invented; the SHAPE is not, and no account data is here.
+
+/** 2026-08-16T14:30:00Z — four and a half hours after NOW. */
+const CLAUDE_FIVE_HOUR_RESET = 1_786_890_600_000
+/** 2026-08-20T00:00:00Z — three and a half days after NOW. */
+const CLAUDE_SEVEN_DAY_RESET = 1_787_184_000_000
+
+/** The always-null per-lane money fields a live body carries beside the two
+ *  this parser reads. Present in the fixture so a lane object here is the shape
+ *  the endpoint actually serves, not a two-field reduction of it. */
+const NULL_DOLLARS = { limit_dollars: null, used_dollars: null, remaining_dollars: null, locked_reason: null }
+
+/** Both named lanes, plus the model-scoped, null and non-lane keys the body also
+ *  carries, which this parser must step over rather than mislabel.
+ *
+ *  `seven_day_opus` and `seven_day_sonnet` are POPULATED here and null on the
+ *  account this was checked against — the adversarial case is the one worth
+ *  pinning, since a null lane is refused by the same guard a missing one is.
+ *  `nimbus_quill` is a real key, verbatim: an unnamed lane reporting 0% against
+ *  no reset at all, which is exactly what a "read every key with a number in it"
+ *  parser would have rendered as a window. */
+const anthropicUsageBody = {
+  five_hour: { utilization: 22, resets_at: "2026-08-16T14:30:00+00:00", ...NULL_DOLLARS },
+  seven_day: { utilization: 4, resets_at: "2026-08-20T00:00:00+00:00", ...NULL_DOLLARS },
+  seven_day_opus: { utilization: 71, resets_at: "2026-08-20T00:00:00+00:00", ...NULL_DOLLARS },
+  seven_day_sonnet: { utilization: 9, resets_at: "2026-08-20T00:00:00+00:00", ...NULL_DOLLARS },
+  seven_day_oauth_apps: null,
+  nimbus_quill: { utilization: 0, resets_at: null, ...NULL_DOLLARS },
+  cinder_cove: null,
+  extra_usage: { is_enabled: false, monthly_limit: null, utilization: null },
+  limits: [],
+}
+
+/** The CLI's own name for a 200 that carries none of the lane keys. */
+const anthropicErrorEnvelope = { error: { type: "rate_limit_error", message: "slow down" } }
+
+/** A stored Claude Code credential. The token is a distinctive string on
+ *  purpose: a short one would make the "no token crosses back" test pass by
+ *  accident. */
+const claudeCredential = (over: Partial<ClaudeCredential> = {}): ClaudeCredential => ({
+  token: "sk-ant-oat-not-a-real-claude-token",
+  expiresAt: NOW + 3_600_000,
+  ...over,
+})
+
 /** A fetch that never touches the network. Records what it was asked for. */
 const stubFetch = (
   response: { ok?: boolean; status?: number; json?: () => Promise<unknown> },
@@ -126,11 +184,13 @@ describe("parseChatgptUsage — a documented body becomes windows", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
     expect(result.plan).toBe("plus")
-    // Weekly FIRST — the pill renders only windows[0], and the weekly cap is
-    // the budget a user actually manages (same rule as the GO lanes).
+    // Weekly FIRST — a documented-body convention shared with the GO lanes below,
+    // no longer load-bearing for what the pill shows (ModelPicker.svelte picks the
+    // TIGHTEST window, not windows[0], since t-d942yi) but still the order a
+    // consumer reading windows[0] directly (the JSONL export) would see.
     expect(result.windows).toEqual([
-      { label: "Weekly", usedPercent: 47.5, resetsAt: 1_787_174_400_000 },
-      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000 },
+      { label: "Weekly", usedPercent: 47.5, resetsAt: 1_787_174_400_000, lengthMs: 604_800_000 },
+      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000, lengthMs: 18_000_000 },
     ])
   })
 
@@ -188,6 +248,143 @@ describe("parseChatgptUsage — a documented body becomes windows", () => {
 
   test("an over-100 percentage is clamped so a progress bar cannot overflow its track", () => {
     const result = parseChatgptUsage({ rate_limit: { primary_window: { used_percent: 103 } } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.usedPercent).toBe(100)
+  })
+
+  test("limit_window_seconds becomes lengthMs, in millis", () => {
+    const result = parseChatgptUsage(
+      { rate_limit: { primary_window: { used_percent: 5, limit_window_seconds: 604800, reset_at: 1_786_883_400 } } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.lengthMs).toBe(604_800_000)
+  })
+
+  test("no limit_window_seconds leaves lengthMs absent rather than inventing one", () => {
+    const result = parseChatgptUsage({ rate_limit: { primary_window: { used_percent: 5 } } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.lengthMs).toBeUndefined()
+  })
+})
+
+// t-d942yi — the owner's actual blocker: a monthly cap hidden in
+// `additional_rate_limits[]`, which this parser used to refuse outright.
+describe("parseChatgptUsage — additional_rate_limits[] (t-d942yi)", () => {
+  test("a 73% five-hour window next to a 100% monthly ADDITIONAL entry: the monthly one is not dropped", () => {
+    const body = {
+      rate_limit: {
+        primary_window: { used_percent: 73, limit_window_seconds: 18000, reset_at: 1_786_883_400 },
+        additional_rate_limits: [
+          { limit_name: "monthly", used_percent: 100, limit_window_seconds: 2_592_000, reset_at: 1_789_476_600 },
+        ],
+      },
+    }
+    const result = parseChatgptUsage(body, NOW)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([
+      { label: "5-hour", usedPercent: 73, resetsAt: 1_786_883_400_000, lengthMs: 18_000_000 },
+      { label: "30-day", usedPercent: 100, resetsAt: 1_789_476_600_000, lengthMs: 2_592_000_000 },
+    ])
+    // The tightest window is what the pill shows — proven at the webview layer
+    // (ModelPicker.test.ts); this only proves the monthly entry SURVIVES parsing.
+    expect(Math.max(...result.windows.map((w) => w.usedPercent))).toBe(100)
+  })
+
+  test("labelled by its OWN name when the entry states no window length", () => {
+    const result = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ limit_name: "gpt-5.6-preview", used_percent: 40 }] } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([{ label: "gpt-5.6-preview", usedPercent: 40 }])
+  })
+
+  test("falls back to `window_type`, then `name`, when `limit_name` is absent", () => {
+    const byType = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ window_type: "monthly", used_percent: 10 }] } },
+      NOW,
+    )
+    if (!byType.ok) throw new Error("unreachable")
+    expect(byType.windows[0]!.label).toBe("monthly")
+
+    const byName = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ name: "org-cap", used_percent: 10 }] } },
+      NOW,
+    )
+    if (!byName.ok) throw new Error("unreachable")
+    expect(byName.windows[0]!.label).toBe("org-cap")
+  })
+
+  test("reads `utilization` when `used_percent` is absent, and the reset from `resets_at` / `resets_in_seconds`", () => {
+    const absolute = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ limit_name: "monthly", utilization: 55, resets_at: 1_786_883_400 }] } },
+      NOW,
+    )
+    if (!absolute.ok) throw new Error("unreachable")
+    // No `limit_window_seconds` on this entry, so the label falls back to its
+    // OWN name ("monthly") rather than a length-derived one.
+    expect(absolute.windows[0]).toEqual({ label: "monthly", usedPercent: 55, resetsAt: 1_786_883_400_000 })
+
+    const relative = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ limit_name: "monthly", utilization: 20, resets_in_seconds: 600 }] } },
+      NOW,
+    )
+    if (!relative.ok) throw new Error("unreachable")
+    expect(relative.windows[0]!.resetsAt).toBe(NOW + 600_000)
+  })
+
+  test("a malformed additional entry is DROPPED without breaking the two known windows", () => {
+    const body = {
+      rate_limit: {
+        primary_window: { used_percent: 12, limit_window_seconds: 18000, reset_at: 1_786_883_400 },
+        secondary_window: { used_percent: 4, limit_window_seconds: 604800, reset_at: 1_787_174_400 },
+        additional_rate_limits: [
+          "not an object",
+          null,
+          42,
+          { limit_name: "no percentage at all" },
+          { limit_name: "percent as a string", used_percent: "100" },
+          { limit_name: "percent NaN", used_percent: Number.NaN },
+        ],
+      },
+    }
+    const result = parseChatgptUsage(body, NOW)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([
+      { label: "Weekly", usedPercent: 4, resetsAt: 1_787_174_400_000, lengthMs: 604_800_000 },
+      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000, lengthMs: 18_000_000 },
+    ])
+  })
+
+  test("`additional_rate_limits` absent entirely is byte-compatible with the body this parser read before", () => {
+    // fullBody carries no `additional_rate_limits` key at all — the exact shape
+    // this parser has always read. Same result as the pre-t-d942yi assertion
+    // above: two windows, nothing extra invented from an absent array.
+    const result = parseChatgptUsage(fullBody, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toEqual([
+      { label: "Weekly", usedPercent: 47.5, resetsAt: 1_787_174_400_000, lengthMs: 604_800_000 },
+      { label: "5-hour", usedPercent: 12, resetsAt: 1_786_883_400_000, lengthMs: 18_000_000 },
+    ])
+  })
+
+  test("`additional_rate_limits` present but not an array is ignored, not a throw", () => {
+    const result = parseChatgptUsage(
+      { rate_limit: { primary_window: { used_percent: 5 }, additional_rate_limits: "not an array" } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toHaveLength(1)
+  })
+
+  test("an over-100 additional percentage is clamped, same rule as the documented windows", () => {
+    const result = parseChatgptUsage(
+      { rate_limit: { additional_rate_limits: [{ limit_name: "monthly", used_percent: 140 }] } },
+      NOW,
+    )
     if (!result.ok) throw new Error("unreachable")
     expect(result.windows[0]!.usedPercent).toBe(100)
   })
@@ -284,6 +481,64 @@ describe("parseGrokUsage — a credits body becomes windows", () => {
     if (!result.ok) throw new Error("unreachable")
     expect(result.windows[0]!.usedPercent).toBe(0)
   })
+
+  test("currentPeriod.start becomes startsAt, and no lengthMs is derived once a start is known", () => {
+    const result = parseGrokUsage(
+      { config: { creditUsagePercent: 10, currentPeriod: { start: "2026-08-01T00:00:00Z", end: "2026-09-01T00:00:00Z" } } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    // toEqual checks EXACT keys: label/usedPercent/resetsAt below are the same
+    // shape parseGrokUsage already produced before this change (proving the
+    // edit did not shift them) — startsAt is the only new key on this window.
+    expect(result.windows[0]).toEqual({
+      label: "Credits",
+      usedPercent: 10,
+      resetsAt: Date.parse("2026-09-01T00:00:00Z"),
+      startsAt: Date.parse("2026-08-01T00:00:00Z"),
+    })
+  })
+
+  test("billingPeriodStart is used when currentPeriod.start is absent", () => {
+    const result = parseGrokUsage({ config: { creditUsagePercent: 10, billingPeriodStart: "2026-08-01T00:00:00Z" } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.startsAt).toBe(Date.parse("2026-08-01T00:00:00Z"))
+  })
+
+  test.each([
+    ["USAGE_PERIOD_TYPE_WEEKLY", 7 * 24 * 60 * 60 * 1000],
+    ["USAGE_PERIOD_TYPE_MONTHLY", 30 * 24 * 60 * 60 * 1000],
+  ])("no stated start: currentPeriod.type %s yields lengthMs, not startsAt", (periodType, expectedLengthMs) => {
+    const result = parseGrokUsage({ config: { creditUsagePercent: 10, currentPeriod: { type: periodType } } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.startsAt).toBeUndefined()
+    expect(result.windows[0]!.lengthMs).toBe(expectedLengthMs)
+  })
+
+  test("an unrecognised currentPeriod.type yields neither startsAt nor lengthMs", () => {
+    const result = parseGrokUsage({ config: { creditUsagePercent: 10, currentPeriod: { type: "USAGE_PERIOD_TYPE_QUARTERLY" } } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.startsAt).toBeUndefined()
+    expect(result.windows[0]!.lengthMs).toBeUndefined()
+  })
+
+  test("the Credits and On-demand rows share one billing period: same startsAt on both", () => {
+    const result = parseGrokUsage(
+      {
+        config: {
+          creditUsagePercent: 34.5,
+          currentPeriod: { start: "2026-08-01T00:00:00Z" },
+          onDemandCap: { val: 500 },
+          onDemandUsed: { val: 125 },
+        },
+      },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toHaveLength(2)
+    expect(result.windows[0]!.startsAt).toBe(Date.parse("2026-08-01T00:00:00Z"))
+    expect(result.windows[1]!.startsAt).toBe(Date.parse("2026-08-01T00:00:00Z"))
+  })
 })
 
 describe("parseGrokUsage — an unreadable body degrades to unavailable, never to a number", () => {
@@ -320,10 +575,12 @@ describe("parseGoUsage — the three subscription lanes", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
     expect(result.plan).toBe("go")
+    // lengthMs is a per-lane constant (see GO_LANES), present on every lane —
+    // the body itself carries no length field, so this is stated, not parsed.
     expect(result.windows).toEqual([
-      { label: "Weekly", usedPercent: 12, resetsAt: GO_WEEKLY_RESET },
-      { label: "5-hour", usedPercent: 30, resetsAt: GO_ROLLING_RESET },
-      { label: "Monthly", usedPercent: 6, resetsAt: GO_MONTHLY_RESET },
+      { label: "Weekly", usedPercent: 12, resetsAt: GO_WEEKLY_RESET, lengthMs: 7 * 24 * 60 * 60 * 1000 },
+      { label: "5-hour", usedPercent: 30, resetsAt: GO_ROLLING_RESET, lengthMs: 5 * 60 * 60 * 1000 },
+      { label: "Monthly", usedPercent: 6, resetsAt: GO_MONTHLY_RESET, lengthMs: 30 * 24 * 60 * 60 * 1000 },
     ])
   })
 
@@ -344,7 +601,7 @@ describe("parseGoUsage — the three subscription lanes", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
-    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 100, resetsAt: GO_WEEKLY_RESET }])
+    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 100, resetsAt: GO_WEEKLY_RESET, lengthMs: 5 * 60 * 60 * 1000 }])
   })
 
   test("a lane the body omits is skipped, and the ones present keep their order", () => {
@@ -367,7 +624,7 @@ describe("parseGoUsage — the three subscription lanes", () => {
   test("an unparseable resetsAt leaves the lane WITHOUT a reset rather than dropping it", () => {
     const result = parseGoUsage({ usage: { rolling: { status: "ok", percent: 30, resetsAt: "not-a-date" } } })
     if (!result.ok) throw new Error("unreachable")
-    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 30 }])
+    expect(result.windows).toEqual([{ label: "5-hour", usedPercent: 30, lengthMs: 5 * 60 * 60 * 1000 }])
   })
 
   test("an over-100 percentage is clamped so a progress bar cannot overflow its track", () => {
@@ -398,6 +655,15 @@ describe("parseGoUsage — the three subscription lanes", () => {
     const result = parseGoUsage({ usage: { rolling: { percent: -3 } } })
     if (!result.ok) throw new Error("unreachable")
     expect(result.windows[0]!.usedPercent).toBe(0)
+  })
+
+  test("each lane states its own length, since the body carries none: 7d weekly, 5h rolling, 30d monthly", () => {
+    const result = parseGoUsage(goUsageBody)
+    if (!result.ok) throw new Error("unreachable")
+    const HOUR = 60 * 60 * 1000
+    const DAY = 24 * HOUR
+    // Order matches windows: Weekly, 5-hour, Monthly (see the IN ORDER test above).
+    expect(result.windows.map((w) => w.lengthMs)).toEqual([7 * DAY, 5 * HOUR, 30 * DAY])
   })
 })
 
@@ -518,6 +784,283 @@ describe("fetchGoUsage — the one call", () => {
   })
 })
 
+// GITHUB COPILOT FIXTURES — the field names and shape are CONFIRMED against
+// ONE live 200 from `api.github.com/copilot_internal/user` on 2026-09-04 (an
+// individual-plan account). The percentages, dates and plan id below are
+// invented, the same rule the Go fixtures above follow: no account data is
+// in this repo, only the shape that was actually observed.
+
+/** 2026-10-01T00:00:00Z in epoch millis — `quota_reset_date` has no time
+ *  component and is read as 00:00 UTC of that date. */
+const COPILOT_RESET = Date.parse("2026-10-01T00:00:00Z")
+/** One calendar month before COPILOT_RESET — the derived `startsAt`. */
+const COPILOT_STARTS = Date.parse("2026-09-01T00:00:00Z")
+
+const copilotLane = (percentRemaining: number, unlimited: boolean, quotaId: string) => ({
+  entitlement: unlimited ? 0 : 1500,
+  remaining: unlimited ? 0 : 1498,
+  percent_remaining: percentRemaining,
+  unlimited,
+  overage_permitted: false,
+  quota_id: quotaId,
+})
+
+/** The exact live shape: premium requests metered, chat/completions unlimited. */
+const copilotBody = {
+  copilot_plan: "individual",
+  quota_reset_date: "2026-10-01",
+  quota_snapshots: {
+    premium_interactions: copilotLane(99.8, false, "premium_interactions"),
+    chat: copilotLane(100, true, "chat"),
+    completions: copilotLane(100, true, "completions"),
+  },
+}
+
+describe("parseCopilotUsage — a documented body becomes windows", () => {
+  test("premium requests leads, unlimited chat/completions lanes are dropped, and the plan is human-readable", () => {
+    const result = parseCopilotUsage(copilotBody, NOW)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.plan).toBe("Copilot Individual")
+    // 100 - 99.8 in floating point, not the decimal-looking 0.2 — same rule the
+    // module itself applies with no extra rounding (usageLine rounds for display).
+    expect(result.windows).toEqual([{ label: "Premium requests", usedPercent: 100 - 99.8, resetsAt: COPILOT_RESET, startsAt: COPILOT_STARTS }])
+  })
+
+  test("a metered chat or completions lane gets its own row, in Chat/Completions order", () => {
+    const result = parseCopilotUsage(
+      {
+        ...copilotBody,
+        quota_snapshots: {
+          premium_interactions: copilotLane(99.8, false, "premium_interactions"),
+          chat: copilotLane(20, false, "chat"),
+          completions: copilotLane(5, false, "completions"),
+        },
+      },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Premium requests", "Chat", "Completions"])
+    expect(result.windows[1]).toEqual({ label: "Chat", usedPercent: 80, resetsAt: COPILOT_RESET, startsAt: COPILOT_STARTS })
+    expect(result.windows[2]).toEqual({ label: "Completions", usedPercent: 95, resetsAt: COPILOT_RESET, startsAt: COPILOT_STARTS })
+  })
+
+  test("usedPercent is 100 - percent_remaining, clamped so a progress bar cannot overflow its track", () => {
+    const over = parseCopilotUsage(
+      { ...copilotBody, quota_snapshots: { premium_interactions: copilotLane(-10, false, "premium_interactions") } },
+      NOW,
+    )
+    if (!over.ok) throw new Error("unreachable")
+    expect(over.windows[0]!.usedPercent).toBe(100)
+    const under = parseCopilotUsage(
+      { ...copilotBody, quota_snapshots: { premium_interactions: copilotLane(150, false, "premium_interactions") } },
+      NOW,
+    )
+    if (!under.ok) throw new Error("unreachable")
+    expect(under.windows[0]!.usedPercent).toBe(0)
+  })
+
+  test("quota_reset_date has no time component and is read as 00:00 UTC of that date", () => {
+    const result = parseCopilotUsage(copilotBody, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.resetsAt).toBe(COPILOT_RESET)
+    expect(new Date(result.windows[0]!.resetsAt!).getUTCFullYear()).toBe(2026)
+  })
+
+  test.each([
+    ["individual", "Copilot Individual"],
+    ["pro", "Copilot Pro"],
+    ["pro_plus", "Copilot Pro+"],
+    ["business", "Copilot Business"],
+    ["enterprise", "Copilot Enterprise"],
+  ])("known plan id %s maps to %s", (planId, expected) => {
+    const result = parseCopilotUsage({ ...copilotBody, copilot_plan: planId }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.plan).toBe(expected)
+  })
+
+  test("an unrecognised plan id still renders, title-cased on its underscores", () => {
+    const result = parseCopilotUsage({ ...copilotBody, copilot_plan: "team_flex" }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.plan).toBe("Copilot Team Flex")
+  })
+
+  test("no reset date leaves resetsAt absent rather than inventing one", () => {
+    const { quota_reset_date, ...rest } = copilotBody
+    const result = parseCopilotUsage(rest, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.resetsAt).toBeUndefined()
+  })
+
+  test("quota_reset_date derives startsAt as one calendar month earlier, shared by every lane", () => {
+    const result = parseCopilotUsage(
+      {
+        ...copilotBody,
+        quota_snapshots: {
+          premium_interactions: copilotLane(99.8, false, "premium_interactions"),
+          chat: copilotLane(20, false, "chat"),
+          completions: copilotLane(5, false, "completions"),
+        },
+      },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    // quota_reset_date is 2026-10-01 -> one calendar month earlier is 2026-09-01.
+    const expectedStart = Date.parse("2026-09-01T00:00:00Z")
+    expect(result.windows).toHaveLength(3)
+    for (const window of result.windows) {
+      expect(window.startsAt).toBe(expectedStart)
+    }
+  })
+
+  test("no reset date leaves startsAt absent too — there is nothing to derive it from", () => {
+    const { quota_reset_date, ...rest } = copilotBody
+    const result = parseCopilotUsage(rest, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.startsAt).toBeUndefined()
+  })
+})
+
+describe("parseCopilotUsage — an unlimited premium-requests lane is the whole result's answer", () => {
+  test("unlimited beats a percentage present on the SAME lane — the live account shows both fields at once", () => {
+    // Measured live: chat/completions carry `unlimited: true` AND
+    // `percent_remaining: 100` together. The order this module checks them in
+    // is the whole point of this test.
+    const result = parseCopilotUsage(
+      { ...copilotBody, quota_snapshots: { premium_interactions: copilotLane(100, true, "premium_interactions") } },
+      NOW,
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).toBe("Unlimited on this plan.")
+  })
+})
+
+describe("parseCopilotUsage — an unreadable body degrades to unavailable, never to a number", () => {
+  const unreadable: Array<[string, unknown]> = [
+    ["null", null],
+    ["an array", [{ percent_remaining: 50 }]],
+    ["a string", "Bad credentials"],
+    ["an empty object", {}],
+    ["quota_snapshots missing entirely", { copilot_plan: "individual" }],
+    ["quota_snapshots present but empty — no premium_interactions lane", { quota_snapshots: {} }],
+    [
+      "premium_interactions renamed (a shape change we did not follow)",
+      { quota_snapshots: { premium_requests: copilotLane(99, false, "premium_requests") } },
+    ],
+    [
+      "percent_remaining as a string",
+      { quota_snapshots: { premium_interactions: { ...copilotLane(99, false, "premium_interactions"), percent_remaining: "99" } } },
+    ],
+    [
+      "percent_remaining NaN",
+      {
+        quota_snapshots: {
+          premium_interactions: { ...copilotLane(99, false, "premium_interactions"), percent_remaining: Number.NaN },
+        },
+      },
+    ],
+    ["an error envelope instead of quota", { message: "Bad credentials" }],
+  ]
+  for (const [name, body] of unreadable) {
+    test(name, () => {
+      const result = parseCopilotUsage(body, NOW)
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error("unreachable")
+      expect(result.unavailable.length).toBeGreaterThan(0)
+      // The reason is shown verbatim in a fold — it must not carry a stack.
+      expect(result.unavailable).not.toContain("at ")
+    })
+  }
+})
+
+describe("fetchCopilotUsage — the one call", () => {
+  test("sends credential.refresh as the bearer, to api.github.com — NOT api.githubcopilot.com", async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    await fetchCopilotUsage(oauth(), NOW, stubFetch({ json: async () => copilotBody }, seen))
+    expect(seen.url).toBe("https://api.github.com/copilot_internal/user")
+    expect(seen.headers?.["Authorization"]).toBe("Bearer rt-not-a-real-refresh-token")
+    expect(seen.headers?.["Accept"]).toBe("application/vnd.github+json")
+  })
+
+  test("an enterprise credential swaps the domain onto api.<tenant>, not copilot-api.<tenant>", async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    await fetchCopilotUsage(
+      oauth({ enterpriseUrl: "contoso.ghe.com" }),
+      NOW,
+      stubFetch({ json: async () => copilotBody }, seen),
+    )
+    expect(seen.url).toBe("https://api.contoso.ghe.com/copilot_internal/user")
+  })
+
+  test("a 200 happy path returns the parsed windows", async () => {
+    const result = await fetchCopilotUsage(oauth(), NOW, stubFetch({ json: async () => copilotBody }))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Premium requests"])
+  })
+
+  test("an expired credential is reported as expired WITHOUT a call being made", async () => {
+    // Copilot's own grant does not expire (copilot.ts stores `expires: 0`), so
+    // this exercises the guard as a safety net rather than a path reachable today.
+    let called = false
+    const result = await fetchCopilotUsage(oauth({ expires: NOW - 1 }), NOW, async () => {
+      called = true
+      throw new Error("must not be called")
+    })
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).toContain("expired")
+  })
+
+  test("401 and 403 say re-authorize; another status names itself", async () => {
+    for (const status of [401, 403]) {
+      const result = await fetchCopilotUsage(oauth(), NOW, stubFetch({ ok: false, status }))
+      if (result.ok) throw new Error("unreachable")
+      expect(result.unavailable).toContain("Re-authorize")
+    }
+    const server = await fetchCopilotUsage(oauth(), NOW, stubFetch({ ok: false, status: 502 }))
+    if (server.ok) throw new Error("unreachable")
+    expect(server.unavailable).toContain("502")
+  })
+
+  test("a thrown fetch (offline) is an unavailable line, not a crash", async () => {
+    const result = await fetchCopilotUsage(oauth(), NOW, async () => {
+      throw new Error("getaddrinfo ENOTFOUND api.github.com")
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).not.toContain("ENOTFOUND")
+  })
+
+  test("a 200 with a non-JSON body is unavailable, not a throw", async () => {
+    const result = await fetchCopilotUsage(
+      oauth(),
+      NOW,
+      stubFetch({
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON at position 0")
+        },
+      }),
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  test("NO TOKEN crosses back in the result, on any path", async () => {
+    const results = [
+      await fetchCopilotUsage(oauth(), NOW, stubFetch({ json: async () => copilotBody })),
+      await fetchCopilotUsage(oauth(), NOW, stubFetch({ ok: false, status: 401 })),
+      await fetchCopilotUsage(oauth({ expires: NOW - 1 }), NOW, stubFetch({})),
+    ]
+    for (const result of results) {
+      const serialised = JSON.stringify(result)
+      expect(serialised).not.toContain("at-not-a-real-access-token")
+      expect(serialised).not.toContain("rt-not-a-real-refresh-token")
+    }
+  })
+})
+
 /** Narrow a gate answer to its refusal, failing loudly if it let the call through. */
 const refusalOf = (result: ReturnType<typeof usageGate>) => {
   if (!result || result.ok) throw new Error("expected usageGate to refuse, but it allowed the call")
@@ -550,6 +1093,19 @@ describe("usageGate — which connections have a usage source at all", () => {
     for (const id of ["anthropic", "lmstudio", "openrouter", ""]) {
       expect(refusalOf(usageGate(id, oauth())).unavailable).toBeTruthy()
     }
+  })
+
+  test("a GitHub Copilot OAuth credential is the ONLY combination that proceeds", () => {
+    expect(usageGate("github-copilot", oauth())).toBeUndefined()
+  })
+
+  test("an API-KEY credential on the github-copilot id is refused as the wrong kind of account", () => {
+    const result = refusalOf(usageGate("github-copilot", { type: "api", key: "gh-not-a-real-key" } as Auth.Info))
+    expect(result.unavailable).toContain("GitHub Copilot")
+  })
+
+  test("no credential at all for github-copilot is refused, and the name is GitHub Copilot not the raw provider id", () => {
+    expect(refusalOf(usageGate("github-copilot", undefined)).unavailable).toContain("GitHub Copilot")
   })
 
   test("an API-KEY credential on the openai id is refused as the wrong kind of account", () => {
@@ -820,6 +1376,16 @@ describe("ACPProviderUsage.usage — reading the stored credential", () => {
     expect(result.windows.map((w) => w.label)).toEqual(["Credits", "On-demand"])
   })
 
+  test("a GitHub Copilot OAuth credential reaches the call, and the windows come back", async () => {
+    const result = await run(
+      { "github-copilot": oauth() },
+      ACPProviderUsage.usage("github-copilot", stubFetch({ json: async () => copilotBody }), NOW),
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Premium requests"])
+  })
+
   test("an xai API-key credential is refused BY NAME WITHOUT any call being made", async () => {
     let called = false
     const result = await run(
@@ -929,6 +1495,219 @@ describe("ACPProviderUsage.usage — reading the stored credential", () => {
     ]
     for (const result of results) {
       expect(JSON.stringify(result)).not.toContain("sk-not-a-real-go-key")
+    }
+  })
+
+  test("anthropic reads the CLAUDE CODE credential store, not auth.json", async () => {
+    // The whole reason this provider needed its own lane: plugin/anthropic.ts has
+    // no `auth` block, so a Claude subscription never appears in auth.json and an
+    // Auth-only read would refuse a subscription that is fully signed in.
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    const result = await run(
+      {},
+      ACPProviderUsage.usage(
+        "anthropic",
+        stubFetch({ json: async () => anthropicUsageBody }, seen),
+        NOW,
+        () => claudeCredential(),
+      ),
+    )
+    expect(seen.url).toBe("https://api.anthropic.com/api/oauth/usage")
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly", "5-hour"])
+  })
+
+  test("an anthropic API KEY in the store does not stand in for the subscription sign-in", async () => {
+    // An API key on the same id is a different, metered account. With no CLI
+    // sign-in there is no plan window, and no call may be made for one.
+    let called = false
+    const result = await run(
+      { anthropic: { type: "api", key: "sk-ant-not-a-real-key" } as Auth.Info },
+      ACPProviderUsage.usage(
+        "anthropic",
+        async () => {
+          called = true
+          throw new Error("must not be called")
+        },
+        NOW,
+        () => undefined,
+      ),
+    )
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).toContain("Claude Code")
+    expect(JSON.stringify(result)).not.toContain("sk-ant-not-a-real-key")
+  })
+})
+
+describe("parseAnthropicUsage — the Claude subscription's two named lanes", () => {
+  test("the documented body yields the weekly lane first and the 5-hour lane second", () => {
+    const result = parseAnthropicUsage(anthropicUsageBody, NOW)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+    // Weekly FIRST — the pill renders only windows[0], the same rule the ChatGPT
+    // and GO parsers state. The length comes from the lane KEY, not from the body.
+    expect(result.windows).toEqual([
+      { label: "Weekly", usedPercent: 4, resetsAt: CLAUDE_SEVEN_DAY_RESET, lengthMs: 604_800_000 },
+      { label: "5-hour", usedPercent: 22, resetsAt: CLAUDE_FIVE_HOUR_RESET, lengthMs: 18_000_000 },
+    ])
+  })
+
+  test("an unnamed lane the account happens to carry is NOT a window", () => {
+    // `nimbus_quill` reports 0% against no reset. A parser that read every key
+    // with a number in it would have put a meaningless 0% row on the account.
+    const result = parseAnthropicUsage(anthropicUsageBody, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows).toHaveLength(2)
+  })
+
+  test("a lane the account has NULL is refused by the same guard a missing one is", () => {
+    const result = parseAnthropicUsage({ ...anthropicUsageBody, five_hour: null }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly"])
+  })
+
+  test("a model-scoped lane is NOT a second Weekly row", () => {
+    // seven_day_opus and seven_day_sonnet are seven days long too, so reading
+    // them would put three indistinguishable "Weekly" rows on one account.
+    const result = parseAnthropicUsage(anthropicUsageBody, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.filter((w) => w.label === "Weekly")).toHaveLength(1)
+    expect(result.windows.map((w) => w.usedPercent)).not.toContain(71)
+  })
+
+  test("a lane whose reset has already passed is dropped, not plotted", () => {
+    const result = parseAnthropicUsage(
+      { ...anthropicUsageBody, five_hour: { utilization: 90, resets_at: "2026-08-16T09:00:00+00:00" } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly"])
+  })
+
+  test("a lane with no utilization number is dropped, NOT rendered as 0% used", () => {
+    // "0% used" reads as "plenty left" to someone who is about to be cut off.
+    const result = parseAnthropicUsage(
+      { ...anthropicUsageBody, five_hour: { resets_at: "2026-08-16T14:30:00+00:00" } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly"])
+  })
+
+  test("a lane with no resets_at is dropped — there is no window to plot against", () => {
+    const result = parseAnthropicUsage({ five_hour: { utilization: 40 }, seven_day: { utilization: 4, resets_at: "2026-08-20T00:00:00+00:00" } }, NOW)
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows.map((w) => w.label)).toEqual(["Weekly"])
+  })
+
+  test("utilization is clamped into 0..100 — a bar cannot leave its track", () => {
+    const result = parseAnthropicUsage(
+      { seven_day: { utilization: 130, resets_at: "2026-08-20T00:00:00+00:00" } },
+      NOW,
+    )
+    if (!result.ok) throw new Error("unreachable")
+    expect(result.windows[0]!.usedPercent).toBe(100)
+  })
+
+  test("an in-band error envelope answered with HTTP 200 is unavailable, never a number", () => {
+    // The CLI's own name for it: a 200 whose body carries none of the lane keys.
+    const result = parseAnthropicUsage(anthropicErrorEnvelope, NOW)
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.providerID).toBe("anthropic")
+  })
+
+  test("a body that is not an object at all is unavailable, not a throw", () => {
+    for (const body of [null, undefined, "five_hour", 7, [] as unknown]) {
+      const result = parseAnthropicUsage(body, NOW)
+      expect(result.ok).toBe(false)
+    }
+  })
+
+  test("a lane that is a STRING where an object was expected is unavailable, not a throw", () => {
+    const result = parseAnthropicUsage({ five_hour: "22%", seven_day: "4%" }, NOW)
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe("fetchAnthropicUsage — the one call", () => {
+  test("the bearer and the CLI user-agent go out, and no token comes back", async () => {
+    const seen: { url?: string; headers?: Record<string, string> } = {}
+    const result = await fetchAnthropicUsage(
+      claudeCredential(),
+      NOW,
+      stubFetch({ json: async () => anthropicUsageBody }, seen),
+    )
+    expect(seen.url).toBe("https://api.anthropic.com/api/oauth/usage")
+    expect(seen.headers?.["Authorization"]).toBe("Bearer sk-ant-oat-not-a-real-claude-token")
+    // Presenting as the CLI is what makes this the SAME read the CLI makes.
+    expect(seen.headers?.["User-Agent"]).toContain("claude-code/")
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(result)).not.toContain("sk-ant-oat-not-a-real-claude-token")
+  })
+
+  test("an expired credential is refused WITHOUT a call being made", async () => {
+    let called = false
+    const result = await fetchAnthropicUsage(claudeCredential({ expiresAt: NOW - 1 }), NOW, async () => {
+      called = true
+      throw new Error("must not be called")
+    })
+    expect(called).toBe(false)
+    expect(result.ok).toBe(false)
+  })
+
+  test("a credential with NO stated expiry is still tried — 0 means unknown, not expired", async () => {
+    const result = await fetchAnthropicUsage(
+      claudeCredential({ expiresAt: 0 }),
+      NOW,
+      stubFetch({ json: async () => anthropicUsageBody }),
+    )
+    expect(result.ok).toBe(true)
+  })
+
+  test("a 401 is a re-authorize sentence, and it names no header", async () => {
+    const result = await fetchAnthropicUsage(claudeCredential(), NOW, stubFetch({ ok: false, status: 401 }))
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).not.toContain("Bearer")
+  })
+
+  test("a thrown fetch is an unavailable line, not a crash, and leaks no cause", async () => {
+    const result = await fetchAnthropicUsage(claudeCredential(), NOW, async () => {
+      throw new Error("getaddrinfo ENOTFOUND api.anthropic.com")
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("unreachable")
+    expect(result.unavailable).not.toContain("ENOTFOUND")
+  })
+
+  test("a 200 with a non-JSON body is unavailable, not a throw", async () => {
+    const result = await fetchAnthropicUsage(
+      claudeCredential(),
+      NOW,
+      stubFetch({
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON at position 0")
+        },
+      }),
+    )
+    expect(result.ok).toBe(false)
+  })
+})
+
+describe("readClaudeCodeCredential — the one file this module did not write", () => {
+  test("a machine with no readable credential store answers undefined, never throws", () => {
+    // The real reader, run against whatever this machine actually has. It must
+    // answer a value or nothing; it must never propagate a filesystem error.
+    // NOTHING IS ASSERTED ABOUT THE TOKEN and nothing about it is printed.
+    const result = readClaudeCodeCredential()
+    expect(result === undefined || typeof result.token === "string").toBe(true)
+    if (result !== undefined) {
+      expect(result.token.length).toBeGreaterThan(0)
+      expect(Number.isFinite(result.expiresAt)).toBe(true)
     }
   })
 })

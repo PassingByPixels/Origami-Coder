@@ -22,14 +22,14 @@ type Metadata = {
 }
 
 /**
- * The model-facing half of GOAL MODE. The engine half - the critic, the
+ * The model-facing half of goal mode. The engine half - the critic, the
  * continuation and the round budget - is session/goal.ts, which reads exactly
  * the record this tool writes.
  *
- * Modelled on `todowrite`: one small tool, one write to per-session state, and
- * the permission ask so a ruleset can close it. The read (`status`) is NOT
- * behind the ask - prompting a human to approve a report of state they already
- * own is a prompt that teaches people to click through prompts.
+ * Modelled on `todowrite`: one small tool, one write to per-session state, and a
+ * permission ask so a ruleset can close it. The read (`status`) is not behind
+ * the ask - approving a report of state the user already owns teaches people to
+ * click through prompts.
  */
 export const GoalTool = Tool.define<typeof Parameters, Metadata, Session.Service>(
   "goal",
@@ -39,6 +39,7 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, Session.Service
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
           const session = yield* sessions.get(ctx.sessionID).pipe(Effect.orDie)
@@ -84,11 +85,9 @@ export const GoalTool = Tool.define<typeof Parameters, Metadata, Session.Service
             }
           }
 
-          // A `set` always RESTARTS the budget, including a set that repeats the
+          // A `set` always restarts the budget, including one that repeats the
           // same words. Carrying the old round count over would let a re-set
-          // silently inherit an almost-spent budget and stop after one round,
-          // which reads as the feature being broken rather than as the budget
-          // being where the user left it.
+          // inherit an almost-spent budget and stop after one round.
           const rounds =
             params.max_rounds !== undefined && Number.isFinite(params.max_rounds) && params.max_rounds >= 1
               ? Math.floor(params.max_rounds)

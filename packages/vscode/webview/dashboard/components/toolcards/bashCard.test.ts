@@ -294,8 +294,14 @@ describe('Kill wiring — the message the card posts is one the host still handl
   // pane quietly stop passing `sessionId` with the suite still green, which is
   // the same dead-control failure this guard exists to catch.
   it('the real render path still feeds ToolCard the session and the start stamp', () => {
+    // The ToolCard call site moved into ToolRunGroup.svelte with the stepped
+    // strip (t-qmzegs item 3). Same guard, followed to where the markup went:
+    // the transcript must still hand the run group the session, and the group
+    // must still hand each card the session and the call's start stamp.
     const transcript = readFileSync(join(__dirname, '../ChatTranscript.svelte'), 'utf-8');
-    expect(transcript).toMatch(/sessionId=\{sessionId\} startedAt=\{msg\.timestamp\}/);
+    expect(transcript).toMatch(/<ToolRunGroup rows=\{[^}]+\} \{sessionId\}/);
+    const group = readFileSync(join(__dirname, '../ToolRunGroup.svelte'), 'utf-8');
+    expect(group).toMatch(/sessionId=\{sessionId\} startedAt=\{msg\.timestamp\}/);
     const pane = readFileSync(join(__dirname, '../../panes/ChatPane.svelte'), 'utf-8');
     expect(pane).toMatch(/sessionId=\{cellSession\.id\}/);
   });
@@ -310,21 +316,26 @@ describe('ToolCard — shell dispatch + honest exit', () => {
     expect(screen.getByText('OUT')).toBeInTheDocument();
   });
 
-  it('renders ✗ (not ✓) on a completed bash call whose exit is non-zero', () => {
+  // The ✓/✗ glyphs became StatusMark's drawn check and cross (t-qmzegs item 3),
+  // so these two read the MARK instead of the character. The guard is unchanged
+  // and is the one that matters: a bash call the engine COMPLETED with a
+  // non-zero exit must never wear the success mark.
+  it('draws the cross (not the check) on a completed bash call whose exit is non-zero', () => {
     render(ToolCard, {
       title: 'npm test', kind: 'execute', toolName: 'bash', status: 'completed',
       result: 'FAIL', shell: { exit: 1 },
     });
-    const cross = screen.getByTitle('exit 1');
-    expect(cross.textContent).toBe('✗');
-    expect(screen.queryByText('✓')).toBeNull();
+    const status = document.querySelector('[data-tip="exit 1"]') as HTMLElement;
+    expect(status.querySelector('.cross')).not.toBeNull();
+    expect(document.querySelector('.check')).toBeNull();
   });
 
-  it('keeps the ✓ on exit 0', () => {
+  it('keeps the check on exit 0', () => {
     render(ToolCard, {
       title: 'npm test', kind: 'execute', toolName: 'bash', status: 'completed',
       result: 'PASS', shell: { exit: 0 },
     });
-    expect(screen.getByText('✓')).toBeInTheDocument();
+    expect(document.querySelector('.check')).not.toBeNull();
+    expect(document.querySelector('.cross')).toBeNull();
   });
 });

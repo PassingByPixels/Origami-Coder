@@ -31,6 +31,12 @@ const MESSAGES: Message[] = [
   { id: 7, kind: 'compacted', label: '', text: 'carried forward: the plan' },
   { id: 8, kind: 'peer', label: 'Kirin', text: 'ack', peerReplyTo: 'Tsuru' },
   { id: 9, kind: 'error', label: 'Error', text: 'nope' },
+  // 0.4.66 — the review card. In the fixture because the dispatch chain is what
+  // this file guards: the `verdict` branch moved to VerdictRow.svelte in the
+  // same commit that added this one, and a mis-ordered {:else if} would render
+  // one of them as the other's neighbour with nothing else noticing.
+  { id: 10, kind: 'secondOpinion', label: 'Second opinion — GPT-5', text: 'I disagree.',
+    secondOpinion: { id: 'so-1', modelId: 'openrouter/openai/gpt-5', modelLabel: 'GPT-5', state: 'ok' } },
 ];
 
 // The DOM signature each kind must produce, in the order the list declares.
@@ -40,13 +46,16 @@ const MESSAGES: Message[] = [
 const EXPECTED = [
   'div.row.user',
   'details.thought-block',
-  'div.tool-card',
+  // A tool row is now drawn through ToolRunGroup (t-qmzegs item 3), which wraps
+  // every call — lone or in a run — so the card's own selector sits one level in.
+  'div.tool-run',
   'div.agent-row',
   'div.turn-verdict',
   'div.todo-summary-msg',
   'details.compaction-block',
   'div.peer-row',
   'div.row.error',
+  'div.so-card',
 ];
 
 describe('ChatTranscript — a fixed message list becomes the rows it names', () => {
@@ -91,9 +100,15 @@ describe('ChatTranscript — a fixed message list becomes the rows it names', ()
  *
  *  0.4.62: the count was four before the dividers existed. It is six because
  *  the transcript now says what it hid, not because the filter changed — the
- *  four prose rows are the same four, in the same order. */
+ *  four prose rows are the same four, in the same order.
+ *
+ *  0.4.66: SEVEN, because the second-opinion card SURVIVES focus view. That is
+ *  the deliberate answer, not an oversight: chatFocus.ts names only what to
+ *  HIDE, and a review is prose the user explicitly asked for that carries the
+ *  hand-over control. Pinned here so a later "tidy up the focus list" that
+ *  swept it in with `verdict` fails instead of quietly hiding it. */
 const CONVERSATION_ONLY = [
-  'div.row.user', 'div.focus-gap', 'div.agent-row', 'div.focus-gap', 'div.peer-row', 'div.row.error',
+  'div.row.user', 'div.focus-gap', 'div.agent-row', 'div.focus-gap', 'div.peer-row', 'div.row.error', 'div.so-card',
 ];
 
 function signatures(container: Element): string[] {
@@ -159,7 +174,7 @@ describe('ChatTranscript — focus view keeps the conversation and drops the res
       currentThoughtMsgId: null, currentAgentMsgId: null,
       openThoughtIds: [], onThoughtOpenIds: () => {}, focusMode: true,
     }).container;
-    expect(signatures(c)).toEqual(['div.focus-gap', 'div.row.user', 'div.focus-gap']);
+    expect(signatures(c)).toEqual(['div.focus-gap', 'div.row.user.og-spotlight', 'div.focus-gap']);
     expect([...c.querySelectorAll('.focus-gap')].map((d) => d.textContent?.trim()))
       .toEqual(['1 thought', '1 command']);
   });
@@ -215,7 +230,79 @@ describe('ChatTranscript — focus view keeps the conversation and drops the res
     expect(signatures(view.container).length).toBe(CONVERSATION_ONLY.length);
     await view.rerender({ ...props, focusMode: false });
     expect(signatures(view.container).length, 'every hidden row is back').toBe(MESSAGES.length);
-    expect(MESSAGES.length, 'and the source list was never edited').toBe(9);
+    // Literal on purpose: `toBe(MESSAGES.length)` would compare the array with
+    // itself and pass however badly the component mutated it. 9 -> 10 with the
+    // second-opinion row (0.4.66); the guarantee is unchanged.
+    expect(MESSAGES.length, 'and the source list was never edited').toBe(10);
+  });
+});
+
+// EMPTY AGENT TURNS (t-d93tfs, then t-di3a0w) — a step that was only edits or
+// a tool cancel carries an 'agent' row with `text: ''` (the real shape:
+// AGENT_TURN below, and MESSAGES id 4, both use the wire's actual field name
+// and Tsuru's real label). chatFocus.ts keeps 'agent' visible by kind —
+// deliberately, an agent turn is usually a real answer — so before t-d93tfs
+// that empty row rendered as a blank Tsuru bubble beside the tool run's own
+// `.focus-gap` divider. t-d93tfs hid the bubble; the divider was still split
+// in two either side of it (the owner's phone screenshot, taken after
+// t-d93tfs shipped) because `foldForFocus` still treated the empty row as a
+// boundary. t-di3a0w is the second half: `foldForFocus` now swallows the row
+// outright, so the two tool runs it used to separate merge into ONE divider.
+
+const EMPTY_AGENT_THEN_EDIT: Message[] = [
+  { id: 1, kind: 'agent', label: 'Tsuru', text: '', engineMsgId: 'eng-1' },
+  { id: 2, kind: 'tool', label: 'edit: foo.ts', text: '', toolKind: 'edit', toolName: 'edit', toolStatus: 'completed' },
+  { id: 3, kind: 'agent', label: 'Tsuru', text: '', engineMsgId: 'eng-2' },
+  // A cancelled tool call: still kind 'tool', so chatFocus.ts hides it the
+  // same way as a completed one — the cancel is not a separate disposition.
+  { id: 4, kind: 'tool', label: 'bash', text: '', toolStatus: 'cancelled' },
+];
+
+describe('ChatTranscript — an agent turn with nothing to show, in focus view', () => {
+  it('draws no bubble for an empty turn, and folds BOTH tool runs into ONE divider', () => {
+    // t-di3a0w: the empty agent rows (ids 1, 3) sit between the edit (id 2)
+    // and the cancelled bash call (id 4) with nothing visible between them, so
+    // the two runs are really one gap — not two dividers either side of a
+    // bubble nobody sees.
+    const c = render(ChatTranscript, {
+      messages: EMPTY_AGENT_THEN_EDIT, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {}, focusMode: true,
+    }).container;
+    expect(signatures(c), 'no agent-row anywhere, and the two runs merged into one divider').toEqual([
+      'div.focus-gap',
+    ]);
+    expect(c.querySelector('.agent-row'), 'no blank Tsuru bubble').toBeNull();
+    expect([...c.querySelectorAll('.focus-gap')].map((d) => d.textContent?.trim()))
+      .toEqual(['1 tool · 1 edit']);
+  });
+
+  it('keeps the bubble when the SAME turn has text, edits or not', () => {
+    // Acceptance #2: text and edits together still show the text plus the
+    // summary — the fix must not have made the row conditional on `kind`
+    // alone.
+    const textAndEdit: Message[] = [
+      { id: 1, kind: 'agent', label: 'Tsuru', text: 'renamed the helper', engineMsgId: 'eng-1' },
+      { id: 2, kind: 'tool', label: 'edit: foo.ts', text: '', toolKind: 'edit', toolName: 'edit', toolStatus: 'completed' },
+    ];
+    const c = render(ChatTranscript, {
+      messages: textAndEdit, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {}, focusMode: true,
+    }).container;
+    expect(signatures(c)).toEqual(['div.agent-row', 'div.focus-gap']);
+    expect(c.querySelector('.agent-row .text')?.textContent).toContain('renamed the helper');
+    expect(c.querySelector('.focus-gap')?.textContent?.trim()).toBe('1 edit');
+  });
+
+  it('leaves the empty bubble drawn when focus is OFF — this is a focus-view-only fix', () => {
+    const c = render(ChatTranscript, {
+      messages: EMPTY_AGENT_THEN_EDIT, sessionId: 'sess-1', inFlight: false,
+      currentThoughtMsgId: null, currentAgentMsgId: null,
+      openThoughtIds: [], onThoughtOpenIds: () => {},
+    }).container;
+    expect(c.querySelectorAll('.agent-row')).toHaveLength(2);
+    expect(c.querySelectorAll('.focus-gap')).toHaveLength(0);
   });
 });
 
@@ -313,5 +400,58 @@ describe('ChatTranscript — read-only kills the controls that reach the machine
     expect(link, 'a prose path must still linkify').not.toBeNull();
     await fireEvent.click(link!);
     expect(post()).toHaveBeenCalledWith({ type: 'openAbsoluteFile', path: 'src/foo.ts', line: 78 });
+  });
+
+  // The FLOCK rider has to reach PeerMessageRow through this dispatch, or the
+  // row badges "from Macbook" and reads as one of the owner's own windows. The
+  // row's own rendering is proved in peerMessage.test.ts; what is proved here
+  // is the one prop that carries it across.
+  it('a flock message keeps its contact and thread through the dispatch', () => {
+    const c = mount([{
+      id: 1, kind: 'peer', label: 'Macbook', text: 'section 4 covers it', peerReplyTo: 'macbook@abc',
+      peerFlock: { contact: 'Macbook', thread: 'flq_1', kind: 'reply', icon: 'crane' },
+    }], true);
+    expect(c.querySelector('.peer-badge')!.textContent).toBe('flock · Macbook');
+    expect(c.querySelector('.peer-row')!.getAttribute('data-flock-thread')).toBe('flq_1');
+  });
+});
+
+// t-f6u661 — a `task` card is the transcript's own sub-agent surface, and it
+// used to print the tool call's header, which is the literal word `task`. The
+// T-number is derived from the POSITION of the card in this list, so the fan-out
+// below is the case: three spawns, three numbers, in order.
+describe('ChatTranscript — a sub-agent card is NAMED, not labelled `task`', () => {
+  const spawn = (id: number, child: string, description: string): Message => ({
+    id, kind: 'tool', label: 'task', text: '', toolKind: 'think', toolName: 'task',
+    toolStatus: 'in_progress', toolCallId: `tc-${child}`, taskSessionId: child,
+    taskDescription: description, taskAgentType: 'Explore',
+  });
+  const titles = (c: HTMLElement) => [...c.querySelectorAll('.tool-title')].map((t) => t.textContent);
+
+  const draw = (messages: Message[]) => render(ChatTranscript, {
+    messages, sessionId: 'sess-1', inFlight: false,
+    currentThoughtMsgId: null, currentAgentMsgId: null,
+    openThoughtIds: [], onThoughtOpenIds: () => {}, onImageClick: () => {}, onRewind: () => {},
+  }).container;
+
+  it("numbers a fan-out T1..T3 and prints each agent's own description", () => {
+    expect(titles(draw([
+      spawn(1, 'child-a', 'audit the bundle'),
+      spawn(2, 'child-b', 'map the routes'),
+      spawn(3, 'child-c', 'chase the leak'),
+    ]))).toEqual([
+      'Explore · T1 · audit the bundle',
+      'Explore · T2 · map the routes',
+      'Explore · T3 · chase the leak',
+    ]);
+  });
+
+  it("leaves every OTHER tool card's header exactly as it was", () => {
+    // The rename is scoped to `task`. A read card still says what it read.
+    const c = draw([
+      { id: 1, kind: 'tool', label: 'read_file: ChatPane.svelte', text: '', toolKind: 'read', toolName: 'read_file', toolStatus: 'completed' },
+      spawn(2, 'child-a', 'audit the bundle'),
+    ]);
+    expect(titles(c)).toEqual(['read_file: ChatPane.svelte', 'Explore · T1 · audit the bundle']);
   });
 });

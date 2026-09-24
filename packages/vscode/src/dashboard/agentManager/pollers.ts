@@ -1,7 +1,5 @@
-// Agent Manager - pollers.ts (S3): per-worktree git stats for the board rows,
-// Kilo cadence (5s while the board is visible, 60s hidden) with content-hash
-// suppression so an unchanged worktree never re-broadcasts. Read-only git -
-// no repo mutex needed; the runGit Semaphore(3) bounds the spawn fan-out.
+// Per-worktree git stats for the board rows, with content-hash suppression so an unchanged
+// worktree never re-broadcasts.
 
 import { runGit, runGitStdout } from './worktrees';
 
@@ -25,15 +23,9 @@ export function statsKey(s: WorktreeGitStats): string {
   return `${s.ahead}|${s.adds}|${s.dels}`;
 }
 
-/**
- * Mark every untracked file in the worktree intent-to-add so `git diff` sees it.
- * `git add -A --intent-to-add` records that new files WILL be added WITHOUT
- * staging their content, so `git diff <base>` (badge) and `git diff --binary
- * <base>` (patch) emit proper new-file entries for them - they are otherwise
- * invisible to `git diff`. .gitignore is respected, so ignored files stay out;
- * the worktree is disposable, so marking its index is harmless. Best-effort: a
- * locked index must NEVER break stats, so any failure is swallowed.
- */
+/** Mark every untracked worktree file intent-to-add so `git diff` sees new files
+ *  (otherwise invisible to it), matching the badge and patch paths. .gitignore is respected;
+ *  best-effort, since a locked index must never break stats. */
 export async function markUntracked(worktreePath: string): Promise<void> {
   try { await runGit(['add', '-A', '--intent-to-add'], worktreePath); }
   catch { /* best-effort - a locked index must not break stats */ }
@@ -45,10 +37,8 @@ export async function readWorktreeStats(worktreePath: string, baseSha: string): 
     // rev-list --count is PARSED (parseInt) - runGitStdout so a stderr warning
     // can't glue itself to the count (the same hazard that corrupted numstat).
     runGitStdout(['rev-list', '--count', `${baseSha}..HEAD`], worktreePath),
-    // Exclude the engine's own .origami/ artifacts from the badge counts, exactly
-    // as diffFiles does - a plan-mode run whose only output is .origami/plans/x.md
-    // shows 0/0 (its plan stays readable via Chat). shortstat's regex is tolerant
-    // of stderr noise, so it stays on the merged runGit.
+    // Exclude the engine's own .origami/ artifacts from the badge counts, as diffFiles does, so
+    // a plan-only run shows 0/0.
     runGit(['diff', '--shortstat', baseSha, '--', '.', ':(exclude).origami'], worktreePath),
   ]);
   const { adds, dels } = parseShortstat(diff.ok ? diff.output : '');

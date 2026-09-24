@@ -57,6 +57,16 @@ describe('acpTaskMeta — riders on a task tool update', () => {
     expect(riders.taskEndedAt).toBeUndefined();
   });
 
+  it('reads the TOKEN rider, and leaves it undefined against an engine that rides none', () => {
+    // Fail-open is the whole contract here: this UI ships ahead of the engine
+    // lane that writes the key, so "no rider" has to mean "print nothing"
+    // rather than "printed zero". Shape rules: src/acpTaskTokens.ts.
+    const spent = taskRiders({ _meta: { origami_task_session: 'ses_child', origami_task_tokens: { input: 12_400, output: 2_100 } } });
+    expect(spent.taskTokens).toEqual({ input: 12_400, output: 2_100 });
+    expect(taskRiders({ _meta: { origami_task_session: 'ses_child' } }).taskTokens).toBeUndefined();
+    expect(taskRiders({ _meta: { origami_task_session: 'ses_child', origami_task_tokens: 'lots' } }).taskTokens).toBeUndefined();
+  });
+
   it('a plain tool update yields nothing to spread over the handler args', () => {
     // Spreading `{ taskSessionId: undefined }` over an earlier value would ERASE
     // it — the pending call has no id, and only the update carries one.
@@ -127,29 +137,53 @@ describe('acpTaskMeta — the terminal marker', () => {
 // pins rootDir), so these key names are declared twice — the house rule is that
 // every mirror is read by a test that fails when the two sides disagree.
 describe('acpTaskMeta — drift guard against the engine', () => {
-  const KEYS = [
+  // Written by acp/event.ts TODAY and decoded here. Both directions are
+  // asserted: a key the engine stopped writing, and a key this file stopped
+  // reading, are each one silent broken feature.
+  const MIRRORED = [
     'origami_task_session',
     'origami_task_background',
     'origami_task_model',
     'origami_task_state',
     'origami_task_started',
     'origami_task_ended',
+    // t-gvz8t0: what a forwarded child chunk IS (`reasoning`, or prose when absent).
+    'origami_task_part',
   ];
+
+  // Decoded HERE, AHEAD of the engine lane that writes them (t-dcl8fe ships
+  // separately, and an installed engine is routinely older than the extension
+  // anyway). A pending key is NOT required of the engine — requiring it would
+  // fail this suite against every engine that predates the rider — but it IS
+  // required of this file, and it is listed so the second guard below does not
+  // flag it as an unknown rider on the day the engine starts writing it.
+  // Decoding fails open (src/acpTaskTokens.ts): absent = blank, never zero.
+  const PENDING = ['origami_task_tokens'];
 
   it('every key this file decodes is still WRITTEN by acp/event.ts', () => {
     const engine = read('../../../../engine/src/acp/event.ts');
     const client = read('../../../src/acpTaskMeta.ts');
-    for (const key of KEYS) {
+    for (const key of MIRRORED) {
       expect(engine, `engine no longer writes ${key}`).toContain(key);
       expect(client, `client no longer reads ${key}`).toContain(key);
     }
   });
 
+  it('every PENDING key is at least read on this side — an unread rider is a dead feature', () => {
+    const client = read('../../../src/acpTaskMeta.ts');
+    for (const key of PENDING) expect(client, `client no longer reads ${key}`).toContain(key);
+  });
+
   it('the engine writes no task rider this file has never heard of', () => {
     // The other direction: a NEW rider added engine-side that nothing decodes is
-    // a fact the drawer is silently throwing away.
+    // a fact the drawer is silently throwing away. A PENDING key appearing here
+    // is fine — it is one this file already decodes.
     const engine = read('../../../../engine/src/acp/event.ts');
-    const found = new Set(engine.match(/origami_task_[a-z_]+/g) ?? []);
-    expect([...found].sort()).toEqual([...KEYS].sort());
+    const found = [...new Set(engine.match(/origami_task_[a-z_]+/g) ?? [])];
+    const known = new Set([...MIRRORED, ...PENDING]);
+    expect(found.filter((key) => !known.has(key))).toEqual([]);
+    // ...and every MIRRORED key really is still there, so the filter above
+    // cannot pass by the engine writing nothing at all.
+    expect(MIRRORED.filter((key) => !found.includes(key))).toEqual([]);
   });
 });

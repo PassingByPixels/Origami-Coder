@@ -1,33 +1,24 @@
 import type { AgentSideConnection, PermissionOption, RequestPermissionResponse } from "@agentclientprotocol/sdk"
 import type { Event, OrigamiClient } from "@origami/sdk/v2"
 import type { ACPSession } from "./session"
+import { describeCause } from "./permission"
 import { Effect } from "effect"
 
 type QuestionEvent = Extract<Event, { type: "question.asked" }>
 type Connection = Partial<Pick<AgentSideConnection, "requestPermission">>
 
-// The engine asks the user a question by publishing `question.asked` and
-// blocking on a Deferred (see question/index.ts). Over ACP the only
-// interactive client call available is `requestPermission`, so we surface each
-// question as a permission prompt, map the chosen option back to its label, and
-// reply via `sdk.question.reply` — mirroring acp/permission.ts exactly.
+// The engine asks the user a question by publishing `question.asked` and blocking
+// on a Deferred (see question/index.ts). Over ACP the only interactive client call
+// is `requestPermission`, so each question is surfaced as a permission prompt, the
+// chosen option mapped back to its label, and the reply sent via
+// `sdk.question.reply` - mirroring acp/permission.ts. A multi-select question
+// degrades to the single chosen option and never silently drops the request.
 //
-// Two kinds of question reach an ACP client: plan_exit's single Yes/No
-// "switch to build agent?" prompt, and — since the LLM-facing `question` tool
-// is now enabled for ACP (see registry.ts questionEnabled) — the model's own
-// ask-the-user calls. A multi-select question degrades to the single chosen
-// option (faithful for the common single-select case) and never silently drops
-// the request.
-//
-// A MULTI-question request is offered as ONE prompt, not N. ACP has no
-// many-questions request, so the batch rides `_meta` — the sanctioned
-// extension bag — as `_meta.questions`, while the top-level `toolCall.title`
-// and `options` keep describing the FIRST question exactly as before. A client
-// that reads `_meta.questions` renders the whole set ("Question 1 of N") and
-// returns every answer in `_meta.answers`; a client that ignores it sees the
-// unchanged single-question prompt it has always seen. Whatever comes back,
-// `process` re-offers the questions still unanswered, so no question is
-// dropped and the loop always shrinks by at least one.
+// A MULTI-question request is offered as ONE prompt, not N: ACP has no
+// many-questions request, so the batch rides `_meta.questions` while the top-level
+// `toolCall.title`/`options` keep describing the FIRST question, and a batch-aware
+// client returns every answer in `_meta.answers`. `process` re-offers whatever is
+// still unanswered, so the loop always shrinks by at least one.
 export class Handler {
   private readonly queues = new Map<string, Promise<void>>()
 
@@ -44,7 +35,8 @@ export class Handler {
     const previous = this.queues.get(request.sessionID) ?? Promise.resolve()
     const next = previous
       .then(() => this.process(event))
-      .catch(() => {})
+      // `process` answers its own failures. This is the last net, and it is never silent.
+      .catch((cause) => logAsk(request.id, "was not answered", cause))
       .finally(() => {
         if (this.queues.get(request.sessionID) === next) {
           this.queues.delete(request.sessionID)
@@ -55,28 +47,52 @@ export class Handler {
 
   private async process(event: QuestionEvent) {
     const request = event.properties
-    const session = await Effect.runPromise(this.input.session.tryGet(request.sessionID))
-    if (!session) return
+    const session = await Effect.runPromise(this.input.session.tryGet(request.sessionID)).catch((cause) => {
+      logAsk(request.id, `could not resolve session ${request.sessionID}`, cause)
+      return undefined
+    })
+    // NO SESSION, NO SILENCE (as acp/permission.ts). An early return left the
+    // question pending with nobody to answer it. There is no session to read a
+    // directory off, so the engine's own cwd is used.
+    if (!session) {
+      console.error(`[acp-question] ask ${request.id}: no registered session for ${request.sessionID}, rejecting it`)
+      await this.reject(request.id, process.cwd())
+      return
+    }
 
-    if (!this.input.connection.requestPermission || request.questions.length === 0) {
+    // t-tc2es2. ERRORS ANSWER THE QUESTION: a client that throws instead of
+    // rejecting, or an answer the engine refused, rejects it (logged) instead
+    // of leaving it pending with no timeout.
+    try {
+      await this.answer(request, session.cwd)
+    } catch (cause) {
+      logAsk(request.id, "failed, rejecting it", cause)
       await this.reject(request.id, session.cwd)
+    }
+  }
+
+  private async answer(request: QuestionEvent["properties"], directory: string) {
+    if (!this.input.connection.requestPermission || request.questions.length === 0) {
+      await this.reject(request.id, directory)
       return
     }
 
     const answers: string[][] = []
     while (answers.length < request.questions.length) {
-      // Offer everything still unanswered. A batch-aware client answers the lot
-      // in one prompt; a legacy one answers only the head, and the next round
-      // re-offers the rest. Either way `round` is non-empty, so this terminates.
+      // Offer everything still unanswered. A batch-aware client answers the lot in
+      // one prompt; a legacy one answers only the head. `round` is always non-empty.
       const round = await this.ask(request, request.questions.slice(answers.length))
       if (!round) {
-        await this.reject(request.id, session.cwd)
+        await this.reject(request.id, directory)
         return
       }
       answers.push(...round)
     }
 
-    await this.input.sdk.question.reply({ requestID: request.id, directory: session.cwd, answers }).catch(() => {})
+    // The SDK RETURNS `{ error }` on a non-2xx instead of throwing; throw it, so
+    // `process` rejects the question rather than leaving it pending.
+    const result = await this.input.sdk.question.reply({ requestID: request.id, directory, answers })
+    if (result?.error) throw new Error(`the engine did not take the answer: ${describeCause(result.error)}`)
   }
 
   /** One permission prompt offering `batch`; the answers it produced, or undefined when declined. */
@@ -105,14 +121,27 @@ export class Handler {
           })),
         },
       })
-      .catch(() => undefined)
+      .catch((cause) => {
+        // The client call failed: no answer, so the caller rejects the question. Logged here.
+        logAsk(request.id, "prompt failed, rejecting it", cause)
+        return undefined
+      })
 
     return resolveAnswers(result, batch)
   }
 
+  /** Best effort: there is nothing left to fall back to, so a failure is logged. */
   private async reject(requestID: string, directory: string) {
-    await this.input.sdk.question.reject({ requestID, directory }).catch(() => {})
+    const result = await this.input.sdk.question
+      .reject({ requestID, directory })
+      .catch((cause: unknown) => ({ error: cause }))
+    if (result?.error) logAsk(requestID, "rejection was not delivered", result.error)
   }
+}
+
+/** One stderr line per failure, naming the ask. stderr, never stdout: stdout is the JSON-RPC channel. */
+function logAsk(requestID: string, what: string, cause: unknown) {
+  console.error(`[acp-question] ask ${requestID} ${what}: ${describeCause(cause)}`)
 }
 
 /** Name of the synthetic free-text option, and the reply when it carries none. */
@@ -121,14 +150,10 @@ export const OTHER_LABEL = "Other"
 type Asked = QuestionEvent["properties"]["questions"][number]
 
 /**
- * The permission options one question is offered with.
- *
- * The last entry is a synthetic escape hatch. A permission prompt can only
- * offer the answers the asker pre-baked, so a user whose real answer is none of
- * them had to pick a wrong one or dismiss the prompt (which rejects the whole
- * question). "Other" is appended with the next free index so the existing
- * optionId-to-label mapping is untouched, and a client that supports free text
- * returns it in `_meta.answerText`.
+ * The permission options one question is offered with. The last entry is a
+ * synthetic escape hatch: a permission prompt can only offer the answers the asker
+ * pre-baked, so "Other" is appended with the next free index, leaving the existing
+ * optionId-to-label mapping untouched. Free text comes back in `_meta.answerText`.
  */
 function promptOptions(question: Asked): PermissionOption[] {
   const options: PermissionOption[] = question.options.map((option, index) => ({
@@ -148,12 +173,10 @@ function trimmedText(value: unknown): string | undefined {
 }
 
 /**
- * Free text the client attached to the outcome, if any.
- *
- * `_meta` is the ACP-sanctioned extension bag: "Implementations MUST NOT make
- * assumptions about values at these keys". So this reads it DEFENSIVELY - the
- * key may be absent, null, or any type at all - and yields text only for a
- * non-empty string.
+ * Free text the client attached to the outcome, if any. `_meta` is the
+ * ACP-sanctioned extension bag: "Implementations MUST NOT make assumptions about
+ * values at these keys", so it is read DEFENSIVELY - the key may be absent, null,
+ * or any type at all - and yields text only for a non-empty string.
  */
 function answerText(outcome: unknown): string | undefined {
   return trimmedText(metaOf(outcome)?.answerText)
@@ -168,18 +191,13 @@ function metaOf(outcome: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * The reply text for ONE answered question.
+ * The reply text for ONE answered question. Typed free text WINS over the picked
+ * option: a client that renders a text box next to the choices is telling us the
+ * user wrote a real answer. Falling back in order: the option's own label, then
+ * "Other" for the synthetic index.
  *
- * Typed free text WINS over the picked option, whichever option that was: a
- * client that renders a text box next to the choices is telling us the user
- * wrote a real answer, and silently replying with the button's label instead
- * would discard it. Falling back in order: the option's own label, then
- * "Other" for the synthetic index (an "Other" pick with no text is still an
- * answer, not a rejection).
- *
- * `optionId` is `unknown` because on the batched path it comes out of `_meta`.
- * Only a string or number is a pick — `null` and `""` must NOT coerce to index 0
- * and silently answer with the first label the user never chose.
+ * `optionId` is `unknown` because on the batched path it comes out of `_meta`. Only
+ * a string or number is a pick - `null` and `""` must NOT coerce to index 0.
  */
 function answerFor(optionId: unknown, typed: string | undefined, labels: string[]): string | undefined {
   if (typed) return typed
@@ -192,12 +210,10 @@ function answerFor(optionId: unknown, typed: string | undefined, labels: string[
 
 /**
  * Every answer this outcome carries, in the order the batch was offered.
- *
- * `_meta.answers` is the batch reply: one `{ optionId, answerText }` per
- * question a "Question 1 of N" client showed. Absent (or unusable) means a
- * legacy single-question reply, which answers the HEAD only — the caller then
- * re-offers the rest. A short array is fine for the same reason. `undefined`
- * means the user declined, and the whole request is rejected.
+ * `_meta.answers` is the batch reply: one `{ optionId, answerText }` per question a
+ * "Question 1 of N" client showed. Absent or unusable means a legacy
+ * single-question reply, which answers the HEAD only; the caller re-offers the
+ * rest. `undefined` means the user declined.
  */
 function resolveAnswers(
   result: RequestPermissionResponse | undefined,

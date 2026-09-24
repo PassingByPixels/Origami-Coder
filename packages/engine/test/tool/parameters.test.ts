@@ -27,11 +27,19 @@ import { Parameters as Plan } from "../../src/tool/plan"
 import { Parameters as Question } from "../../src/tool/question"
 import { Parameters as Read } from "../../src/tool/read"
 import { Parameters as Shell } from "../../src/tool/shell"
+import { Parameters as SideQuest } from "../../src/tool/side-quest"
 import { Parameters as Skill } from "../../src/tool/skill"
 import { Parameters as Task } from "../../src/tool/task"
 import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
+import {
+  CallParameters as WebmcpCall,
+  LaunchParameters as WebmcpLaunch,
+  ListParameters as WebmcpList,
+  NoteParameters as WebmcpNote,
+  ToolsParameters as WebmcpTools,
+} from "../../src/tool/webmcp"
 import { Parameters as Write } from "../../src/tool/write"
 
 const parse = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown): S["Type"] =>
@@ -60,11 +68,17 @@ describe("tool parameters", () => {
     test("plan", () => expect(toJsonSchema(Plan)).toMatchSnapshot())
     test("question", () => expect(toJsonSchema(Question)).toMatchSnapshot())
     test("read", () => expect(toJsonSchema(Read)).toMatchSnapshot())
+    test("side_quest", () => expect(toJsonSchema(SideQuest)).toMatchSnapshot())
     test("skill", () => expect(toJsonSchema(Skill)).toMatchSnapshot())
     test("task", () => expect(toJsonSchema(Task)).toMatchSnapshot())
     test("todo", () => expect(toJsonSchema(Todo)).toMatchSnapshot())
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
     test("websearch", () => expect(toJsonSchema(WebSearch)).toMatchSnapshot())
+    test("webmcp_list", () => expect(toJsonSchema(WebmcpList)).toMatchSnapshot())
+    test("webmcp_launch", () => expect(toJsonSchema(WebmcpLaunch)).toMatchSnapshot())
+    test("webmcp_tools", () => expect(toJsonSchema(WebmcpTools)).toMatchSnapshot())
+    test("webmcp_call", () => expect(toJsonSchema(WebmcpCall)).toMatchSnapshot())
+    test("webmcp_note", () => expect(toJsonSchema(WebmcpNote)).toMatchSnapshot())
     test("write", () => expect(toJsonSchema(Write)).toMatchSnapshot())
 
     test("inlines named child schemas for provider compatibility", () => {
@@ -293,6 +307,40 @@ describe("tool parameters", () => {
   describe("websearch", () => {
     test("accepts query", () => {
       expect(parse(WebSearch, { query: "origami" }).query).toBe("origami")
+    })
+  })
+
+  describe("webmcp", () => {
+    test("list takes no arguments", () => {
+      expect(parse(WebmcpList, {})).toEqual({})
+    })
+    test("launch requires a site", () => {
+      expect(parse(WebmcpLaunch, { site: "folio" }).site).toBe("folio")
+      expect(accepts(WebmcpLaunch, {})).toBe(false)
+    })
+    test("tools takes an optional detail flag", () => {
+      expect(parse(WebmcpTools, { site: "folio" }).detail).toBeUndefined()
+      expect(parse(WebmcpTools, { site: "folio", detail: true }).detail).toBe(true)
+      expect(accepts(WebmcpTools, {})).toBe(false)
+    })
+    // `args` is OPTIONAL and free-form: a page tool that takes nothing must be
+    // callable without inventing an empty object, and a schema that constrained
+    // the keys here would contradict whatever the page published.
+    test("call requires a site and a tool, and takes free-form args", () => {
+      expect(parse(WebmcpCall, { site: "folio", tool: "create_deck" }).args).toBeUndefined()
+      expect(parse(WebmcpCall, { site: "folio", tool: "add_chunk", args: { starter: "venn", n: 2 } }).args).toEqual({
+        starter: "venn",
+        n: 2,
+      })
+      expect(accepts(WebmcpCall, { site: "folio" })).toBe(false)
+      expect(accepts(WebmcpCall, { tool: "create_deck" })).toBe(false)
+    })
+    // BOTH fields required: a note call that lost its text would otherwise
+    // decode fine and silently clear the site's banked knowledge.
+    test("note requires a site and the notes text", () => {
+      expect(parse(WebmcpNote, { site: "folio", notes: "n" })).toEqual({ site: "folio", notes: "n" })
+      expect(accepts(WebmcpNote, { site: "folio" })).toBe(false)
+      expect(accepts(WebmcpNote, { notes: "n" })).toBe(false)
     })
   })
 

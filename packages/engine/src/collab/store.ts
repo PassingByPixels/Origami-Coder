@@ -14,11 +14,9 @@ import {
 } from "@origami/core/collab/sql"
 import { Identifier } from "@/id/id"
 
-/**
- * Durable state for Collabs. Everything the feature persists lives here; the
- * runner keeps only per-process turn status, which is why a restart cannot
- * strand a stream in "running".
- */
+/** Durable state for Collabs. Everything the feature persists lives here; the
+ *  runner keeps only per-process turn status, which is why a restart cannot
+ *  strand a stream in "running". */
 
 export type AuthorKind = "human" | "agent"
 
@@ -40,16 +38,12 @@ export type Collab = {
   /** The agent an unaddressed human message wakes. null = nobody. */
   readonly lead: string | null
   readonly objective: string | null
-  /**
-   * How many participant turns this room dispatches at once. null (and anything
-   * below 2) = SERIAL, which is every room that never opted in.
-   */
+  /** How many participant turns this room dispatches at once. null (and anything
+   *  below 2) = SERIAL, which is every room that never opted in. */
   readonly concurrency: number | null
-  /**
-   * What KIND of room this is. null = never configured, which is `discuss` -
-   * the chain every room has always run. Stored RAW: `CollabCouncil.flavorOf`
-   * is the only reader and resolves anything it does not know to `discuss`.
-   */
+  /** What KIND of room this is. null = never configured, which is `discuss`.
+   *  Stored RAW: `CollabCouncil.flavorOf` is the only reader and resolves
+   *  anything it does not know to `discuss`. */
   readonly flavor: string | null
 }
 
@@ -91,10 +85,8 @@ export type AppendInput = {
   readonly mentions?: readonly string[]
   readonly taskId?: string
   readonly trace?: readonly TraceEntry[]
-  /**
-   * Images posted with this message, as `data:` URLs. Validate with
-   * {@link imageRefusal} BEFORE calling: this writes what it is handed.
-   */
+  /** Images posted with this message, as `data:` URLs. Validate with
+   *  {@link imageRefusal} BEFORE calling: this writes what it is handed. */
   readonly images?: readonly string[]
 }
 
@@ -193,11 +185,8 @@ export interface Interface {
   readonly appendMessage: (input: AppendInput) => Effect.Effect<Message>
   readonly listMessages: (collabId: string, sinceSeq?: number) => Effect.Effect<Message[]>
   readonly addTask: (input: TaskInput) => Effect.Effect<Task>
-  /**
-   * Point a task at the message that created it. Separate from `addTask`
-   * because an `ask` needs the task's id to put ON that message, so the
-   * message's sequence number only exists one write later.
-   */
+  /** Point a task at the message that created it. Separate from `addTask`
+   *  because an `ask` needs the task's id to put ON that message. */
   readonly setTaskOrigin: (collabId: string, taskId: string, seq: number) => Effect.Effect<void>
   /** Applies ONE legal transition. An illegal one is a defect, not a value. */
   readonly updateTask: (input: TaskUpdate) => Effect.Effect<Task>
@@ -216,11 +205,8 @@ export const TRACE_LIMIT = 20
 /** How much of one tool's argument summary survives. */
 export const TRACE_SUMMARY_LIMIT = 120
 
-/**
- * Bound one trace before it is stored. Enforced HERE rather than at each caller
- * so a chatty turn cannot put an unbounded blob on a row that every later turn
- * then reads back as context.
- */
+/** Bound one trace before it is stored. Enforced HERE rather than at each caller
+ *  so a chatty turn cannot put an unbounded blob on a row later turns read. */
 export function boundTrace(entries: readonly TraceEntry[]): TraceEntry[] {
   const clipped = entries.slice(0, TRACE_LIMIT).map((entry) => ({
     tool: entry.tool,
@@ -238,13 +224,10 @@ export const IMAGE_LIMIT = 4
 export const IMAGE_BYTES_MAX = 2 * 1024 * 1024
 
 /**
- * What a base64 `data:` URL weighs once decoded, near enough to enforce a limit
- * on. Four characters carry three bytes, and the trailing `=` padding carries
- * none - so this is exact for well-formed base64.
- *
- * A URL with no comma at all has no payload to find, so the whole string is
- * measured. That OVER-states it, which is the safe direction for a bound: a
- * malformed URL is refused rather than let through under-measured.
+ * What a base64 `data:` URL weighs once decoded. Four characters carry three
+ * bytes and the trailing `=` padding carries none, so this is exact for
+ * well-formed base64. A URL with no comma has no payload to find, so the whole
+ * string is measured - over-stating it, the safe direction for a bound.
  */
 export function decodedBytes(dataUrl: string): number {
   const payload = dataUrl.slice(dataUrl.indexOf(",") + 1)
@@ -254,11 +237,8 @@ export function decodedBytes(dataUrl: string): number {
 
 /**
  * Why a set of posted images is refused, or undefined when they are legal.
- *
- * Lives here beside {@link taskRefusal} for the same reason: the ACP layer turns
- * a refusal into a message the human reads, and the policy has to be written
- * down in exactly one place. Every refusal NAMES the limit it hit - a human
- * told only "refused" is left guessing which of three rules they broke.
+ * Beside {@link taskRefusal} so the policy is written down in one place, and
+ * every refusal NAMES the limit it hit rather than saying only "refused".
  */
 export function imageRefusal(images: readonly string[]): string | undefined {
   if (images.length > IMAGE_LIMIT) {
@@ -277,10 +257,8 @@ export function imageRefusal(images: readonly string[]): string | undefined {
 }
 
 /**
- * The task board's whole policy, in one table. Both the ACP layer (which turns
- * a refusal into a method error the human can read) and the store (which treats
- * one as a defect, because it should never have been asked) read this, so there
- * is exactly one place the legal moves are written down.
+ * The task board's whole policy, in one table, read by both the ACP layer and
+ * the store, so the legal moves are written down in exactly one place.
  *
  * Returns the reason a move is refused, or undefined when it is legal.
  */
@@ -397,13 +375,10 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
 
     /**
-     * Keep `lead_slug` on an agent that is actually in the room.
-     *
-     * Run after every roster change: a collab with no lead takes the FIRST
-     * active agent, and removing the lead promotes the next by join order, or
-     * nobody when the room empties. A deliberate `setLead(null)` therefore
-     * survives until the next roster change, which is the only event the
-     * contract lets fill an empty seat.
+     * Keep `lead_slug` on an agent that is actually in the room. Run after every
+     * roster change: a collab with no lead takes the FIRST active agent, and
+     * removing the lead promotes the next by join order. A deliberate
+     * `setLead(null)` survives until the next roster change.
      */
     const syncLead = Effect.fnUntraced(function* (collabId: string) {
       const collab = yield* load(collabId)
@@ -426,10 +401,9 @@ const layer = Layer.effect(
     ) {
       const unique = [...new Set(agentSlugs)]
       if (unique.length === 0) return
-      // Stamp join order explicitly: a bulk add lands inside one millisecond,
-      // and `participants()` tiebreaks equal times ALPHABETICALLY — which made
-      // the lead default (first joined) fall on the alphabetically-first slug
-      // instead of the first invited. +i per row keeps invite order the truth.
+      // Stamp join order explicitly: a bulk add lands inside one millisecond and
+      // `participants()` tiebreaks equal times ALPHABETICALLY, which put the lead
+      // default on the alphabetically-first slug. +i per row keeps invite order.
       const base = Date.now()
       yield* db
         .insert(CollabParticipantTable)
@@ -478,12 +452,9 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
     })
 
-    /**
-     * Reopen an archived collab. Only `time_archived` moves: the log, the roster,
-     * every member's session and every last-seen marker are left exactly as the
-     * archive found them, so the room comes back where it stopped rather than
-     * replaying itself.
-     */
+    /** Reopen an archived collab. Only `time_archived` moves: the log, the roster,
+     *  every member's session and every last-seen marker are left as the archive
+     *  found them, so the room comes back where it stopped. */
     const unarchive = Effect.fn("Collab.unarchive")(function* (collabId: string) {
       yield* db
         .update(CollabTable)
@@ -498,11 +469,9 @@ const layer = Layer.effect(
     })
 
     /**
-     * Add one agent, or bring a removed one back by clearing `time_removed`.
-     *
-     * A re-add keeps `session_id` and `last_seen_seq` on purpose: the agent
-     * comes back with the memory it left with, and is not handed the whole
-     * backlog of the conversation it was absent for as one turn.
+     * Add one agent, or bring a removed one back by clearing `time_removed`. A
+     * re-add keeps `session_id` and `last_seen_seq`: the agent comes back with
+     * the memory it left with, not the whole absent backlog as one turn.
      */
     const addParticipant = Effect.fn("Collab.addParticipant")(function* (collabId: string, agentSlug: string) {
       yield* db
@@ -517,10 +486,8 @@ const layer = Layer.effect(
       yield* syncLead(collabId)
     })
 
-    /**
-     * Soft delete: the roster row stays, so the agent's session, its last-seen
-     * marker and everything it said are all still there if it is added back.
-     */
+    /** Soft delete: the roster row stays, so the agent's session, its last-seen
+     *  marker and everything it said are all still there if it is added back. */
     const removeParticipant = Effect.fn("Collab.removeParticipant")(function* (
       collabId: string,
       agentSlug: string,
@@ -544,22 +511,16 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
     })
 
-    /**
-     * How many turns this room may dispatch at once. Written RAW: the width a
-     * value means is `CollabParallel.dispatchWidth`'s answer, and clamping on
-     * the way in would make "4 on a build that allowed 4" indistinguishable
-     * from "8, clamped" the next time the ceiling moves.
-     */
+    /** How many turns this room may dispatch at once. Written RAW: the width a
+     *  value means is `CollabParallel.dispatchWidth`'s answer, and clamping on
+     *  the way in would hide "8, clamped" the next time the ceiling moves. */
     const setConcurrency = Effect.fn("Collab.setConcurrency")(function* (collabId: string, concurrency: number | null) {
       yield* db.update(CollabTable).set({ concurrency }).where(eq(CollabTable.id, collabId)).run().pipe(Effect.orDie)
     })
 
-    /**
-     * What kind of room this is. Written RAW for the same reason the width is:
-     * the meaning of a stored value is `CollabCouncil.flavorOf`'s answer, and
-     * normalising on the way in would lose a flavor this build does not know
-     * but a newer one does.
-     */
+    /** What kind of room this is. Written RAW for the same reason the width is:
+     *  normalising on the way in would lose a flavor this build does not know
+     *  but a newer one does. */
     const setFlavor = Effect.fn("Collab.setFlavor")(function* (collabId: string, flavor: string | null) {
       yield* db.update(CollabTable).set({ flavor }).where(eq(CollabTable.id, collabId)).run().pipe(Effect.orDie)
     })
@@ -624,13 +585,10 @@ const layer = Layer.effect(
         .pipe(Effect.orDie)
     })
 
-    /**
-     * Append one message, assigning `seq = max(seq) + 1` INSIDE a transaction.
-     * The unique (collab_id, seq) index is the backstop: two writers that read
-     * the same max under separate connections make the loser fail there rather
-     * than silently duplicating a sequence number, so it retries once with the
-     * max it can now see.
-     */
+    /** Append one message, assigning `seq = max(seq) + 1` INSIDE a transaction.
+     *  The unique (collab_id, seq) index is the backstop: two writers that read
+     *  the same max under separate connections make the loser fail there rather
+     *  than duplicate a sequence number, so it retries once. */
     const insert = (input: AppendInput) =>
       db.transaction((tx) =>
         Effect.gen(function* () {
@@ -720,9 +678,8 @@ const layer = Layer.effect(
     })
 
     const setTaskOrigin = Effect.fn("Collab.setTaskOrigin")(function* (collabId: string, taskId: string, seq: number) {
-      // Guarded by `isNull` so the origin can only be set once: it names the
-      // message the task was born on, and a later write would repoint the
-      // board row at a message that did not create it.
+      // Guarded by `isNull` so the origin can only be set once: a later write
+      // would repoint the board row at a message that did not create it.
       yield* db
         .update(CollabTaskTable)
         .set({ origin_seq: seq })
@@ -740,9 +697,9 @@ const layer = Layer.effect(
     const updateTask = Effect.fn("Collab.updateTask")(function* (input: TaskUpdate) {
       const task = yield* getTask(input.collabId, input.taskId)
       if (!task) return yield* Effect.die(new Error(`collab task not found: ${input.taskId}`))
-      // A refusal HERE means a caller skipped the check it owed the human, so
-      // it is a defect rather than a value: the board must never end up in a
-      // state no transition produced.
+      // A refusal HERE means a caller skipped the check it owed the human: a
+      // defect, not a value. The board must never reach a state no transition
+      // produced.
       const refusal = taskRefusal(task, input)
       if (refusal) return yield* Effect.die(new Error(`collab task ${input.taskId}: ${refusal}`))
 

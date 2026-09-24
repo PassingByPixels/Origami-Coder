@@ -80,7 +80,7 @@ describe('collabManager — COLLAB_MESSAGE_TYPES', () => {
       // the supervision four, one set, one check by the panel.
       'collabArchetypeSetModel', 'deleteCollabAgentDef', 'listCollabAgentDefs', 'saveCollabAgentDef',
       'startBotSession', 'botMemoryRead', 'botMemoryClear',
-      'openBotsSection', 'boardReady', 'boardSectionShown',
+      'openBotsSection', 'openBoardSection', 'boardReady', 'boardSectionShown',
       // The board rail's Docs button — host-owned URL, see botsManager DOCS_URL.
       'boardOpenDocs',
     ].sort());

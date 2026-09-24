@@ -28,52 +28,43 @@ const applyQuery = (url: string, query: Record<string, string> | undefined) => {
   return next.toString()
 }
 
-const PROTOCOL_BODY_OVERLAY_DENYLIST = new Set([
-  "content",
-  "contents",
-  "frequencyPenalty",
-  "frequency_penalty",
-  "generationConfig",
-  "inferenceConfig",
-  "input",
-  "maxTokens",
-  "max_tokens",
-  "messages",
-  "model",
-  "presencePenalty",
-  "presence_penalty",
-  "responseFormat",
-  "response_format",
-  "seed",
-  "stop",
-  "stopSequences",
-  "stop_sequences",
-  "stream",
-  "streamOptions",
-  "stream_options",
-  "system",
-  "systemInstruction",
-  "system_instruction",
-  "temperature",
-  "thinking",
-  "toolChoice",
-  "toolConfig",
-  "tool_choice",
-  "tool_config",
-  "tools",
-  "topK",
-  "topP",
-  "top_k",
-  "top_p",
-])
+// The body fields a protocol OWNS are per protocol AND per request: a key is
+// owned only when the protocol that is actually sending this request lists it
+// as structure (`ProtocolBody.structure`) AND wrote it into the body it just
+// built. An overlay naming an owned key would rewrite the request's structure,
+// so it still fails loudly.
+//
+// A key the protocol did not write this time is NOT owned even if it is in the
+// protocol's vocabulary: `thinking` is Anthropic structure, but on an
+// OpenAI-compatible server it is just an extra a GLM/zai block sets, and even
+// on Anthropic it is free when reasoning is off. One global denylist refused it
+// everywhere, which broke those blocks on every prompt.
+//
+// Deliberately never structure: the sampling knobs (temperature, top_p, top_k,
+// frequency_penalty, presence_penalty, seed, stop, ...) and any server extra
+// (chat_template_kwargs, repetition_penalty, min_p, ...). A provider block on
+// this box sets `frequency_penalty: 0` on its vLLM models, and the AI SDK path
+// always passed such keys through verbatim - the overlay spread AFTER the
+// standard settings, so a configured knob won. Refusing them took the whole
+// OpenAI-compatible family down on the first turn. The overlay therefore wins
+// on a sampling key, exactly as before the cutover.
+const ownedBodyKeys = (body: unknown, structure: ReadonlyArray<string>) => {
+  const written = ProviderShared.isRecord(body) ? body : {}
+  return new Set(structure.filter((key) => written[key] !== undefined))
+}
 
-const forbiddenBodyOverlayKeys = (body: Record<string, unknown>) =>
-  Object.keys(body).filter((key) => PROTOCOL_BODY_OVERLAY_DENYLIST.has(key))
+const forbiddenBodyOverlayKeys = (overlay: Record<string, unknown>, owned: ReadonlySet<string>) =>
+  Object.keys(overlay).filter((key) => owned.has(key))
 
-const bodyWithOverlay = <Body>(body: Body, request: LLMRequest, encodeBody: (body: Body) => string) =>
+const bodyWithOverlay = <Body>(
+  body: Body,
+  request: LLMRequest,
+  encodeBody: (body: Body) => string,
+  structure: ReadonlyArray<string>,
+) =>
   Effect.gen(function* () {
     if (request.http?.body === undefined) return { jsonBody: body, bodyText: encodeBody(body) }
-    const forbiddenKeys = forbiddenBodyOverlayKeys(request.http.body)
+    const forbiddenKeys = forbiddenBodyOverlayKeys(request.http.body, ownedBodyKeys(body, structure))
     if (forbiddenKeys.length > 0)
       return yield* ProviderShared.invalidRequest(
         `http.body cannot overlay protocol-owned field(s): ${forbiddenKeys.join(", ")}`,
@@ -91,7 +82,7 @@ export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
       renderEndpoint(input.endpoint, { request: input.request, body: input.body }).toString(),
       input.request.http?.query,
     )
-    const body = yield* bodyWithOverlay(input.body, input.request, input.encodeBody)
+    const body = yield* bodyWithOverlay(input.body, input.request, input.encodeBody, input.bodyStructure)
     const headers = yield* Auth.toEffect(input.auth)({
       request: input.request,
       method: "POST",

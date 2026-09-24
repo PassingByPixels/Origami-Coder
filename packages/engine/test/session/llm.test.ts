@@ -1312,7 +1312,7 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
-    "keeps supported OpenAI models on AI SDK path when native flag is off",
+    "keeps supported OpenAI models on AI SDK path when the family is switched off",
     () =>
       Effect.gen(function* () {
         const model = loadFixture("openai", "gpt-5.2").model
@@ -1385,7 +1385,9 @@ describe("session.llm.stream", () => {
         yield* drainWith(
           AppNodeBuilder.build(LLM.node, [
             [LayerNodePlatform.llmClient, failingNativeClient],
-            [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: false })],
+            // The OpenAI family is native by default since phase 2; the family
+            // list is the switch that keeps a model on the AI SDK.
+            [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: false, nativeLlmFamilies: "none" })],
           ]),
           {
             user: {
@@ -2081,8 +2083,8 @@ describe("session.llm.stream", () => {
         expect(messages[toolUseIndex + 1]).toMatchObject({
           role: "user",
           content: [
-            { type: "tool_result", tool_use_id: "toolu_01N8mDEzG8DSTs7UPHFtmgCT", content: "<path>/root</path>" },
-            { type: "tool_result", tool_use_id: "toolu_01APxrADs7VozN8uWzw9WwHr", content: "No files found" },
+            { type: "tool_result", tool_use_id: "toolu_01N8mDEzG8DSTs7UPHFtmgCT", content: "[took 0.0 s]\n<path>/root</path>" },
+            { type: "tool_result", tool_use_id: "toolu_01APxrADs7VozN8uWzw9WwHr", content: "[took 0.0 s]\nNo files found" },
           ],
         })
       }),
@@ -2187,9 +2189,18 @@ describe("session.llm.stream — held think-scanner text never outlives the stre
   // The `<think>` scanner HOLDS a trailing partial tag back until the next chunk
   // proves it was prose. That is only safe if something always drains it. A local
   // OpenAI-compatible server that reports a failure part-way through a reply is the
-  // shape that never reaches `text-end` or `finish`: the adapter fails on the error
-  // frame, so the held characters have to come out of the stream's own exit or they
-  // are silently missing from the reply that gets persisted.
+  // shape that never reaches `text-end` or `finish` on its own, so the held
+  // characters have to come out of the stream's close or they are silently missing
+  // from the reply that gets persisted.
+  //
+  // The in-band `{"error":{...}}` frame used to fail the chunk schema and kill the
+  // stream, and the tail came out of the failure path. It is now decoded and
+  // REPORTED (`provider-error`, then a terminal `finish` with reason "error" —
+  // openai-chat.ts), which is what `@ai-sdk/openai-compatible` does with the same
+  // frame. The turn still ends as an error for the user: `session/processor.ts`
+  // throws on `provider-error`, carrying the provider's own sentence instead of
+  // "Invalid openai/openai-chat stream event". What this test guards is unchanged —
+  // the held characters must still be emitted.
   const vivgridFixture = { providerID: "vivgrid", modelID: "gemini-3.1-pro-preview" }
 
   function failedMidReplyChatStream(text: string) {
@@ -2243,7 +2254,7 @@ describe("session.llm.stream — held think-scanner text never outlives the stre
           model: { providerID: ProviderV2.ID.make(vivgridFixture.providerID), modelID: resolved.id },
         } satisfies SessionV1.User
 
-        const seen: Array<{ type: string; text?: string }> = []
+        const seen: Array<{ type: string; text?: string; message?: string; reason?: string }> = []
         const exit = yield* LLM.Service.use((svc) =>
           svc
             .stream({
@@ -2258,7 +2269,9 @@ describe("session.llm.stream — held think-scanner text never outlives the stre
             })
             .pipe(
               Stream.tap((event) =>
-                Effect.sync(() => seen.push(event as unknown as { type: string; text?: string })),
+                Effect.sync(() =>
+                  seen.push(event as unknown as { type: string; text?: string; message?: string; reason?: string }),
+                ),
               ),
               Stream.runDrain,
             ),
@@ -2266,9 +2279,14 @@ describe("session.llm.stream — held think-scanner text never outlives the stre
 
         yield* Effect.promise(() => request)
 
-        // The stream still fails — the provider gave up, and that is not a clean end.
-        expect(Exit.isFailure(exit)).toBe(true)
-        // ...but every character the model did send has to have been emitted first.
+        // The provider gave up, and the stream says so in the provider's own words
+        // rather than dying on an unreadable chunk.
+        expect(Exit.isSuccess(exit)).toBe(true)
+        expect(seen.filter((event) => event.type === "provider-error").map((event) => event.message)).toEqual([
+          "KV cache exhausted",
+        ])
+        expect(seen.at(-1)).toMatchObject({ type: "finish", reason: "error" })
+        // ...and every character the model did send has to have been emitted first.
         const text = seen
           .filter((event) => event.type === "text-delta")
           .map((event) => event.text ?? "")
@@ -2319,7 +2337,16 @@ describe("session.llm.stream — AI SDK warnings reach the engine log", () => {
     }
   }
 
-  it.instance(
+  // This is a test of the AI SDK path, so the native route table is switched
+  // off for it: the fixture model would otherwise be routed native by default
+  // and the vendor warning could never happen.
+  const aiSdkIt = testEffect(
+    AppNodeBuilder.build(LayerNode.group([LLM.node, Provider.node]), [
+      [RuntimeFlags.node, RuntimeFlags.layer({ nativeLlmFamilies: "none" })],
+    ]),
+  )
+
+  aiSdkIt.instance(
     "a warning raised by the provider is logged with its message, provider and model",
     () => {
       const capture = captureLogs()

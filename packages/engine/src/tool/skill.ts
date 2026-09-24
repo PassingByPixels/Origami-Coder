@@ -17,6 +17,11 @@ export const SkillTool = Tool.define(
 
     return {
       description: DESCRIPTION,
+      // Not deferrable, unlike almost every other non-core builtin: the system
+      // prompt already carries the skill roster and a standing instruction
+      // naming this tool by id (session/system.ts). Hiding it behind the catalog
+      // would point that instruction at a tool the model cannot see, and it
+      // saves under a kilobyte.
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

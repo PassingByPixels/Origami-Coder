@@ -1,0 +1,70 @@
+# Origami Remote relay — systemd unit.
+#
+# The relay binds LOOPBACK only. TLS and the public port belong to a terminator
+# in front of it (see Caddyfile), because a certificate that renews itself is
+# one less thing to remember and the relay has no business running as root to
+# hold port 443.
+#
+# install.sh writes this file to /etc/systemd/system/origami-relay.service and
+# rewrites only the values you changed. Copying it by hand works too.
+
+[Unit]
+Description=Origami Remote blind relay
+Documentation=https://origamilabs.nl/relay.html
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=origami
+Group=origami
+# --ring-seconds defaults to 90 when omitted (how long a reconnecting phone
+# can be replayed the desktop's recent frames, and vice versa). Add
+# "--ring-seconds <n>" to ExecStart to change it; 0 keeps no ring at all.
+#
+# --bulk-rid-mb-per-minute defaults to 20 when omitted: the bulk lane
+# (?lane=bulk, for a one-shot pull like a cloud-session journal) gets its own
+# rid namespace, no ring, and this per-rid bucket, still inside the daily
+# budget above. New live rids are refused before new bulk rids once the day
+# is 90% spent.
+ExecStart=/opt/origami/bin/origami relay \
+  --hostname 127.0.0.1 \
+  --port 8787 \
+  --app-dir /opt/origami/remote-app \
+  --daily-budget-mb 2048 \
+  --bulk-rid-mb-per-minute 20
+Restart=always
+RestartSec=2
+
+# The engine binary bootstraps its data directory (~/.local/share/origami) even
+# for the relay verb. With ProtectSystem=strict and HOME under /opt that mkdir
+# fails with EROFS and the unit crash-loops. A private, writable state
+# directory keeps the hardening and gives the bootstrap a home.
+StateDirectory=origami-relay
+Environment=HOME=/var/lib/origami-relay
+Environment=XDG_DATA_HOME=/var/lib/origami-relay/.local/share
+Environment=XDG_CONFIG_HOME=/var/lib/origami-relay/.config
+Environment=XDG_CACHE_HOME=/var/lib/origami-relay/.cache
+
+# The relay reads a static directory and holds sockets. It writes nothing, so
+# everything else is closed off.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadOnlyPaths=/opt/origami
+
+# The relay logs a start line and nothing else. It never logs a rendezvous id.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

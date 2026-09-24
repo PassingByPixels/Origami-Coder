@@ -2,25 +2,15 @@ import { SessionPromptCapture } from "@/session/prompt-capture"
 import { ToolSearch } from "./tool-search"
 
 /**
- * The OFF state — `tools: { <id>: false }` in origami.json.
+ * The off state — `tools: { <id>: false }` in origami.json.
  *
- * WHAT THIS FIXES. `tools` has been in the config SCHEMA since the fork
- * (packages/core/src/v1/config/config.ts, `Schema.Record(String, Boolean)`)
- * and nothing in the engine ever read it. A user who wrote
- * `"tools": { "browser": false }` got a file that validated, an editor that
- * autocompleted it, and a tool that stayed switched on — the worst kind of
- * silence, because the setting LOOKS honoured. This module is the read that
- * was missing.
+ * Off is not deferred. `tool-search.ts` decides how a tool is presented: a
+ * deferred tool still exists, costs one catalog line, and `tool_search` can pull
+ * its schema in mid-turn. Off means the tool is in neither the map handed to the
+ * model nor the catalog, so there is nothing for a search to find — which is why
+ * the two live in separate modules over separate config keys.
  *
- * OFF IS NOT DEFERRED. `tool-search.ts` decides how a tool is PRESENTED: a
- * deferred tool still exists, costs one catalog line, and `tool_search` can
- * pull its schema in mid-turn. Off means the tool is not in the map handed to
- * the model and not in the catalog either, so there is nothing for a search to
- * find. That is why the two live in separate modules over separate config
- * keys rather than as a third value in `Settings`.
- *
- * Everything here is PURE — plain JSON in, ids out — so the rules are testable
- * without booting an engine, the same shape tool-search.ts keeps.
+ * Everything here is pure — plain JSON in, ids out.
  */
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -28,12 +18,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 /**
  * The patterns switched off, read out of whatever the config object carries.
- *
- * Defensive for the same reason `ACPTools.readSettings` is: origami.json is
- * hand-editable, and a malformed `tools` value must leave every tool ON rather
- * than fail the turn. ONLY an explicit `false` switches a tool off — `true`
- * and every non-boolean are "not switched off", so a truthy value can never
- * disable something by accident.
+ * origami.json is hand-editable, so a malformed `tools` value must leave every
+ * tool on rather than fail the turn. Only an explicit `false` switches a tool
+ * off; `true` and every non-boolean mean "not switched off".
  */
 export function offPatterns(config: unknown): string[] {
   const raw = isRecord(config) ? config["tools"] : undefined
@@ -44,20 +31,14 @@ export function offPatterns(config: unknown): string[] {
 }
 
 /**
- * Is this tool switched off?
+ * Is this tool switched off? Wildcards go through `ToolSearch.matches` rather
+ * than a second implementation, or the same string would work in one setting
+ * and not the other.
  *
- * Wildcards are `ToolSearch.matches`, not a second implementation: `defer`
- * and `always` already read `board_*` that way, and two pattern dialects over
- * the same tool ids would be a bug the user experiences as "the same string
- * works in one setting and not the other".
- *
- * REPAIR-ONLY TOOLS ARE EXEMPT, and it is not a courtesy. `invalid` is the
- * destination `experimental_repairToolCall` rewrites a malformed tool call to
- * (session/llm.ts); switch it off and that redirect targets a tool missing
- * from `prepared.tools`, so the repair path breaks for every model that ever
- * emits bad JSON. The UI cannot reach it (it is not listed — acp/tools.ts),
- * but a hand-edited config can name it, so the guard lives HERE, at the read,
- * where every caller inherits it.
+ * Repair-only tools are exempt: `invalid` is where
+ * `experimental_repairToolCall` rewrites a malformed call, so switching it off
+ * would break the repair path for every model that emits bad JSON. The UI cannot
+ * reach it, but a hand-edited config can, so the guard lives here at the read.
  */
 export function isOff(id: string, patterns: readonly string[]): boolean {
   if (SessionPromptCapture.REPAIR_ONLY_TOOLS.has(id)) return false

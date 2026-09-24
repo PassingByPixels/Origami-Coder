@@ -1,40 +1,31 @@
 <script lang="ts">
-  // The sidebar's Chats half, EXTRACTED from SidebarLauncher.svelte — the
-  // seam that file's own cap comment named ("the Chats half and the Collabs
-  // half are each an obvious seam"), the same move CollabsList.svelte made
-  // for the other half at M2. Owns the session list end to end (handshake,
-  // ring lifecycle, drag reorder, rename, history) PLUS t-kgserq's chat-
-  // grouping sections — none of which fit in the launcher's remaining
-  // headroom without this file existing.
+  // The sidebar's Chats half, extracted from SidebarLauncher.svelte. Owns the
+  // session list end to end (handshake, ring lifecycle, drag reorder, rename)
+  // plus chat-grouping sections. New chat / History / Agent Manager left with
+  // the toolbar: they are SidebarDock.svelte's now.
   //
-  // t-r43glr (2026-08-14): the owner wants NO built-in section besides
-  // "Main" — sections exist only when the user makes one. This retires
-  // t-kgserq v2's fixed "Loops" row (pinned bottom) and the pre-v2 "spare"
-  // single custom section; a chat that was filed under either now simply
-  // reads back as Main (see src/dashboard/chatSections.ts's migration
-  // comment). What remains: "Main" PINNED top (undeletable, unrenamable,
-  // carries the + create-section control; it is simply the old "ungrouped"
-  // list, now with its own header) and any number of user sections BELOW it
-  // (add/rename/delete — deleting moves its chats back to Main). Sections
-  // are a DISPLAY FILTER over the one global order array (dropping onto a
-  // ROW still just reorders that array, unchanged from before); dropping
-  // onto a SECTION HEADER sets that chat's membership (or clears it, for
-  // Main). Membership/collapsed/section defs persist via the extension's
-  // chatSections.ts (workspaceState) and ride their own small messages,
-  // independent of the reorder wire.
+  // No built-in section besides "Main" — sections exist only when the user
+  // makes one. "Main" is pinned top (undeletable, unrenamable, carries the +
+  // create-section control; the old "ungrouped" list with its own header),
+  // and any number of user sections sit below it (add/rename/delete —
+  // deleting moves its chats back to Main). Sections are a display filter
+  // over the one global order array; dropping onto a row still just reorders
+  // that array, dropping onto a section header sets the chat's membership.
+  // Membership/collapsed/section defs persist via the extension's
+  // chatSections.ts and ride their own messages, independent of the reorder wire.
   //
-  // The per-section HEADER markup (chevron, count, delete) is
-  // ChatSectionBlock.svelte, generic over Main vs. a custom section so two
-  // near-identical header blocks did not have to exist here. What stays
-  // here: every ROW's own markup (drag/open/rename/close — identical
-  // wherever a chat sits) and each section's NAME area (plain text for Main,
-  // name+pencil+dblclick-rename for a custom one) — passed to
-  // ChatSectionBlock as snippets, because Svelte scopes a snippet's CSS to
-  // the file that WRITES its markup, not the one that renders it.
+  // The per-section header markup is ChatSectionBlock.svelte, generic over
+  // Main vs. a custom section. What stays here: every row's own markup and
+  // each section's name area, passed to ChatSectionBlock as snippets, because
+  // Svelte scopes a snippet's CSS to the file that writes its markup.
   import { getVsCodeApi } from '../shared/vscodeApi';
-  import { onMount } from 'svelte';
-  import HistoryDropdown from './HistoryDropdown.svelte';
+  import { onMount, type Snippet } from 'svelte';
   import ChatSectionBlock from './ChatSectionBlock.svelte';
+  // t-s9k0q6 (Nests L4c): ChatsHereNest.svelte's mount point. All absent = today's list. `hiddenIds` = other desks' chats (Nest only);
+  // `listHidden` = the Nest tab is up (the rows state stays mounted); `rowLead`/`rowBadge` = a fork's parent line / the from/fork pill.
+  // t-t7lfho: `selectedId` = the chat Continue here just landed in (marked, aria-current).
+  let { hiddenIds, listHidden = false, rowLead, rowBadge, selectedId }: { hiddenIds?: ReadonlySet<string>; listHidden?: boolean; rowLead?: Snippet<[string]>; rowBadge?: Snippet<[string]>; selectedId?: string } = $props();
+  import { animateIn } from './animatedList';
   import {
     groupSessionIds,
     defaultChatSectionsState,
@@ -42,47 +33,37 @@
     type ChatSectionsState,
   } from './chatSections';
   import { deriveRowVisualState, addPendingAsk, removePendingAsk } from './sessionRowState';
+  import { trackSpawnedChild, clearDoneChild } from './runningChildren';
+  import { engineTurnRunning } from '../shared/engineStatus';
+  import InlineToast from '../dashboard/components/InlineToast.svelte';
+  import { closeToastText, createCloseFuse, type PendingClose } from './pendingClose';
 
   const vscode = getVsCodeApi();
 
-  // `state` drives the per-row activity ring. 'idle' = this launcher has seen no
-  // activity for the chat yet (no ring at all — an untouched chat must not claim
-  // to be waiting on you); 'working' = a turn is in flight; 'ready' = the turn
-  // came back and the chat is yours again. `pendingAsks` (open tool-permission/
-  // question toolCallIds) is the ring's THIRD input, folded in at render time by
-  // sessionRowState.ts's deriveRowVisualState rather than living inside RowState.
+  // `state` drives the per-row activity ring. 'idle' = no activity seen yet (no
+  // ring); 'working' = a turn in flight; 'ready' = the turn came back.
+  // `pendingAsks` is the ring's third input, folded in at render time by
+  // sessionRowState.ts's deriveRowVisualState rather than living in RowState.
   type RowState = 'idle' | 'working' | 'ready';
-  interface SessionRow { id: string; number: number; agentName: string; title?: string; state: RowState; pendingAsks: ReadonlySet<string> }
+  interface SessionRow { id: string; number: number; agentName: string; title?: string; state: RowState; pendingAsks: ReadonlySet<string>; runningChildren: ReadonlySet<string> }
   let sessions = $state<SessionRow[]>([]);
 
-  // The host has no per-chat "is it busy" broadcast to subscribe to, so the ring
-  // reads the turn-lifecycle events it ALREADY fans out to every attached view:
-  //   echoUser — the host echoing the prompt it just accepted. This is the only
-  //     start-of-turn signal that covers an ordinary chat: `busy` is posted by
-  //     the /loop scheduled-run path alone (one producer), because a normal send
-  //     originates IN ChatPane, which flips its own composer locally and never
-  //     needs to be told. The sidebar is not the sender, so it needs the echo.
-  //     EXCEPT when it carries `replay: true` — that tags the ONE echoUser a
-  //     loadSession history recall produces (DashboardPanel's onUserMessageChunk,
-  //     fed only by ACP replay), one per historical user turn with no turnDone
-  //     ever following. A restored chat is not a turn in flight, so a
-  //     replay-tagged echoUser must NOT flip the ring.
-  //   busy — the /loop path's start-of-run signal, for the runs nobody typed.
+  // The ring's truth is `sessionStatus` (../shared/engineStatus.ts), the only
+  // input that covers a turn the engine started. An engine that doesn't send
+  // it falls back to the older turn-lifecycle events below:
+  //   echoUser — the host echoing the prompt it just accepted; the only
+  //     start-of-turn signal for an ordinary chat send. Skipped when it
+  //     carries `replay: true` (a history recall), which is not a turn in flight.
+  //   busy — the /loop path's start-of-run signal, for runs nobody typed.
   //   turnDone — every terminal path (reply, error, blocked, idle, loop_run).
-  //   firstfoldDone — /firstfold's own terminal signal (it never posts a plain
-  //     turnDone; its start (firstfoldStart) is always preceded by its own
-  //     echoUser on the same session, so only the terminal side needs a case).
-  //   requestPermission / permissionAudit — the THIRD ring state's inputs (see
-  //     sessionRowState.ts and the two case blocks below for the wire-shape
-  //     gotchas: no sessionId on the resolution, and the 'requested' variant
-  //     that is not one).
+  //   firstfoldDone — /firstfold's own terminal signal.
+  //   requestPermission / permissionAudit — the third ring state's inputs
+  //     (see sessionRowState.ts for the wire-shape gotchas).
   function markSession(id: unknown, next: RowState) {
     const sid = typeof id === 'string' ? id : '';
     if (!sid) return;
-    // 'ready' also clears pendingAsks — the Cancel/Stop backstop: a Cancel
-    // answers every queued ask host-side without necessarily emitting its own
-    // permissionAudit per ask, but its in-flight prompt() call still settles
-    // into a 'ready' turnDone, which must not leave a stale waiting ring.
+    // 'ready' also clears pendingAsks: Cancel answers every queued ask
+    // host-side without necessarily emitting its own permissionAudit per ask.
     const clearsAsks = next === 'ready' ? { pendingAsks: new Set<string>() } : {};
     sessions = sessions.map(s => s.id === sid ? { ...s, state: next, ...clearsAsks } : s);
   }
@@ -90,12 +71,13 @@
   // --- t-kgserq: chat-list sections ---------------------------------------
   let chatSections = $state<ChatSectionsState>(defaultChatSectionsState());
   const knownSectionIds = $derived(new Set(chatSections.sections.map((sec) => sec.id)));
-  const grouped = $derived(groupSessionIds(sessions.map(s => s.id), chatSections.membership, knownSectionIds));
+  // A chat waiting on its close fuse is off the list everywhere at once —
+  // filtered HERE, so the section counts drop with the row.
+  const grouped = $derived(groupSessionIds(
+    sessions.filter(s => s.id !== pendingClose?.id && !hiddenIds?.has(s.id)).map(s => s.id), chatSections.membership, knownSectionIds));
   const indexById = $derived(new Map(sessions.map((s, i) => [s.id, i] as const)));
-  // Two different empty-Main lines, same distinction the old plain list drew:
-  // no chats at all vs. every chat already claimed by a section below it.
-  // (Main is pinned TOP; custom sections render below it — see the layout
-  // note at the top of this file.)
+  // Two different empty-Main lines: no chats at all vs. every chat already
+  // claimed by a section below it.
   const mainEmptyText = $derived(sessions.length === 0 ? 'No open chats. Hit ＋ New chat.' : 'Every open chat is in a section below.');
 
   function withLocalSection(membership: Record<string, string>, id: string, section: string | null): Record<string, string> {
@@ -128,10 +110,9 @@
     vscode.postMessage({ type: 'setChatSection', sessionId: id, section: null });
   }
 
-  // Section CRUD (t-kgserq v2). Create/delete are NOT optimistic — the id is
-  // host-generated (chatSections.ts's generateSectionId), so there is
-  // nothing correct to render until the `chatSections` echo names it. Same
-  // pattern newChat() below already uses for a host-assigned session id.
+  // Create/delete are not optimistic — the id is host-generated
+  // (chatSections.ts's generateSectionId), so there's nothing correct to
+  // render until the `chatSections` echo names it.
   function createSection() { vscode.postMessage({ type: 'createChatSection' }); }
   function deleteSection(id: string) {
     chatSections = {
@@ -164,59 +145,42 @@
   // Theme picker, ControlStrip and the brand header stay in SidebarLauncher —
   // this half owns only what is below.
 
-  // In-webview history dropdown (same wire as ChatPane: requestHistory →
-  // historyList; recallSession opens the recalled chat in a fresh tab).
-  let historyOpen = $state(false);
-  let historyLoading = $state(false);
-  let historyQuery = $state('');
-  interface HistoryItem { sessionId: string; title: string; folder: string; updatedAt: string }
-  let historyItems = $state<HistoryItem[]>([]);
-  let historyFiltered = $derived.by(() => {
-    const q = historyQuery.trim().toLowerCase();
-    if (!q) return historyItems;
-    return historyItems.filter(h => `${h.title} ${h.folder}`.toLowerCase().includes(q));
-  });
-  function openHistoryDropdown() {
-    historyOpen = true;
-    historyLoading = true;
-    historyItems = [];
-    historyQuery = '';
-    vscode.postMessage({ type: 'requestHistory' });
-  }
-  function toggleHistory() { historyOpen ? (historyOpen = false) : openHistoryDropdown(); }
-  function recallSession(sessionId: string) {
-    historyOpen = false;
-    vscode.postMessage({ type: 'recallSession', sessionId });
-  }
-  function fmtHistoryDate(iso: string): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    return isNaN(d.getTime()) ? '' : d.toLocaleString();
-  }
   /** Still used by the RENAME inputs below (per-chat AND a section name). */
   function focusOnMount(node: HTMLInputElement) { node.focus(); }
 
-  // Any launcher action that changes session state also collapses the
-  // recall panel (recallSession already does; keep them consistent).
-  function newChat() { historyOpen = false; vscode.postMessage({ type: 'newSession' }); }
+  // New chat, the History popup and the Agent Manager moved to SidebarDock.svelte
+  // with the toolbar that held them — see that file's header. What is left here
+  // is the list itself.
   // Open (or reveal) this chat's own editor tab.
-  function openChat(id: string) { historyOpen = false; vscode.postMessage({ type: 'popOutSession', sessionId: id }); }
-  function closeChat(id: string) { vscode.postMessage({ type: 'closeSession', sessionId: id }); }
+  function openChat(id: string) { vscode.postMessage({ type: 'popOutSession', sessionId: id }); }
+  // CLOSING A CHAT IS UNDOABLE (t-ru13hb item 2). The row leaves the list at
+  // once and the host hears NOTHING until the fuse burns: an optimistic post
+  // plus a later reopen would be a lossier feature, since a reopened session is
+  // not the object the sidebar was showing. The fuse, and the one-at-a-time
+  // rule, are pendingClose.ts's — this file only draws the toast.
+  let pendingClose = $state<PendingClose | null>(null);
+  const closeFuse = createCloseFuse({
+    post: (id) => {
+      vscode.postMessage({ type: 'closeSession', sessionId: id });
+      // Drop it locally too. The filter above only hides what is still
+      // UNDOABLE, so without this the row would flash back for as long as the
+      // host takes to echo a `sessionList` without it. A refused close comes
+      // back on that echo, which is the same authority every other row has.
+      sessions = sessions.filter((s) => s.id !== id);
+    },
+    onChange: (p) => (pendingClose = p),
+  });
+  function closeChat(s: SessionRow) { closeFuse.close({ id: s.id, label: s.title ?? s.agentName }); }
 
-  // Drag-to-reorder the Chats list. Native HTML5 DnD (no library in the repo;
-  // the only precedent is InputBar's file drop). The dragged index is held in
-  // component state rather than in dataTransfer: the payload we need is a list
-  // position, dataTransfer is string-only, and reading it back is unavailable
-  // during dragover — which is exactly when the drop indicator has to decide.
-  // We still setData, because Firefox refuses to start a drag without it.
+  // Drag-to-reorder the Chats list. Native HTML5 DnD. The dragged index is
+  // held in component state rather than dataTransfer, since dataTransfer is
+  // string-only and unreadable during dragover, exactly when the drop
+  // indicator has to decide; still setData, since Firefox refuses to start a
+  // drag without it. Reorder happens locally first and the host is told
+  // after, then echoes the settled order back.
   //
-  // Reorder happens LOCALLY first and the host is told after, so the row follows
-  // the pointer without a round trip; the host is authoritative for what gets
-  // persisted, and echoes the settled order back.
-  //
-  // DEFERRED: no keyboard path — this is pointer-only, so the reorder (and the
-  // drag-into-a-section move) is not accessible. Removing FROM a section has a
-  // keyboard path (the row's un-group button); moving INTO one does not yet.
+  // Deferred: no keyboard path for reorder or drag-into-a-section (pointer
+  // only). Removing from a section has a keyboard path (un-group button).
   let dragIndex = $state<number | null>(null);
   let overIndex = $state<number | null>(null);
 
@@ -252,7 +216,7 @@
   // config channel and echoes it back as 'sessionTitle'); Escape cancels.
   let editingId = $state<string | null>(null);
   let editDraft = $state('');
-  function startRename(s: SessionRow) { historyOpen = false; editingId = s.id; editDraft = s.title ?? ''; }
+  function startRename(s: SessionRow) { editingId = s.id; editDraft = s.title ?? ''; }
   function commitRename(s: SessionRow) {
     const title = editDraft.trim();
     editingId = null;
@@ -268,23 +232,21 @@
       const msg = ev.data || {};
       switch (msg.type) {
         case 'sessionList': {
-          // Authoritative full list — the mount-time handshake response.
-          // Covers the case where this launcher is the PRIMARY webview and
-          // missed the bootstrap `sessionCreated` broadcast (posted before
-          // its listener was ready). Incremental events below keep it live.
+          // Authoritative full list, the mount-time handshake response —
+          // covers a launcher that missed the bootstrap broadcast.
           const rows = Array.isArray(msg.sessions) ? msg.sessions : [];
-          // Carry each row's ring state across the rebuild (mid-turn must not
-          // drop back to "no ring"). Open asks trust the HOST's own report
-          // (`pendingAskIds`) over `prior` (empty at boot) — else an early
-          // `requestPermission` is lost forever. Falls back to `prior` for an older reply.
+          // Carry each row's ring state across the rebuild. Open asks trust
+          // the host's own report (`pendingAskIds`) over `prior` (empty at
+          // boot), else an early `requestPermission` is lost forever.
           const prior = new Map(sessions.map(s => [s.id, s]));
-          sessions = rows.map((r: { id?: unknown; number?: unknown; agentName?: unknown; title?: unknown; pendingAskIds?: unknown }) => ({
+          sessions = rows.map((r: { id?: unknown; number?: unknown; agentName?: unknown; title?: unknown; pendingAskIds?: unknown; runningChildIds?: unknown }) => ({
             id: String(r.id ?? ''),
             number: Number(r.number ?? 0),
             agentName: String(r.agentName ?? 'Tsuru'),
             title: typeof r.title === 'string' && r.title ? r.title : undefined,
             state: prior.get(String(r.id ?? ''))?.state ?? 'idle',
             pendingAsks: Array.isArray(r.pendingAskIds) ? new Set(r.pendingAskIds.filter((x): x is string => typeof x === 'string')) : (prior.get(String(r.id ?? ''))?.pendingAsks ?? new Set<string>()),
+            runningChildren: Array.isArray(r.runningChildIds) ? new Set(r.runningChildIds.filter((x): x is string => typeof x === 'string')) : (prior.get(String(r.id ?? ''))?.runningChildren ?? new Set<string>()),
           })).filter((s: SessionRow) => s.id);
           break;
         }
@@ -294,17 +256,17 @@
               id: msg.sessionId,
               number: msg.sessionNumber,
               agentName: msg.agentName || 'Tsuru',
-              // A REOPENED chat already knows its stored name by the time this
-              // launcher attaches (the engine replays it on session/load), so
-              // dropping it here is what left a restored row as a bare agent name.
+              // A reopened chat already knows its stored name (the engine
+              // replays it on session/load); dropping it here would leave a
+              // restored row as a bare agent name.
               title: typeof msg.title === 'string' && msg.title ? msg.title : undefined,
               state: 'idle',
               pendingAsks: new Set<string>(),
+              runningChildren: new Set<string>(),
             }];
           }
-          // NOTE: CollabsList listens for this same broadcast itself — it is
-          // what makes its "open a chat first" handshake retryable — so there
-          // is nothing to forward from here.
+          // CollabsList listens for this same broadcast itself, so there's
+          // nothing to forward from here.
           break;
         }
         case 'sessionClosed':
@@ -320,6 +282,13 @@
         case 'busy':
           markSession(msg.sessionId, 'working');
           break;
+        case 'sessionStatus': {
+          // The engine's own run state — see the case-group comment, and
+          // engineStatus.ts for why only 'idle' settles the ring.
+          const running = engineTurnRunning(msg.status);
+          if (running !== null) markSession(msg.sessionId, running ? 'working' : 'ready');
+          break;
+        }
         case 'turnDone':
         case 'firstfoldDone':
           markSession(msg.sessionId, 'ready');
@@ -337,6 +306,8 @@
           if (tcid) sessions = sessions.map(s => ({ ...s, pendingAsks: removePendingAsk(s.pendingAsks, tcid) }));
           break;
         }
+        case 'toolResult': sessions = trackSpawnedChild(sessions, msg); break;
+        case 'subagentDone': sessions = clearDoneChild(sessions, msg); break;
         case 'agentSwitched': {
           if (msg.sessionId && msg.agentName) {
             sessions = sessions.map(s => s.id === msg.sessionId ? { ...s, agentName: String(msg.agentName) } : s);
@@ -373,13 +344,6 @@
           };
           break;
         }
-        case 'showHistory':
-          openHistoryDropdown();
-          break;
-        case 'historyList':
-          historyItems = Array.isArray(msg.sessions) ? msg.sessions : [];
-          historyLoading = false;
-          break;
       }
     };
     window.addEventListener('message', onMsg);
@@ -391,46 +355,18 @@
   });
 </script>
 
-<svelte:window onkeydown={(e) => { if (historyOpen && e.key === 'Escape') historyOpen = false; }} />
-
-<div class="chats-toolbar">
-  <button class="chat-action primary" onclick={newChat} title="Start a new chat (opens its own editor tab)">＋ New chat</button>
-  <button class="chat-action" class:active={historyOpen} onclick={toggleHistory} title="Recall a past chat">⟲ History</button>
-  <button class="chat-action" onclick={() => { historyOpen = false; vscode.postMessage({ type: 'openAgentManager' }); }}
-    title="Agent Manager — background agents in isolated git worktrees, on their own board">⚑ Agents</button>
-</div>
-
-{#if historyOpen}
-  <!-- Inline searchable history — flows under the toolbar (no absolute
-       anchor), so section order doesn't matter. The panel itself is
-       HistoryDropdown.svelte, shared with the Collabs half; the FILTER
-       stays here, because only this half matches on the folder too. -->
-  <HistoryDropdown
-    items={historyFiltered.map(h => ({
-      id: h.sessionId,
-      title: h.title,
-      meta: [h.folder, fmtHistoryDate(h.updatedAt)].filter(Boolean).join(' · '),
-    }))}
-    loading={historyLoading}
-    query={historyQuery}
-    onQuery={(v) => (historyQuery = v)}
-    onPick={recallSession}
-    onClose={() => (historyOpen = false)}
-    emptyText={historyItems.length === 0 ? 'No past chats yet.' : 'No matches.'}
-  />
-{/if}
-
 <!-- One row's markup, shared by every section below so a chat looks and
      behaves identically wherever it sits. `section` is the CURRENT section
      this row is rendered under (null for Main) — it only changes which
      extra button shows. -->
 {#snippet chatRow(s: SessionRow, i: number, section: string | null)}
-  {@const visualState = deriveRowVisualState(s.state, s.pendingAsks.size > 0)}
-  <div
+  {@const visualState = deriveRowVisualState(s.state, s.pendingAsks.size > 0, s.runningChildren.size > 0)}
+  {#if rowLead}{@render rowLead(s.id)}{/if}<div
     class="session-row"
     role="listitem"
-    title={visualState === 'waiting' ? 'Waiting for you — approval or question open' : visualState === 'working' ? 'Working…' : visualState === 'ready' ? 'Your turn' : undefined}
+    title={visualState === 'waiting' ? 'Waiting for you — approval or question open' : visualState === 'working' ? 'Working…' : visualState === 'subagents' ? 'Sub-agents running' : visualState === 'ready' ? 'Your turn' : undefined}
     class:dragging={dragIndex === i}
+    class:selected={!!selectedId && s.id === selectedId} aria-current={!!selectedId && s.id === selectedId ? 'true' : undefined}
     class:drop-above={overIndex === i && dragIndex !== null && dragIndex > i}
     class:drop-below={overIndex === i && dragIndex !== null && dragIndex < i}
     draggable={editingId !== s.id}
@@ -438,13 +374,12 @@
     ondragover={(e) => dragOverRow(e, i)}
     ondrop={(e) => dropOnRow(e, i)}
     ondragend={endDrag}
+    use:animateIn
   >
-    <!-- The activity indicator: a full-pill border overlay, not a dot. It is
-         position:absolute + inset:0, so its presence/absence NEVER changes the
-         row's box — a turn starting or finishing cannot shift any row's text.
-         No child element: the sweep is a background on this node alone, so
-         there is nothing here whose own box can grow past the ring. `visualState`
-         folds in the waiting-for-user override (sessionRowState.ts). -->
+    <!-- The activity indicator: a full-pill border overlay, not a dot.
+         position:absolute + inset:0 so its presence/absence never shifts the
+         row's text. `visualState` folds in the waiting-for-user override
+         (sessionRowState.ts). -->
     <span class="session-ring" data-state={visualState} aria-hidden="true"></span>
     {#if editingId === s.id}
       <input
@@ -455,22 +390,47 @@
         onblur={() => commitRename(s)}
         aria-label="Rename chat" />
     {:else}
-      <button class="session-open" onclick={() => openChat(s.id)} title="Open this chat in its editor tab">
-        <span class="session-tag">#{s.number}</span>
+      <!-- Mock-Redesign change 29: a small dot reads state at a glance beside
+           the ring's whole-pill border. Blue pulsing = a turn is live
+           (working/subagents), amber = parked on you (waiting), grey = idle
+           or your turn. The number moves to the title — a row's identity is
+           its name, not its ordinal. -->
+      <button
+        class="session-open"
+        onclick={() => openChat(s.id)}
+        title="#{s.number} — Open this chat in its editor tab"
+      >
+        <span
+          class="session-dot"
+          data-state={visualState === 'working' || visualState === 'subagents' ? 'running' : visualState === 'waiting' ? 'asking' : 'idle'}
+          aria-hidden="true"
+        ></span>
         <span class="session-name">{s.agentName}{s.title ? ': ' + s.title : ''}</span>
+        <!-- The unread count reuses the SAME pendingAsks set the ring's
+             'waiting' state already tracks (requestPermission /
+             permissionAudit) — the number of open asks in this chat. There is
+             no separate unread-message field on the wire to read instead. -->
+        {#if s.pendingAsks.size > 0}
+          <span class="session-unread" aria-label="{s.pendingAsks.size} waiting">{s.pendingAsks.size}</span>
+        {/if}{#if rowBadge}{@render rowBadge(s.id)}{/if}
       </button>
       <button class="session-rename-btn" onclick={() => startRename(s)} title="Rename chat" aria-label="Rename chat">✎</button>
     {/if}
     {#if section}
       <button class="session-ungroup-btn" onclick={() => removeFromSection(s.id)} title="Remove from section" aria-label="Remove from section">↩</button>
     {/if}
-    <button class="session-close" onclick={() => closeChat(s.id)} title="Close this chat" aria-label="Close chat">&times;</button>
+    <!-- t-ql9ari: swipe-to-delete (A1, t-q8zfo7) misread a horizontal drag as
+         a reorder attempt. The x is the only delete affordance again. -->
+    <!-- t-ql9ari: swipe-to-delete (A1, t-q8zfo7) misread a horizontal drag as
+         a reorder attempt. The x is the only delete affordance again. -->
+    <button class="session-close" onclick={() => closeChat(s)} title="Close this chat" aria-label="Close chat">&times;</button>
   </div>
 {/snippet}
 
 <!-- MAIN — pinned top: undeletable, unrenamable, carries the + control that
      creates a new user section. This is the old "ungrouped" list with its
      own header, so a chat with no explicit membership has always lived here. -->
+{#if !listHidden}
 <ChatSectionBlock
   ariaLabel="Main section"
   count={grouped.main.length}
@@ -519,9 +479,8 @@
           aria-label="Rename section" />
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <!-- the pencil button right after this is the fully keyboard-
-             accessible path to the SAME action; dblclick here is a mouse
-             convenience only. -->
+        <!-- The pencil button after this is the keyboard-accessible path to
+             the same action; dblclick here is a mouse convenience only. -->
         <span class="chat-section-name" role="button" tabindex="-1" ondblclick={() => startRenameSection(sec)} title="Double-click to rename">{sec.name}</span>
         <button class="chat-section-rename-btn" onclick={() => startRenameSection(sec)} title="Rename section" aria-label="Rename section">✎</button>
       {/if}
@@ -532,27 +491,19 @@
     {/each}
   </ChatSectionBlock>
 {/each}
+{/if}
+
+<!-- The Undo, for as long as the fuse burns. Fixed to the sidebar's foot: the
+     row it belongs to has just left the list, so there is nothing to anchor to. -->
+{#if pendingClose}
+  <div class="chat-close-toast">
+    <InlineToast text={closeToastText(pendingClose.label)} actionLabel="Undo"
+      onAction={closeFuse.undo} onDismiss={closeFuse.commit} />
+  </div>
+{/if}
 
 <style>
-  .chats-toolbar {
-    display: flex;
-    gap: 6px;
-    padding: 2px 10px 6px;
-  }
-  .chat-action {
-    font-size: 11px;
-    padding: 4px 8px;
-    background: var(--og-btn-bg);
-    color: var(--og-text-secondary);
-    border: 1px solid var(--og-border);
-    border-radius: 5px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .chat-action:hover { border-color: var(--og-chat); color: var(--og-text); }
-  .chat-action.primary { color: var(--og-text); border-color: var(--og-chat); }
-  .chat-action.active { background: color-mix(in srgb, var(--og-accent) 14%, transparent); color: var(--og-text); }
-
+  .chat-close-toast { position: fixed; left: 8px; bottom: 10px; z-index: 60; }
   .session-row {
     position: relative;
     display: flex;
@@ -561,6 +512,26 @@
     border-radius: 5px;
   }
   .session-row:hover { background: var(--og-btn-bg); }
+  .session-row.selected { background: var(--og-btn-bg); box-shadow: inset 2px 0 0 0 var(--og-accent); }
+  /* ENTRANCE (change 3, react-bits AnimatedList as written): shrunk and
+     transparent until the row is 50% visible, then 200ms to rest after a
+     fixed 100ms delay — no per-index stagger. animatedList.ts toggles
+     `is-in`; leaving the viewport reverses it. */
+  .session-row {
+    opacity: 0;
+    transform: scale(0.7);
+    transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1),
+                transform 200ms cubic-bezier(0.23, 1, 0.32, 1);
+    transition-delay: 100ms;
+  }
+  /* :global on the RUNTIME class only — animatedList.ts adds `is-in`, which
+     never appears in this file's markup, so Svelte would otherwise prune the
+     rule as unused and the rows would stay invisible for ever. The
+     `.session-row` half stays scoped, so this cannot leak. */
+  .session-row:global(.is-in) { opacity: 1; transform: scale(1); }
+  @media (prefers-reduced-motion: reduce) {
+    .session-row { opacity: 1; transform: none; transition: none; }
+  }
   .session-row[draggable='true'] { cursor: grab; }
   .session-row.dragging { opacity: 0.4; }
   /* Drop indicator: a line on the edge the dragged row would land against.
@@ -624,12 +595,13 @@
     animation: sl-ring-spin 0.9s linear infinite;
   }
   @keyframes sl-ring-spin { to { --sl-ring-angle: 360deg; } }
+  .session-ring[data-state='subagents'] { background: conic-gradient(from var(--sl-ring-angle), color-mix(in srgb, var(--og-warning) 55%, transparent) 0deg 90deg, var(--og-border) 90deg 360deg); animation: sl-ring-spin 2.4s linear infinite; }
   /* Respect the OS "reduce motion" setting: freeze the arc in place instead
      of spinning it (angle stays at the @property initial-value, 0deg — a
      static partial arc). Colour alone still separates working (partial arc)
      from ready (closed, steady border). */
   @media (prefers-reduced-motion: reduce) {
-    .session-ring[data-state='working'] { animation: none; }
+    .session-ring[data-state='working'], .session-ring[data-state='subagents'] { animation: none; }
   }
 
   .session-open {
@@ -645,11 +617,44 @@
     font-family: inherit;
     overflow: hidden;
   }
-  .session-tag {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 10px;
-    color: var(--og-text-muted);
+  /* t-qmzz3q — change 29's dot. A separate signal from .session-ring (which
+     wraps the whole pill): the ring says "this row needs attention", the dot
+     says WHICH of the three states that is, at a glance down the list. */
+  .session-dot {
     flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    margin-right: 1px;
+    border-radius: 50%;
+    background: var(--og-text-muted);
+    opacity: 0.55;
+  }
+  .session-dot[data-state='running'] {
+    background: var(--og-chat);
+    opacity: 1;
+    animation: session-dot-pulse 1.6s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  }
+  .session-dot[data-state='asking'] { background: var(--og-warning); opacity: 1; }
+  @keyframes session-dot-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--og-chat) 55%, transparent); }
+    55% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--og-chat) 0%, transparent); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .session-dot { animation: none !important; }
+  }
+  .session-unread {
+    flex: none;
+    min-width: 15px;
+    height: 15px;
+    margin-left: auto;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--og-chat);
+    color: var(--og-bg);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 15px;
+    text-align: center;
   }
   .session-name {
     font-size: 12px;
@@ -760,9 +765,9 @@
     padding: 4px 8px;
     outline: none;
   }
-  /* t-kgserq v2 — Main's create-section control. Always visible (not a
-     hover-reveal like rename/delete on an individual row): creating a
-     section is a deliberate, findable action, not decluttering. */
+  /* t-kgserq v2 — Main's create-section control. t-qmzz3q (change 32) made it
+     hover-only, matching the rename/delete idiom above: findable on hover
+     over the header, not a permanently-on fourth icon beside the count. */
   .chat-section-add-btn {
     background: none;
     border: none;
@@ -774,6 +779,10 @@
     border-radius: 3px;
     flex: 0 0 auto;
     font-family: inherit;
+    opacity: 0;
+    transition: opacity 140ms ease;
   }
-  .chat-section-add-btn:hover { color: var(--og-accent); background: var(--og-btn-bg); }
+  :global(.chat-section-header):hover .chat-section-add-btn,
+  :global(.chat-section-header):focus-within .chat-section-add-btn { opacity: 0.8; }
+  .chat-section-add-btn:hover { opacity: 1; color: var(--og-accent); background: var(--og-btn-bg); }
 </style>

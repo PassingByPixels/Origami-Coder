@@ -10,7 +10,7 @@
 //      case — setSessionMode does not refresh configOptions).
 //   4. A non-escalating engine mode (`build`, a custom agent) renders a warning.
 import { describe, expect, it } from 'vitest';
-import { PermissionBannerState, toPermissionMode } from '../../../src/dashboard/permissionBanner';
+import { PermissionBannerState, toPermissionMode, permBannerCopy } from '../../../src/dashboard/permissionBanner';
 
 const A = 'session-a';
 const B = 'session-b';
@@ -70,6 +70,18 @@ describe('permission banner — follows the mode stream, never a poll', () => {
     expect(toPermissionMode('')).toBe('default');
     expect(toPermissionMode('plan')).toBe('plan');
     expect(toPermissionMode('bypass')).toBe('bypass');
+  });
+
+  // The bypass banner was a full-width duplicate of the InputBar's own red
+  // "Access: Bypass" chip (Phase C2); the auto banner duplicated the same
+  // chip's "Auto-approve" label (t-dih1p7) — `setApproveMode` writes the
+  // identical mode id into both places. Both render no copy now, same as
+  // `default`. Only plan (no other on-screen indicator) keeps its banner.
+  it('bypass and auto render no banner copy; plan still does', () => {
+    expect(permBannerCopy('bypass')).toBe('');
+    expect(permBannerCopy('default')).toBe('');
+    expect(permBannerCopy('auto')).toBe('');
+    expect(permBannerCopy('plan')).not.toBe('');
   });
 });
 

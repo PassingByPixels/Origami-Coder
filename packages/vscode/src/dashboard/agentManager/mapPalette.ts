@@ -1,18 +1,8 @@
-// The map's PALETTE — the colour a component kind is drawn in, the colour a
-// pillar district and a flow street are tinted with, and the one-line shade()
-// that makes three faces out of one hue.
-//
-// THIS IS DATA ENCODING, NOT THEME CHROME. A box is orange because its `kind` is
-// "entrypoint", the same way a bar chart's series has a colour: change it per
-// theme and the reader loses the only key the picture has. So these are literal
-// hexes on purpose, in BOTH renderers, and neither one reads --og-* for them.
-// (The chrome around the picture — panels, borders, text — does follow the theme
-// in the webview, and follows the artifact's own fixed sheet in map.html.)
-//
-// MIRRORED into webview/dashboard/components/repoMapPillars.ts, because
-// tsconfig.webview.json pins rootDir to `webview/` and the webview cannot import
-// a runtime value out of src/. That mirror carries the house obligation:
-// repoMapPillars.test.ts reads BOTH files and fails if the tables drift.
+// The map's palette: kind colours, pillar/flow tints, and the shade() helper. Data encoding,
+// not theme chrome — a box's colour is its data key, so these are literal hexes in both
+// renderers, never --og-* theme variables. Mirrored into
+// webview/dashboard/components/repoMapPillars.ts (the webview can't import a src/ runtime
+// value), with a test that fails if the two tables drift.
 
 /** One hue per component kind, carried from the cartographer mockups. */
 export const KIND_COLOR: Readonly<Record<string, string>> = {
@@ -46,12 +36,9 @@ export function colourOf(kind: string): string {
   return KIND_COLOR[kind] ?? KIND_FALLBACK;
 }
 
-/** Darken (`f` < 1) or lighten (`f` > 1) a #rrggbb toward black or white.
- *
- *  Plain sRGB channel scaling, deliberately: `shade(c, 0.5)` is exactly
- *  `color-mix(in srgb, c 50%, black)`, which is how the in-editor stage gets the
- *  same three tones out of CSS without mirroring this function as well. Only the
- *  TABLES above are mirrored; the arithmetic stays here. */
+/** Darken/lighten a hex toward black/white by plain sRGB channel scaling — deliberately
+ *  identical to `color-mix(in srgb, ...)`, so the in-editor stage gets the same tones from
+ *  CSS without mirroring this arithmetic too. */
 export function shade(hex: string, f: number): string {
   const ch = (at: number): number => parseInt(hex.slice(at, at + 2), 16);
   const mix = (v: number): number => Math.max(0, Math.min(255, Math.round(f <= 1 ? v * f : v + (255 - v) * (f - 1))));
@@ -59,10 +46,8 @@ export function shade(hex: string, f: number): string {
   return `#${hh(ch(1))}${hh(ch(3))}${hh(ch(5))}`;
 }
 
-/** The kinds a legend should list: the known ones in KIND_ORDER, then anything
- *  else the map actually used, sorted. A cartographer writing `kind: "gate"` must
- *  still get a swatch and a working filter, or the legend quietly lies about how
- *  many components the map has. */
+/** The kinds a legend should list: the known ones, then anything else the map actually used,
+ *  sorted — so a cartographer-invented kind still gets a swatch and a working filter. */
 export function kindsIn(kinds: Iterable<string>): string[] {
   const seen = new Set(kinds);
   const known = KIND_ORDER.filter((k) => seen.has(k));

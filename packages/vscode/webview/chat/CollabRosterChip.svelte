@@ -1,27 +1,15 @@
 <script lang="ts">
-  // ONE roster chip. EXTRACTED from CollabRoster.svelte (271 of its 290-line
-  // cap) so the lead star could become a real control (report 1.5 / S8) and
-  // the empty roster could coach (report 1.6) without raising the cap.
+  // One roster chip: who is in the room, what it is doing (shared pill-sweep
+  // ring), and whether it leads.
   //
-  // A chip answers four questions: who is in the room (name + brand glyph),
-  // what it is doing right now (the shared pill-sweep ring, identical to the
-  // sidebar's chat rows), whether it LEADS — and, now, lets you change that.
+  // The lead star is two different things: on the lead's own chip it is a
+  // marker (nothing to set); on every other chip it is a button that makes
+  // that agent lead. It is a sibling of the chip button, never a child — a
+  // button inside a button is invalid markup, and clicking the star must not
+  // also open the chip's context drawer.
   //
-  // WHY THE STAR IS TWO DIFFERENT THINGS. On the lead's own chip it is a
-  // MARKER: there is nothing to set, and a disabled button there would be a
-  // control that refuses every click. On every other active chip it is a
-  // BUTTON that makes that agent the lead. So the star is interactive exactly
-  // where it does something.
-  //
-  // It is a SIBLING of the chip button, never a child: a button inside a
-  // button is invalid markup, and clicking the star must not also open the
-  // context drawer the chip owns.
-  //
-  // W3 wave 3: the ring gained a fourth state (`error`, report F13 — a failed
-  // agent used to fall back to a blank ring plus this 14px `!`), and the chip
-  // gained the two PER-AGENT controls. Both arrive already decided:
-  // collabSupervision.ts owns which ring a status draws and whether a stop has
-  // anything to end, and CollabChipControls.svelte owns their markup.
+  // The ring state and the per-agent Stop/Redirect controls arrive already
+  // decided: collabSupervision.ts owns the rules, this file only renders them.
   import ArchetypeGlyph from '../dashboard/components/ArchetypeGlyph.svelte';
   import CollabChipControls from './CollabChipControls.svelte';
   import CollabChipError from './CollabChipError.svelte';
@@ -45,10 +33,8 @@
     /** null when this agent must not be offered the lead — it already leads,
      *  or it has left the roster. */
     onSetLead: (() => void) | null;
-    /** W3 (report 2.4): the per-agent Stop/Redirect pair, or null where the
-     *  surface offers none — an archived room, a removed member, or a caller
-     *  that has not wired supervision at all. ONE object rather than four
-     *  props: they are never individually useful and never individually absent. */
+    /** The per-agent Stop/Redirect pair, or null where the surface offers
+     *  none. One object, since the four fields are never individually useful. */
     supervise: {
       canStop: boolean;
       outcome: string;
@@ -65,9 +51,8 @@
 
 <span class="chip-wrap" role="listitem">
   {#if isLead}
-    <!-- The lead takes every human message that names nobody (C17 rule 3),
-         which is the one roster fact a reader must see without opening
-         anything. -->
+    <!-- The lead takes every human message that names nobody: the one
+         roster fact a reader must see without opening anything. -->
     <span class="chip-lead" title="lead">&#9733;</span>
   {:else if onSetLead}
     <button class="chip-lead set" title={`Make ${name} the lead`} aria-label={`Make ${name} the lead`} onclick={onSetLead}>&#9734;</button>

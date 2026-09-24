@@ -1,0 +1,30 @@
+Publish a self-contained page, report or document as an ARTIFACT: a versioned bundle of files kept in the user's local artifact store and shown in the Artifacts pill in the sidebar.
+
+Use it for something the user will look at or come back to - an HTML page, a dashboard, a written report, a set of generated files. Do not use it for source code you are editing in the repo; that belongs in the working tree.
+
+Files can be given inline (`content`, UTF-8 text) or by path (`sourcePath`, read from disk byte for byte - use this for images and anything binary). A `sourcePath` outside this project needs the user's approval, the same as reading that file would. Paths inside the artifact are store-relative and use `/`. `..`, absolute paths, backslashes and `.git` segments are refused and nothing is written. One version may total at most 32 MiB across all its files.
+
+VERSIONING. Every publish carries the version it was made from:
+- New artifact: omit `artifactId` and omit `baseVersion`.
+- New version of an existing artifact: pass `artifactId` AND `baseVersion` = the version number you last saw for it (from artifact_publish, artifact_list or artifact_get).
+If someone else published in between, the result is a CONFLICT - nothing was written, and the text tells you the current version. Read it with artifact_get, then either republish on that version or publish the same files as a new artifact to keep both.
+
+Retrying the identical tool call is safe: it returns the first result and does not mint a second version.
+
+WHAT A PAGE CAN DO. The page is served on loopback under `Content-Security-Policy: sandbox allow-scripts` and `X-Content-Type-Options: nosniff`. It runs in an opaque origin, cut off from the engine.
+It works:
+- Inline <script> and <style>, and a classic <script src> or <link rel="stylesheet"> to the artifact's own relative files.
+- Script, stylesheet and font links to a public CDN. They load only if the CDN allows cross-origin use and the viewer is online.
+- Images from the artifact's own files (png, jpg, svg, webp), from absolute https URLs, or as data: URIs.
+- Event handlers, canvas, SVG and charts drawn by script.
+It does not work:
+- fetch or XMLHttpRequest to the engine or to any same-origin URL, including the artifact's own files. Put the data in the page: a JSON <script> block or a .js file.
+- localStorage, sessionStorage, IndexedDB and cookies. Nothing the page does is kept.
+- Form submission, and window.open or navigation to the engine.
+- Fonts and <script type="module"> from the artifact's own files: the browser fetches them with CORS and this route sends no CORS header. Use a CDN or a classic script.
+- An image or file given as a local disk path (C:\..., file://). Publish it as an artifact file with `sourcePath`.
+- Markdown formatting: a .md entry is served as text/markdown and shows as plain text. Publish HTML for a formatted page.
+Other extensions (gif, woff, ...) are served as application/octet-stream; set `mediaType` for them.
+A version is immutable: it never changes after it is published. To change a page, publish a new version.
+
+After a successful publish, put the result's `Link:` line in your reply, as written. The chat shows it as a card with an Open button.

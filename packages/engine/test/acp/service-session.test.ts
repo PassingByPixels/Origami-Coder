@@ -162,6 +162,7 @@ describe("ACP service sessions", () => {
     const mcpAdds: string[] = []
     const aborts: string[] = []
     const forks: string[] = []
+    const messageQueries: { sessionID: string; limit?: number }[] = []
     const prompts: unknown[] = []
     const commands: unknown[] = []
     const summarizes: unknown[] = []
@@ -221,7 +222,10 @@ describe("ACP service sessions", () => {
           const ordered = [...rows].sort((a, b) => b.time.updated - a.time.updated)
           return Promise.resolve({ data: ordered.slice(0, input.limit ?? 100) })
         },
-        messages: () => Promise.resolve({ data: messages }),
+        messages: (input: { sessionID: string; limit?: number }) => {
+          messageQueries.push(input)
+          return Promise.resolve({ data: messages })
+        },
         todo: () =>
           options?.todoFails
             ? Promise.reject(new Error("todo read failed"))
@@ -266,7 +270,10 @@ describe("ACP service sessions", () => {
           }),
         fork: (input: { sessionID: string }) => {
           forks.push(input.sessionID)
-          return Promise.resolve({ data: { id: `fork_${input.sessionID}` } })
+          // `Session.fork` names the fork after its parent (getForkedTitle), and
+          // that name is the only one the client can ever be told: no title job
+          // runs for a chat that never sent a first message.
+          return Promise.resolve({ data: { id: `fork_${input.sessionID}`, title: "Parent chat (fork #1)" } })
         },
         delete: (input: { sessionID: string }) => {
           deletes.push(input.sessionID)
@@ -303,7 +310,7 @@ describe("ACP service sessions", () => {
         return Promise.resolve()
       },
     } as Pick<AgentSideConnection, "sessionUpdate" | "extNotification">
-    const usage = UsageService.Service.of({
+    const usage: UsageService.Interface = {
       buildUsage: UsageService.buildUsage,
       latestAssistantMessage: UsageService.latestAssistantMessage,
       totalSessionCost: UsageService.totalSessionCost,
@@ -312,7 +319,7 @@ describe("ACP service sessions", () => {
         Effect.sync(() => {
           usageUpdates.push(input.sessionID)
         }),
-    })
+    }
 
     return {
       service: ACPService.make({ sdk, connection, usage }),
@@ -321,6 +328,7 @@ describe("ACP service sessions", () => {
       mcpAdds,
       aborts,
       forks,
+      messageQueries,
       prompts,
       commands,
       summarizes,
@@ -601,6 +609,42 @@ describe("ACP service sessions", () => {
     expect(select(forked, "effort")?.currentValue).toBe("medium")
     expect(select(updated, "effort")?.currentValue).toBe("low")
     expect(forks).toEqual(["ses_parent"])
+  })
+
+  // A fork owns a full copy of the parent's transcript, but the client only sees
+  // what `forkSession` replays. The old `limit: 20` handed the user a chat that
+  // looked 20 messages old with no way to see the rest. t-ucnjwp: both paths now
+  // read the same bounded newest page and tell the client older pages exist
+  // (`_meta.origami_history`, test/acp/service-history.test.ts); the fork must
+  // ask exactly what a reopen asks.
+  it("reads the fork's newest page the same way a reopen does (loadSession parity)", async () => {
+    const { service, messageQueries } = makeService([
+      { info: { role: "assistant", providerID: "test", modelID: "second-model" }, parts: [] },
+    ])
+
+    await Effect.runPromise(service.forkSession({ cwd: "/workspace", sessionId: "ses_parent", mcpServers: [] }))
+    const forkQuery = messageQueries.find((query) => query.sessionID === "fork_ses_parent")
+    expect(forkQuery).toBeDefined()
+    expect(forkQuery?.limit).toBe(51)
+
+    // Same request shape as the reopen path, so the two cannot drift apart.
+    await Effect.runPromise(service.loadSession({ cwd: "/workspace", sessionId: "ses_load", mcpServers: [] }))
+    const loadQuery = messageQueries.find((query) => query.sessionID === "ses_load")
+    expect(loadQuery?.limit).toBe(forkQuery?.limit)
+  })
+
+  // A fork is named after its parent by `Session.fork`, and that name is the
+  // only one it will ever have: the title job runs off a first prompt, which a
+  // fork does not send. Without this the new tab opened UNTITLED above a
+  // transcript it obviously did not start.
+  it("tells the client the fork's name, the way a reopen does", async () => {
+    const { service, updates } = makeService([{ info: { role: "user" }, parts: [] }])
+
+    await Effect.runPromise(service.forkSession({ cwd: "/workspace", sessionId: "ses_parent", mcpServers: [] }))
+
+    const info = updates.find((update) => update.update.sessionUpdate === "session_info_update")
+    expect(info?.sessionId).toBe("fork_ses_parent")
+    expect(info?.update).toMatchObject({ title: "Parent chat (fork #1)" })
   })
 
   // The todo list is durable engine state keyed by the session, and every
@@ -1573,13 +1617,13 @@ describe("ACP service sessions", () => {
           add: () => Promise.resolve({ data: {} }),
         },
       } as unknown as OrigamiClient,
-      usage: UsageService.Service.of({
+      usage: {
         buildUsage: UsageService.buildUsage,
         latestAssistantMessage: UsageService.latestAssistantMessage,
         totalSessionCost: UsageService.totalSessionCost,
         contextLimit: () => Effect.succeed(128000),
         sendUpdate: () => Effect.void,
-      }),
+      } satisfies UsageService.Interface,
     })
     await Effect.runPromise(failing.newSession({ cwd: "/workspace", mcpServers: [] }))
     const error = await Effect.runPromise(

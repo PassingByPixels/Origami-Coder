@@ -1,10 +1,6 @@
-// Agent Manager - state.ts (S2): the persistent run registry, Kilo-shaped
-// (.kilo/agent-manager.json -> .origami/agent-manager.json). One JSON document
-// per repo holding the worktree records; sessions attach to records in S3
-// (worktrees and sessions are orthogonal - many sessions may visit one
-// worktree). Writes are atomic (tmp + rename), a corrupt file is backed up
-// rather than clobbered, and boot reconciliation treats `git worktree list`
-// as ground truth - the registry can never strand disk state, and disk state
+// The persistent run registry: one JSON document per repo holding the worktree records.
+// Writes are atomic (tmp + rename), a corrupt file is backed up rather than clobbered,
+// and boot reconciliation treats `git worktree list` as ground truth, so disk state
 // found without a record becomes a visible orphan instead of a leak.
 
 import * as fs from 'node:fs';
@@ -25,44 +21,31 @@ export interface WorktreeRecord {
   /** Set by reconciliation when the record was synthesized from a worktree on
    *  disk that had no record (e.g. a crashed window's leftovers). */
   orphan?: boolean;
-  /** A task queued against this worktree but not yet run (amCreate start:false).
-   *  Present => the record is 'queued' until amStart provisions a session, pins
-   *  the effective model and clears this field. `model` is the RAW per-task pick
-   *  ('' when none) - the repo default is resolved at start time, so a later
-   *  default change still applies. Survives boot reconciliation unchanged. */
+  /** A task queued against this worktree but not yet run. `model` is the RAW per-task pick
+   *  ('' = none) — the repo default is resolved at start time, so a later default change still
+   *  applies. Survives boot reconciliation unchanged. */
   queuedTask?: { prompt: string; agentName: string; model: string };
-  /** Set when a run reached idle (runCreate/runStart), so a completed agent
-   *  stays visibly done across a window reload (seeded idle, not detached).
-   *  Cleared when runStart begins a fresh start (a restarted agent isn't done).
-   *  Survives boot reconciliation unchanged. */
+  /** Set when a run reached idle, so a completed agent stays visibly done across a window
+   *  reload (seeded idle, not detached); cleared when a fresh start begins. */
   done?: { stopReason: string; at: number };
-  /** Stamped by a CLEAN apply-to-main: the card retires to the Merged section
-   *  instead of sitting re-appliable in Done. Cleared when a new start supersedes
-   *  it (a restarted agent's old apply no longer describes it). A forced/conflicted
-   *  apply never stamps it. Survives boot reconciliation unchanged. */
+  /** Stamped by a CLEAN apply-to-main: the card retires to Merged instead of sitting
+   *  re-appliable in Done. Cleared when a new start supersedes it; a forced/conflicted apply
+   *  never stamps it. */
   merged?: { at: number };
-  /** Engine-store session UUID (AcpClient.currentSessionId) of the record's most
-   *  recent session, written at create-/queued-start alongside `sessions.push`.
-   *  Unlike the UI ids in `sessions` (ephemeral, per-window) this survives a
-   *  reload, so a Done card can loadSession-reopen its transcript after the
-   *  engine child is gone. Survives boot reconciliation unchanged. */
+  /** Engine-store session UUID of the record's most recent session — unlike the ephemeral
+   *  per-window UI ids, this survives a reload, so a Done card can reopen its transcript after
+   *  the engine child is gone. */
   engineSessionId?: string;
-  /** Display agent name of the record's most recent run, written at create-/
-   *  queued-start alongside `sessions.push`/`engineSessionId`. `queuedTask` holds
-   *  its own agentName while queued, but a completed/errored run has none left,
-   *  so Chat-on-Done reads this to label the reopened session with the agent that
-   *  produced the transcript (else a reload would mislabel it with the global
-   *  default). Survives boot reconciliation unchanged. */
+  /** Display agent name of the record's most recent run: a completed/errored run has no live
+   *  agent name left, so Chat-on-Done reads this to label the reopened session correctly (else
+   *  a reload would mislabel it with the global default). */
   agentName?: string;
-  /** Fan-out race grouping (S5): siblings created by one runFanout share this
-   *  id, so the board clusters them under a race header. Absent/'' = a
-   *  standalone agent. Survives boot reconciliation unchanged (kept records are
-   *  carried through verbatim). */
+  /** Fan-out race grouping: siblings created by one runFanout share this id, so the board
+   *  clusters them under a race header. Absent/'' = standalone. */
   groupId?: string;
-  /** Folds board: the ticket this fold was launched from. The LINK lives on the
-   *  record (the ticket file holds the reverse pointer), so the run lifecycle can
-   *  stamp the ticket without threading an id through every call. Survives boot
-   *  reconciliation unchanged, exactly like groupId. */
+  /** Folds board: the ticket this fold was launched from. Lives on the record (the ticket
+   *  file holds the reverse pointer) so the run lifecycle can stamp the ticket without
+   *  threading an id through every call. */
   ticketId?: string;
 }
 
@@ -80,15 +63,11 @@ export function newWorktreeRecordId(now = Date.now()): string {
   return `w${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-// ---------------------------------------------------------------------------
-// Load / save
-// ---------------------------------------------------------------------------
+// ---- Load / save ----
 
-/**
- * Read the registry. A missing file is an empty registry; an unreadable or
- * shape-invalid file is backed up beside itself (never deleted - it may hold
- * a recoverable record) and treated as empty.
- */
+/** Read the registry. A missing file is empty; an unreadable or shape-invalid file is
+ *  backed up beside itself (never deleted — may hold a recoverable record) and treated as
+ *  empty. */
 export function loadState(repoRoot: string): AgentManagerState {
   const file = path.join(repoRoot, STATE_FILENAME);
   let raw: string;
@@ -113,9 +92,7 @@ export function saveState(repoRoot: string, state: AgentManagerState): void {
   fs.renameSync(tmp, file);
 }
 
-// ---------------------------------------------------------------------------
-// Boot reconciliation (pure - `git worktree list` output in, verdict out)
-// ---------------------------------------------------------------------------
+// ---- Boot reconciliation (pure: `git worktree list` output in, verdict out) ----
 
 export interface ReconcileResult {
   state: AgentManagerState;
@@ -125,13 +102,10 @@ export interface ReconcileResult {
   orphans: WorktreeRecord[];
 }
 
-/**
- * Reconcile the registry against the actual worktree list. Git is ground
- * truth: a record without a live worktree is stale (the work, if any, still
- * lives on its branch - the record just no longer points at anything); a live
- * worktree under .origami/worktrees/ without a record is adopted as an orphan
- * so the user can inspect or delete it from the UI instead of it leaking.
- */
+/** Reconcile the registry against the actual worktree list. Git is ground truth: a record
+ *  without a live worktree is stale (its work, if any, still lives on its branch); a live
+ *  worktree with no record is adopted as an orphan so the user can inspect or delete it
+ *  rather than it leaking. */
 export function reconcile(
   state: AgentManagerState,
   liveWorktrees: WorktreeListEntry[],

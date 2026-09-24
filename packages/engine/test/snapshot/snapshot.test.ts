@@ -15,12 +15,15 @@ import {
   tmpdirScoped,
 } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { canSymlink } from "../lib/filesystem"
 
 const it = testEffect(
   Layer.mergeAll(LayerNode.compile(LayerNode.group([Snapshot.node, FSUtil.node])), testInstanceStoreLayer),
 )
 // Windows forbids both * and : in directory names.
 const nonWindowsIt = process.platform === "win32" ? it.live.skip : it.live
+// Symlink creation needs admin/Developer Mode on Windows; probe, do not assume.
+const symlinkIt = canSymlink ? it.instance : it.instance.skip
 
 // Git always outputs /-separated paths internally. Snapshot.patch() joins them
 // with path.join (which produces \ on Windows) then normalizes back to /.
@@ -188,7 +191,7 @@ it.instance(
   { git: true },
 )
 
-it.instance(
+symlinkIt(
   "symlink handling",
   withTrackedSnapshot(({ tmp, snapshot, before }) =>
     Effect.gen(function* () {
@@ -381,7 +384,7 @@ it.instance(
   { git: true },
 )
 
-it.instance(
+symlinkIt(
   "nested symlinks",
   withTrackedSnapshot(({ tmp, snapshot, before }) =>
     Effect.gen(function* () {

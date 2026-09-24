@@ -1,33 +1,52 @@
-// What a run SPENT — totalled per sub-agent branch, per agent, and for the run.
-// Pure, like labyrinthLanes / labyrinthSpans / labyrinthCollide, so every rule
+// What a run SPENT: totals per sub-agent branch, per agent, and for the run.
+// Pure, like labyrinthLanes / labyrinthSpans / labyrinthCollide: every rule
 // below is testable with no DOM.
 //
-// Two things this must never do, both of which would be worse than showing
-// nothing at all:
-//
-//  1. INVENT a number. A step whose message recorded no usage contributes
-//     nothing and prints nothing — never a 0, which reads as "this turn was
-//     free". A genuine 0 (a local model really does cost nothing) is kept.
-//  2. Present a SHORT total as a complete one. `usageMissing` steps, a run the
-//     engine truncated, and a delegated run that was never expanded each mean
-//     the sum below is a FLOOR. Every one of them sets `approximate` and says
-//     why, because a confident wrong number is the failure that matters here.
-//
-// Nothing is ever derived from text length. The only inputs are numbers the
-// engine recorded.
+// Never invent a number: a step with no recorded usage contributes nothing
+// and prints nothing, never a 0 (which would read as a free turn). A real
+// 0 is kept. Never present a short total as complete: `usageMissing` steps,
+// truncation, and unexpanded delegated runs make the sum a floor only —
+// each sets `approximate` and says why. Nothing is derived from text length.
 
 import { branchModel, type BranchStep } from './labyrinthBranches';
+
+/** Why a step read nothing from the provider's prefix cache, as the ENGINE
+ *  recorded it — mirrors `RunStepCacheCause` in `src/acpExtTypes.ts` (declared
+ *  here rather than imported: tsconfig.webview.json pins rootDir to `webview/`).
+ *  Absent on a run recorded before 0.4.160, and on a cache-blind provider. */
+export type CacheCause =
+  | 'cold'
+  | 'model'
+  | 'compaction'
+  | 'idle'
+  | 'system'
+  | 'tools'
+  | 'history'
+  | 'provider'
+  | 'small';
+
+/** Mirrors `RunStepCache` — see the field-by-field comments there. */
+export interface CacheFacts {
+  cause?: CacheCause;
+  preserved?: boolean;
+  divergence?: { message: number; role: string; offset: number; source?: 'tool-aging' | 'reminder' | 'plugin' | 'unknown' };
+  idleMs?: number;
+  ttlSeconds?: number;
+  warmed?: boolean;
+}
 
 /** The part of a step the usage rules read. `LayoutStep` satisfies it. */
 export interface UsageStep extends BranchStep {
   title: string;
   agent?: string;
-  /** `providerID/modelID`, as the engine recorded it on the owning message. */
   model?: string;
   childSessionId?: string;
   tokens?: { input: number; output: number; reasoning?: number; cache?: { read?: number; write?: number } };
   cost?: number;
   usageMissing?: true;
+  /** ENGINE-recorded cache facts for this step (0.4.160+). Absent means the
+   *  engine measured none — a legacy run, or a cache-blind provider. */
+  cache?: CacheFacts;
 }
 
 export interface UsageTotal {
@@ -44,19 +63,14 @@ export interface UsageTotal {
   cacheRead?: number;
   cacheWrite?: number;
   cost?: number;
-  /**
-   * The headline count: input + output + reasoning + cache read. Not invented —
-   * it is exactly how the engine composes its own `tokens.total` (checked
-   * against all 1,198 stored messages that carry one). Cache WRITE is excluded
-   * for the same reason the engine excludes it.
-   */
+  /** The headline count: input + output + reasoning + cache read. This
+   *  matches exactly how the engine composes its own `tokens.total`.
+   *  Cache WRITE is excluded, for the same reason the engine excludes it. */
   tokens?: number;
 }
 
 export interface BranchUsage {
-  /** `BranchSpan.first` — the branch's unique render key. */
   first: number;
-  /** The spawning step's title, for a label. */
   title: string;
   total: UsageTotal;
 }
@@ -78,8 +92,7 @@ export interface UsageBreakdown {
   caveats: string[];
 }
 
-/** A bucket with nothing in it yet. Exported for labyrinthCost.ts, which groups
- *  the SAME steps by model and must start from the same empty. */
+/** A bucket with nothing in it. labyrinthCost.ts starts from the same empty bucket. */
 export const emptyUsage = (): UsageTotal => ({ counted: 0, missing: 0, approximate: false });
 
 /** `a + b` where an absent side stays absent — 0 + undefined must not become 0. */
@@ -89,10 +102,9 @@ function add(a: number | undefined, b: number | undefined): number | undefined {
 }
 
 /**
- * Add one step into a bucket. THE single summation in the Labyrinth: exported
- * so labyrinthCost.ts's per-model split rides it rather than keeping a second
- * copy of the arithmetic, which is how two surfaces end up disagreeing about
- * what the same run cost.
+ * Adds one step into a bucket. The single summation in the Labyrinth:
+ * labyrinthCost.ts's per-model split reuses it rather than keeping a
+ * second copy, which is how two surfaces would end up disagreeing.
  */
 export function accumulateUsage(into: UsageTotal, step: UsageStep): void {
   if (step.usageMissing) into.missing++;
@@ -109,7 +121,6 @@ export function accumulateUsage(into: UsageTotal, step: UsageStep): void {
   into.tokens = (into.tokens ?? 0) + t.input + t.output + (t.reasoning ?? 0) + (t.cache?.read ?? 0);
 }
 
-/** Options a caller knows that the step list cannot say for itself. */
 export interface UsageContext {
   /** The engine capped the list, so steps past the cap are missing outright. */
   truncated?: boolean;
@@ -124,8 +135,7 @@ export function usageBreakdown(steps: readonly UsageStep[], ctx: UsageContext = 
 
   steps.forEach((step, i) => {
     accumulateUsage(run, step);
-    // `host` is the branch whose AGENT produced the step, so a `task` call
-    // lands on the thread that MADE it, not on the sub-agent it started.
+    // `host` is the branch whose agent produced the step, not the sub-agent it started.
     const host = model.host[i] ?? -1;
     if (host < 0) accumulateUsage(main, step);
     else {
@@ -139,9 +149,8 @@ export function usageBreakdown(steps: readonly UsageStep[], ctx: UsageContext = 
     byAgent.set(key, agent);
   });
 
-  // A delegated run the caller never fetched contributes NOTHING, and its spawn
-  // is the only trace of it. Counting the total as complete would silently drop
-  // a whole sub-agent's spend.
+  // A delegated run the caller never fetched contributes nothing, and its
+  // spawn is the only trace of it — so a "complete" total would drop it.
   const unexpanded = model.spans.filter(
     (s) => steps[s.first]?.childSessionId && !steps.some((_, i) => model.host[i] === s.first),
   ).length;
@@ -189,10 +198,8 @@ export function formatCost(n: number | undefined): string | undefined {
   return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
 }
 
-/**
- * One step's usage as a single line. Returns undefined when the step recorded
- * none, so the caller renders NO row rather than an empty or zeroed one.
- */
+/** One step's usage as a line; undefined when the step recorded none, so
+ * the caller renders no row instead of an empty or zeroed one. */
 export function stepUsageText(step: UsageStep): string | undefined {
   const t = step.tokens;
   const cost = formatCost(step.cost);

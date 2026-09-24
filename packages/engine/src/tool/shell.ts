@@ -1,4 +1,4 @@
-import { Effect, Exit, Scope, Stream } from "effect"
+import { Cause, Effect, Exit, Scope, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -22,6 +22,8 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { DEFAULT_IDLE_TIMEOUT_MS, MAX_TIMEOUT_MS, ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { BackgroundJob } from "@/background/job"
+import { ShellResult } from "./shell/result" // origami_change (t-41dz9f)
+import type { TaskPromptOps } from "./task" // origami_change (t-41dz9f)
 import { Interject } from "@/origami/interject" // origami_change
 import { ShellTelemetry, type State as ShellTelemetryState } from "@/origami/shell-telemetry"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -32,15 +34,10 @@ export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
 
-/**
- * Outer ceiling on ending a command we have decided to end. The spawner bounds
- * its own kill acknowledgement, so this is the backstop for the case that bound
- * cannot see: a kill that fails outright. `taskkill /pid <n> /T /F` against a
- * pid that has ALREADY exited reports "not found" and returns non-zero, which
- * is a FAILED effect, not a slow one - and a failed kill that was being died-on
- * turned a tool call into a defect while the user watched the card say
- * "running...". A target that is already gone is the outcome we wanted.
- */
+/** Outer ceiling on ending a command. The spawner bounds its own kill
+ *  acknowledgement, so this is the backstop for a kill that fails outright:
+ *  `taskkill /pid <n> /T /F` against a pid that has ALREADY exited returns
+ *  non-zero, and a target already gone is the outcome we wanted. */
 const KILL_DEADLINE_MS = 15_000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
@@ -53,9 +50,9 @@ const FILES = new Set([
   "chmod",
   "chown",
   "cat",
-  // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
-  // already hit the entries above, and alias normalization should happen in one
-  // place later so we do not risk double-prompting.
+  // PowerShell aliases are left out: the common ones already hit the entries
+  // above, and alias normalization belongs in one place or a command prompts
+  // twice.
   "get-content",
   "set-content",
   "add-content",
@@ -98,13 +95,10 @@ type Chunk = {
   size: number
 }
 
-/**
- * The one metadata shape every return path of this tool produces. Declared
- * rather than inferred, because the paths legitimately disagree about which
- * facts they carry - a backgrounded call has a job id and no exit code, a
- * finished one the reverse - and inference over that union settles on whichever
- * branch it reads first, then rejects the others.
- */
+/** The one metadata shape every return path of this tool produces. Declared
+ *  rather than inferred: a backgrounded call has a job id and no exit code, a
+ *  finished one the reverse, and inference over that union settles on whichever
+ *  branch it reads first. */
 type ShellMetadata = {
   output: string
   exit: number | null
@@ -262,12 +256,9 @@ function preview(text: string) {
   return "...\n\n" + text.slice(-MAX_METADATA_LENGTH)
 }
 
-/**
- * The escape from a blocking call, written as the call itself. A killed command
- * is exactly the moment the model needs the background form, and "consider a
- * background task" is advice it has already proved it will not act on; a literal
- * argument object is something it can copy.
- */
+/** The escape from a blocking call, written as the call itself. A killed
+ *  command is the moment the model needs the background form, and a literal
+ *  argument object is something it can copy where advice is not. */
 function backgroundHint(command: string) {
   return `If the command has no end of its own - a server, a watcher, a tail - run it detached instead of blocking: call this tool with {"command": ${JSON.stringify(command)}, "background": true}. It returns a task id at once, streams output to a file you can Read or Grep, reports status through task_list and stops through task_stop.`
 }
@@ -395,9 +386,95 @@ export const ShellTool = Tool.define(
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
     const jobs = yield* BackgroundJob.Service
+    // origami_change-start (t-41dz9f)
+    // The TOOL's scope, not a call's: the notifier has to outlive the `bash`
+    // call that started the job, because the job is what the call returns
+    // instead of waiting for. Same acquisition `tool/task.ts` uses.
+    const toolScope = yield* Scope.Scope
+    // origami_change-end
     const interjections = yield* Interject.Service // origami_change
     const events = yield* Effect.serviceOption(EventV2Bridge.Service)
     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+
+    // origami_change-start (t-41dz9f: tell the model when a background job ends)
+    /**
+     * Waits out ONE background shell job and writes its ending into the session
+     * as a synthetic turn. The `tool/task.ts` shape, minus the drainer.
+     *
+     * No drainer: background shells are started one at a time, so batching
+     * would buy nothing. If shell fan-out ever becomes normal, extract
+     * `task.ts`'s drainer for BOTH rather than copying it here.
+     *
+     * The contract is how the two timings fall out: `ops.prompt` on a BUSY
+     * session joins the run in flight and every step re-reads its message
+     * window, so the model meets the block at its next tool call; on an IDLE
+     * session the same call starts a turn. `session/run-state.ts` chooses, not
+     * this. Best-effort by construction: every failure is logged and swallowed.
+     */
+    const notifyBackground = Effect.fn("ShellTool.notifyBackground")(function* (input: {
+      ctx: Tool.Context
+      jobId: string
+      command: string
+      logPath: string
+    }) {
+      const ops = input.ctx.extra?.["promptOps"] as TaskPromptOps | undefined
+      if (!ops) {
+        // A tool invoked outside the session loop: nothing to inject into.
+        yield* Effect.logDebug("background shell finished with no prompt ops to notify", { jobId: input.jobId })
+        return
+      }
+      const result = yield* jobs.wait({ id: input.jobId })
+      if (!result.info || result.info.status === "running") return
+      const { state, summary, exit } = ShellResult.describe(result.info, input.command)
+      const text = ShellResult.render({
+        jobId: input.jobId,
+        state,
+        summary,
+        ...(exit === undefined ? {} : { exit }),
+        text: ShellResult.lastLines(result.info.output ?? result.info.error ?? ""),
+        logPath: input.logPath,
+      })
+      const busy = yield* ops.busy(input.ctx.sessionID).pipe(Effect.catchCause(() => Effect.succeed(false)))
+      yield* ops
+        .prompt({
+          sessionID: input.ctx.sessionID,
+          agent: input.ctx.agent,
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              text,
+              metadata: ShellResult.shellResultMetadata({
+                jobId: input.jobId,
+                state,
+                ...(exit === undefined ? {} : { exit }),
+              }),
+            },
+          ],
+        })
+        .pipe(
+          // Exit, not ignore: `ops.prompt` turns every failure into a defect,
+          // and an escaping one would take down the fiber this runs in and lose
+          // the ending with no trace.
+          Effect.exit,
+          Effect.tap((exited) =>
+            Exit.isSuccess(exited)
+              ? Effect.logInfo("background shell result injected", {
+                  "session.id": input.ctx.sessionID,
+                  jobId: input.jobId,
+                  state,
+                  exit,
+                  joinedRunningTurn: busy,
+                })
+              : Effect.logError("background shell result injection failed", {
+                  "session.id": input.ctx.sessionID,
+                  jobId: input.jobId,
+                  cause: Cause.pretty(exited.cause),
+                }),
+          ),
+        )
+    })
+    // origami_change-end
     const idleTimeoutMs = flags.bashIdleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
     const backgroundMaxMs = flags.backgroundJobMaxDurationMs ?? BackgroundJob.DEFAULT_MAX_DURATION_MS
 
@@ -487,21 +564,17 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
-        /**
-         * Silence window, in ms, after which the command counts as hung. Omit
-         * to race on the wall clock alone - which is what a DETACHED run wants,
-         * because a server that says nothing for an hour is a server working.
-         */
+        /** Silence window, in ms, after which the command counts as hung. Omit
+         *  to race on the wall clock alone, which is what a DETACHED run wants:
+         *  a server that says nothing for an hour is a server working. */
         idleTimeout?: number
         /** Stream every byte here from the first chunk, not only on overflow. */
         logPath?: string
         /** No `ctx.abort` arm: the run outlives the turn that started it. */
         detached?: boolean
-        /**
-         * On wall-clock expiry with the process STILL ALIVE, hand it to the
-         * background registry instead of killing it. Off for a detached run,
-         * which is already a job and has nowhere to be promoted to.
-         */
+        /** On wall-clock expiry with the process STILL ALIVE, hand it to the
+         *  background registry instead of killing it. Off for a detached run,
+         *  which is already a job with nowhere to be promoted to. */
         promoteOnExpiry?: boolean
         telemetryState?: ShellTelemetryState
         jobId?: string
@@ -521,26 +594,22 @@ export const ShellTool = Tool.define(
       let expired = false
       let aborted = false
       let idled = false
-      /**
-       * Set when the still-running process was handed to the background
-       * registry at expiry. It is the one outcome where this call returns
-       * WITHOUT the process being reaped, so it also decides whether the scope
-       * below is closed here or by the job that now owns it.
-       */
+      /** Set when the still-running process was handed to the background
+       *  registry. The one outcome where this call returns WITHOUT the process
+       *  being reaped, so it also decides whether the scope below is closed
+       *  here or by the job that now owns it. */
       // origami_change: `reason` rides the promotion - expiry and an
       // interjection take the same path but do not read the same to the model.
       let promotion: { jobId: string; logPath: string; reason: "timeout" | "interject" } | undefined
       /**
        * False once this call has settled. The output stream keeps running after
-       * a promotion - that is the point - but `ctx.metadata` must stop, because
-       * a settled tool call has no card left to update and writing to one is a
-       * claim about something nobody is looking at.
+       * a promotion, but `ctx.metadata` must stop: a settled tool call has no
+       * card left to update.
        */
       let live = true
       // Wall-clock stamp of the last byte seen on stdout/stderr. Date.now, not
       // the Effect Clock, because it is written from inside the stream callback
-      // where there is no fiber to yield on; every caller of this races on the
-      // real clock.
+      // where there is no fiber to yield on.
       let lastOutput = Date.now()
       const startedAt = Date.now()
       let firstOutputAt: number | undefined
@@ -632,8 +701,14 @@ export const ShellTool = Tool.define(
               }
 
               last = preview(last + chunk)
-              const publishTelemetry = lastOutput - lastTelemetryAt >= 250
-              if (publishTelemetry) lastTelemetryAt = lastOutput
+              // t-tc2rlo: the tool part (metadata) and the telemetry event share one
+              // 250 ms window. Un-throttled, a chatty command rewrote the WHOLE tool
+              // part - up to MAX_METADATA_LENGTH chars - on every stdout chunk (a
+              // `npm install` can emit hundreds a second). The final state is always
+              // written separately at completion (see the non-promoted return below),
+              // so dropping a live preview between windows costs nothing durable.
+              const publishNow = lastOutput - lastTelemetryAt >= 250
+              if (publishNow) lastTelemetryAt = lastOutput
 
               if (file) {
                 sink?.write(chunk)
@@ -661,13 +736,14 @@ export const ShellTool = Tool.define(
                 }
               }
 
-              if (!live) return publishTelemetry ? telemetry("running") : Effect.void
+              if (!publishNow) return Effect.void
+              if (!live) return telemetry("running")
               return ctx.metadata({
                 metadata: {
                   output: last,
                   shellDisplay: input.shellDisplay,
                 },
-              }).pipe(Effect.andThen(publishTelemetry ? telemetry("running") : Effect.void))
+              }).pipe(Effect.andThen(telemetry("running")))
             }),
           )
 
@@ -697,12 +773,12 @@ export const ShellTool = Tool.define(
               : Effect.never
 
           // origami_change-start (interject): the fifth arm. A foreground
-          // command that runs for minutes never reaches a tool boundary, so
-          // the user's queued message would wait behind it however urgent it
-          // is. Completing this signal takes the SAME promotion path expiry
-          // takes - the process is untouched and its output keeps streaming -
-          // which settles this call and lets the turn read the message. A
-          // detached run has no `promoteOnExpiry`, so it never arms.
+          // command that runs for minutes never reaches a tool boundary, so a
+          // queued user message would wait behind it. This signal takes the
+          // SAME promotion path expiry takes - the process is untouched and its
+          // output keeps streaming - which settles this call and lets the turn
+          // read the message. A detached run has no `promoteOnExpiry`, so it
+          // never arms.
           const interjected = input.promoteOnExpiry ? interjections.wait(ctx.sessionID) : Effect.never
           // origami_change-end
 
@@ -734,9 +810,9 @@ export const ShellTool = Tool.define(
               },
               // The job now OWNS the process scope: it closes it when the
               // command ends, and `ensuring` means a `task_stop` interrupt
-              // closes it too - which runs the spawner's release and
-              // tree-kills the process. Without that, stopping the task
-              // would only forget about it.
+              // closes it too, which runs the spawner's release and tree-kills
+              // the process. Without that, stopping the task would only forget
+              // about it.
               run: handle.exitCode.pipe(
                 Effect.tap((value) => telemetry(value === 0 ? "completed" : "error", "promoted", value)),
                 Effect.map((value) => `Command exited with code ${value}. Full output: ${logPath}`),
@@ -760,14 +836,11 @@ export const ShellTool = Tool.define(
             interjected.pipe(Effect.map(() => ({ kind: "interject" as const, code: null }))),
           ])
 
-          // Ending the command, bounded and failure-tolerant. `Effect.orDie`
-          // used to sit here, which made the two ways a kill goes wrong both
-          // fatal to a call the user was already waiting on: an unacknowledged
-          // kill hung it, and a kill that FAILED - `taskkill` on a pid that had
-          // already exited, which is precisely the wedged-parent case - turned
-          // it into a defect. Neither is a reason to withhold the output we
-          // have; a target that will not die is reported through the metadata
-          // note below, not by never answering.
+          // Ending the command, bounded and failure-tolerant: neither an
+          // unacknowledged kill nor a failed one (`taskkill` on a pid that has
+          // already exited) may be fatal to a call the user is waiting on. A
+          // target that will not die is reported through the metadata note
+          // below, not by never answering.
           const reap = Effect.ignore(
             Effect.timeoutOrElse(handle.kill({ forceKillAfter: "3 seconds" }), {
               duration: `${KILL_DEADLINE_MS} millis`,
@@ -780,13 +853,11 @@ export const ShellTool = Tool.define(
             yield* reap
           }
           if (exit.kind === "timeout") {
-            // A command that is STILL RUNNING at expiry has not failed - it is
-            // longer than the caller guessed. Killing it and printing the
-            // background call to copy left the model to run the whole thing
-            // again from zero; hand the live process to the registry instead,
-            // and the work already done survives the deadline. Only a process
-            // that is already gone (or a run with nowhere to be promoted to)
-            // takes the kill path.
+            // A command STILL RUNNING at expiry has not failed - it is longer
+            // than the caller guessed. Handing the live process to the registry
+            // keeps the work already done; killing it would make the model run
+            // the whole thing again from zero. Only a process that is already
+            // gone, or a run with nowhere to be promoted to, takes the kill path.
             if (yield* promote("timeout")) return null
             expired = true
             yield* reap
@@ -809,11 +880,10 @@ export const ShellTool = Tool.define(
         },
       ).pipe(
         Scope.provide(scope),
-        // The guarantee `Effect.scoped` used to give, minus the one case it
-        // cannot express: a promoted process is owned by its job now, and
-        // closing the scope here would kill the very command we just told the
-        // model was still running. Every other exit - success, failure,
-        // interruption - closes it exactly as before.
+        // What `Effect.scoped` gives, minus the one case it cannot express: a
+        // promoted process is owned by its job now, and closing the scope here
+        // would kill the very command we just told the model was still running.
+        // Every other exit - success, failure, interruption - closes it.
         Effect.onExit((exit) => (promotion ? Effect.void : Scope.close(scope, exit))),
         Effect.orDie,
       )
@@ -855,13 +925,11 @@ export const ShellTool = Tool.define(
 
       const meta: string[] = []
       if (expired) {
-        // The old text told the model to "retry with a larger timeout" whatever
-        // had happened, which turned every hung command into a ladder of longer
-        // and longer blocking calls. Name the two real causes instead, and give
-        // background work an exit that is not another blocking call. The
-        // background line spells the call out rather than describing it: an
-        // instruction to "use the task tool" is what the model was already
-        // ignoring, and this tool can now do it itself.
+        // Name the two real causes rather than saying "retry with a larger
+        // timeout", which turns every hung command into a ladder of longer
+        // blocking calls, and give background work an exit that is not another
+        // blocking call. The background line spells the call out rather than
+        // describing it.
         meta.push(
           [
             `shell tool terminated command after exceeding timeout ${input.timeout} ms.`,
@@ -967,16 +1035,15 @@ export const ShellTool = Tool.define(
               if (params.background === true) {
                 // Detached: the run belongs to the background registry, not to
                 // this turn. No `ctx.abort` arm (the turn ending must not kill a
-                // server the model deliberately started) and no silence
-                // watchdog (silence is a server's normal state). What bounds it
-                // instead is the registry's own max-duration watchdog.
+                // server the model deliberately started) and no silence watchdog
+                // (silence is a server's normal state); the registry's own
+                // max-duration watchdog is what bounds it.
                 //
                 // Output goes to a file from the first byte, because the tool
-                // call it belongs to is already finished by then: nothing is
-                // listening to the stream, so a file the model can Read or Grep
-                // is the only honest channel. `ctx.metadata` is stubbed out for
-                // the same reason - writing to a settled tool call is a claim
-                // about a card nobody is looking at.
+                // call it belongs to has already settled: nothing is listening
+                // to the stream, and writing to a settled card is a claim about
+                // something nobody is looking at, which is why `ctx.metadata` is
+                // stubbed out too.
                 const logPath = yield* trunc.write("")
                 const detachedCtx: Tool.Context = { ...ctx, metadata: () => Effect.void }
                 const jobId = `shell-${ctx.callID}`
@@ -1006,8 +1073,19 @@ export const ShellTool = Tool.define(
                       shellDisplay,
                     },
                     detachedCtx,
-                  ).pipe(Effect.map((result) => result.output)),
+                    // origami_change (t-41dz9f): the exit code travels with the
+                    // output. Dropping it files an `npm test` that exited 1 as a
+                    // COMPLETED job.
+                  ).pipe(Effect.map((result) => ({ text: result.output, exit: result.metadata.exit ?? undefined }))),
                 })
+                // origami_change-start (t-41dz9f)
+                // Armed AFTER the job exists and BEFORE this call returns, so a
+                // command that dies in milliseconds still has a waiter: `jobs.wait`
+                // on a settled job answers from the registry rather than blocking.
+                yield* notifyBackground({ ctx, jobId: job.id, command: params.command, logPath }).pipe(
+                  Effect.forkIn(toolScope, { startImmediately: true }),
+                )
+                // origami_change-end
                 const metadata: ShellMetadata = {
                   output: "",
                   exit: null,
@@ -1040,11 +1118,10 @@ export const ShellTool = Tool.define(
                   env,
                   timeout,
                   idleTimeout: idleTimeoutMs,
-                  // Expiry with the process still alive is a mis-sized
-                  // timeout, not a failure: promote it. Silence is NOT
-                  // promoted - a command with nothing to say is the shape of
-                  // one waiting for input, and backgrounding that would leave
-                  // it waiting forever instead of ending it.
+                  // Expiry with the process still alive is a mis-sized timeout,
+                  // not a failure: promote it. Silence is NOT promoted - a
+                  // command with nothing to say is the shape of one waiting for
+                  // input, and backgrounding that leaves it waiting forever.
                   promoteOnExpiry: true,
                   shellDisplay,
                 },

@@ -1,17 +1,11 @@
-// Agent Manager - attention.ts (S7, 2026-07-22): the pure, vscode-free decision
-// leaves for the "needs you" attention surface. A background agent that asks a
-// QUESTION while no view is mounted for it must be flagged on the board (a row
-// chip + a toast + the status-bar aggregate) instead of the run hanging silently;
-// and a mounted agent's permission ask must be FORWARDED to that surface rather
-// than auto-answered. These helpers are the testable cores the DashboardPanel
-// wiring threads together; keeping them here (not in the panel) makes each
-// decision a unit test instead of a full panel/host harness.
+// Pure, vscode-free decision helpers for the "needs you" attention surface: a background
+// agent's question with no mounted view must be flagged (chip/toast/status-bar), and a
+// mounted agent's permission ask must forward to that surface rather than auto-answer.
 
-/** A view is mounted for `sessionId` when the main panel is showing it, a solo
- *  editor tab exists for it, OR the sidebar is in grid layout (which tiles EVERY
- *  session as a visible cell). Inputs are cheap host-side reads, so this stays a
- *  pure boolean. soloPanels is anything with a `.has` (real Map, a Set in tests);
- *  gridActive is the sidebar's last-reported grid state. */
+import { pickAllowOption, type PermOption } from './permissions';
+
+/** A view is mounted for `sessionId` when the main panel shows it, a solo tab exists, or the
+ *  sidebar grid tiles it. Pure boolean over cheap host-side reads. */
 export function isSessionMounted(
   sessionId: string,
   activeSessionId: string | null,
@@ -30,10 +24,8 @@ export function questionPreview(question: string, max = 80): string {
 
 export interface AggregateCounts { running: number; needYou: number; }
 
-/** Count live work across every repo column: `running` = provisioning/working rows;
- *  `needYou` = rows carrying a needsYou attention (a pending question). A row's
- *  needsYou is projected only WHILE the row is in progress (rows.ts), so an
- *  answered / completed run contributes 0 without any extra bookkeeping here. */
+/** Count live work per repo column: running = provisioning/working rows; needYou = rows with
+ *  a pending question, projected only while in progress. */
 export function boardAggregate(
   repos: ReadonlyArray<{ rows?: ReadonlyArray<{ state: string; needsYou?: unknown }> }> | undefined,
 ): AggregateCounts {
@@ -64,6 +56,23 @@ export function resolvePermission<T extends { action: string }>(mounted: boolean
 
 /** Resolve every pending permission ask as cancelled (deny) so a Stop, or a closed
  *  forward-surface, never leaves an agent hanging on an unanswered respond(). */
-export function drainPermissions(pending: Map<string, (optionId: string | null) => void>): void {
-  for (const [id, respond] of pending) { respond(null); pending.delete(id); }
+export function drainPermissions(pending: Map<string, { respond: (optionId: string | null) => void }>): void {
+  for (const [id, entry] of pending) { entry.respond(null); pending.delete(id); }
+}
+
+/** A session entering YOLO (bypass) doesn't leave its open asks hanging: the engine already
+ *  re-evaluates every pending ask against the new ruleset and releases them all. This answers
+ *  each with its own allow option (never `respond(null)`, which the engine reads as reject
+ *  and would cascade-reject every other pending ask on the session) — the same audit event an
+ *  explicit click posts. */
+export function releaseBypassedPermissions(
+  pending: Map<string, { respond: (optionId: string | null) => void; options: ReadonlyArray<PermOption> }>,
+  post: (msg: { type: 'permissionAudit'; toolCallId: string; action: 'approved' | 'denied'; optionId: string; timestamp: string }) => void,
+): void {
+  for (const [id, entry] of pending) {
+    pending.delete(id);
+    const optionId = pickAllowOption(entry.options);
+    entry.respond(optionId);
+    post({ type: 'permissionAudit', toolCallId: id, action: optionId ? 'approved' : 'denied', optionId: optionId ?? 'cancelled', timestamp: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) });
+  }
 }

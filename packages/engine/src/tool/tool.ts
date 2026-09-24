@@ -66,37 +66,30 @@ export interface Def<
   formatValidationError?(error: unknown): string
   /**
    * Refuse a call carrying a top-level key this tool does not declare, instead
-   * of letting the decoder drop it. OFF by default, and deliberately per-tool:
-   * for a tool whose parameters are all required an excess key is harmless,
-   * because the decode fails on the missing ones anyway. It matters for a tool
-   * whose OPTIONAL fields can go missing without the call failing — chart,
-   * where a `xLabels` no alias rule could place is dropped, the chart draws
-   * unlabelled, and the answer comes back ok:true with nothing said.
+   * of letting the decoder drop it. Off by default and per-tool: with all-
+   * required parameters an excess key is harmless, because the decode fails on
+   * the missing ones anyway. It matters for a tool whose optional fields can go
+   * missing silently — chart draws unlabelled and returns ok:true.
    */
   rejectUnknownKeys?: boolean
   /**
    * This builtin is safe to hide behind the `tool_search` catalog: the model
    * sees its name and one line of description, and pays for its schema only
-   * after searching for it. OFF by default and deliberately per-tool — a tool
-   * the loop cannot function without (read, edit, shell) must never be a
-   * catalog line, and MCP tools get the same treatment from config instead,
-   * since they have no Def to mark.
+   * after searching for it. Off by default and per-tool — a tool the loop cannot
+   * function without (read, edit, shell) must never be a catalog line. MCP tools
+   * get the same treatment from config, having no Def to mark.
    */
   deferrable?: boolean
   /**
-   * Where this tool's definition lives, for a shell that wants to show or
-   * link to it (t-kgtaac round 3, the Tools pane's source badge). Left
-   * undefined by every BUILTIN — registry.ts sets it only on a tool it built
-   * from `custom` (a `.origami/tool/*.ts` file or a plugin's `tool` map), so
-   * "undefined" is read as "builtin" by every consumer rather than repeating
-   * that literal at each of the ~25 builtin call sites.
+   * Where this tool's definition lives, for a shell that shows or links to it
+   * (the Tools pane's source badge). Left undefined by every builtin —
+   * registry.ts sets it only on a tool built from `custom` — so consumers read
+   * "undefined" as "builtin" rather than repeating that at ~25 call sites.
    */
   source?: "user-file" | "plugin"
   /**
    * Absolute path to the file this tool was scanned from. Set only alongside
-   * `source: "user-file"` — a plugin tool has no file of its own to point at,
-   * the plugin package does — and it is what the Tools pane's copy-path
-   * button hands to an agent.
+   * `source: "user-file"` — a plugin tool has no file of its own to point at.
    */
   location?: string
 }
@@ -146,11 +139,10 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
       const decode = Schema.decodeUnknownEffect(toolInfo.parameters)
-      // What THIS tool declares: its JSON Schema and the top-level key names
-      // taken from it, resolved once on first use like the parser above. An
-      // exotic schema the converter cannot handle throws, and neither the key
-      // list nor the corrective message is worth failing a call over, so a
-      // throw degrades to "no schema" and normalisation only unwraps.
+      // This tool's JSON Schema and top-level key names, resolved once on first
+      // use like the parser above. An exotic schema the converter cannot handle
+      // throws, and that is not worth failing a call over, so a throw degrades
+      // to "no schema" and normalisation only unwraps.
       let declared: { schema: unknown; keys: readonly string[] } | undefined
       const parameters = () => {
         if (!declared) {
@@ -165,10 +157,10 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
         return declared
       }
       // Effect's formatter names the offending path; this names the flat keys
-      // the tool actually wants, which is what the model needs to rewrite the
-      // call. Built from the payload the DECODER saw: by then the wrapper is
-      // gone and the aliases are applied, so a sentence built from the args as
-      // sent reports the keys normalisation already fixed as missing.
+      // the tool wants, which is what the model needs to rewrite the call. Built
+      // from the payload the DECODER saw — by then the wrapper is gone and the
+      // aliases are applied, so building it from the args as sent would report
+      // keys normalisation already fixed as missing.
       const expectation = (input: unknown) => ToolNormalize.describeExpectedInput(id, parameters().schema, input)
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
@@ -179,19 +171,17 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
         }
         return Effect.gen(function* () {
-          // Untyped → typed boundary, and the ONLY structural guard on either
+          // Untyped → typed boundary, and the only structural guard on either
           // runtime: the AI SDK builds tools with `jsonSchema(plainObject)`,
-          // whose `validate` is undefined, so it rejects unparseable JSON and
-          // nothing else — a wrapper or a snake_case key reaches this line
-          // unexamined. Models routinely send the right values in the wrong
-          // shape, so repair it here, bounded by this tool's own parameters.
+          // whose `validate` is undefined, so a wrapper or a snake_case key
+          // reaches this line unexamined. Repair here, bounded by this tool's
+          // own parameters.
           const normalized = ToolNormalize.normalizeToolInput(args, { keys: parameters().keys })
-          // The opt-in second guard, for a tool that cannot afford a dropped
-          // key. It has to be its own check: the decoder drops an excess key
-          // and SUCCEEDS whenever the tool's remaining fields are optional, so
-          // the corrective message below — which lives in the decode-failure
-          // branch — can never fire for that call. Runs after normalisation, so
-          // only a key no alias rule could place gets here.
+          // The opt-in second guard, for a tool that cannot afford a dropped key.
+          // It needs its own check because the decoder drops an excess key and
+          // SUCCEEDS when the remaining fields are optional, so the corrective
+          // message below (decode-failure branch) never fires. Runs after
+          // normalisation, so only a key no alias rule could place gets here.
           const unknown = toolInfo.rejectUnknownKeys
             ? ToolNormalize.unrecognisedKeys(normalized, parameters().keys)
             : []

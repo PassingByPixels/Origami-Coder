@@ -113,6 +113,7 @@ export const FileTool = Tool.define<typeof Parameters, Metadata, FSUtil.Service 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
@@ -175,8 +176,8 @@ export const FileTool = Tool.define<typeof Parameters, Metadata, FSUtil.Service 
               },
             })
 
-            // `fs.rm` needs `recursive` for ANY directory, empty or not. The guard
-            // above is what stops a non-empty directory going without `recursive: true`.
+            // `fs.rm` needs `recursive` for any directory, empty or not. The
+            // guard above stops a non-empty one going without it.
             yield* Effect.promise(() => NFS.rm(target, { recursive: isDir, force: false }))
             yield* events.publish(Watcher.Event.Updated, { file: target, event: "unlink" })
             return {

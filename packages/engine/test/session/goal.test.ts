@@ -423,37 +423,80 @@ describe("SessionGoal.check — MET", () => {
 })
 
 describe("SessionGoal.check — a critic that cannot be read", () => {
-  it("counts an unreadable verdict as an error and never as met", async () => {
+  // RED PROOF (t-3mxhgr, acceptance test 1): on the unfixed code, `settle`
+  // returned `undefined` from the errors<2 branch — nothing was injected, the
+  // round never got a transcript line, and the goal loop stalled silently.
+  // Verified red against the pre-fix goal.ts: `h.prompts` was 1 (the sole
+  // critic attempt, no retry) and no PARENT prompt existed to assert on.
+  it("posts a visible system line and stays armed when the critic run throws, after one retry", async () => {
     reset()
-    const h = harness({ session: withGoal({}), criticReplies: ["I reckon it is fine"] })
+    const h = harness({ session: withGoal({}), criticReplies: [null, null] })
     await run(h)
     expect(h.verdicts).toHaveLength(0)
     const goal = Session.goal(h.row())!
     expect(goal.active).toBe(true)
     expect(goal.completed).toBeUndefined()
     expect(goal.criticErrors).toBe(1)
-    // Nothing injected: paying for a continuation on the word of a critic that
-    // said nothing is spend with no evidence behind it.
-    expect(h.prompts).toHaveLength(1)
+    // Both the original attempt and the retry ran before the failure counted,
+    // then the failure landed in the transcript instead of leaving the round
+    // with nothing injected — the next round still fires because a
+    // continuation was actually sent to the parent session.
+    expect(h.prompts).toHaveLength(3)
+    expect(h.prompts[0]!.sessionID).toBe(SessionID.make("ses_goal_critic"))
+    expect(h.prompts[1]!.sessionID).toBe(SessionID.make("ses_goal_critic"))
+    expect(h.prompts[2]!.sessionID).toBe(PARENT)
+    const part = h.prompts[2]!.parts[0] as { type: "text"; text: string; synthetic?: boolean }
+    expect(part.synthetic).toBe(true)
+    expect(part.text).toContain("the critic run failed")
+    expect(part.text).toContain("the goal stays armed")
   })
 
-  it("counts a critic run that dies the same way", async () => {
+  // Acceptance test 2: a second consecutive failure (across two separate
+  // `check` calls, i.e. two turns) pauses the goal, visibly, naming it.
+  it("pauses the goal with a visible line naming it after two consecutive critic failures", async () => {
     reset()
-    const h = harness({ session: withGoal({}), criticReplies: [null] })
-    await run(h)
-    expect(Session.goal(h.row())?.criticErrors).toBe(1)
-    expect(Session.goal(h.row())?.active).toBe(true)
-  })
-
-  it("retires the goal after TWO consecutive failures", async () => {
-    reset()
-    const h = harness({ session: withGoal({ criticErrors: 1 }), criticReplies: ["no verdict here"] })
+    const h = harness({ session: withGoal({ criticErrors: 1 }), criticReplies: [null, null] })
     await run(h)
     expect(h.verdicts).toEqual(["error_during_execution"])
     const goal = Session.goal(h.row())!
     expect(goal.active).toBe(false)
     expect(goal.completed).toBeUndefined()
-    expect(h.prompts[1]!.sessionID).toBe(PARENT)
+    expect(h.prompts).toHaveLength(3)
+    expect(h.prompts[2]!.sessionID).toBe(PARENT)
+    const part = h.prompts[2]!.parts[0] as { type: "text"; text: string }
+    expect(part.text).toContain("CONDITION: the tests pass")
+    expect(part.text).toContain("has been CLEARED")
+  })
+
+  it("counts an unreadable verdict as an error and never as met", async () => {
+    reset()
+    const h = harness({ session: withGoal({}), criticReplies: ["I reckon it is fine", "still no verdict"] })
+    await run(h)
+    expect(h.verdicts).toHaveLength(0)
+    const goal = Session.goal(h.row())!
+    expect(goal.active).toBe(true)
+    expect(goal.completed).toBeUndefined()
+    expect(goal.criticErrors).toBe(1)
+  })
+
+  it("counts a critic run that dies the same way", async () => {
+    reset()
+    const h = harness({ session: withGoal({}), criticReplies: [null, null] })
+    await run(h)
+    expect(Session.goal(h.row())?.criticErrors).toBe(1)
+    expect(Session.goal(h.row())?.active).toBe(true)
+  })
+
+  it("recovers silently when the retry reads a verdict — the hiccup never counts", async () => {
+    reset()
+    const h = harness({ session: withGoal({}), criticReplies: [null, "VERDICT: NOT MET"] })
+    await run(h)
+    expect(h.verdicts).toHaveLength(0)
+    const goal = Session.goal(h.row())!
+    expect(goal.active).toBe(true)
+    // The retry succeeded, so this is an ordinary NOT MET round, not a strike.
+    expect(goal.criticErrors).toBeUndefined()
+    expect(goal.rounds).toBe(1)
   })
 
   it("resets the count on any readable verdict, so two SEPARATE hiccups do not retire it", async () => {
@@ -470,7 +513,10 @@ describe("SessionGoal.check — a critic that cannot be read", () => {
     await run(h)
     expect(Session.goal(h.row())?.criticErrors).toBe(1)
     expect(Session.goal(h.row())?.active).toBe(true)
-    expect(h.prompts).toHaveLength(0)
+    // No critic session could even be created, but the failure is still
+    // reported visibly rather than leaving the round with nothing injected.
+    expect(h.prompts).toHaveLength(1)
+    expect(h.prompts[0]!.sessionID).toBe(PARENT)
   })
 })
 
@@ -532,5 +578,140 @@ describe("SessionGoal.check — re-entrancy", () => {
     await Promise.all([run(h), run(h)])
     const injections = h.prompts.filter((prompt) => prompt.sessionID === PARENT)
     expect(injections).toHaveLength(1)
+  })
+})
+
+// t-tc2itu, acceptance 1: a HARD usage limit on the build turn that just ended
+// must stop the goal outright, not spend a critic call (or two, with the
+// retry) against the same spent window.
+//
+// The fixture is the ChatGPT-backend body `session/usage-limit.ts` already
+// parses: `{"error":{"type":"usage_limit_reached","plan_type":"plus",
+// "resets_in_seconds":10374}}`, the exact shape and a `resets_in_seconds`
+// inside the 10368-10374 range the 429 burst in t-tauw49 B#8 logged
+// (session ses_f645ce6faffegDHGQuMFLIySIg, openai / gpt-5.6-sol, 7 requests
+// in 7.2 s).
+const usageLimitReply = (): SessionV1.WithParts => {
+  const reply = assistantReply("")
+  return {
+    info: {
+      ...reply.info,
+      error: {
+        name: "APIError",
+        data: {
+          message: "Too Many Requests",
+          statusCode: 429,
+          isRetryable: true,
+          responseBody: JSON.stringify({
+            error: { type: "usage_limit_reached", plan_type: "plus", resets_in_seconds: 10374 },
+          }),
+        },
+      },
+    },
+    parts: [],
+  } as unknown as SessionV1.WithParts
+}
+
+describe("SessionGoal.check — a hard usage limit on the turn that just ended", () => {
+  // RED PROOF: on the unfixed `check`, only `askedUser` short-circuits before
+  // `settle`. With this fixture and the guard removed, `settle` runs the critic
+  // (which the harness scripts to answer "VERDICT: NOT MET"), spends a round,
+  // and injects a continuation back at the PARENT — three more calls against
+  // a window that will not reset for hours. Verified red against the pre-fix
+  // `goal.ts`: `h.prompts` was 2 and a round was spent.
+  it("spends no round, runs no critic, and clears the goal at once", async () => {
+    reset()
+    const h = harness({
+      session: withGoal({ rounds: 1 }),
+      criticReplies: ["VERDICT: NOT MET"],
+      lastAssistant: usageLimitReply(),
+    })
+    await run(h)
+    expect(h.prompts).toHaveLength(0)
+    expect(h.verdicts).toEqual(["error_during_execution"])
+    const goal = Session.goal(h.row())!
+    expect(goal.active).toBe(false)
+    expect(goal.rounds).toBe(1)
+  })
+
+  it("says when it can resume, in the recorded verdict", async () => {
+    reset()
+    const h = harness({ session: withGoal({}), criticReplies: ["VERDICT: NOT MET"], lastAssistant: usageLimitReply() })
+    await run(h)
+    const goal = Session.goal(h.row())!
+    expect(goal.lastVerdict).toContain("usage limit reached")
+    expect(goal.lastVerdict).toContain("resets in")
+    expect(SessionGoal.describe(goal)).toContain("resets in")
+  })
+
+  it("still runs the critic for an ordinary provider error that is not a hard limit", async () => {
+    // The short-circuit is narrow: an unrelated failure (or none) on the last
+    // assistant message must not silently swallow the critic step.
+    reset()
+    const h = harness({
+      session: withGoal({}),
+      criticReplies: ["VERDICT: NOT MET"],
+      lastAssistant: assistantReply("ordinary reply, no error"),
+    })
+    await run(h)
+    expect(h.prompts.length).toBeGreaterThan(0)
+  })
+})
+
+describe("SessionGoal.runCritic — the failure text", () => {
+  // t-tc2itu, acceptance 3: the critic's error text used to be JUST the error
+  // class name (`the critic run failed: APIError`) - three WARNs in the
+  // t-tauw49 B#8 burst carried nothing else. It must name the provider, the
+  // model, the status and the provider's own sentence.
+  const deps = (failure: { name: string; data: Record<string, unknown> }): SessionGoal.CheckDeps => ({
+    sessions: {
+      get: () => Effect.succeed(info()),
+      create: () => Effect.succeed(info({ id: SessionID.make("ses_goal_critic"), parentID: PARENT })),
+      setMetadata: () => Effect.void,
+    },
+    agents: { get: () => Effect.succeed(criticAgent) },
+    ops: {
+      busy: () => Effect.succeed(false),
+      prompt: () =>
+        Effect.succeed({
+          info: { ...assistantReply("").info, error: failure } as SessionV1.WithParts["info"],
+          parts: [],
+        }),
+    },
+    worktree: "/repo",
+    model: Effect.succeed(MODEL),
+    lastAssistant: Effect.succeed(undefined),
+  })
+
+  it("names the provider, model, status and the provider's sentence for an APIError", async () => {
+    reset()
+    const outcome = await Effect.runPromise(
+      SessionGoal.runCritic(
+        deps({
+          name: "APIError",
+          data: { message: "You exceeded your current quota, please check your plan and billing details.", statusCode: 429, isRetryable: true },
+        }),
+        info(),
+        "the tests pass",
+      ),
+    )
+    expect(outcome.kind).toBe("error")
+    const reason = (outcome as { kind: "error"; reason: string }).reason
+    expect(reason).toContain(MODEL.providerID)
+    expect(reason).toContain(MODEL.modelID)
+    expect(reason).toContain("429")
+    expect(reason).toContain("You exceeded your current quota")
+  })
+
+  it("still names the provider and model when the failure carries no HTTP status", async () => {
+    reset()
+    const outcome = await Effect.runPromise(
+      SessionGoal.runCritic(deps({ name: "ContentFilterError", data: { message: "blocked by the safety filter" } }), info(), "the tests pass"),
+    )
+    expect(outcome.kind).toBe("error")
+    const reason = (outcome as { kind: "error"; reason: string }).reason
+    expect(reason).toContain(MODEL.providerID)
+    expect(reason).toContain(MODEL.modelID)
+    expect(reason).not.toContain("(status")
   })
 })

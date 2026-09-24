@@ -1,15 +1,7 @@
-// The static artifact's CONNECTORS: every edge as a bowed arrow with a label held
-// in reserve, and every flow as a traced path with numbered steps. Split from
-// mapHtmlSvg.ts (the solids) the same way isoWires.ts is split from isoLayout.ts.
-//
-// EVERYTHING IS RENDERED UP FRONT AND SHOWN BY CLASS. The flow traces and the
-// edge labels are only visible when something is selected, and the obvious way to
-// build them is at click time — which is exactly what the artifact must not do.
-// Creating an SVG element at runtime needs createElementNS and its namespace URI,
-// which would be the only `http://` string in a document whose whole contract is
-// that it fetches nothing, and the guard test asserts that over the whole file.
-// Rendering them hidden costs a few kilobytes and leaves the script with no DOM
-// factory at all.
+// The static artifact's connectors: bowed edge arrows and traced flow paths, rendered up
+// front and shown by class rather than built at click time, since building at runtime would
+// need createElementNS and its namespace URI — the document's only http:// string, which the
+// guard test forbids.
 
 import type { IsoFlowPath, IsoLink } from './isoWires';
 import type { Pt } from './isoProject';
@@ -26,9 +18,8 @@ const quad = (a: Pt, c: Pt, b: Pt): string => `M ${a.x} ${a.y} Q ${c.x} ${c.y} $
 /** A caption has no ellipsis in SVG, so an edge label is cut on the RAW string. */
 const short = (s: string, max = 34): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 
-/** Every edge: a curve, its arrowhead, and the label that lights up with it.
- *  `data-from`/`data-to` are what the script filters on, so it never needs to
- *  know the geometry it is highlighting. */
+/** Every edge as a curve+arrowhead+label; `data-from`/`data-to` are what the script filters
+ *  on so it never needs the highlighted geometry itself. */
 export function linkSvg(links: readonly IsoLink[]): string {
   return links.map((l, i) =>
     `<g class="lk" data-lk="${i}" data-from="${esc(l.from)}" data-to="${esc(l.to)}">`
@@ -37,9 +28,8 @@ export function linkSvg(links: readonly IsoLink[]): string {
     + `<text class="elab" data-elab="${i}" x="${l.mid.x}" y="${l.mid.y - 4}">${esc(short(l.label))}</text>`).join('');
 }
 
-/** Every flow: its hops as bowed lines in the flow's colour, and one numbered
- *  badge per step. A revisited node keeps its FIRST number (isoWires.ts decides
- *  that; this file only draws what it is handed). */
+/** Every flow as bowed hops in its colour plus numbered badges; a revisited node keeps its
+ *  first number (decided in isoWires.ts). */
 export function traceSvg(flows: readonly IsoFlowPath[]): string {
   return flows.map((f) => {
     const colour = FLOW_COLOR[f.index % FLOW_COLOR.length];

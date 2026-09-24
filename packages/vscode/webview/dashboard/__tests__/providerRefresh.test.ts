@@ -23,7 +23,7 @@ import {
   refreshingWriter,
   type RefreshTarget,
 } from '../../../src/dashboard/providerRefresh';
-import { writeModelContextLimit } from '../../../src/dashboard/firstFold';
+import { writeModelContextLimit, writeModelVision, readModelVision } from '../../../src/dashboard/firstFold';
 
 const client = (extMethod = vi.fn().mockResolvedValue({ ok: true })) => ({ extMethod });
 
@@ -52,8 +52,19 @@ describe('refreshEngineProviders', () => {
   it('one dead chat does not stop the others being told', async () => {
     const dead = client(vi.fn().mockRejectedValue(new Error('connection closed')));
     const alive = client();
-    await expect(refreshEngineProviders([{ client: dead }, { client: alive }])).resolves.toBeUndefined();
+    // false: the Connections Refresh button shows "failed" rather than claim every engine re-read.
+    await expect(refreshEngineProviders([{ client: dead }, { client: alive }])).resolves.toBe(false);
     expect(alive.extMethod).toHaveBeenCalled();
+  });
+
+  it('hard (the Connections Refresh button) is sent on the wire; a plain refresh never sends it', async () => {
+    // The engine drops its discovery memo and its on-disk catalogs only for `hard`
+    // (agent.ts `case "provider_refresh"`), so a picker open must not send it.
+    const c = client();
+    await expect(refreshEngineProviders([{ client: c, cwd: '/work/repo' }], { hard: true })).resolves.toBe(true);
+    expect(c.extMethod).toHaveBeenCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo', hard: true });
+    await refreshEngineProviders([{ client: c, cwd: '/work/repo' }]);
+    expect(c.extMethod).toHaveBeenLastCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo' });
   });
 
   it('omits cwd rather than sending an empty one', async () => {
@@ -67,12 +78,12 @@ describe('refreshEngineProviders', () => {
   it('is a no-op before any chat has opened an engine', async () => {
     // No chats at all — the pre-connect case. Must resolve, not throw: the
     // config write it follows already succeeded.
-    await expect(refreshEngineProviders([])).resolves.toBeUndefined();
+    await expect(refreshEngineProviders([])).resolves.toBe(true);
   });
 
   it('swallows an engine that refuses because it predates the method', async () => {
     const c = client(vi.fn().mockRejectedValue(new Error('method_not_found')));
-    await expect(refreshEngineProviders([{ client: c }])).resolves.toBeUndefined();
+    await expect(refreshEngineProviders([{ client: c }])).resolves.toBe(false);
     expect(c.extMethod).toHaveBeenCalled();
   });
 });
@@ -240,6 +251,114 @@ describe('refreshingChangeWriter — the probed context window', () => {
     const write = refreshingChangeWriter(() => { throw new Error('config is corrupt'); }, () => [{ client: c }]);
 
     expect(() => write()).toThrow('config is corrupt');
+    expect(c.extMethod).not.toHaveBeenCalled();
+  });
+});
+
+// The VISION half of the same seam — the third field on the reload wall, and the
+// one with the loudest failure.
+//
+// THE DEFECT. A local server that answers no capability probe at all (vLLM,
+// SGLang) leaves every model reading as blind, so the owner pins one On by hand.
+// That only rewrote `modalities.input` in origami.json. The running engine had
+// frozen `capabilities.input.image = false` when it built its provider, so
+// session/transform.ts went on REPLACING each attached image with the "this
+// model cannot read images" text part — the picture was never sent and never
+// billed — and the control had to admit it needed a window reload. Everything
+// needed to fix it already existed; the writer was simply passed raw.
+//
+// Driven against the REAL writer and a temp XDG dir, for the context-window
+// block's reason above: the writer honours XDG_CONFIG_HOME, so a mocked homedir
+// would pass just as happily against a defect. Paired assertions throughout —
+// what landed in the file, AND whether the engines were told — because either
+// half alone is a green test over a broken feature.
+describe('refreshingWriter — the vision pin', () => {
+  let tmp: string;
+  let cfgPath: string;
+  let savedXdg: string | undefined;
+
+  const seed = () => {
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      provider: {
+        vllm: {
+          name: 'vLLM',
+          npm: '@ai-sdk/openai-compatible',
+          options: { baseURL: 'http://127.0.0.1:8000/v1' },
+          models: { 'glm-5.3-flash': { name: 'GLM 5.3 Flash' } },
+        },
+      },
+    }, null, 2) + '\n', 'utf8');
+  };
+
+  beforeEach(() => {
+    savedXdg = process.env.XDG_CONFIG_HOME;
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'origami-vision-refresh-'));
+    process.env.XDG_CONFIG_HOME = tmp;
+    cfgPath = path.join(tmp, 'origami', 'origami.json');
+    seed();
+  });
+
+  afterEach(() => {
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('the owner repro: pinning a probe-less model On tells the running engines', async () => {
+    const c = client();
+    const write = refreshingWriter(writeModelVision, () => [{ client: c, cwd: '/work/repo' }]);
+
+    expect(readModelVision('vllm', 'glm-5.3-flash')).toBe(false);
+    write({ providerId: 'vllm', modelId: 'glm-5.3-flash', enabled: true });
+
+    // Both halves. The file is what the NEXT engine reads; the ext method is
+    // what makes THIS one re-read it, and the pin was useless without the second.
+    expect(readModelVision('vllm', 'glm-5.3-flash')).toBe(true);
+    await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo' }));
+  });
+
+  it('unpinning back to Auto tells them too', async () => {
+    // The mirror case, and the one a "fire only when turning something on"
+    // shortcut would miss: a model handed back to detection has to stop being
+    // treated as sighted in the chat that is already open.
+    const c = client();
+    const write = refreshingWriter(writeModelVision, () => [{ client: c, cwd: '/work/repo' }]);
+
+    write({ providerId: 'vllm', modelId: 'glm-5.3-flash', enabled: true });
+    await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalledTimes(1));
+
+    write({ providerId: 'vllm', modelId: 'glm-5.3-flash', enabled: false });
+    expect(readModelVision('vllm', 'glm-5.3-flash')).toBe(false);
+    await vi.waitFor(() => expect(c.extMethod).toHaveBeenCalledTimes(2));
+  });
+
+  it('tells EVERY open chat, not just the one the click came from', async () => {
+    // A pin is per MODEL and global, so a second chat on the same model is
+    // exactly as wrong as the first one until it is told.
+    const chat = client();
+    const worktree = client();
+    const write = refreshingWriter(writeModelVision, () => [
+      { client: chat, cwd: '/work/repo' },
+      { client: worktree, cwd: '/work/repo.wt/agent-1' },
+    ]);
+
+    write({ providerId: 'vllm', modelId: 'glm-5.3-flash', enabled: true });
+    await vi.waitFor(() => {
+      expect(chat.extMethod).toHaveBeenCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo' });
+      expect(worktree.extMethod).toHaveBeenCalledWith(PROVIDER_REFRESH_METHOD, { cwd: '/work/repo.wt/agent-1' });
+    });
+  });
+
+  it('a config that will not parse tells no one, and the throw still reaches the caller', async () => {
+    // The write is the half that can fail. A refresh fired anyway would drop
+    // every engine's provider cache for a change that never landed.
+    fs.writeFileSync(cfgPath, '{ this is not json', 'utf8');
+    const c = client();
+    const write = refreshingWriter(writeModelVision, () => [{ client: c }]);
+
+    expect(() => write({ providerId: 'vllm', modelId: 'glm-5.3-flash', enabled: true })).toThrow();
+    await new Promise((r) => setTimeout(r, 10));
     expect(c.extMethod).not.toHaveBeenCalled();
   });
 });

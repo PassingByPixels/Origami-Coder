@@ -23,37 +23,28 @@ import { Global } from "@origami/core/global"
 /** The file a user writes to replace the built-in base prompt. */
 export const BASE_PROMPT_FILE = "base-prompt.md"
 
-/**
- * The built-in this fork ships as the base prompt: `default.txt`, the ONE
- * model-agnostic text every model gets. It is what `base-prompt.md` replaces.
- */
+/** The built-in base prompt: `default.txt`, the ONE model-agnostic text every
+ *  model gets, and what `base-prompt.md` replaces. */
 export const BASE_PROMPT_BUILTIN: string = PROMPT_DEFAULT
 
 /**
- * Where the override lives: the SAME directory the engine already resolves its
- * global config from (`Global.config` — the home of origami.json and the global
- * AGENTS.md), so one discoverable root holds everything hand-editable.
+ * Where the override lives: the same directory the engine resolves its global
+ * config from, so one root holds everything hand-editable.
  *
- * Resolved through `Global.make()` on each call rather than a module-load
- * constant, because `ORIGAMI_CONFIG_DIR` is a lazy `Flag` getter — a constant
- * would freeze the path before a test or a wrapper could redirect it.
+ * Resolved through `Global.make()` on each call, not a module-load constant:
+ * `ORIGAMI_CONFIG_DIR` is a lazy `Flag` getter, and a constant would freeze the
+ * path before a test or a wrapper could redirect it.
  */
 export function basePromptPath(): string {
   return path.join(Global.make().config, BASE_PROMPT_FILE)
 }
 
 /**
- * The user's base prompt, or undefined when there is none.
- *
- * A missing, unreadable or whitespace-only file is NOT an override. An empty
- * file would otherwise send every model an empty system prompt — the worst
- * failure available to a feature whose whole point is that the file is
- * hand-edited, since saving a half-cleared buffer would silently lobotomise
- * the agent instead of falling back.
- *
- * Read synchronously per send. That is a few KB off local disk against an LLM
- * round trip, and it buys the property the feature exists for: an edit takes
- * effect on the NEXT turn, with no restart.
+ * The user's base prompt, or undefined when there is none. A missing,
+ * unreadable or whitespace-only file is NOT an override: saving a half-cleared
+ * buffer would otherwise send every model an empty system prompt instead of
+ * falling back. Read synchronously per send - a few KB off local disk against
+ * an LLM round trip - so an edit takes effect on the NEXT turn, with no restart.
  */
 export function basePromptOverride(): string | undefined {
   try {
@@ -68,12 +59,9 @@ export function basePromptOverride(): string | undefined {
  * The base prompt for a turn: the user's override when there is one, otherwise
  * the single built-in.
  *
- * The model is accepted and DELIBERATELY ignored. This fork ships one
- * model-agnostic base prompt, so the id must not be able to change the text —
- * there is no family chain to fall through and no per-vendor variant to pick.
- * The parameter survives the removal on purpose: it is the seam the
- * "every family gets the same prompt" test drives, and dropping it would leave
- * that claim untestable.
+ * The model is accepted and DELIBERATELY ignored: one model-agnostic base
+ * prompt, so the id must not change the text. The parameter is kept on purpose
+ * as the seam the "every family gets the same prompt" test drives.
  */
 export function provider(_model: Provider.Model) {
   const override = basePromptOverride()
@@ -81,11 +69,8 @@ export function provider(_model: Provider.Model) {
   return [PROMPT_DEFAULT]
 }
 
-/**
- * FLOCK_SPEC §5, verbatim shipping copy. D8: it never mentions Flock, roles,
- * models or prices — the only lever on the main agent is this nudge, and the
- * "witness the steps" test in it is what replaces every forcing mechanism.
- */
+/** FLOCK_SPEC §5, verbatim shipping copy. It must never mention Flock, roles,
+ *  models or prices - this nudge is the only lever on the main agent. */
 export const DELEGATION = [
   `If you can state what "done" looks like and you don't need to witness the steps,`,
   "delegate it — you keep the result, and your context stays on the goal itself.",
@@ -159,9 +144,9 @@ const layer = Layer.effect(
         return [
           "Skills provide specialized instructions and workflows for specific tasks.",
           "Use the skill tool to load a skill when a task matches its description.",
-          // the agents seem to ingest the information about skills a bit better if we present a more verbose
-          // version of them here and a less verbose version in tool description, rather than vice versa.
-          Skill.fmt(list, { verbose: true }),
+          // Name + first-line description only: the skill tool takes the name, so
+          // that is what invocation needs. The XML `verbose` form is still in Skill.fmt.
+          Skill.fmt(list, { verbose: false }),
         ].join("\n")
       }),
 
@@ -184,21 +169,17 @@ const layer = Layer.effect(
       }),
 
       flock: Effect.fn("SystemPrompt.flock")(function* (agent: Agent.Info) {
-        // Only the sovereign main agent (D1). Subagents have the task tool
-        // denied to them, so delegation copy in their context is dead weight.
+        // Main agent only: subagents are denied the task tool, so delegation copy
+        // in their context is dead weight.
         if (agent.mode !== "primary") return
         if (!(yield* flock.active())) return
         return DELEGATION
       }),
 
-      // t-kgtr6c. The SAME shape as `flock` above: a block that costs nothing
-      // on the turns it does not apply to. The difference is where the gate
-      // lives — `flock` asks a service, but whether a vision turn qualifies is
-      // three TURN facts (profile set, model blind, image present) that
-      // session/prompt.ts must also test to decide on the tool. So the caller
-      // resolves it once through SessionVision.activeProfile and hands the
-      // answer down; a second copy of that test here is exactly how a model
-      // ends up told about a tool it was not given.
+      // The gate is resolved by the CALLER (SessionVision.activeProfile) and handed
+      // down, because whether a vision turn qualifies is three turn facts
+      // session/prompt.ts must test anyway to decide on the tool. A second copy of
+      // that test here is how a model ends up told about a tool it was not given.
       vision: Effect.fn("SystemPrompt.vision")(function* (profile: string | undefined) {
         if (!profile) return
         return SessionVision.guidance(profile)

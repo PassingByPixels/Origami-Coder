@@ -1,11 +1,6 @@
-// cronReconcile.ts — the PURE comparison between what `.origami/crons.json`
-// intends and what the machine actually holds. Extracted from cronService.ts
-// when the launcher-script work pushed it past its architecture cap.
-//
-// This module REPORTS and repairs nothing. Silently "fixing" drift would mean
-// either deleting a task somebody created on purpose or re-creating one they
-// removed on purpose — invisibly, which is how a scheduler loses trust for
-// good. The pane shows both directions and lets a human decide.
+// cronReconcile.ts — the pure comparison between what `.origami/crons.json` intends and what the
+// machine actually holds. Reports and repairs nothing: silently fixing drift could delete or
+// recreate a task on the user's behalf, invisibly.
 
 import { taskNameFor } from './cronCommand';
 import type { CronRecord } from './cronState';

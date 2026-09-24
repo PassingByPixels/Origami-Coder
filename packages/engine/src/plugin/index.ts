@@ -19,6 +19,7 @@ import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cl
 import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
+import { AnthropicCatalogPlugin } from "./anthropic"
 import { OpencodeGoCostPlugin } from "./opencode-go"
 import { SnowflakeCortexAuthPlugin } from "./snowflake-cortex"
 import { Effect, Layer, Context } from "effect"
@@ -58,7 +59,8 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@origami/Plugin") {}
 
-export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel?: string }) {
+export function experimentalWebSocketsEnabled(input: { enabled: boolean; disabled?: boolean; channel?: string }) {
+  if (input.disabled) return false
   return input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel)
 }
 
@@ -68,7 +70,10 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
     (input) =>
       CodexAuthPlugin(input, {
-        experimentalWebSockets: experimentalWebSocketsEnabled({ enabled: flags.experimentalWebSockets }),
+        experimentalWebSockets: experimentalWebSocketsEnabled({
+          enabled: flags.experimentalWebSockets,
+          disabled: flags.disableWebSockets,
+        }),
       }),
     CopilotAuthPlugin,
     // gitlab/poe auth plugins are published npm packages built against @opencode-ai/plugin (the pre-fork SDK name),
@@ -81,6 +86,9 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     DigitalOceanAuthPlugin,
     SnowflakeCortexAuthPlugin,
     XaiAuthPlugin,
+    // No auth hook — anthropic is an API-key provider here. Brings the live
+    // `/v1/models` list and the capability defaults (see anthropic.ts).
+    AnthropicCatalogPlugin,
     // No auth hook — a `provider.models` correction only. OpenCode GO is
     // flat-rate, so its catalogue prices must be zeroed (see opencode-go.ts).
     OpencodeGoCostPlugin,
@@ -232,12 +240,6 @@ const layer = Layer.effect(
           }).pipe(
             Effect.tapError((error) => Effect.logError("failed to load plugin", { path: load.spec, error })),
             Effect.catch(() => {
-              // TODO: make proper events for this
-              // events.publish(Session.Event.Error, {
-              //   error: new NamedError.Unknown({
-              //     message: `Failed to load plugin ${load.spec}: ${message}`,
-              //   }).toObject(),
-              // })
               return Effect.void
             }),
           )

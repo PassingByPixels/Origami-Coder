@@ -6,20 +6,21 @@
   // agent that writes the acceptance INTO the file for you; ▶ (Todo only) hands
   // off to the launch popover; ✕ closes the ticket (hidden, not deleted — the
   // file stays on disk).
-  //
   // A Todo card is also DRAGGABLE onto the Pending block (contract §11.4). The
   // payload is the bare ticket id and nothing else: the board owns the rule for
   // what may be queued, so the card cannot smuggle a launch past it.
-  import { age, type TicketRow } from './boardBuckets';
+  import { age, type ColumnId, type TicketRow } from './boardBuckets';
+  import { cardEdgeVar } from './boardCardEdge';
 
   interface Props {
     root: string;
     ticket: TicketRow;
+    status: ColumnId; // the board column this card draws in (status edge)
     onlaunch: (t: TicketRow, at: DOMRect) => void;
     onspec: (t: TicketRow, at: DOMRect) => void;
     post: (msg: Record<string, unknown>) => void;
   }
-  let { root, ticket, onlaunch, onspec, post }: Props = $props();
+  let { root, ticket, status, onlaunch, onspec, post }: Props = $props();
 
   // Both pickers hang off THIS card (§12.1): it reports where it is, nothing more.
   let el = $state<HTMLElement>();
@@ -40,7 +41,8 @@
   }
 </script>
 
-<article class="am-ticket" class:broken bind:this={el} draggable={draggable} ondragstart={onDragStart}>
+<article class="am-ticket" class:broken bind:this={el} draggable={draggable} ondragstart={onDragStart}
+  style="border-top-color: {cardEdgeVar(status)}">
   <div class="am-tk-top">
     <span class="am-tk-id">{(ticket.id || '?').toUpperCase()}</span>
     {#if speccing}<span class="am-tk-spec" title="a spec chat is open for this ticket">speccing…</span>{/if}

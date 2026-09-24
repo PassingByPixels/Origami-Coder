@@ -1,9 +1,6 @@
-// Agent Manager - mapTab.ts (S15): the repo architecture-map EDITOR TAB, mirroring
-// compareTab.ts exactly. A "View map" board action opens a real map SCREEN in its
-// own editor tab (the same createWebviewPanel + dashboard-bundle mount the board and
-// the race Compare tab use, with a new __ORIGAMI_REPO_MAP__ payload). ONE tab per
-// repo root, revealed/reused on re-click. Kept OUT of DashboardPanel (at its line
-// cap) behind a thin dispatch: the panel reads+validates map.json, then hands off here.
+// The repo architecture-map editor tab, mirroring compareTab.ts: "View map" opens a real
+// screen in its own tab (same webview mount, __ORIGAMI_REPO_MAP__ payload). One tab per repo
+// root, revealed/reused on re-click.
 
 import * as vscode from 'vscode';
 import type { WebviewHost } from '../DashboardPanel';
@@ -19,24 +16,16 @@ export interface RepoMapParams {
   map: RepoMap;
 }
 
-/** What the WEBVIEW receives (window.__ORIGAMI_REPO_MAP__) — the same thing plus
- *  the map's isometric geometry, computed here and serialized with it.
- *
- *  This is the seam that replaces a mirror. The webview cannot import a runtime
- *  value out of src/ (tsconfig.webview.json pins rootDir to `webview/`), and the
- *  house answer to that is to declare the value twice with a drift guard reading
- *  both files. That trade is right for a five-entry constant table and wrong for
- *  ~180 lines of geometry, whose only possible guard is a byte-compare. So the
- *  numbers travel with the map instead, and RepoMapScreen.svelte imports only the
- *  TYPES of this shape — which the compiler checks. Two renderers, one layout,
- *  no drift possible. */
+/** What the webview receives: the map plus its isometric geometry, computed here and
+ *  serialized with it — the webview can't import a runtime value from src/, and mirroring
+ *  ~180 lines of geometry with only a byte-compare guard is the wrong trade. So the numbers
+ *  travel with the map; the screen imports only this shape's TYPES, which the compiler checks. */
 export interface RepoMapPayload extends RepoMapParams {
   layout: IsoLayout;
 }
 
-/** The narrow slice of DashboardPanel the tab needs: attach a secondary webview
- *  carrying the map payload (renderHtmlFor injects the global; the shared host
- *  fans broadcasts to it). Mirrors CompareTabHost. */
+/** The narrow slice of DashboardPanel the tab needs: attach a secondary webview carrying the
+ *  map payload. Mirrors CompareTabHost. */
 export interface MapTabHost {
   attachView(host: WebviewHost, bundle: 'chat', soloSessionId: undefined, memory: boolean, board: boolean, raceCompare: undefined, repoMap: RepoMapPayload): void;
 }
@@ -75,10 +64,8 @@ export function openRepoMapTab(
     reveal: () => panel.reveal(),
     dispose: () => panel.dispose(),
   };
-  // The screen's ONE message: "save this map as a page". Subscribed HERE and not
-  // in DashboardPanel's switch, where the sibling exports live: that file sits at
-  // 6335 lines against a cap of 6336, so a case there would force a raise on the
-  // largest file in the repo — the exact move the ratchet exists to prevent.
+  // The screen's one message, "save this map as a page", is subscribed here rather than in
+  // DashboardPanel's switch, which sits at its own line cap.
   panel.webview.onDidReceiveMessage((m: { type?: unknown }) => {
     if (m && m.type === 'exportRepoMap') void saveMapHtml(params.map, params.name);
   });

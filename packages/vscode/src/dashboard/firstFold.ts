@@ -1,14 +1,13 @@
-// /firstfold — first-run workspace wizard. Shell-only: turns a blank
-// folder into an Origami workspace (scaffold + knowledge layout) and,
-// in a later step, writes the model provider config for the user.
-//
-// The runner emits checklist steps through `FirstFoldEmit` so the chat
-// renders a live, ticking checklist. Scaffolding is idempotent: existing
-// files are skipped, never overwritten.
+// /firstfold — first-run workspace wizard. Shell-only: turns a blank folder into an Origami
+// workspace, then writes the model provider config.
+// Emits checklist steps through FirstFoldEmit for a live, ticking checklist. Scaffolding is
+// idempotent — existing files are skipped, never overwritten.
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { DEFAULT_SKILLS } from './defaultSkills';
+import { OAUTH_PROVIDERS } from './oauthConnections';
+import { CLAUDE_SUBSCRIPTION_PROVIDER } from '../claudeSubscription/models';
 import {
   globalConfigPath,
   readConfigObject,
@@ -95,11 +94,9 @@ function scanWorkspace(cwd: string): ScanResult {
   return { type, buildSection, detail };
 }
 
-/** OS-specific shell note, written for the machine the fold runs on. Windows:
- *  the engine's `bash` tool runs PowerShell, so Unix flags error — warn the
- *  model up front. macOS: zsh with the BSD userland, whose GNU-flag gaps are
- *  the classic trap for a model trained mostly on Linux transcripts. Linux
- *  needs no note — Unix syntax is the model's default assumption. */
+/** OS-specific shell note for the machine the fold runs on: Windows needs a PowerShell warning (the
+ *  engine's bash tool runs PowerShell, Unix flags error); macOS needs a BSD-userland note; Linux
+ *  needs none. */
 function shellNote(): string {
   if (process.platform === 'win32') {
     return `## This machine
@@ -118,17 +115,10 @@ function shellNote(): string {
   return '';
 }
 
-/** The LOCKED gold-standard AGENTS.md (Passing signed off on this content).
- *  The "Before you start" section was added under t-ra4pm8: the scaffold taught
- *  the agent to WRITE the handoff and the wiki and never to READ them, so the
- *  loop the rest of this file pays for was only ever half-closed. The owner's
- *  direction to add it IS the sign-off for that section. Everything else here
- *  still needs a fresh one.
- *  The map line joined it for the same reason one level down: the cartographer
- *  writes .origami/map/map.json for agents to READ, and a scaffolded workspace
- *  that never mentions it leaves every session re-deriving the architecture the
- *  last run already wrote down. It sits last in the block because it orients you
- *  in the CODE, after the two lines that orient you in the session. */
+/** The locked gold-standard AGENTS.md content (owner signed off). "Before you start" was added so
+ *  the agent is taught to READ the handoff and wiki, not just write them. The map line sits last in
+ *  the block — it orients the agent in the CODE, after the two lines that orient it in the session.
+ */
 function agentsMd(projectName: string, buildSection: string): string {
   return `# ${projectName} — Origami workspace guide
 
@@ -204,22 +194,17 @@ ${buildSection}
 }
 
 /**
- * The same AGENTS.md text `runFirstFold` would seed, freshly scanned against
- * `cwd` — used by the Instructions pane's "Restore default" so a project
- * AGENTS.md restores to exactly the /firstfold default, never a second copy
- * of the template that could drift from this one.
+ * The same AGENTS.md text `runFirstFold` would seed, freshly scanned against `cwd` — used by
+ *  "Restore default" so it never drifts into a second copy of the template.
  */
 export function agentsMdTemplate(cwd: string): string {
   return agentsMd(path.basename(cwd) || 'workspace', scanWorkspace(cwd).buildSection);
 }
 
 /**
- * True when `cwd` has never been through /firstfold — no AGENTS.md at its
- * root yet. AGENTS.md is the first artefact a 'full' fold writes
- * (writeIfAbsent, above), so its absence is the cheapest honest signal that
- * nothing has been scaffolded. Callers must pass the SAME cwd `runFirstFold`
- * itself resolves (`findWorkspacePath() ?? extension cwd`) so this predicate
- * never disagrees with what a fold would actually create.
+ * True when `cwd` has never been through /firstfold — no AGENTS.md at its root yet, the cheapest
+ *  honest signal nothing has been scaffolded. Callers must pass the same cwd `runFirstFold` itself
+ *  resolves.
  */
 export function needsFirstFold(cwd: string): boolean {
   return !fs.existsSync(path.join(cwd, 'AGENTS.md'));
@@ -289,7 +274,7 @@ and call out anything that looks risky or unfinished.
 /** Sample skill — teaches the format by example. The engine discovers
  *  `.origami/skills/<name>/SKILL.md`; frontmatter `name` + `description`, body =
  *  knowledge loaded on demand. `slash: true` also exposes it as a /command. */
-function sampleSkillMd(): string {
+export function sampleSkillMd(): string {
   return `---
 name: example-skill
 category: reference
@@ -307,15 +292,10 @@ to the frontmatter to also expose it as a /slash-command.
 `;
 }
 
-/** The /wrap command — the workspace's session-close skill: HANDOFF block + wiki
- *  distil in one pass. Placement is deterministic (insert below the HANDOFF
- *  anchor marker via edit, so it can't cut into the header), and the wiki side
- *  is standardised (mandatory [[links]] + index entry) so the graph stays usable.
- *  This is why firstFold also seeds the marker into the HANDOFF stub. The wiki
- *  step also reframes the wiki itself: it is the agent's persistent memory, not
- *  an end-of-session filing chore, and it nudges the full markdown toolbox
- *  (diagrams, images, structure) over plain prose blocks where that says more. */
-function wrapSkillMd(): string {
+/** The /wrap command: HANDOFF block + wiki distil in one pass. Placement is deterministic (inserted
+ *  at the HANDOFF anchor marker), and the wiki side is standardised (mandatory links + index entry)
+ *  so the graph stays usable. firstFold seeds the marker into the HANDOFF stub for this reason. */
+export function wrapSkillMd(): string {
   return `---
 name: wrap
 category: workflow
@@ -490,15 +470,11 @@ export function isLoopbackBaseUrl(u: unknown): boolean {
   }
 }
 
-/** Find the local OpenAI-compatible provider (LM Studio) in the global config —
- *  its id + display name. Lets live-polled models be tagged + written to the
- *  right provider block. Null if none is configured.
- *
- *  The LOOPBACK check is load-bearing: vLLM / OpenRouter are ALSO
- *  `openai-compatible`, so keying only on `npm` would misclassify whichever
- *  remote provider sorts FIRST in the config as "local" — and then fire
- *  `lms unload/load` against it (evicting LM Studio's model + a doomed load of an
- *  id LM Studio doesn't have). Only a loopback endpoint is lms-manageable. */
+/** Find the local OpenAI-compatible provider (LM Studio) in the global config — id + display name,
+ *  for tagging live-polled models. Null if none configured.
+ * The loopback check is load-bearing: vLLM/OpenRouter are also `openai-compatible`, so keying on
+ *  `npm` alone would misclassify a remote provider as local and fire `lms unload/load` against it.
+ */
 export function detectLocalProvider(): { id: string; name: string } | null {
   try {
     const cfg = readConfigObject(globalConfigPath()) as {
@@ -537,19 +513,14 @@ export interface ModelChoice {
    *  from config. Needed for OpenRouter, whose pricing isn't in the (empty at
    *  runtime) models.dev catalog; omit for free/local models. */
   cost?: { input: number; output: number };
-  /** The context window the SERVER ITSELF reported for `modelId` at connect time
-   *  (vLLM's `max_model_len` and friends, via fetchModelInfo). Baked into the
-   *  block's `limit.context` by writeModelConfig below, so a freshly-connected
-   *  self-hosted provider starts life with a REAL window instead of the 0 that
-   *  disables auto-compaction outright. 0/absent = the server published none, and
-   *  the entry is written exactly as it was before this field existed. */
+  /** The context window the server itself reported for `modelId` at connect time. Baked into
+   *  `limit.context` by writeModelConfig so a freshly-connected self-hosted provider starts with a
+   *  real window instead of the 0 that disables auto-compaction. 0/absent = server published none.
+   */
   servedContext?: number;
-  /** Extra models to declare in the same block, with their full config fields
-   *  (limit / capabilities / modalities). An OAuth connection needs this: the
-   *  provider's whole catalog has to exist in config before the engine can
-   *  resolve any of it (models.dev is empty in this fork), and `modelId` alone
-   *  would declare exactly one. Merged per model, so a hand-edited override
-   *  survives a re-connect. */
+  /** Extra models to declare in the same block, full config fields included. An OAuth connection
+   *  needs this: the provider's whole catalog must exist in config before the engine can resolve
+   *  any of it. Merged per model so a hand-edited override survives a re-connect. */
   catalog?: Record<string, Record<string, unknown>>;
 }
 
@@ -557,17 +528,11 @@ export interface ModelChoice {
 export type ConnectModelFn = () => Promise<ModelChoice | null>;
 
 /**
- * Merge a chosen provider into the GLOBAL origami.json and set it as the
- * default model. Machine-wide (where the working config already lives) so a
- * fresh machine is set up once for every workspace. Backs up any existing
- * config and never overwrites unrelated keys. Throws on a corrupt config
- * rather than clobbering it. Returns the written path + the `provider/model` id.
- *
- * `automatic` marks a write NOT caused by a user action — today only
- * maybeAdoptRemoteServedModel's background poll. Such a write takes no backup:
- * the `.bak` chain is the user's rollback point for what the USER did, and a
- * background writer consuming a slot is how a hand-edit gone wrong used to
- * become unrecoverable (connections review finding 8).
+ * Merge a chosen provider into the GLOBAL origami.json and set it as the default model. Backs up
+ *  any existing config; throws on a corrupt config rather than clobbering it.
+ * `automatic` marks a write not caused by the user (only the background remote-served-model poll
+ *  today) — such a write takes no backup, since the `.bak` chain is the user's rollback point for
+ *  what THEY did.
  */
 export function writeModelConfig(choice: ModelChoice, opts: { automatic?: boolean } = {}): { path: string; model: string } {
   const cfgPath = globalConfigPath();
@@ -579,17 +544,10 @@ export function writeModelConfig(choice: ModelChoice, opts: { automatic?: boolea
   if (choice.npm) block.npm = choice.npm;
   const options = asObj(block.options);
   if (choice.baseURL) options.baseURL = choice.baseURL;
-  // A truthy key writes/replaces it. Removing one takes the EXPLICIT
-  // `clearApiKey` — Re-key's "leave blank to remove the key" contract, carried
-  // as its own field.
-  //
-  // 0.4.28 inferred the clear from `apiKey` simply being ABSENT, and that was
-  // the wrong signal: absence is what every caller with no business knowing a
-  // key already passes — the chat-pane model pin, the lms swap,
-  // adoptLoadedModel, the background maybeAdoptRemoteServedModel, OAuth
-  // completion (keyless BY DESIGN) and firstFold's LM Studio branch. Pinning a
-  // model on OpenRouter therefore deleted its key, and the next prompt went out
-  // with no Authorization header at all. Intent is now stated, never guessed.
+  // A truthy key writes/replaces it; removing one takes the explicit `clearApiKey` flag — Re-key's
+  // "leave blank to remove" contract. Intent must be stated, never inferred from `apiKey` being
+  // absent, since every key-unrelated caller (model pin, lms swap, OAuth completion, etc.) passes
+  // no key at all.
   if (choice.apiKey) options.apiKey = choice.apiKey;
   else if (choice.clearApiKey) delete options.apiKey;
   block.options = options;
@@ -616,13 +574,9 @@ export function writeModelConfig(choice: ModelChoice, opts: { automatic?: boolea
   const model = `${choice.providerId}/${choice.modelId}`;
   cfg.model = model;
   saveConfig(cfgPath, cfg, opts.automatic ? null : loaded);
-  // …and, when the server told us its window, bake it in the same breath. Through
-  // writeModelContextLimit rather than inline above, so the SHAPE rule ({context,
-  // output} — a bare context invalidates the whole config) and the "never overrule
-  // a hand-set window" rule have exactly one implementation. onlyWhenUnset because
-  // a re-connect must not stomp a limit the user deliberately lowered. It runs
-  // AFTER the save, since it refuses to write into a provider block that does not
-  // exist yet, and it is a no-op for every caller that reports no window.
+  // When the server reported its window, bake it in via writeModelContextLimit (onlyWhenUnset) so
+  // the config-shape rule and "never overrule a hand-set window" rule have one implementation. Runs
+  // after save; a no-op when no window was reported.
   if (choice.servedContext) {
     writeModelContextLimit(choice.providerId, choice.modelId, choice.servedContext, { onlyWhenUnset: true });
   }
@@ -630,53 +584,79 @@ export function writeModelConfig(choice: ModelChoice, opts: { automatic?: boolea
 }
 
 /**
- * Persist a PROBED context window onto an existing model's config block, so the
- * ENGINE stops resolving `limit.context` to 0 for local models.
- *
- * Why this exists: the extension probes the real window accurately (LM Studio's
- * `loaded_context_length`, vLLM's `max_model_len`) but only ever used it for its
- * own UI. `provider.ts` resolves `model.limit?.context ?? existingModel?.limit
- * ?.context ?? 0` — and nothing wrote that field — so every local model came out
- * 0, which disables auto-compaction outright (`session/overflow.ts` isOverflow()
- * hard-returns false at context 0) and suppresses the usage event that feeds the
- * gauge. This is the bridge between the two systems.
- *
- * SHAPE: the config schema (`@origami/core/v1/config/provider` Model.limit) makes
- * `output` REQUIRED alongside `context` — a bare `{ context }` fails the strict
- * `decodeUnknownExit` in config/parse.ts and invalidates the WHOLE config, and
- * globalConfig.ts's pre-write validator refuses such a write outright rather than
- * let it land. So we preserve any existing `output` and otherwise write 0, which
- * is exactly what the engine already defaults to for these models.
- *
- * A written `output: 0` means UNKNOWN — not "zero tokens of output" — and the
- * engine reads it that way in `session/overflow.ts`'s `outputReserve`: an unknown
- * output reservation is capped at a quarter of the window rather than having the
- * flat 32k REQUEST default subtracted whole. That is the difference between a
- * 36096-token model compacting at 27072 tokens and compacting at 4096 — which is
- * to say, on every turn. Only `limit` changes.
- *
- * Deliberately NARROW vs writeModelConfig: it never touches `cfg.model` (a probe
- * must not re-point the default model), never creates a provider block, and only
- * ever writes a genuinely probed positive window. Read + write happen with no
- * await between them, so a concurrent chat's engine can't interleave a lost
- * update. Best-effort: any missing/corrupt config is a no-op, never a throw.
- *
- * `onlyWhenUnset` — for a REMOTE server, whose reported window is a static server
- * maximum the user may have deliberately capped LOWER in config (a smaller window
- * = compact earlier). There we only FILL A HOLE. For a local LM Studio model the
- * loaded window genuinely changes with every `lms load -c`, so the probe is
- * authoritative and overwrites.
- *
- * NO BACKUP, deliberately. Both call sites are automatic — reprobeModel() and
- * refreshModelInfoFor() in DashboardPanel.ts, neither triggered by the user.
- * Rotating the `.bak` chain here would spend the user's rollback slots on
- * background probes, which is exactly how a bad hand-edit became unrecoverable
- * (connections review finding 8).
- *
- * Returns true only when the file was actually rewritten. A FAILURE is no
- * longer silent: it warns with the path and the reason, and calls `onError`, so
- * the caller can tell the user that auto-compaction is off for this model
- * (finding 9). The legitimate no-ops below stay quiet.
+ * Persist ONLY the default model (`cfg.model`) — what a model pick must save when the engine
+ *  already serves it (it was already in the engine's own model option list). No provider block is
+ *  created and no `models[id]` row is pinned, so the config never freezes a copy of a catalog the
+ *  engine keeps current on its own (t-u0rcmb). Same backup/corrupt-config rules as writeModelConfig,
+ *  since this is still a user-facing write.
+ */
+export function writeDefaultModel(model: string, opts: { automatic?: boolean } = {}): { path: string; model: string } {
+  const cfgPath = globalConfigPath();
+  const loaded = readConfigForWrite(cfgPath);
+  const cfg: Record<string, unknown> = loaded?.cfg ?? {};
+  cfg.model = model;
+  saveConfig(cfgPath, cfg, opts.automatic ? null : loaded);
+  return { path: cfgPath, model };
+}
+
+/**
+ * Resolve the provider's display name for a MODEL PICK. Never borrows another provider's identity:
+ *  the local provider's name is a valid fallback ONLY when the id being persisted is the local
+ *  provider's OWN id. Before this, any provider with no config block (e.g. `claude-subscription`)
+ *  fell through to the LOCAL provider's name, so the owner's live config could get a
+ *  `claude-subscription` block literally named "LM Studio" (t-u0rcmb).
+ */
+export function resolveModelPickProviderName(
+  providerId: string,
+  configuredName: string | undefined,
+  local: { id: string; name: string } | null,
+): string {
+  if (configuredName) return configuredName;
+  if (local && providerId === local.id) return local.name;
+  return providerId;
+}
+
+/**
+ * The shared tail of every "switch to this model" flow: decide whether the pick needs a persisted
+ *  PROVIDER BLOCK or only the default. `isConfigured` is the caller's pre-switch check against the
+ *  ENGINE's own model option list — a model already there needs nothing but `cfg.model`; a block is
+ *  needed only when the engine cannot serve the model without one (a fresh local/self-hosted model,
+ *  or a catalog pick that needs pricing/context baked in). Reusing the SAME `isConfigured` the caller
+ *  computed before the switch (not re-checked after) is deliberate: it answers "did the engine know
+ *  this model on its own", not "does config now have an entry" — which the first write may have just
+ *  made true for the wrong reason.
+ */
+export function persistModelPick(
+  choice: ModelChoice,
+  isConfigured: boolean,
+  opts: { automatic?: boolean } = {},
+): { path: string; model: string; wroteBlock: boolean } {
+  if (isConfigured) {
+    const { path, model } = writeDefaultModel(`${choice.providerId}/${choice.modelId}`, opts);
+    return { path, model, wroteBlock: false };
+  }
+  const { path, model } = writeModelConfig(choice, opts);
+  return { path, model, wroteBlock: true };
+}
+
+/**
+ * Persist a PROBED context window onto an existing model's config block, so the engine stops
+ *  resolving `limit.context` to 0 for local models (which disables auto-compaction and suppresses
+ *  the usage gauge).
+ * SHAPE: the schema requires `output` alongside `context` — a bare `{context}` invalidates the
+ *  whole config — so any existing `output` is preserved, otherwise written as 0 (meaning UNKNOWN,
+ *  which caps the reserved-output estimate at a quarter of the window rather than subtracting a
+ *  flat default).
+ * Deliberately narrow vs writeModelConfig: never touches `cfg.model`, never creates a provider
+ *  block, only writes a genuinely probed positive window. Read+write with no await between them so
+ *  a concurrent chat can't interleave a lost update.
+ * `onlyWhenUnset`: for a remote server, whose window is a static maximum the user may have
+ *  deliberately lowered — fill the hole, never overwrite. A local LM Studio window changes with
+ *  every load, so the probe is authoritative there.
+ * NO BACKUP: both call sites are automatic probes, never user-triggered, and must not spend the
+ *  user's rollback slots.
+ * Returns true only when the file was actually rewritten; a failure warns with the path/reason and
+ *  calls `onError` so the caller can tell the user auto-compaction is off for this model.
  */
 export function writeModelContextLimit(
   providerId: string,
@@ -720,17 +700,12 @@ export function writeModelContextLimit(
 }
 
 /**
- * Does picking this local model actually require an `lms unload --all` + `load`?
- *
- * Only when something would genuinely CHANGE. Re-picking the model that is
- * already loaded, at the context it is already loaded at, used to evict and
- * re-load it anyway — tens of seconds of dead GPU, and (because LM Studio serves
- * one model at a time) the switch then carries every OTHER chat on that provider
- * onto the "new" model, cascading the pointless reload across the window.
- *
- * Skip requires ALL of: the server reports a model genuinely loaded, it is the
- * requested id, and its window equals the requested one. An unknown window on
- * either side (0) is NOT a match — we reload rather than assume.
+ * Does picking this local model actually require an `lms unload --all` + `load`? Only when
+ *  something would genuinely change — re-picking an already-loaded model at the same context used
+ *  to evict and reload it anyway, cascading onto every other chat on that provider (LM Studio
+ *  serves one model at a time).
+ * Skip requires the server to report the requested id genuinely loaded AND its window equal to the
+ *  requested one; an unknown window (0) on either side is not a match.
  */
 export function shouldReloadLocalModel(input: {
   requestedModelId: string;
@@ -754,12 +729,9 @@ function firstConfiguredModel(providers: Record<string, unknown>): string | null
   return null;
 }
 
-/** Remove a provider block from the GLOBAL origami.json (the reverse of
- *  writeModelConfig). If the active `model` pointed at the removed provider it is
- *  repointed to another configured model, or cleared when none remain. Backs the
- *  file up first. Returns the new active model (null = none left) and whether a
- *  block was actually removed. No-op (removed:false) if the provider isn't
- *  present. Throws on a corrupt config rather than clobbering it. */
+/** Remove a provider block from the global origami.json (reverse of writeModelConfig). If the
+ *  active model pointed at the removed provider it is repointed to another configured model, or
+ *  cleared. Backs the file up first; throws on a corrupt config. */
 export function removeProviderConfig(providerId: string): { path: string; model: string | null; removed: boolean } {
   const cfgPath = globalConfigPath();
   const loaded = readConfigForWrite(cfgPath);
@@ -779,6 +751,86 @@ export function removeProviderConfig(providerId: string): { path: string; model:
   }
   saveConfig(cfgPath, cfg, loaded);
   return { path: cfgPath, model, removed: true };
+}
+
+/** The fields the OLD `claude-subscription` pick path (pre-t-u0rcmb writeModelConfig calls) could
+ *  ever have written to a provider block: a name, an always-empty `options` (no baseURL/apiKey — the
+ *  route needs neither), and per-model `name`/`attachment`/`modalities` only (no `cost`, no `limit`,
+ *  no `npm`). */
+const OLD_PICK_BLOCK_KEYS = new Set(['name', 'options', 'models']);
+const OLD_PICK_MODEL_KEYS = new Set(['name', 'attachment', 'modalities']);
+
+/** True only when every field in `block` is one the old pick path could have written. Anything else
+ *  — a hand-set apiKey/baseURL/npm, a model with `cost` or `limit` — means a person edited it, and
+ *  the clean-up must leave it alone. */
+function isOldPickPathClaudeSubscriptionBlock(block: unknown): boolean {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return false;
+  const b = block as Record<string, unknown>;
+  if (!Object.keys(b).every((k) => OLD_PICK_BLOCK_KEYS.has(k))) return false;
+  if ('options' in b) {
+    const opts = b.options;
+    if (!opts || typeof opts !== 'object' || Array.isArray(opts) || Object.keys(opts).length > 0) return false;
+  }
+  const models = b.models;
+  if (models === undefined) return true;
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return false;
+  return Object.values(models as Record<string, unknown>).every((m) => {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
+    return Object.keys(m as Record<string, unknown>).every((k) => OLD_PICK_MODEL_KEYS.has(k));
+  });
+}
+
+/**
+ * One-time clean-up: remove a `claude-subscription` provider block from the GLOBAL config if it
+ *  holds ONLY what the old pick path could ever have written. That provider is a connection tile,
+ *  not a config block (t-ty02bb) — a leftover block only ever misroutes it back to whatever local
+ *  provider it happened to have borrowed a name from (t-u0rcmb). `cfg.model` is left untouched even
+ *  if it still points at the removed block: an unreachable configured model already falls back
+ *  honestly (engine `defaultModelFromConfig`), so there is nothing here for this pass to fix.
+ * Idempotent — a second call finds no block (or a hand-edited one it correctly leaves alone) and is
+ *  a no-op. Backed up like any other user-facing write. Throws on a corrupt/unreadable/commented
+ *  config, same as every other writer here — the caller (extension activation) decides whether to
+ *  swallow that.
+ */
+export function cleanupStaleClaudeSubscriptionBlock(): { path: string; removed: boolean } {
+  const cfgPath = globalConfigPath();
+  const loaded = readConfigForWrite(cfgPath);
+  if (!loaded) return { path: cfgPath, removed: false };
+  const cfg = loaded.cfg;
+  const providers = asObj(cfg.provider);
+  const block = providers[CLAUDE_SUBSCRIPTION_PROVIDER];
+  if (block === undefined || !isOldPickPathClaudeSubscriptionBlock(block)) {
+    return { path: cfgPath, removed: false };
+  }
+  delete providers[CLAUDE_SUBSCRIPTION_PROVIDER];
+  cfg.provider = providers;
+  saveConfig(cfgPath, cfg, loaded);
+  return { path: cfgPath, removed: true };
+}
+
+/** Install-once marker for {@link ensureClaudeSubscriptionBlockCleanup}, backed by VS Code
+ *  `context.globalState` — the same shape `ensureGlobalSeeds`/`ensureSubagentToolDefaults` use. */
+export interface CleanupOnceMarker {
+  get(): boolean | undefined;
+  set(v: boolean): void;
+}
+
+/**
+ * Run {@link cleanupStaleClaudeSubscriptionBlock} AT MOST ONCE per install, not on every
+ *  activation. Since the vision fix above, a genuine `models`-only capability block (the owner's own
+ *  vision override on a `claude-subscription` model) is structurally the SAME shape the clean-up
+ *  removes — so running the clean-up on every boot would delete a real, current override the moment
+ *  the owner set one. Gating it to the one pass a fresh install needs (before any such override could
+ *  exist) makes the two features safe to have side by side.
+ * The marker is set ONLY after a successful pass — a throw (corrupt/commented config) leaves it
+ *  unset, so the next activation retries rather than silently giving up forever.
+ * Returns null when the marker already says done (no config read at all).
+ */
+export function ensureClaudeSubscriptionBlockCleanup(marker: CleanupOnceMarker): { path: string; removed: boolean } | null {
+  if (marker.get()) return null;
+  const result = cleanupStaleClaudeSubscriptionBlock(); // throws on a corrupt config — left unset below
+  marker.set(true);
+  return result;
 }
 
 /** Rename a configured provider — change ONLY its display name (`block.name`),
@@ -841,11 +893,9 @@ export function readAgentFrequencyPenalty(agentName = 'build'): number | null {
   }
 }
 
-/** Write (or clear) the per-agent frequency-penalty in the GLOBAL origami.json.
- *  null = remove the key (unset → the engine's model-gated default applies again).
- *  The engine re-reads it per request (Config.getLiveAgentSampling), so a change
- *  applies on the next message — no respawn. Touches ONLY frequency_penalty.
- *  Returns the written path. */
+/** Write (or clear) the per-agent frequency-penalty in the global origami.json. null removes the
+ *  key (the engine's model-gated default applies again). Re-read per request, so a change applies
+ *  on the next message with no respawn. */
 export function writeAgentFrequencyPenalty(value: number | null, agentName = 'build'): { path: string } {
   const cfgPath = globalConfigPath();
   const loaded = readConfigForWrite(cfgPath);
@@ -885,26 +935,49 @@ export function listConfiguredModels(providerId: string): string[] {
   }
 }
 
-/** Read whether image (vision) input is enabled for a model in the global
- *  config — i.e. its `modalities.input` includes "image". */
+/**
+ * Read whether image (vision) input is enabled for a model in the global config (`modalities.input`
+ *  includes "image") — the picker's whole answer for the per-row vision chip, since the engine's
+ *  directory listing flattens model capabilities away.
+ * A row the config says nothing about reads as "no vision", which is honest for a self-hosted
+ *  server (the local reconcile pass writes this flag from a probe) but wrong for a Labs OAuth model
+ *  the config has never held an entry for.
+ * A config declaration always wins over this and cannot fight the vision pin:
+ *  `writeModelVision(off)` stores "off" as absent modalities plus a pin.
+ * KNOWN LIMIT: gating is by id alone, so an API-key entry sharing an id with an OAuth connection
+ *  inherits its vision status even for a non-chat model.
+ */
 export function readModelVision(providerId: string, modelId: string): boolean {
   try {
     const cfg = readConfigObject(globalConfigPath());
     if (!cfg) return false;
     const model = asObj(asObj(asObj(asObj(cfg.provider)[providerId]).models)[modelId]);
     const input = asObj(model.modalities).input;
-    return Array.isArray(input) && input.includes('image');
+    if (Array.isArray(input)) return input.includes('image');
+    return providerId in OAUTH_PROVIDERS;
   } catch {
     return false;
   }
 }
 
-/** Toggle image-input (vision) capability for a model in the GLOBAL origami.json.
- *  Sets/removes `attachment` + `modalities.input:["text","image"]` on the model
- *  entry. "text" MUST stay in the list: the engine derives text-input support
- *  from `modalities.input.includes("text")`, so `["image"]` alone would disable
- *  text. The engine reads capabilities at startup, so the caller must respawn
- *  (window reload) for the change to take effect. Returns the written path. */
+/**
+ * Toggle image-input (vision) for a model in the global origami.json: sets/removes `attachment` +
+ *  `modalities.input`. "text" must stay in the list — the engine derives text-input support from
+ *  it. Caller must respawn (window reload) for the change to take effect.
+ * The pin IS read by the extension's own display (visionPin.ts), but NOT by the engine — the engine
+ *  only ever reads this config flag, so a capability override for a provider with no block (an
+ *  engine-served pick, t-u0rcmb — e.g. `openai` with only an auth key) still needs SOMETHING written
+ *  here, or the control shows "on" while the engine sends no images.
+ * The fix is MINIMAL, not a full block: never writes `name`, `npm` or `options`, only `models[id]`'s
+ *  two capability fields. `capabilityOnly` — true for a block that carries none of those identity
+ *  fields, whether that's because it never existed or because a prior call here is the only thing
+ *  that ever wrote it — decides whether this call is allowed to prune the block back to nothing once
+ *  the capability turns off and leaves it empty. The engine's own config merge (provider.ts, t-ty02bb)
+ *  layers a block over the catalog/family row without touching npm/baseURL, so a `{ models }`-only
+ *  block is safe to hand it.
+ * A block that DOES carry identity fields (a person's real connection) is never pruned this way —
+ *  only its model row's two capability fields are touched, exactly as before.
+ */
 export function writeModelVision(input: { providerId: string; modelId: string; enabled: boolean }): { path: string } {
   const cfgPath = globalConfigPath();
   const loaded = readConfigForWrite(cfgPath);
@@ -912,6 +985,7 @@ export function writeModelVision(input: { providerId: string; modelId: string; e
 
   const providers = asObj(cfg.provider);
   const block = asObj(providers[input.providerId]);
+  const capabilityOnly = Object.keys(block).every((k) => k === 'models');
   const models = asObj(block.models);
   const model = asObj(models[input.modelId]);
   if (input.enabled) {
@@ -923,9 +997,17 @@ export function writeModelVision(input: { providerId: string; modelId: string; e
     delete model.attachment;
     delete model.modalities;
   }
-  models[input.modelId] = model;
-  block.models = models;
-  providers[input.providerId] = block;
+
+  if (capabilityOnly) {
+    if (Object.keys(model).length === 0) delete models[input.modelId];
+    else models[input.modelId] = model;
+    if (Object.keys(models).length === 0) delete providers[input.providerId];
+    else providers[input.providerId] = { models }; // minimal — never name/npm/options
+  } else {
+    models[input.modelId] = model;
+    block.models = models;
+    providers[input.providerId] = block;
+  }
   cfg.provider = providers;
   saveConfig(cfgPath, cfg, loaded);
   return { path: cfgPath };
@@ -955,10 +1037,9 @@ interface StepDef {
 }
 
 /**
- * Run /firstfold as a paced, narrated walk-through that drives the live todo
- * overlay (the same slide-in used for tool work). In 'full' mode it scans the
- * workspace, scaffolds the Origami layout idempotently, then connects a model;
- * in 'model' mode only the model-connect step runs.
+ * Run /firstfold as a paced, narrated walk-through driving the live todo overlay. 'full' mode scans
+ *  the workspace, scaffolds idempotently, then connects a model; 'model' mode runs only the connect
+ *  step.
  */
 export async function runFirstFold(cwd: string, emit: FirstFoldEmit, opts: FirstFoldOpts): Promise<FirstFoldResult> {
   emit.start();
@@ -1043,10 +1124,9 @@ export async function runFirstFold(cwd: string, emit: FirstFoldEmit, opts: First
       run: () => {
         emit.narrate('Seeding .origami/ with the default skill library (/wrap, grilling, spec + tickets, TDD, review…) and an example command — the engine auto-discovers them.');
         ensureFolder(path.join(cwd, '.origami', 'command'));
-        // wrap + example-skill live here (beside the HANDOFF stub /wrap edits);
-        // the rest are data in defaultSkills.ts. One loop, so a new default skill
-        // is an entry in that map and nothing else. writeIfAbsent keeps a re-run
-        // harmless: an edited skill is the user's, never ours to restore.
+        // wrap + example-skill live in firstFold.ts beside the HANDOFF stub /wrap edits; the rest
+        // are data in defaultSkills.ts. writeIfAbsent keeps a re-run harmless — an edited skill is
+        // the user's, never ours to restore.
         const library: Record<string, string> = { wrap: wrapSkillMd(), 'example-skill': sampleSkillMd(), ...DEFAULT_SKILLS };
         const seeded: string[] = [];
         for (const [name, body] of Object.entries(library)) {

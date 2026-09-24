@@ -81,6 +81,11 @@ describe("run-stats counting", () => {
       requests: 1,
       tokens: { input: 1, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
       cost: 0,
+      // t-ffziaz. `steps` and `context` are not additive. With no step-finish
+      // part the message level IS the one step, and its context is that step's
+      // input plus whatever cache it reported.
+      steps: 1,
+      context: 1,
     })
   })
 
@@ -223,6 +228,157 @@ describe("run-stats counting", () => {
     const s = stat("ses_a", [])
     expect(s.requests).toBe(0)
     expect(s.tokens).toBeUndefined()
+  })
+})
+
+/**
+ * One `step-finish` part — a single model call inside a turn.
+ *
+ * The shape is the engine's: `cost` and `tokens` per STEP, which is what makes
+ * them summable. The message-level `tokens` beside them is the last step's
+ * context, not a total, so a fixture that sets both can tell the two readings
+ * apart.
+ */
+function stepFinish(
+  sessionID: string,
+  messageID: string,
+  input: { input: number; output: number; reasoning?: number; read?: number; write?: number; cost?: number },
+): Part {
+  return {
+    ...partIds(sessionID, messageID),
+    type: "step-finish",
+    reason: "tool-calls",
+    cost: input.cost ?? 0,
+    tokens: {
+      input: input.input,
+      output: input.output,
+      reasoning: input.reasoning ?? 0,
+      cache: { read: input.read ?? 0, write: input.write ?? 0 },
+    },
+  } as unknown as Part
+}
+
+describe("run-stats spend reads the STEPS, not the last one", () => {
+  // The defect: `session/processor.ts` ASSIGNS `message.tokens` at every
+  // step-finish rather than accumulating it, because the context gauge and the
+  // overflow check both need "how full is the window now". Read as a turn
+  // total it therefore reports only the final step, so every tool loop — the
+  // normal case — was under-reported in the run index.
+
+  it("sums every step of a multi-step turn instead of reporting the last one", () => {
+    const summed = stat("ses_a", [
+      assistantMessage(
+        "ses_a",
+        "msg_a1",
+        { created: 1_000, completed: 2_000 },
+        [
+          stepFinish("ses_a", "msg_a1", { input: 1_000, output: 50, reasoning: 5, read: 900, write: 10, cost: 0.01 }),
+          stepFinish("ses_a", "msg_a1", { input: 1_400, output: 70, reasoning: 7, read: 1_300, write: 0, cost: 0.02 }),
+        ],
+        // What the message level says: the LAST step alone. Reading this would
+        // lose the first call entirely.
+        { tokens: { input: 1_400, output: 70, reasoning: 7, cache: { read: 1_300, write: 0 } }, cost: 0.03 },
+      ),
+    ])
+
+    expect(summed.tokens).toEqual({
+      input: 2_400,
+      output: 120,
+      reasoning: 12,
+      cacheRead: 2_200,
+      cacheWrite: 10,
+    })
+    expect(summed.cost).toBeCloseTo(0.03, 10)
+    // Still ONE request per assistant message: steps are not requests.
+    expect(summed.requests).toBe(1)
+  })
+
+  // t-ffziaz. The owner read a child's 38k next to a chat's 19k and concluded
+  // the child cost twice as much; 38k was a SUM of two steps and 19k was ONE
+  // step's context. `steps` and `context` are what let a client say which is
+  // which, so they must never come out as sums themselves.
+  it("reports the step COUNT and the LAST step's context beside the additive totals", () => {
+    const summed = stat("ses_a", [
+      assistantMessage(
+        "ses_a",
+        "msg_a1",
+        { created: 1_000, completed: 2_000 },
+        [
+          stepFinish("ses_a", "msg_a1", { input: 1_000, output: 50, read: 900, write: 10 }),
+          stepFinish("ses_a", "msg_a1", { input: 1_400, output: 70, read: 1_300, write: 0 }),
+        ],
+        { tokens: { input: 1_400, output: 70, cache: { read: 1_300, write: 0 } }, cost: 0 },
+      ),
+    ])
+
+    expect(summed.steps).toBe(2)
+    // The last step's WHOLE prompt: its non-cached 1,400 plus the 1,300 the
+    // provider served from cache. Not the 2,400 the run sent across both steps.
+    expect(summed.context).toBe(2_700)
+    expect(summed.tokens?.input).toBe(2_400)
+  })
+
+  it("keeps counting steps across several assistant messages, and keeps only the last context", () => {
+    const summed = stat("ses_a", [
+      assistantMessage("ses_a", "msg_a1", { created: 1_000, completed: 2_000 }, [
+        stepFinish("ses_a", "msg_a1", { input: 1_000, output: 50 }),
+        stepFinish("ses_a", "msg_a1", { input: 1_100, output: 60 }),
+      ]),
+      assistantMessage("ses_a", "msg_a2", { created: 2_000, completed: 3_000 }, [
+        stepFinish("ses_a", "msg_a2", { input: 1_200, output: 70 }),
+      ]),
+    ])
+
+    expect(summed.steps).toBe(3)
+    expect(summed.context).toBe(1_200)
+  })
+
+  it("falls back to the message level for a row that carries no step-finish part", () => {
+    // Older rows and foreign transcripts have none. Stale beats absent: the
+    // index must not blank a run just because it predates the parts.
+    const legacy = stat("ses_a", [
+      assistantMessage("ses_a", "msg_a1", { created: 1, completed: 2 }, [tool("ses_a", "msg_a1", "bash", "completed")], {
+        tokens: { input: 500, output: 25, reasoning: 0, cache: { read: 400, write: 0 } },
+        cost: 0.05,
+      }),
+    ])
+
+    expect(legacy.tokens).toEqual({ input: 500, output: 25, reasoning: 0, cacheRead: 400, cacheWrite: 0 })
+    expect(legacy.cost).toBeCloseTo(0.05, 10)
+  })
+
+  it("a step that measured nothing contributes nothing, rather than zeroing the turn", () => {
+    const partial = stat("ses_a", [
+      assistantMessage(
+        "ses_a",
+        "msg_a1",
+        { created: 1, completed: 2 },
+        [
+          { ...partIds("ses_a", "msg_a1"), type: "step-finish", reason: "stop", cost: 0 } as unknown as Part,
+          stepFinish("ses_a", "msg_a1", { input: 300, output: 12 }),
+        ],
+        { tokens: { input: 9_999, output: 9_999, reasoning: 0, cache: { read: 0, write: 0 } } },
+      ),
+    ])
+
+    // The usable step is used; the unusable one is skipped, NOT counted as
+    // zero and NOT allowed to send the reader back to the message level.
+    expect(partial.tokens).toMatchObject({ input: 300, output: 12 })
+  })
+
+  it("sums across messages as well as within one", () => {
+    const across = stat("ses_a", [
+      assistantMessage("ses_a", "msg_a1", { created: 1, completed: 2 }, [
+        stepFinish("ses_a", "msg_a1", { input: 100, output: 10 }),
+        stepFinish("ses_a", "msg_a1", { input: 200, output: 20 }),
+      ]),
+      assistantMessage("ses_a", "msg_a2", { created: 3, completed: 4 }, [
+        stepFinish("ses_a", "msg_a2", { input: 400, output: 40 }),
+      ]),
+    ])
+
+    expect(across.tokens).toMatchObject({ input: 700, output: 70 })
+    expect(across.requests).toBe(2)
   })
 })
 

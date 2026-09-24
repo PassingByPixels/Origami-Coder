@@ -16,7 +16,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: origami.local)
-                                                                [string] [default: "origami.local"]
+                                                                 [string] [default: "origami.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]
       --cwd          working directory [string] [default: "<HOME>"]"
 `;
@@ -28,7 +28,7 @@ manage MCP (Model Context Protocol) servers
 
 Commands:
   origami mcp add [name]     add an MCP server
-  origami mcp list           list MCP servers and their status                        [aliases: ls]
+  origami mcp list           list MCP servers and their status                         [aliases: ls]
   origami mcp auth [name]    authenticate with an OAuth-enabled MCP server
   origami mcp logout [name]  remove OAuth credentials for an MCP server
   origami mcp debug <name>   debug OAuth connection for an MCP server
@@ -59,9 +59,8 @@ Options:
   -c, --continue      continue the last session                                            [boolean]
   -s, --session       session id to continue                                                [string]
       --fork          fork the session when continuing (use with --continue or --session)  [boolean]
-  -p, --password      basic auth password (defaults to ORIGAMI_SERVER_PASSWORD)            [string]
-  -u, --username      basic auth username (defaults to ORIGAMI_SERVER_USERNAME or 'origami')
-                                                                                            [string]
+  -p, --password      basic auth password (defaults to ORIGAMI_SERVER_PASSWORD)             [string]
+  -u, --username      basic auth username (defaults to ORIGAMI_SERVER_USERNAME or 'origami')[string]
       --mini          start the minimal interactive interface             [boolean] [default: false]
       --no-replay     disable mini session history replay on resume and after resize       [boolean]
       --replay-limit  cap visible mini replay to the newest N messages                      [number]"
@@ -92,10 +91,9 @@ Options:
                                           [string] [choices: "default", "json"] [default: "default"]
   -f, --file         file(s) to attach to message                                            [array]
       --title        title for the session (uses truncated prompt if no value provided)     [string]
-      --attach       attach to a running origami server (e.g., http://localhost:4096)      [string]
-  -p, --password     basic auth password (defaults to ORIGAMI_SERVER_PASSWORD)             [string]
-  -u, --username     basic auth username (defaults to ORIGAMI_SERVER_USERNAME or 'origami')
-                                                                                            [string]
+      --attach       attach to a running origami server (e.g., http://localhost:4096)       [string]
+  -p, --password     basic auth password (defaults to ORIGAMI_SERVER_PASSWORD)              [string]
+  -u, --username     basic auth username (defaults to ORIGAMI_SERVER_USERNAME or 'origami') [string]
       --dir          directory to run in, path on remote server if attaching                [string]
       --port         port for the local server (defaults to random port if no value provided)
                                                                                             [number]
@@ -141,7 +139,7 @@ exports[`origami CLI help-text snapshots every documented command emits stable h
 manage AI providers and credentials
 
 Commands:
-  origami providers list               list providers and credentials                 [aliases: ls]
+  origami providers list               list providers and credentials                  [aliases: ls]
   origami providers login [url]        log in to a provider
   origami providers logout [provider]  log out from a configured provider
 
@@ -168,24 +166,6 @@ Options:
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
       --pure        run without external plugins                                           [boolean]"
-`;
-
-exports[`origami CLI help-text snapshots every documented command emits stable help text: origami upgrade --help 1`] = `
-"origami upgrade [target]
-
-upgrade origami to the latest or a specific version
-
-Positionals:
-  target  version to upgrade to, for ex '0.1.48' or 'v0.1.48'                               [string]
-
-Options:
-  -h, --help        show help                                                              [boolean]
-  -v, --version     show version number                                                    [boolean]
-      --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
-  -m, --method      installation method to use
-                          [string] [choices: "curl", "npm", "pnpm", "bun", "brew", "choco", "scoop"]"
 `;
 
 exports[`origami CLI help-text snapshots every documented command emits stable help text: origami uninstall --help 1`] = `
@@ -221,7 +201,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: origami.local)
-                                                                [string] [default: "origami.local"]
+                                                                 [string] [default: "origami.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
@@ -241,7 +221,7 @@ Options:
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: origami.local)
-                                                                [string] [default: "origami.local"]
+                                                                 [string] [default: "origami.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
@@ -314,23 +294,6 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`origami CLI help-text snapshots every documented command emits stable help text: origami github --help 1`] = `
-"origami github
-
-manage GitHub agent
-
-Commands:
-  origami github install  install the GitHub agent
-  origami github run      run the GitHub agent
-
-Options:
-  -h, --help        show help                                                              [boolean]
-  -v, --version     show version number                                                    [boolean]
-      --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
-`;
-
 exports[`origami CLI help-text snapshots every documented command emits stable help text: origami pr --help 1`] = `
 "origami pr <number>
 
@@ -388,7 +351,7 @@ exports[`origami CLI help-text snapshots every documented command emits stable h
 database tools
 
 Commands:
-  origami db [query]     open an interactive sqlite3 shell or run a query                 [default]
+  origami db [query]     open an interactive sqlite3 shell or run a query                  [default]
   origami db path        print the database path
 
 Positionals:
@@ -441,7 +404,7 @@ exports[`origami CLI help-text snapshots every documented command emits stable h
 authenticate with an OAuth-enabled MCP server
 
 Commands:
-  origami mcp auth list  list OAuth-capable MCP servers and their auth status         [aliases: ls]
+  origami mcp auth list  list OAuth-capable MCP servers and their auth status          [aliases: ls]
 
 Positionals:
   name  name of the MCP server                                                              [string]
@@ -489,7 +452,7 @@ exports[`origami CLI help-text snapshots every documented command emits stable h
 log in to a provider
 
 Positionals:
-  url  origami auth provider                                                               [string]
+  url  origami auth provider                                                                [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -579,34 +542,6 @@ Options:
       --print-logs  print logs to stderr                                                   [boolean]
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
       --pure        run without external plugins                                           [boolean]"
-`;
-
-exports[`origami CLI help-text snapshots every documented command emits stable help text: origami github install --help 1`] = `
-"origami github install
-
-install the GitHub agent
-
-Options:
-  -h, --help        show help                                                              [boolean]
-  -v, --version     show version number                                                    [boolean]
-      --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]"
-`;
-
-exports[`origami CLI help-text snapshots every documented command emits stable help text: origami github run --help 1`] = `
-"origami github run
-
-run the GitHub agent
-
-Options:
-  -h, --help        show help                                                              [boolean]
-  -v, --version     show version number                                                    [boolean]
-      --print-logs  print logs to stderr                                                   [boolean]
-      --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure        run without external plugins                                           [boolean]
-      --event       GitHub mock event to run the agent for                                  [string]
-      --token       GitHub personal access token (github_pat_********)                      [string]"
 `;
 
 exports[`origami CLI help-text snapshots every documented command emits stable help text: origami db path --help 1`] = `

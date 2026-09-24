@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from '../../shared/warmTip';
   // t-kgtr6c — the composer's ONE Vision control.
   //
   // Round 2 shipped TWO for one subject: this button ("Eye") and a separate
@@ -15,9 +16,12 @@
   // own cap. It owns no state and posts nothing — InputBar holds `visionProfile`
   // and does the posting.
   //
-  // A LIST, not a notch rail. The approve control's three notches are a scale
-  // from ask to yolo; profiles are unordered names, and a rail would imply a
-  // severity they do not have.
+  // WHAT IS LEFT HERE, after the Auto/On/Profile fold: the BUTTON and its
+  // popover shell. The body — the three choices and the profile list one of them
+  // opens — is VisionPinRow.svelte, because arming a profile stopped being a
+  // second menu under the pin and became one of the pin control's own answers
+  // (visionTriad.ts). The `note` branch stayed: "no profiles exist" and "this
+  // model already looks" are things to SAY, not things to pick.
   import { visionButtonState } from './visionButtonState';
   import VisionPinRow from './VisionPinRow.svelte';
   import { visionPinLine, type VisionState } from './visionPinState';
@@ -41,19 +45,17 @@
 
 <div class="vision-wrap">
   <button class="mode-btn vision-btn" class:active={state.lit} class:native onclick={onToggle}
-    title={`${state.title}\n${visionPinLine(visionState)}`}>{state.label}</button>
+    use:tip={`${state.title}\n${visionPinLine(visionState)}`}>{state.label}</button>
   {#if open}
     <button class="vision-backdrop" aria-label="Close vision selector" onclick={onClose}></button>
     <div class="vision-pop">
-      <!-- In EVERY branch, native included: the state most worth correcting is a model that claims it sees and cannot. -->
-      <VisionPinRow vision={visionState} {sessionId} />
-      {#if state.pop === 'picker'}
-        <button class="vision-item" class:active={!profile} onclick={() => onSelect('')}>Off</button>
-        {#each agents as slug (slug)}
-          <button class="vision-item" class:active={profile === slug} onclick={() => onSelect(slug)}>@{slug}</button>
-        {/each}
-      {:else}
-        <!-- A note, not a menu: there is nothing here a click could change. -->
+      <!-- ONE control, in EVERY branch — native included, because the state most
+           worth correcting is a model that claims it sees and cannot. It owns
+           the profile list too now: Profile is one of its three answers, so the
+           list is what that answer opens rather than a second menu underneath. -->
+      <VisionPinRow vision={visionState} {sessionId} {profile} {agents} {native} {onSelect} />
+      {#if state.pop !== 'picker'}
+        <!-- A note, not a menu: no profiles exist, or the model already looks. -->
         <div class="vision-empty">{state.note}</div>
       {/if}
     </div>
@@ -102,18 +104,6 @@
     border-radius: 6px;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
   }
-  .vision-item {
-    text-align: left;
-    font: inherit;
-    font-size: 11px;
-    padding: 4px 8px;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    background: none;
-    color: var(--og-text-secondary);
-    cursor: pointer;
-  }
-  .vision-item:hover { color: var(--og-text); border-color: var(--og-border); }
-  .vision-item.active { color: var(--og-text); border-color: var(--og-crane); }
+  /* `.vision-item` went to VisionPinRow.svelte with the profile list itself. */
   .vision-empty { padding: 6px 8px; font-size: 10px; line-height: 1.45; color: var(--og-text-muted); }
 </style>

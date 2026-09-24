@@ -3,7 +3,7 @@ export * as EventV2 from "./event"
 import { Cause, Context, Effect, Layer, Option, PubSub, Queue, Schema, Stream } from "effect"
 import { Event } from "@origami/schema/event"
 import type { Data, Definition, Payload } from "@origami/schema/event"
-import { and, asc, eq, gt, inArray } from "drizzle-orm"
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm"
 import { Database } from "./database/database"
 import { EventSequenceTable, EventTable } from "./event/sql"
 import { Location } from "./location"
@@ -107,6 +107,40 @@ export const readAggregate = Effect.fn("EventV2.readAggregate")(function* <A>(
   }
 })
 
+/**
+ * t-tjhmhw. A LOCAL write into an aggregate whose owner row names another desk.
+ * It is raised inside the write transaction, so nothing of the write lands.
+ */
+export class ForeignOwnerError extends Schema.TaggedErrorClass<ForeignOwnerError>()("EventV2.ForeignOwner", {
+  aggregateID: Schema.String,
+  owner: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * This desk's Nests device id, read in the caller's transaction. Nests
+ * (`engine/src/storage/nests.ts`, `rememberDevice`) keeps it as JSON under
+ * `nest_setting('device')`, and creates that table only when Nests is first
+ * used. `undefined` = this store names no desk; `null` = the value is there
+ * and cannot be read.
+ */
+const localDesk = Effect.fnUntraced(function* (db: Database.Interface["db"]) {
+  const table = yield* db
+    .get<{ n: number }>(sql`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'nest_setting'`)
+    .pipe(Effect.orDie)
+  if (!table?.n) return undefined
+  const row = yield* db
+    .get<{ value: string }>(sql`SELECT value FROM nest_setting WHERE key = 'device'`)
+    .pipe(Effect.orDie)
+  if (!row) return undefined
+  try {
+    const value: unknown = JSON.parse(row.value)
+    return typeof value === "string" && value.length > 0 ? value : null
+  } catch {
+    return null
+  }
+})
+
 export class SubscriberOverflowError extends Schema.TaggedErrorClass<SubscriberOverflowError>()(
   "EventV2.SubscriberOverflow",
   { capacity: Schema.Int },
@@ -121,6 +155,19 @@ export interface PublishOptions {
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
+  /**
+   * `false` projects the event WITHOUT appending it to the journal: the tables it
+   * writes are updated and the bus still sees it, but no `event` row is added and
+   * the aggregate's sequence does not advance.
+   *
+   * This is what a streaming writer uses for the intermediate states of one part.
+   * A tool part is rewritten in full on every progress callback, and journalling
+   * each one cost 424 MB of events for 7.1 MB of final parts in the largest
+   * session measured (2026-09-22). The caller MUST journal the part's closing
+   * state; what a transient publish can lose is the last few seconds of progress
+   * on a part whose turn the process did not survive.
+   */
+  readonly journal?: boolean
 }
 
 export interface Interface {
@@ -211,8 +258,10 @@ export const layerWith = (options?: LayerOptions) =>
           readonly ownerID?: string
           readonly strictOwner?: boolean
         },
-        commit?: (seq: number) => Effect.Effect<void>,
+        options?: { readonly commit?: (seq: number) => Effect.Effect<void>; readonly journal?: boolean },
       ) {
+        const commit = options?.commit
+        const journal = options?.journal !== false
         return Effect.gen(function* () {
           const durable = definition?.durable
           if (durable) {
@@ -247,6 +296,27 @@ export const layerWith = (options?: LayerOptions) =>
                             .get()
                             .pipe(Effect.orDie)
                           const latest = row?.seq ?? -1
+                          // t-tjhmhw: a LOCAL write (no `input`: a replay is the
+                          // import path, which writes as the owner) into a chat
+                          // another desk owns is refused here, in the same
+                          // transaction that reads the owner, so an owner flip
+                          // cannot land between the check and the write. An
+                          // aggregate with no owner (every chat on a desk that
+                          // never used Nests) costs nothing: no extra read.
+                          if (!input && row?.ownerID) {
+                            const desk = yield* localDesk(db)
+                            if (desk !== undefined && desk !== row.ownerID)
+                              yield* Effect.die(
+                                new ForeignOwnerError({
+                                  aggregateID,
+                                  owner: row.ownerID,
+                                  message:
+                                    desk === null
+                                      ? `This desk's id could not be read, so chat ${aggregateID} is read only for now`
+                                      : `Chat ${aggregateID} is read only on this desk: desk ${row.ownerID} writes it`,
+                                }),
+                              )
+                          }
                           const encoded = Schema.encodeUnknownSync(definition.data)(event.data) as Record<
                             string,
                             unknown
@@ -291,7 +361,11 @@ export const layerWith = (options?: LayerOptions) =>
                           if (input && row?.ownerID && row.ownerID !== input.ownerID) {
                             return
                           }
-                          const seq = input?.seq ?? latest + 1
+                          // A transient publish does not take a sequence: it is a
+                          // projection of a state the journal will record when the
+                          // part closes, so it sits AT the last recorded position
+                          // rather than claiming the next one.
+                          const seq = journal ? (input?.seq ?? latest + 1) : latest
                           if (input && seq !== latest + 1) {
                             yield* Effect.die(
                               new InvalidDurableEventError({
@@ -300,12 +374,14 @@ export const layerWith = (options?: LayerOptions) =>
                               }),
                             )
                           }
-                          const stored = yield* db
-                            .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
-                            .from(EventTable)
-                            .where(eq(EventTable.id, event.id))
-                            .get()
-                            .pipe(Effect.orDie)
+                          const stored = journal
+                            ? yield* db
+                                .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
+                                .from(EventTable)
+                                .where(eq(EventTable.id, event.id))
+                                .get()
+                                .pipe(Effect.orDie)
+                            : undefined
                           if (stored)
                             yield* Effect.die(
                               new InvalidDurableEventError({
@@ -321,6 +397,7 @@ export const layerWith = (options?: LayerOptions) =>
                             yield* projector(committed)
                           }
                           if (commit) yield* commit(seq)
+                          if (!journal) return { aggregateID, seq, journalled: false }
                           yield* db
                             .insert(EventSequenceTable)
                             .values([{ aggregate_id: aggregateID, seq, owner_id: input?.ownerID }])
@@ -346,12 +423,14 @@ export const layerWith = (options?: LayerOptions) =>
                             ])
                             .run()
                             .pipe(Effect.orDie)
-                          return { aggregateID, seq }
+                          return { aggregateID, seq, journalled: true }
                         }),
                       { behavior: "immediate" },
                     )
                     .pipe(Effect.orDie)
-                  if (committed) {
+                  // Nothing was appended, so there is nothing for a durable reader to
+                  // wake up and find.
+                  if (committed?.journalled) {
                     yield* Effect.forEach(
                       pubsub.durable.get(committed.aggregateID) ?? [],
                       (wake) => PubSub.publish(wake, undefined),
@@ -366,9 +445,13 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
-      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"]) {
+      function publishEvent<D extends Definition>(
+        definition: D,
+        event: Payload<D>,
+        options?: { readonly commit?: PublishOptions["commit"]; readonly journal?: boolean },
+      ) {
         return Effect.gen(function* () {
-          if (!definition?.durable && commit)
+          if (!definition?.durable && options?.commit)
             return yield* Effect.die(
               new InvalidDurableEventError({
                 type: event.type,
@@ -376,7 +459,7 @@ export const layerWith = (options?: LayerOptions) =>
               }),
             )
           if (definition?.durable) {
-            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
+            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, options)
             if (committed) {
               event = {
                 ...event,
@@ -433,7 +516,10 @@ export const layerWith = (options?: LayerOptions) =>
               ...(location ? { location } : {}),
               data,
             } as Payload<D>,
-            options?.commit,
+            {
+              ...(options?.commit ? { commit: options.commit } : {}),
+              ...(options?.journal === false ? { journal: false } : {}),
+            },
           )
         })
       }

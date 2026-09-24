@@ -1,20 +1,14 @@
 <script module lang="ts">
-  /**
-   * The envelope tool/agents.ts wraps a handoff in, followed by an instruction
-   * sentence for the RECEIVING MODEL. The human should see neither — strip
-   * everything from the opening tag through </peer_message> for display, and
-   * leave anything that does not match that pattern alone rather than guessing.
-   *
-   * Exported from the component (the InstructionRowActions.svelte pattern) so
-   * the rule is testable without mounting anything.
-   */
-  export function peerBody(text: string): string {
-    const match = /^<peer_message\b[^>]*>\n?([\s\S]*?)\n?<\/peer_message>/.exec(text.trim());
-    return match ? match[1] : text;
-  }
+  // The envelope strip lives in peerEnvelope.ts; re-exported here because every
+  // caller and its tests import it from the component (the
+  // InstructionRowActions.svelte pattern).
+  import { peerBody } from './peerEnvelope';
+  export { peerBody };
 </script>
 
 <script lang="ts">
+  import { peerBadge } from './peerBadge';
+
   /**
    * A message from ANOTHER agent session, badged as agent-origin.
    *
@@ -22,21 +16,37 @@
    * left-aligned and rule-marked where a user message is a filled bubble, and it
    * leads with WHO sent it. The reply address is not shown to the user — the
    * model receives it in the instruction text that peerBody() strips.
+   *
+   * Three senders share it — a peer handoff, a FLOCK contact (another person's
+   * Origami over the relay) and a SUB-AGENT QUESTION (one of this chat's own
+   * children, blocked until it is answered). Which one a row is, and what the
+   * badge says, is peerBadge.ts beside this.
    */
-  let { from, replyTo, text, timestamp }: {
+  let { from, replyTo, text, timestamp, flock, subagent }: {
     from: string;
     replyTo: string;
     text: string;
     timestamp?: number;
+    flock?: { contact: string; thread: string; kind: string; icon?: string };
+    subagent?: { label: string; requestID: string; sessionID: string };
   } = $props();
 
   const clock = (ts?: number) =>
     ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const badge = $derived(peerBadge({ from, ...(flock ? { flock } : {}), ...(subagent ? { subagent } : {}) }));
 </script>
 
-<div class="peer-row" data-peer-from={from}>
+<div
+  class="peer-row"
+  data-peer-from={from}
+  data-flock-thread={flock?.thread}
+  data-subagent-request={subagent?.requestID}
+>
   <div class="peer-head">
-    <span class="peer-badge">from {from}</span>
+    <span class="peer-badge" class:flock={badge.tone === 'flock'} class:subagent={badge.tone === 'subagent'}>
+      {badge.text}
+    </span>
+    {#if badge.detail}<span class="peer-thread">{badge.detail}</span>{/if}
     {#if timestamp}<span class="peer-time">{clock(timestamp)}</span>{/if}
   </div>
   <div class="peer-text">{peerBody(text)}</div>
@@ -66,6 +76,22 @@
     border-radius: 3px;
     border: 1px solid var(--og-accent-2);
     color: var(--og-accent-2);
+  }
+  /* A flock message comes from OUTSIDE this machine, so it takes the primary
+     accent rather than the peer row's secondary one. */
+  .peer-badge.flock {
+    border-color: var(--og-accent);
+    color: var(--og-accent);
+  }
+  /* A blocked agent of the user's own is a WARNING colour, not an accent: the
+     row is asking for something, unlike the other two senders. */
+  .peer-badge.subagent {
+    border-color: var(--og-warning);
+    color: var(--og-warning-text);
+  }
+  .peer-thread {
+    font-size: 10px;
+    color: var(--og-text-muted);
   }
   .peer-time {
     margin-left: auto;

@@ -217,6 +217,20 @@ describe("session.degrade.detect", () => {
     expect(knob?.label).toBe("reasoning effort")
   })
 
+  // t-rz0amv: retention is derived from the model FAMILY, so a sibling model
+  // that does not take it refuses the request; the engine drops the knob rather
+  // than retrying the identical body.
+  test("classifies a 400 that rejects prompt cache retention", () => {
+    const knob = SessionDegrade.detect(
+      apiError({
+        message: "Unsupported parameter: 'prompt_cache_retention' is not supported with this model.",
+        statusCode: 400,
+      }),
+    )
+    expect(knob?.label).toBe("prompt cache retention")
+    expect(knob?.keys).toContain("promptCacheRetention")
+  })
+
   test("classifies a 400 that rejects verbosity", () => {
     const knob = SessionDegrade.detect(
       apiError({ message: "Unsupported parameter: verbosity", statusCode: 400 }),

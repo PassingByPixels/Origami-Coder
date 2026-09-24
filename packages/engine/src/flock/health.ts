@@ -6,51 +6,40 @@ import { Effect } from "effect"
 import type { Binding, FlockRouting } from "./routing"
 
 /**
- * HTTP statuses that describe the BINDING rather than the request. 401/403 (this
- * endpoint will not have us), 404 (this endpoint does not serve that model), 408
- * (it did not answer in time), 429 (it is saturated). 5xx is handled separately
- * below.
+ * HTTP statuses that describe the BINDING rather than the request: 401/403 (this
+ * endpoint will not have us), 404 (does not serve that model), 408 (no answer in
+ * time), 429 (saturated). 5xx is handled separately below.
  *
  * Deliberately absent: 400 and 422. A malformed request fails identically
- * everywhere, so walking it only spends the rest of the chain reproducing the
- * same failure and buries the real cause behind the last binding's message.
+ * everywhere, so walking it only reproduces the same failure down the chain and
+ * buries the real cause behind the last binding's message.
  */
 const HEALTH_STATUS = new Set([401, 403, 404, 408, 429])
 
-/**
- * Whether a failure is binding sickness — the one thing another binding could
- * survive. Classified against the shapes `MessageV2.fromError` actually
- * produces, which is the single funnel every provider and transport failure in
- * this engine passes through.
- */
+/** Whether a failure is binding sickness — the one thing another binding could
+ *  survive. Classified against the shapes `MessageV2.fromError` actually produces,
+ *  the single funnel every provider and transport failure passes through. */
 export function isHealthClass(error: SessionRetry.Err): boolean {
   // No usable credential for this provider. Detected before the request left,
   // but it is the same fact a 401 reports: this binding cannot be talked to.
   if (SessionV1.AuthError.isInstance(error)) return true
   // Everything else that can be sickness arrives as APIError. Aborts, output
   // length, context overflow, content filter, structured-output and unknown
-  // errors are all facts about the REQUEST or the user's intent, and answer
-  // false by falling through.
+  // errors are facts about the REQUEST, and answer false by falling through.
   if (!SessionV1.APIError.isInstance(error)) return false
   const status = error.data.statusCode
   if (status === undefined) {
-    // Nothing came back with a status: connection refused, DNS failure, socket
-    // or header timeout, a reset or a truncated stream. The AI SDK marks its
-    // own connect failures retryable ("Cannot connect to API"), and so do the
-    // engine's transport wrappers (ECONNRESET, ZlibError, header timeout,
-    // response-stream). A statusless error that is NOT retryable is a refusal
-    // the provider reasoned about — quota exhausted, invalid prompt — and walks
-    // nowhere.
+    // Nothing came back with a status: connection refused, DNS failure, socket or
+    // header timeout, a reset or a truncated stream. The AI SDK and the engine's
+    // transport wrappers mark their own connect failures retryable. A statusless
+    // error that is NOT retryable is a refusal the provider reasoned about.
     return error.data.isRetryable
   }
   return HEALTH_STATUS.has(status) || status >= 500
 }
 
-/**
- * Whether these parts are assistant output a second attempt would duplicate.
- * A tool part counts even when it produced no text: the side effect already
- * happened.
- */
+/** Whether these parts are assistant output a second attempt would duplicate. A
+ *  tool part counts even when it produced no text: the side effect happened. */
 export function produced(parts: readonly SessionV1.Part[]): boolean {
   return parts.some(
     (part) =>
@@ -64,11 +53,9 @@ export interface Failure<A> {
   readonly error: SessionRetry.Err
   /** Whether the attempt had already written output when it failed. */
   readonly produced: boolean
-  /**
-   * What the failing attempt left behind, for callers that must carry on with
-   * it — a subagent turn or a compaction still has a real message to finish
-   * off. Absent when the attempt failed with nothing to hand back at all.
-   */
+  /** What the failing attempt left behind, for callers that must carry on with
+   *  it — a subagent turn or a compaction still has a real message to finish
+   *  off. Absent when the attempt failed with nothing to hand back at all. */
   readonly value?: A
 }
 
@@ -90,20 +77,13 @@ export type Outcome<A> =
   /** No candidate was usable at all: nothing ran, nothing was spent (D10). */
   | { readonly kind: "exhausted" }
 
-/**
- * Walk the subagent binding's ordered candidate chain, at most once per
- * candidate.
- *
- * Two failure layers, one loop. A candidate the provider registry does not have
- * is skipped without spending anything. A candidate that runs and fails is
- * walked past only when the failure is binding sickness AND the attempt wrote
- * no output — re-running a turn that already produced output would duplicate
- * the output and the bill, which is worse than a visible failure.
- *
- * There is no circuit breaker and no cooldown memory: a chain is walked afresh
- * on every request, so the bound on attempts is the chain length. Remembering
- * which bindings were sick last time is future work, not v1.
- */
+/** Walk the subagent binding's ordered candidate chain, at most once per
+ *  candidate. Two failure layers, one loop: a candidate the provider registry
+ *  does not have is skipped without spending anything, and one that runs and
+ *  fails is walked past only when the failure is binding sickness AND the attempt
+ *  wrote no output — re-running a turn that produced output would duplicate the
+ *  output and the bill. No circuit breaker and no cooldown memory: a chain is
+ *  walked afresh every request, so the bound on attempts is the chain length. */
 export const walk = <A, E, R>(input: {
   candidates: readonly Binding[]
   provider: Provider.Interface
@@ -142,27 +122,17 @@ export const walk = <A, E, R>(input: {
       })
     }
     // Every candidate that ran was unhealthy and there is nothing left to walk
-    // to, so the last sickness IS the answer — a chain of dead endpoints is a
-    // real failure, not an absence of routing.
+    // to, so the last sickness IS the answer, not an absence of routing.
     if (last) return { kind: "failed", ...last }
     return { kind: "exhausted" }
   })
 
-/**
- * Run a one-shot generation on the subagent chain — the engine's cheap
- * background work (titles, summarisation, project-copy names) rides the same
- * binding, because it is the same answer to the same question: which model does
- * this user want the work they are not watching to run on. Answers `undefined`
- * when Flock is off, when the profile binds no subagent model, or when the chain
- * could not produce a result — the caller then runs its own resolution, which is
- * today's code and today's behaviour byte for byte.
- *
- * A one-shot generation writes nothing into the session until it has finished,
- * so a failed attempt has no output to duplicate and the chain walks on any
- * sickness. A failure the chain cannot survive still hands the caller back to
- * its own model: that model is what would have run with Flock off, and it is
- * the only thing standing between the user and no title at all.
- */
+/** Run a one-shot generation on the subagent chain — the engine's cheap
+ *  background work (titles, summarisation, project-copy names) rides the same
+ *  binding. Answers `undefined` when Flock is off, the profile binds no subagent
+ *  model, or the chain produced no result; the caller then runs its own
+ *  resolution. A one-shot writes nothing into the session until it finishes, so a
+ *  failed attempt has no output to duplicate and the chain walks on any sickness. */
 export const oneShot = <A, E, R>(input: {
   flock: FlockRouting.Interface
   provider: Provider.Interface

@@ -1,10 +1,4 @@
-// The SHAPE the Crons pane renders — one row, and the payload that carries a
-// list of them. Type-only: no imports of its own beyond the types it composes,
-// nothing to execute, nothing to test.
-//
-// Split out of cronService.ts at that file's architecture cap, when the model
-// field stopped being optional in practice and its `validate` needed room to
-// say why. cronService re-exports both names, so no import site moved.
+// The shape the Crons pane renders — one row, plus the payload carrying a list of them. Type-only.
 
 import type { CronSchedule } from './cronSchedule';
 import type { CronOutcome } from './cronLog';
@@ -27,9 +21,8 @@ export interface CronRow {
   scriptPath: string;
   /** ISO string, or null when an interval cron has no registration anchor. */
   nextRunAt: string | null;
-  /** When the log was last written — the honest "it ran" signal we can see
-   *  without a second round of OS queries. Null when it has never produced
-   *  output. */
+  /** When the log was last written — the honest "it ran" signal without a second round of OS
+   *  queries. Null when it never produced output. */
   lastOutputAt: number | null;
   /** Runs counted from the log itself (cronLog.ts) — the audit trail is the
    *  only counter, so this can never drift from what actually happened. */

@@ -47,6 +47,23 @@ export interface ProtocolBody<Body> {
   readonly schema: Schema.Codec<Body, unknown>
   /** Build the provider-native body from a common `LLMRequest`. */
   readonly from: (request: LLMRequest) => Effect.Effect<Body, LLMError>
+  /**
+   * Top-level body keys that carry the request's STRUCTURE — the ones `from`
+   * writes to say *what is being asked*, not *how to sample the answer*.
+   *
+   * A key is OWNED, and an `http.body` overlay naming it fails loudly, only
+   * when it is listed here AND `from` actually wrote it for the request in
+   * hand. Ownership is therefore per protocol and per request: `thinking` is
+   * structure for Anthropic Messages but a plain extra on an
+   * OpenAI-compatible server, and it is not owned even on Anthropic when
+   * reasoning is off and no `thinking` block was built.
+   *
+   * Sampling knobs (`temperature`, `top_p`, `frequency_penalty`, `seed`,
+   * `stop`, ...) and provider extras stay OUT of this list: the AI SDK path
+   * always let a configured value win, and refusing them took the whole
+   * OpenAI-compatible family down on the first turn.
+   */
+  readonly structure: ReadonlyArray<Extract<keyof Body, string>>
 }
 
 export interface ProtocolStream<Frame, Event, State> {

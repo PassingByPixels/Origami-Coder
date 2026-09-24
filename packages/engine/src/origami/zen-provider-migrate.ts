@@ -15,31 +15,17 @@ const BACKUP_SUFFIX = ".zen-provider.bak"
 /**
  * Fold a legacy `provider["opencode-zen"]` block over to `provider["opencode"]`.
  *
- * WHY: the sidebar's Zen preset used to write its block under the id
- * `opencode-zen`, but the engine's baked catalog names that provider `opencode`
- * and every Zen feature gate keys off `ProviderV2.ID.opencode`. A key connected
- * through the sidebar therefore chatted fine and silently missed the Zen-only
- * features (web search, small-model selection) — the id never met the gate.
- * The extension now writes `opencode`; this folds over the blocks already on
- * disk so existing users get the features without re-pasting a key.
+ * The sidebar's Zen preset wrote its block under `opencode-zen`, but the baked
+ * catalog names that provider `opencode` and every Zen feature gate keys off
+ * `ProviderV2.ID.opencode`, so a key connected through the sidebar silently
+ * missed the Zen-only features. This folds over the blocks already on disk.
  *
- * Conservative in four ways:
- *
- *  - It renames the KEY TOKEN ONLY, as a single offset-based edit. The value
- *    block is never re-serialized, so comments, key order, indentation, blank
- *    lines, trailing commas, CRLF — all survive byte-for-byte. Round-tripping
- *    the value through `JSON.stringify` would have eaten every comment in it.
- *  - It does nothing at all if a `provider["opencode"]` already exists in ANY
- *    candidate file. Two definitions of one provider is a worse state than the
- *    one being fixed, and which of them wins depends on merge order the user
- *    cannot see. Their explicit `opencode` block is the one that should stand.
- *  - It backs the file up to `<file>.zen-provider.bak` before writing, and
- *    never overwrites an existing backup — so a second run cannot destroy the
- *    copy taken by the first.
- *  - It is best-effort. A config directory that cannot be read or written is
- *    not a reason to fail the load; the caller's merge still reads what is
- *    actually on disk, and an unmigrated block is exactly today's behaviour.
- *
+ * Conservative: it renames the KEY TOKEN ONLY, as one offset-based edit, so
+ * comments, key order and line endings survive byte-for-byte; it does nothing
+ * if a `provider["opencode"]` already exists in ANY candidate file, because the
+ * user's explicit block should stand; it backs the file up to
+ * `<file>.zen-provider.bak` and never overwrites an existing backup; and it is
+ * best-effort, since an unreadable config directory must not fail the load.
  * Returns a log line per file changed, or `undefined` when nothing was touched.
  */
 export function migrateZenProviderId(dir: string): string | undefined {
@@ -79,10 +65,8 @@ function hasProvider(text: string, id: string): boolean {
   return !!root && !!findNodeAtLocation(root, ["provider", id])
 }
 
-/**
- * Rewrite `provider["opencode-zen"]`'s KEY to `"opencode"`, leaving every other
- * byte alone. `undefined` when there is nothing to rename.
- */
+/** Rewrite `provider["opencode-zen"]`'s KEY to `"opencode"`, leaving every other
+ *  byte alone. `undefined` when there is nothing to rename. */
 function renameProviderKey(text: string): string | undefined {
   const root = tree(text)
   if (!root) return undefined

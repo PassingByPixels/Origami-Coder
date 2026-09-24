@@ -1,0 +1,99 @@
+{
+  "withComposition": [
+    {
+      "sessionId": "ses_composition",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 331000,
+        "size": 1000000,
+        "cost": {
+          "amount": 0.01,
+          "currency": "USD"
+        },
+        "_meta": {
+          "composition": {
+            "systemPrompt": 3000,
+            "tools": 8,
+            "conversation": 327992,
+            "estimated": true,
+            "method": "chars/4 of the captured system prompt and tool block, scaled to the model's reported prompt tokens; conversation is the remainder"
+          },
+          "cache": {
+            "read": 330000,
+            "write": 0
+          }
+        }
+      }
+    }
+  ],
+  "withoutComposition": [
+    {
+      "sessionId": "ses_no_composition",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 1000,
+        "size": 1000000,
+        "cost": {
+          "amount": 0.01,
+          "currency": "USD"
+        }
+      }
+    }
+  ],
+  "withCacheFields": [
+    {
+      "sessionId": "ses_cache",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 11500,
+        "size": 1000000,
+        "cost": {
+          "amount": 0.01,
+          "currency": "USD"
+        },
+        "_meta": {
+          "cache": {
+            "read": 11000,
+            "write": 4000
+          }
+        }
+      }
+    }
+  ],
+  "withSubagents": [
+    {
+      "sessionId": "ses_1",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 999,
+        "size": 1000000,
+        "cost": {
+          "amount": 0.01,
+          "currency": "USD"
+        },
+        "_meta": {
+          "subagents": {
+            "cost": 0.5,
+            "tokensInput": 70,
+            "tokensOutput": 90
+          }
+        }
+      }
+    }
+  ],
+  "smallContextLimit": [
+    {
+      "sessionId": "ses_small_ctx",
+      "update": {
+        "sessionUpdate": "usage_update",
+        "used": 100,
+        "size": 8000,
+        "cost": {
+          "amount": 0.01,
+          "currency": "USD"
+        }
+      }
+    }
+  ],
+  "noContextLimit": []
+}

@@ -1,18 +1,12 @@
-// Skills pane — host side. Lifted out of DashboardPanel.ts's message switch,
-// which sat two lines under its cap, and lifted HERE rather than folded into
-// pluginsPane.ts because the two panes read different engine methods and are
-// shown separately.
-//
-// It is the same `extMethod` seam pluginsPane.ts and toolsPane.ts use: the
-// ENGINE owns skill discovery, so this process only asks and forwards.
-//
-// The one thing it does NOT copy from those two is how it finds the session to
-// ask. They each resolve one inline at the dispatch line; this resolves it
-// through activeSession.ts, because the resolution is what was broken (W8-L1 —
-// see that file for the corpse this pane reported as "Open a chat first" with
-// two healthy chats open).
+// Skills pane — host side, lifted out of DashboardPanel.ts's message switch (same seam
+// pluginsPane.ts and toolsPane.ts use: the engine owns discovery, this only asks and forwards).
+// Unlike those two, session resolution goes through activeSession.ts rather than an inline resolve
+// — that resolution was the actual bug (see activeSession.ts for the corpse this pane reported as
+// "Open a chat first" with two healthy chats open).
 
+import * as os from 'os';
 import { liveActiveSession } from './activeSession';
+import { classifyScope, scanRoots } from './skillScope';
 
 export const SKILLS_PANE_MESSAGE_TYPES = new Set(['listSkills']);
 
@@ -27,14 +21,17 @@ export interface SkillsPaneSession {
 }
 
 export interface SkillsPaneHost {
-  /**
-   * Every session this window HOLDS. A disposed one is already gone from it —
-   * which is exactly why the active id below cannot be trusted on its own.
-   */
+  /** Every session this window holds — a disposed one is already gone, which is why the active id
+   *  alone can't be trusted. */
   sessions(): ReadonlyMap<string, SkillsPaneSession>;
   /** The session the user is looking at. MAY name one that has been deleted. */
   activeSessionId(): string | null;
   post(message: Record<string, unknown>): void;
+  /** The open workspace folder (DashboardPanel's own `cwd`) — the boundary a skill's
+   *  `location` is tested against for the Local/Global filter (t-7vslix). */
+  cwd(): string;
+  /** t-sh7cog: the window's host engine (hostEngine.ts), asked only when no chat has a client. */
+  hostClient?: () => SkillsPaneClient | undefined;
 }
 
 export async function handleSkillsPaneMessage(
@@ -42,24 +39,41 @@ export async function handleSkillsPaneMessage(
   m: { type?: string; [k: string]: unknown },
 ): Promise<void> {
   if (m.type !== 'listSkills') return;
-  const session = liveActiveSession(host.sessions(), host.activeSessionId());
-  if (!session?.client) {
-    host.post({ type: 'skillsData', skills: [], error: 'Open a chat first — listing skills needs an active session.' });
+  // `scanRoots` rides EVERY answer, the good one and both failures (t-fisfs5
+  // R11): the empty state names the directories it looked in (t-7vslix), and an
+  // error that names none reads as a dead end rather than a diagnostic. It is
+  // computed host-side from the cwd and the home directory, so it is known even
+  // when the engine call never happened.
+  const roots = scanRoots(host.cwd(), os.homedir());
+  const client = liveActiveSession(host.sessions(), host.activeSessionId())?.client ?? host.hostClient?.();
+  if (!client) {
+    host.post({
+      type: 'skillsData',
+      skills: [],
+      error: 'Open a chat first — listing skills needs an active session.',
+      scanRoots: roots,
+    });
     return;
   }
   try {
-    // `refresh` only when the user actually hit the button. The engine scans
-    // skills ONCE per instance, so without this the button re-read an
-    // unchangeable cache — a skill added mid-session never showed up until the
-    // window was reloaded.
+    // `refresh` only when the user hits the button: the engine scans skills once per instance, so a
+    // skill added mid-session wouldn't show up otherwise.
     const rescan = m.refresh === true;
-    const resp = await session.client.extMethod('list_skills', rescan ? { refresh: true } : {});
+    const resp = await client.extMethod('list_skills', rescan ? { refresh: true } : {});
+    const rawSkills = Array.isArray(resp['skills']) ? resp['skills'] : [];
+    const cwd = host.cwd();
+    const skills = rawSkills.map((s) =>
+      s && typeof s === 'object' && typeof (s as Record<string, unknown>)['location'] === 'string'
+        ? { ...s, scope: classifyScope((s as Record<string, unknown>)['location'] as string, cwd) }
+        : s,
+    );
     host.post({
       type: 'skillsData',
-      skills: Array.isArray(resp['skills']) ? resp['skills'] : [],
+      skills,
       problems: Array.isArray(resp['problems']) ? resp['problems'] : [],
+      scanRoots: roots,
     });
   } catch (e) {
-    host.post({ type: 'skillsData', skills: [], error: e instanceof Error ? e.message : String(e) });
+    host.post({ type: 'skillsData', skills: [], error: e instanceof Error ? e.message : String(e), scanRoots: roots });
   }
 }

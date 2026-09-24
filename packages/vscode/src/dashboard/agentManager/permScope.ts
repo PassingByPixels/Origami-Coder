@@ -1,13 +1,8 @@
-// Agent Manager - permScope.ts (S6e): REPO-SCOPED auto-approve. S5.2 auto-allowed
-// EVERY permission ask from a background agent (kind:'agent') with the toggle ON,
-// so a background agent run waved through writes into the OS Temp dir and the
-// user's Python Scripts dir. This narrows the auto-approve to
-// asks whose filesystem paths all resolve INSIDE the session's repo root (the
-// worktree lives under <repoRoot>/.origami/worktrees/<x>, so the repo-root prefix
-// covers both the worktree AND the parent-repo asks S5.2 existed for). An
-// out-of-repo ask is auto-DENIED with the reject option + a transcript note so the
-// model adapts and the run never hangs. Pure + vscode-free so the whole decision
-// unit-tests; the DashboardPanel handler only threads session.cwd + the ask through.
+// REPO-SCOPED auto-approve: narrows the old behaviour (auto-allow every ask from a
+// background agent) to asks whose filesystem paths all resolve inside the session's repo
+// root, which covers both the worktree and the parent-repo asks the old behaviour existed
+// for. An out-of-repo ask is auto-DENIED with a transcript note so the model adapts and the
+// run never hangs.
 
 import path from 'node:path';
 import { decidePermission, pickAllowOption, autoApproveNote, type PermOption } from './permissions';
@@ -20,10 +15,9 @@ export interface PermDecision {
   note?: string;
 }
 
-// rawInput keys that carry a FILESYSTEM path/pattern to scope. `url` and `command`
-// are deliberately excluded - they are not paths, and a command string cannot be
-// reliably scoped; an ask with no path target scopes as vacuously in-repo (today's
-// allow), so command/url asks keep their S5.2 behaviour.
+// rawInput keys that carry a filesystem path/pattern to scope; `url`/`command` are excluded
+// (not paths, and a command string can't be reliably scoped), so those asks keep the old
+// behaviour.
 const PATH_KEYS = ['filepath', 'path', 'file', 'parentDir', 'directory', 'pattern'];
 
 /** Every filesystem path/pattern the ask carries (ACP file locations + the
@@ -46,30 +40,23 @@ export function collectPermPaths(
   return out;
 }
 
-/** Ascend a session cwd to the repo root that owns it: an agent runs in the
- *  worktree <repoRoot>/.origami/worktrees/<x>, so cut at that marker; a session
- *  with no worktree marker (a plain in-repo cwd) IS its own root. Returns a
- *  forward-slash path with no trailing slash. */
+/** Ascend a session cwd to the repo root that owns it: cut at the `.origami/worktrees/`
+ *  marker; a plain in-repo cwd is its own root. */
 export function repoRootFromCwd(cwd: string): string {
   const norm = (cwd || '').replace(/\\/g, '/').replace(/\/+$/, '');
   const idx = norm.toLowerCase().indexOf('/.origami/worktrees/');
   return idx >= 0 ? norm.slice(0, idx) : norm;
 }
 
-/** Resolve `p` (relative OR absolute) against the session `cwd`, COLLAPSING
- *  `.`/`..` to a real absolute path - this closes the traversal escapes (a
- *  relative `..\..\x`, or an absolute path with embedded `..` that merely
- *  PREFIXES the root) before the inside-repo test. win32/posix per `win`; the
- *  base cwd is absolute in practice, so this never consults the process cwd. */
+/** Resolve `p` against the session cwd, collapsing `.`/`..` to a real absolute path — this
+ *  closes traversal escapes (a relative `..\..\x`, or an absolute path that merely prefixes
+ *  the root) before the inside-repo test. */
 export function resolvePermPath(cwd: string, p: string, win = process.platform === 'win32'): string {
   return (win ? path.win32 : path.posix).resolve(cwd, p);
 }
 
-/** Is `target` the repo root or strictly beneath it? Windows semantics on win32:
- *  case-insensitive + separator-normalised, with a prefix BOUNDARY so `C:/repo2`
- *  is NOT inside `C:/repo` (only `C:/repo` itself or `C:/repo/...`). `win`
- *  defaults to the host platform but is injectable so the matrix tests are
- *  deterministic on any OS. */
+/** Is `target` the repo root or strictly beneath it? Windows: case-insensitive +
+ *  separator-normalised, with a prefix boundary so a sibling repo isn't misread as inside. */
 export function isPathInside(root: string, target: string, win = process.platform === 'win32'): boolean {
   const norm = (p: string) => {
     const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
@@ -81,9 +68,8 @@ export function isPathInside(root: string, target: string, win = process.platfor
   return t === r || t.startsWith(r + '/');
 }
 
-/** The reject-family option to answer an out-of-scope ask with (reject_once,
- *  else reject_always, else null -> the caller forwards rather than inventing a
- *  denial). Mirror of pickAllowOption. */
+/** The reject-family option for an out-of-scope ask (reject_once, else reject_always, else
+ *  null — the caller forwards rather than inventing a denial). */
 export function pickRejectOption(options: ReadonlyArray<PermOption>): string | null {
   const reject = options.find((o) => o.kind === 'reject_once')
     ?? options.find((o) => o.kind === 'reject_always')
@@ -97,14 +83,10 @@ export function autoDenyNote(detail: string): string {
   return d ? `⚙ auto-denied out-of-repo permission: ${d}` : '⚙ auto-denied out-of-repo permission';
 }
 
-/**
- * The full auto-approve decision for one permission ask. Only a background agent
- * session with the toggle ON is answered host-side (decidePermission); everything
- * else forwards. Of those: every path in the ask is RESOLVED against the session
- * cwd (collapsing `.`/`..`) and, if EVERY resolved path is inside the repo root ->
- * ALLOW; if ANY resolves outside -> DENY. A missing allow/reject option forwards
- * unchanged (never invent consent or a denial on a surface that offers neither).
- */
+/** The full auto-approve decision for one ask: only a background agent session with the
+ *  toggle ON is answered host-side. Every resolved path must be inside the repo root to
+ *  ALLOW; any outside resolves to DENY. A missing allow/reject option forwards unchanged —
+ *  never invent consent or a denial. */
 export function decideAgentPermission(
   kind: 'chat' | 'agent' | undefined,
   autoApprove: boolean,

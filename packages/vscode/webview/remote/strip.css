@@ -1,0 +1,74 @@
+/* Origami Remote — the CHAT STRIP.
+ *
+ * Split out of remote.css, which says of itself that it holds three concerns
+ * (layout overrides, feature gates, the shell's own chrome) and that a fourth
+ * belongs in a stylesheet of its own. The strip is no longer a chip rule: it
+ * is a tab bar with a current-tab state, a new-chat control and a close
+ * control, and its geometry (tap targets, the two border halves that make one
+ * pill) is the part a reviewer has to be able to read in one place.
+ *
+ * Loaded by `sessionBar.ts`, the module that draws it — esbuild folds it into
+ * the same out/remote/remote.css the shell already links.
+ *
+ * The phone's answer to the desktop's session tabs. A flex SIBLING above
+ * #app, like the status strip, so its height comes out of the app's box and
+ * never pushes the composer below the fold. It opens on the FIRST chat and
+ * stays open — the + and the x live in it, so hiding it below two chats hid
+ * the only controls that change how many chats there are. The strip scrolls
+ * ITSELF, because nothing on a phone may scroll the page sideways.
+ */
+#remoteSessions {
+  display: none;
+  flex: 0 0 auto;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--og-surface);
+  border-bottom: 1px solid var(--og-border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#remoteSessions[data-open="true"] { display: flex; }
+
+.remote-chip {
+  flex: 0 0 auto;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 32px: the smallest comfortable tap target that still fits three chips
+     across a 390px iPhone viewport beside the + button. */
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--og-border);
+  border-radius: 16px;
+  background: var(--og-btn-bg);
+  color: var(--og-text-secondary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.remote-chip[data-current="true"] { border-color: var(--og-crane); color: var(--og-text); }
+.remote-chip-new { font-size: 16px; line-height: 1; padding: 4px 12px; }
+
+/* One tab: the chip, plus the close button on the current chat. Siblings, not
+   nested (a <button> inside a <button> is invalid markup); the two border
+   halves below join them into one pill. */
+.remote-tab { display: inline-flex; flex: 0 0 auto; align-items: stretch; }
+.remote-tab[data-current="true"] .remote-chip { border-radius: 16px 0 0 16px; border-right: 0; }
+
+/* Close the chat the phone is ON. 32px of its own, so a thumb aiming at the
+   label cannot take the chat down by accident. */
+.remote-chip-close {
+  flex: 0 0 auto;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--og-crane);
+  border-radius: 0 16px 16px 0;
+  background: var(--og-btn-bg);
+  color: var(--og-text-secondary);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+}

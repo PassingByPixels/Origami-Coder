@@ -154,25 +154,33 @@ describe("ModelsDev Service", () => {
     }),
   )
 
-  it.live("get() recovers from a corrupted cache file by fetching a fresh catalog", () =>
+  // t-ru0by6 item 3: this used to write a corrupted cache, flip fetch back on,
+  // and expect get() to recover by fetching fixture2 over the network. The
+  // network leg is gone: models-dev.ts's `populate` has a FORK STRIP branch
+  // (`if (true) return {}`) ahead of `fetchAndWrite`, hard-disabled for this
+  // fork's no-phone-home policy — the flip of ORIGAMI_DISABLE_MODELS_FETCH no
+  // longer reaches it. What is still real and still worth pinning:
+  // `loadFromDisk`'s readJson-error branch does not throw on invalid JSON and
+  // does remove the corrupted file, same as `fs-util.test.ts` proves for
+  // `readJson` itself — asserted here at the ModelsDev.get() call site.
+  it.live("get() recovers from a corrupted cache file by removing it and falling back", () =>
     Effect.gen(function* () {
       yield* writeCacheText("{")
-      const state = yield* Ref.make({ ...initialState, body: JSON.stringify(fixture2) })
-      const context = yield* Layer.build(buildLayer(state))
-      const result = yield* Effect.acquireUseRelease(
-        Effect.sync(() => {
-          Flag.ORIGAMI_DISABLE_MODELS_FETCH = false
-        }),
-        () => ModelsDev.Service.use((s) => s.get()).pipe(Effect.provide(context)),
-        () =>
-          Effect.sync(() => {
-            Flag.ORIGAMI_DISABLE_MODELS_FETCH = true
-          }),
+      const state = yield* Ref.make(initialState)
+      const result = yield* provided(
+        state,
+        ModelsDev.Service.use((s) => s.get()),
       )
-      expect(result).toEqual(fixture2)
-      expect(yield* Effect.promise(() => readFile(cacheFile, "utf8"))).toBe(JSON.stringify(fixture2))
+      expect(result).toEqual({})
+      const exists = yield* Effect.promise(() =>
+        readFile(cacheFile, "utf8").then(
+          () => true,
+          () => false,
+        ),
+      )
+      expect(exists).toBe(false)
       const final = yield* Ref.get(state)
-      expect(final.calls.length).toBe(1)
+      expect(final.calls).toEqual([])
     }),
   )
 

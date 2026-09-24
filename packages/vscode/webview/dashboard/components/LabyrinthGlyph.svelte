@@ -25,6 +25,8 @@
     thinking: ['M4 7h16', 'M6.5 12h11', 'M9 17h6'],
     subagent: [DOT(6, 6, 1.6), 'M6 7.6V12', 'M6 12c0 4 4 4 8 4', 'M6 12c0-3 4-3 8-3', DOT(18, 16, 1.6), DOT(18, 9, 1.6)],
     error: ['M12 3.5L1.8 20.5h20.4z', 'M12 9.5v4.5', 'M11.99 17.4h.02'],
+    // compaction: two arrows closing on one line — the context squeezed down.
+    compaction: ['M3 12h18', 'M7 5l4 4-4 4', 'M17 5l-4 4 4 4', 'M6 19h12'],
   };
 
   let paths = $derived(PATHS[kind] ?? [DOT(12, 12, 6)]);

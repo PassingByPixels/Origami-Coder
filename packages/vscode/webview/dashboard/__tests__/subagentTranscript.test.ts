@@ -98,6 +98,16 @@ describe('transcriptEntry — a settled ToolCall becomes the card rules’ own p
     // Dropping it would turn a child that died into one that finished silently.
     expect(err.text).toBe('RateLimit: slow down');
   });
+
+  // t-gvz8t0. The child's reasoning is projected as the chat's OWN thought row,
+  // so ChatTranscript draws it with ThoughtPill — the same collapsed block the
+  // main chat gives its own reasoning — and never as the child's reply.
+  it('projects reasoning as a THOUGHT row, not as prose', () => {
+    const row = transcriptEntry({ type: 'reasoning', messageId: 'm', text: 'weighing two approaches' });
+    expect(row.kind).toBe('thought');
+    expect(row.kind).not.toBe('agent');
+    expect(row.text).toBe('weighing two approaches');
+  });
 });
 
 describe('subagentTranscriptPayload — a panel always gets something to draw', () => {

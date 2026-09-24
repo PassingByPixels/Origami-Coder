@@ -1,14 +1,12 @@
 import { Effect } from "effect"
 import { LLMError, LLMEvent, type ProviderMetadata, type ToolCall } from "../../schema"
-import { eventError, parseToolInput, type ToolAccumulator } from "../shared"
+import { eventError, readToolInput, type ToolAccumulator } from "../shared"
 
 type StreamKey = string | number
 
-/**
- * One pending streamed tool call. Providers emit the tool identity and JSON
- * argument text across separate chunks; `input` is the raw JSON string collected
- * so far, not the parsed object.
- */
+/** One pending streamed tool call. Providers emit the tool identity and JSON
+ *  argument text across separate chunks; `input` is the raw JSON string collected
+ *  so far, not the parsed object. */
 export interface PendingTool extends ToolAccumulator {
   readonly providerExecuted?: boolean
   readonly providerMetadata?: ProviderMetadata
@@ -17,19 +15,14 @@ export interface PendingTool extends ToolAccumulator {
 /**
  * Sparse parser state keyed by the provider's stream-local tool identifier.
  *
- * This key is not the final tool-call id (`call_...`). It is the id/index the
- * provider uses while streaming a partial call: OpenAI Chat / Anthropic /
- * Bedrock use numeric content indexes, while OpenAI Responses uses string
- * `item_id`s. The generic keeps each protocol internally consistent.
+ * Not the final tool-call id (`call_...`): OpenAI Chat / Anthropic / Bedrock use
+ * numeric content indexes while OpenAI Responses uses string `item_id`s.
  */
 export type State<K extends StreamKey> = Partial<Record<K, PendingTool>>
 
-/**
- * Result of adding argument text to one pending tool call. It returns both the
- * next `tools` state and the updated `tool` because parsers often need the
- * current id/name immediately. `events` contains lifecycle and delta events
- * produced by the append; metadata-only deltas update identity without output.
- */
+/** Result of adding argument text to one pending tool call. Returns both the next
+ *  `tools` state and the updated `tool`, since parsers often need the id/name at
+ *  once. `events` holds lifecycle and delta events; metadata-only deltas emit none. */
 export interface AppendOutcome<K extends StreamKey> {
   readonly tools: State<K>
   readonly tool: PendingTool
@@ -63,19 +56,27 @@ const inputDelta = (tool: PendingTool, text: string) =>
     text,
   })
 
-const toolCall = (route: string, tool: PendingTool, inputOverride?: string) =>
-  parseToolInput(route, tool.name, inputOverride ?? tool.input).pipe(
-    Effect.map(
-      (input): ToolCall =>
-        LLMEvent.toolCall({
-          id: tool.id,
-          name: tool.name,
-          input,
-          providerExecuted: tool.providerExecuted ? true : undefined,
-          providerMetadata: tool.providerMetadata,
-        }),
-    ),
-  )
+/**
+ * Build the public `tool-call` event for one finished call.
+ *
+ * Unreadable arguments do NOT fail the stream. The provider announced a call; the
+ * honest report is that call, marked `invalid`, carrying the raw text the model
+ * sent — the finish reason, the usage and every sibling call that did parse still
+ * reach the consumer.
+ */
+const toolCall = (route: string, tool: PendingTool, inputOverride?: string): ToolCall => {
+  const raw = inputOverride ?? tool.input
+  const read = readToolInput(route, tool.name, raw)
+  return LLMEvent.toolCall({
+    id: tool.id,
+    name: tool.name,
+    input: read.ok ? read.input : raw,
+    invalid: read.ok ? undefined : true,
+    error: read.ok ? undefined : read.error,
+    providerExecuted: tool.providerExecuted ? true : undefined,
+    providerMetadata: tool.providerMetadata,
+  })
+}
 
 /** Store the updated tool and produce the optional public delta event. */
 const appendTool = <K extends StreamKey>(
@@ -97,23 +98,17 @@ const appendTool = <K extends StreamKey>(
 export const isError = <K extends StreamKey>(result: AppendOutcome<K> | LLMError): result is LLMError =>
   result instanceof LLMError
 
-/**
- * Register a tool call whose start event arrived before any argument deltas.
- * Used by Anthropic `content_block_start`, Bedrock `contentBlockStart`, and
- * OpenAI Responses `response.output_item.added`.
- */
+/** Register a tool call whose start event arrived before any argument deltas. Used
+ *  by Anthropic `content_block_start`, Bedrock `contentBlockStart`, OpenAI Responses. */
 export const start = <K extends StreamKey>(
   tools: State<K>,
   key: K,
   tool: Omit<PendingTool, "input"> & { readonly input?: string },
 ) => withTool(tools, key, { ...tool, input: tool.input ?? "" })
 
-/**
- * Append a streamed argument delta, starting the tool if this provider encodes
- * identity on the first delta instead of a separate start event. OpenAI Chat has
- * this shape: `tool_calls[].index` is the stream key, and `id` / `name` may only
- * appear on the first delta for that index.
- */
+/** Append a streamed argument delta, starting the tool if the provider encodes
+ *  identity on the first delta instead of a separate start event. OpenAI Chat has
+ *  this shape: `tool_calls[].index` is the key and `id`/`name` may appear only there. */
 export const appendOrStart = <K extends StreamKey>(
   route: string,
   tools: State<K>,
@@ -138,11 +133,8 @@ export const appendOrStart = <K extends StreamKey>(
   return appendTool(tools, key, tool, delta.text)
 }
 
-/**
- * Append argument text to a tool that must already have been started. This keeps
- * protocols honest when their stream grammar promises a start event before any
- * argument delta.
- */
+/** Append argument text to a tool that must already have been started, keeping
+ *  protocols honest when their grammar promises a start event first. */
 export const appendExisting = <K extends StreamKey>(
   route: string,
   tools: State<K>,
@@ -156,63 +148,42 @@ export const appendExisting = <K extends StreamKey>(
   return appendTool(tools, key, { ...current, input: `${current.input}${text}` }, text)
 }
 
-/**
- * Finalize one pending tool call: parse the accumulated raw JSON, remove it
- * from state, and return the optional public `tool-call` event. Missing keys are
- * a no-op because some providers emit stop events for non-tool content blocks.
- */
+/** Shared body of `finish` / `finishWithInput`: pop one call and close it. */
+const finishOne = <K extends StreamKey>(route: string, tools: State<K>, key: K, inputOverride?: string) => {
+  const tool = tools[key]
+  if (!tool) return { tools }
+  return {
+    tools: withoutTool(tools, key),
+    events: [
+      LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata }),
+      toolCall(route, tool, inputOverride),
+    ],
+  }
+}
+
+/** Finalize one pending tool call: read the raw JSON, remove it from state, return
+ *  the optional `tool-call` event. A missing key is a no-op (non-tool stop events). */
 export const finish = <K extends StreamKey>(route: string, tools: State<K>, key: K) =>
-  Effect.gen(function* () {
-    const tool = tools[key]
-    if (!tool) return { tools }
-    return {
-      tools: withoutTool(tools, key),
-      events: [
-        LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata }),
-        yield* toolCall(route, tool),
-      ],
-    }
-  })
+  Effect.succeed(finishOne(route, tools, key))
 
-/**
- * Finalize one pending tool call with an authoritative final input string.
- * OpenAI Responses can send accumulated deltas and then repeat the completed
- * arguments on `response.output_item.done`; the final value wins.
- */
+/** Finalize one pending tool call with an authoritative final input string: OpenAI
+ *  Responses repeats the completed arguments on `output_item.done`, and that wins. */
 export const finishWithInput = <K extends StreamKey>(route: string, tools: State<K>, key: K, input: string) =>
-  Effect.gen(function* () {
-    const tool = tools[key]
-    if (!tool) return { tools }
-    return {
-      tools: withoutTool(tools, key),
-      events: [
-        LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata }),
-        yield* toolCall(route, tool, input),
-      ],
-    }
-  })
+  Effect.succeed(finishOne(route, tools, key, input))
 
-/**
- * Finalize every pending tool call at once. OpenAI Chat has this shape: it does
- * not emit per-tool stop events, so all accumulated calls finish when the choice
- * receives a terminal `finish_reason`.
- */
-export const finishAll = <K extends StreamKey>(route: string, tools: State<K>) =>
-  Effect.gen(function* () {
-    const pending = Object.values<PendingTool | undefined>(tools).filter(
-      (tool): tool is PendingTool => tool !== undefined,
-    )
-    return {
-      tools: empty<K>(),
-      events: yield* Effect.forEach(pending, (tool) =>
-        toolCall(route, tool).pipe(
-          Effect.map((call) => [
-            LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata }),
-            call,
-          ]),
-        ),
-      ).pipe(Effect.map((events) => events.flat())),
-    }
+/** Finalize every pending tool call at once. OpenAI Chat emits no per-tool stop
+ *  events, so all accumulated calls finish on a terminal `finish_reason`. */
+export const finishAll = <K extends StreamKey>(route: string, tools: State<K>) => {
+  const pending = Object.values<PendingTool | undefined>(tools).filter(
+    (tool): tool is PendingTool => tool !== undefined,
+  )
+  return Effect.succeed({
+    tools: empty<K>(),
+    events: pending.flatMap((tool) => [
+      LLMEvent.toolInputEnd({ id: tool.id, name: tool.name, providerMetadata: tool.providerMetadata }),
+      toolCall(route, tool),
+    ]),
   })
+}
 
 export * as ToolStream from "./tool-stream"

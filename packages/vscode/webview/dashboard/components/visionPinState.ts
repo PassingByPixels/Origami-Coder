@@ -1,8 +1,17 @@
-// The Vision tri-state, as the composer must SHOW it.
+// The Vision state's READ-OUT LINE — what the popover says vision is, and who
+// decided it.
 //
 // A table, not markup, for the reason visionButtonState.ts beside it is one:
 // the rules are four rows and a component is a rendering of them, and a table
 // can be checked without a DOM.
+//
+// SCOPE NARROWED. This file also used to hold WHICH BUTTON was armed and the
+// three buttons on offer (Auto/On/Off). Both moved to visionTriad.ts when the
+// popover became one control — "which of Auto, On and Profile is the answer"
+// depends on the armed profile and on native vision, neither of which is a fact
+// about the pin, and threading them through here would have made this table
+// answer a question it does not own. What is left is the sentence, which four
+// wire values map onto with nothing else in the input.
 //
 // THE DISTINCTION THE COPY MUST CARRY. `auto-on` and `on` write the same flag
 // into origami.json, so nothing downstream can tell them apart — the whole
@@ -18,15 +27,6 @@
 /** Wire value of `modelStatus.visionState`. Mirror of visionPin.ts's own type. */
 export type VisionState = 'auto-on' | 'auto-off' | 'on' | 'off';
 
-/** Which of the three buttons is the current answer. */
-export type VisionMode = 'auto' | 'on' | 'off';
-
-export interface VisionPinRowState {
-  /** The one-line read-out: what vision is, and who decided it. */
-  readonly line: string;
-  readonly mode: VisionMode;
-}
-
 const LINES: Record<VisionState, string> = {
   'auto-on': 'Vision: Auto (on — detected)',
   'auto-off': 'Vision: Auto (off)',
@@ -40,33 +40,3 @@ const LINES: Record<VisionState, string> = {
 export function visionPinLine(state: VisionState): string {
   return LINES[state] ?? LINES['auto-off'];
 }
-
-export function visionPinState(state: VisionState): VisionPinRowState {
-  return {
-    line: visionPinLine(state),
-    mode: state === 'on' ? 'on' : state === 'off' ? 'off' : 'auto',
-  };
-}
-
-/** The three choices, in the order they are offered. `wire` is what the host
- *  reads: '' is not a third pin value, it is the ABSENCE of one. */
-export const VISION_MODES: readonly { mode: VisionMode; name: string; wire: string; title: string }[] = [
-  {
-    mode: 'auto',
-    name: 'Auto',
-    wire: '',
-    title: 'Let the server decide. LM Studio and Ollama report which models can see; every other server leaves the setting exactly as configured.',
-  },
-  {
-    mode: 'on',
-    name: 'On',
-    wire: 'on',
-    title: 'This model can read images. Overrules detection until you set it back to Auto.',
-  },
-  {
-    mode: 'off',
-    name: 'Off',
-    wire: 'off',
-    title: 'This model cannot read images. Overrules detection until you set it back to Auto.',
-  },
-];

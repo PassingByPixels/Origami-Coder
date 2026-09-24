@@ -1,38 +1,11 @@
-// The Claude family a fresh "Claude (Anthropic API)" connection declares in the
-// GLOBAL origami.json — the multi-model half of the catalog entry whose picker
-// face lives in webview/sidebar/setupCatalog.ts.
+// The Claude model family a fresh "Claude (Anthropic API)" connection
+// declares in the global origami.json.
 //
-// WHY A BAKED LIST AT ALL. The sidebar's model picker is built from the CONFIG
-// blocks (firstFold.readGlobalProviders -> liveModelMerge -> modelOptions), not
-// from the engine's own provider database. The cloud setup form submits exactly
-// one model id (ControlStrip's `cloud` shape: API key + model id), so without
-// this table "connect Claude" wrote a block declaring a single model and the
-// picker offered that one row forever — while the engine could resolve the whole
-// family. The block is what the picker can see; this is what makes the family
-// visible in it.
-//
-// WHERE THE NUMBERS COME FROM. Read out of the models.dev snapshot the ENGINE
-// ITSELF is built against: `packages/engine/script/generate.ts` fetches
-// models.dev/api.json at build time and `script/build.ts` inlines it into the
-// binary as the `ORIGAMI_MODELS_DEV` define. These six entries were extracted
-// verbatim from the shipped `~/.origami/bin/origami.exe` (2026-08-26 build) at
-// the `anthropic:{id:"anthropic"` offset, cross-checked field for field against
-// Anthropic's own current-model table. Same trade oauthConnections.ts makes: a
-// mirror of data that lives elsewhere, so it will age — but it is small,
-// visible, and a wrong id fails loudly on the first message rather than
-// silently.
-//
-// NOT THE WHOLE ZOO. That snapshot's anthropic provider carries 13 entries,
-// including dated snapshots (`claude-sonnet-4-5-20250929`), `(latest)` aliases
-// and superseded generations. This is the CURRENT line-up only — one entry per
-// tier that is still the thing a new connection should be offered. A user who
-// wants a retired id types it into the form; it is written alongside these.
-//
-// The values are deliberately full (limit / capabilities / modalities / cost)
-// rather than name-only: an engine spawned from source (`origami.devEngineSource`)
-// has NO baked snapshot, so its provider database is empty and every field the
-// block omits falls back to a zero — a `limit.context` of 0 disables auto-
-// compaction outright, and a cost of 0 makes every spend readout wrong.
+// The sidebar's model picker is built from this config block, not from the
+// engine's provider database, so without it a cloud connection only offered
+// one model. Values are mirrored from the engine's models.dev snapshot and
+// will age — kept small and visible so a wrong id fails loudly rather than
+// silently. This is the CURRENT line-up only, not the full provider list.
 
 /** One model's block, in `origami.json`'s own shape. A type alias, not an
  *  interface, so it carries the implicit index signature `ModelChoice.catalog`
@@ -88,8 +61,7 @@ export const CLAUDE_MODELS: Record<string, ClaudeModelConfig> = {
     modalities: TEXT_IN_IMAGE_PDF, release_date: '2026-05-28',
     cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
   },
-  // The two entries that still accept `temperature` — the 4.6/4.5 generation.
-  // Kept because they are the cheaper lanes, not because they are newest.
+  // The two entries that still accept `temperature` (4.5/4.6 generation).
   'claude-sonnet-4-6': {
     name: 'Claude Sonnet 4.6',
     limit: { context: 1_000_000, output: 128_000 },
@@ -107,12 +79,9 @@ export const CLAUDE_MODELS: Record<string, ClaudeModelConfig> = {
 };
 
 /**
- * The multi-model catalog to declare alongside the model a setup form submitted,
- * or undefined for a provider that has no baked family here.
- *
- * Keyed on the ENGINE provider id, never on the picker's label: the entry is
- * called "Claude" in the UI and `anthropic` everywhere the engine, auth.json and
- * the config block are concerned, and only the latter may decide this.
+ * The multi-model catalog to declare alongside a setup form's model, or
+ * undefined if none is baked for this provider. Keyed on the engine
+ * provider id, never the picker's label.
  */
 export function claudeCatalogFor(providerId: string): Record<string, ClaudeModelConfig> | undefined {
   return providerId === 'anthropic' ? CLAUDE_MODELS : undefined;

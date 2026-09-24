@@ -8,6 +8,8 @@ import * as ACPService from "@/acp/service"
 import { Directory } from "@/acp/directory"
 import { ACPSession } from "@/acp/session"
 import { peerMessageMetadata } from "@/session/peer-message"
+import { TASK_TOKENS_KEY } from "@/session/task-result"
+import { SessionStreamDrop } from "@/session/stream-drop"
 
 type SessionUpdateParams = Parameters<AgentSideConnection["sessionUpdate"]>[0]
 type ToolSessionUpdateParams = SessionUpdateParams & {
@@ -84,6 +86,12 @@ function createHarness(
   // Domain parent chain, child id -> parent id. Sub-agent sessions live ONLY in
   // the domain store, so this is what the ancestor walk reads.
   parents: Record<string, string> = {},
+  // Stored transcripts by session id, which is what the sub-agent token rider
+  // (t-dkkd2o) is summed over. Empty for every other test, so nothing measured.
+  transcripts: Record<string, SessionMessageResponse[]> = {},
+  // t-ucndru. Session ROW fields by session id (tokens, cost, steps): what the
+  // sub-agent token rider reads now, instead of the transcript above.
+  rows: Record<string, Record<string, unknown>> = {},
 ) {
   const updates: SessionUpdateParams[] = []
   const calls = {
@@ -91,6 +99,8 @@ function createHarness(
     message: 0,
     messageSessions: [] as string[],
     sessionGet: 0,
+    /** t-ucndru. `session.messages` reads with no `limit`: a whole transcript each. */
+    wholeTranscripts: [] as string[],
   }
   const events = createEventStream()
   const sdk = {
@@ -110,9 +120,13 @@ function createHarness(
         calls.sessionGet++
         const sessionID = input?.sessionID
         if (!sessionID) return Promise.resolve({ data: { id: "ses_loaded" } })
-        return Promise.resolve({ data: { id: sessionID, parentID: parents[sessionID] } })
+        return Promise.resolve({ data: { id: sessionID, parentID: parents[sessionID], ...rows[sessionID] } })
       },
-      messages: () => Promise.resolve({ data: [] }),
+      messages: (input?: { sessionID?: string; limit?: number }) => {
+        if (!input?.limit) calls.wholeTranscripts.push(input?.sessionID ?? "")
+        const all = transcripts[input?.sessionID ?? ""] ?? []
+        return Promise.resolve({ data: input?.limit ? all.slice(-input.limit) : all })
+      },
     },
   } as unknown as OrigamiClient
   const connection = {
@@ -406,6 +420,10 @@ describe("acp event routing", () => {
       eventSubscription: (started) => {
         subscription = started
       },
+      // This test is specifically about the SDK-transport subscribe count, so
+      // it keeps the fake sdk.global.event() path rather than the (t-tc2rlo)
+      // in-process default.
+      events: (options) => harness.sdk.global.event(options) as unknown as Promise<ACPEvent.GlobalEventStream>,
     })
 
     await pollUntil(() => harness.calls.eventSubscribe === 1, "event subscription did not start")
@@ -416,6 +434,39 @@ describe("acp event routing", () => {
     expect(harness.calls.eventSubscribe).toBe(1)
     subscription?.stop()
     harness.events.close()
+  })
+
+  // t-tc2rlo #8: `run()` can read GlobalBus in-process (the real, injected
+  // default: `ACPEvent.globalBusEventSource`) instead of looping through
+  // `sdk.global.event()`. This proves the two paths produce IDENTICAL wire
+  // frames for the same event — same `connection.sessionUpdate` calls, same
+  // order — so switching the transport changed nothing `handle()` produces.
+  it("produces the same sessionUpdate frames whether the event arrives via the SDK stream or GlobalBus directly", async () => {
+    const sdkHarness = createHarness()
+    await createKnownSession(sdkHarness.session, "ses_a", { messageId: "msg_a", partId: "part_a", partType: "text" })
+    sdkHarness.events.push({ payload: textDelta("ses_a", "msg_a", "part_a", "hi") })
+    sdkHarness.events.push({ payload: textDelta("ses_a", "msg_a", "part_a", " there") })
+    sdkHarness.subscription.start()
+    await pollUntil(() => sdkHarness.updates.length >= 2, "sdk-transport updates did not arrive")
+    sdkHarness.subscription.stop()
+    sdkHarness.events.close()
+
+    const busHarness = createHarness()
+    await createKnownSession(busHarness.session, "ses_a", { messageId: "msg_a", partId: "part_a", partType: "text" })
+    const busSubscription = new ACPEvent.Subscription({
+      sdk: busHarness.sdk,
+      connection: busHarness.connection,
+      session: busHarness.session,
+      events: ACPEvent.globalBusEventSource,
+    })
+    busSubscription.start()
+    const { GlobalBus } = await import("@/bus/global")
+    GlobalBus.emit("event", { payload: textDelta("ses_a", "msg_a", "part_a", "hi") })
+    GlobalBus.emit("event", { payload: textDelta("ses_a", "msg_a", "part_a", " there") })
+    await pollUntil(() => busHarness.updates.length >= 2, "GlobalBus-transport updates did not arrive")
+    busSubscription.stop()
+
+    expect(busHarness.updates).toEqual(sdkHarness.updates)
   })
 
   it("does not call sdk.session.message repeatedly when metadata is known", async () => {
@@ -925,6 +976,55 @@ describe("acp event routing", () => {
 // produced used to be dropped at this boundary: the client saw the parent's task
 // tool call and, minutes later, the final <task_result> - nothing in between.
 describe("acp event routing for sub-agent sessions", () => {
+  // An empty chunk carrying the child's counters and no state (t-dkkd2o).
+  const tokenChunks = (updates: SessionUpdateParams[]) =>
+    updates.filter((item) => {
+      if (item.update.sessionUpdate !== "agent_message_chunk") return false
+      const meta = (item.update as { _meta?: Record<string, unknown> })._meta
+      return typeof meta?.["origami_task_session"] === "string" && !!meta[TASK_TOKENS_KEY]
+    })
+
+  /** A child session's stored transcript: one assistant message billed for one step. */
+  const billed = (sessionID: string, input: number, output: number) =>
+    ({
+      info: {
+        id: "msg_billed",
+        sessionID,
+        role: "assistant",
+        time: { created: Date.now() },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+      parts: [
+        {
+          id: "part_step",
+          sessionID,
+          messageID: "msg_billed",
+          type: "step-finish",
+          cost: 0,
+          tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
+      ],
+    }) as unknown as SessionMessageResponse
+
+  /** t-ucndru. The same child's session ROW: the projector's running sums and step count. */
+  const row = (input: number, output: number, steps?: number) => ({
+    cost: 0,
+    tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } },
+    ...(steps === undefined ? {} : { steps }),
+  })
+
+  const stepFinished = (sessionID: string) =>
+    ({
+      id: `evt_step_${sessionID}`,
+      type: "message.part.updated",
+      properties: {
+        sessionID,
+        time: Date.now(),
+        part: { id: "part_step", sessionID, messageID: "msg_billed", type: "step-finish" },
+      },
+    }) as unknown as Event
+
   const childChunks = (updates: SessionUpdateParams[]) =>
     updates.filter(
       (item) =>
@@ -957,15 +1057,146 @@ describe("acp event routing for sub-agent sessions", () => {
     expect(harness.calls.messageSessions).toContain("ses_child")
   })
 
-  it("does not forward a sub-agent's reasoning", async () => {
+  // t-gvz8t0. Reasoning used to be DROPPED here. Two measured `general` children
+  // spent their entire first step thinking - 123 s / 5,449 tokens and
+  // 159 s / 7,318 tokens - with nothing whatsoever on their drawer row, and the
+  // owner read two minutes of silence as a failure.
+  it("forwards a sub-agent's reasoning on the child channel, MARKED as reasoning", async () => {
     const harness = createHarness({}, { ses_child: "ses_parent" })
     await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
 
     await harness.subscription.handle(partUpdated("ses_child", "msg_think", "part_think", "reasoning"))
     await harness.subscription.handle(textDelta("ses_child", "msg_think", "part_think", "maybe I should..."))
 
+    // NOT an agent_thought_chunk: that slot is the PARENT's own thinking, and a
+    // child's thought rendered there is a sub-agent talking in the main chat.
     expect(harness.updates.filter((item) => item.update.sessionUpdate === "agent_thought_chunk")).toEqual([])
-    expect(childChunks(harness.updates)).toEqual([])
+    const forwarded = childChunks(harness.updates)
+    expect(forwarded).toHaveLength(1)
+    expect(forwarded[0]?.sessionId).toBe("ses_parent")
+    expect((forwarded[0]?.update as { content: { text: string } }).content.text).toBe("maybe I should...")
+    expect((forwarded[0]?.update as { _meta?: Record<string, unknown> })._meta).toEqual({
+      origami_child_session: "ses_child",
+      origami_task_part: "reasoning",
+    })
+  })
+
+  it("marks a sub-agent's PROSE with no part rider, so an old receiver sees no change", async () => {
+    const harness = createHarness(
+      { msg_child: assistantMessage("ses_child", "msg_child", "part_child", "text") },
+      { ses_child: "ses_parent" },
+    )
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle(partUpdated("ses_child", "msg_child", "part_child", "text"))
+    await harness.subscription.handle(textDelta("ses_child", "msg_child", "part_child", "drafting the story"))
+
+    const forwarded = childChunks(harness.updates)
+    expect(forwarded).toHaveLength(1)
+    // The absence IS the contract: prose carries the child rider and nothing
+    // else, so a client that never heard of the marker keeps its old behaviour.
+    expect((forwarded[0]?.update as { _meta?: Record<string, unknown> })._meta).toEqual({
+      origami_child_session: "ses_child",
+    })
+  })
+
+  // t-dkkd2o. A BACKGROUND child's launcher tool call completes the instant the
+  // child is spawned, and the parent turn that owned it ends soon after, so
+  // tool/task.ts's later `ctx.metadata` writes reach nothing at all - the drawer
+  // row sat at "0 / 0" for the whole run. The child's own step-finish still
+  // arrives here, which is the one moment the figure changed.
+  it("posts a running sub-agent's token total on the child's own step-finish", async () => {
+    const harness = createHarness(
+      {},
+      { ses_child: "ses_parent" },
+      { ses_child: [billed("ses_child", 1200, 34)] },
+      { ses_child: row(1200, 34, 1) },
+    )
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle(stepFinished("ses_child"))
+
+    // t-ucndru. The figure comes from the child's ROW: no whole-transcript read.
+    expect(harness.calls.wholeTranscripts).toEqual([])
+    const posted = tokenChunks(harness.updates)
+    expect(posted).toHaveLength(1)
+    // Under the ANCESTOR's id, like every other forwarded child update.
+    expect(posted[0]?.sessionId).toBe("ses_parent")
+    expect((posted[0]?.update as { _meta?: Record<string, unknown> })._meta).toEqual({
+      origami_task_session: "ses_child",
+      // t-ffziaz: `steps` and `context` ride beside the sums - one step so far,
+      // and its context is the 1200 it sent (this child reported no cache).
+      [TASK_TOKENS_KEY]: { input: 1200, output: 34, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0, steps: 1, context: 1200 },
+    })
+    // Riders only: text would append an empty assistant bubble to the parent.
+    expect((posted[0]?.update as { content: { text: string } }).content.text).toBe("")
+  })
+
+  // t-ucndru. A live step's `context` comes from the step-finish part the event
+  // carries (plan 5.3), and a row the steps backfill has not reached (NULL, so
+  // no `steps` on the row) must not be sent as "0 steps".
+  it("takes a live step's context from its part, and sends no step count the row does not have", async () => {
+    const harness = createHarness({}, { ses_child: "ses_parent" }, {}, { ses_child: row(5000, 70) })
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+    const reads: unknown[] = []
+    const messages = harness.sdk.session.messages.bind(harness.sdk.session)
+    Object.assign(harness.sdk.session, {
+      messages: (input: never) => {
+        reads.push(input)
+        return messages(input)
+      },
+    })
+
+    await harness.subscription.handle({
+      id: "evt_step_measured",
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_child",
+        time: Date.now(),
+        part: {
+          id: "part_step",
+          sessionID: "ses_child",
+          messageID: "msg_billed",
+          type: "step-finish",
+          cost: 0,
+          tokens: { input: 900, output: 70, reasoning: 0, cache: { read: 4000, write: 100 } },
+        },
+      },
+    } as unknown as Event)
+
+    const posted = tokenChunks(harness.updates)
+    expect(posted).toHaveLength(1)
+    expect((posted[0]?.update as { _meta?: Record<string, unknown> })._meta?.[TASK_TOKENS_KEY]).toEqual({
+      input: 5000,
+      output: 70,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      context: 900 + 4000 + 100,
+    })
+    // No message read at all: the part had the figure.
+    expect(reads).toEqual([])
+  })
+
+  it("posts nothing for a child that has not been billed for a step yet", async () => {
+    // Zeros would read as "this agent spent nothing", which is a different claim
+    // from "nobody has told us" - and would overwrite a figure already shown.
+    const harness = createHarness({}, { ses_child: "ses_parent" })
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle(stepFinished("ses_child"))
+
+    expect(tokenChunks(harness.updates)).toEqual([])
+  })
+
+  it("posts no sub-agent token chunk for the PARENT's own step-finish", async () => {
+    const harness = createHarness({}, {}, { ses_parent: [billed("ses_parent", 900, 12)] })
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle(stepFinished("ses_parent"))
+
+    expect(tokenChunks(harness.updates)).toEqual([])
   })
 
   it("renders a sub-agent's tool as ONE activity line, never a tool card in the parent", async () => {
@@ -1345,6 +1576,115 @@ describe("acp event — the sub-agent lifecycle riders", () => {
     }
   })
 
+  // t-di2ky9. The engine stamps the child's spend onto the task tool part's own
+  // metadata (tool/task.ts, TASK_TOKENS_KEY) so the drawer can show a per-child
+  // figure without reading the whole child transcript. withTaskSession has to
+  // lift that rider onto `_meta` the same way it lifts the session id — the
+  // extension only ever reads `_meta`.
+  it("lifts the child's token counters onto every task update when the tool part carries them", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    const tokens = { input: 120, output: 340, reasoning: 12, cacheRead: 5, cacheWrite: 0, cost: 0.0042 }
+    await harness.subscription.handle(
+      toolUpdated(taskCard({ parentSessionId: "ses_parent", sessionId: "ses_child", [TASK_TOKENS_KEY]: tokens })),
+    )
+
+    for (const meta of riders(harness.updates)) {
+      expect(meta?.[TASK_TOKENS_KEY]).toEqual(tokens)
+    }
+  })
+
+  // t-q90gj9. A dropped stream used to be PROSE on the assistant part, so the
+  // client got it as an agent_message_chunk under the agent's name and could only
+  // take it apart by matching the wording. It is a rider now, on an EMPTY chunk.
+  it("forwards a stream-drop notice as a structured rider, not as agent prose", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle({
+      id: "evt_drop",
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_parent",
+        time: Date.now(),
+        part: {
+          id: "part_drop",
+          sessionID: "ses_parent",
+          messageID: "msg_drop",
+          type: "text",
+          text: "",
+          metadata: {
+            [SessionStreamDrop.NOTICE_KEY]: SessionStreamDrop.notice(
+              "retrying",
+              2,
+              "fetch failed (ECONNRESET)",
+            ),
+          },
+        },
+      },
+    } as unknown as Event)
+
+    const notices = harness.updates
+      .filter((item) => item.update.sessionUpdate === "agent_message_chunk")
+      .map((item) => item.update as { content?: { text?: string }; _meta?: Record<string, unknown> })
+      .filter((update) => update._meta?.[SessionStreamDrop.NOTICE_KEY] !== undefined)
+
+    expect(notices.length).toBe(1)
+    // Empty on purpose: a client that does not know the key must render NOTHING
+    // rather than a nameless bubble.
+    expect(notices[0]?.content?.text).toBe("")
+    expect(notices[0]?._meta?.[SessionStreamDrop.NOTICE_KEY]).toEqual({
+      kind: "retrying",
+      attempt: 2,
+      max: SessionStreamDrop.limit(),
+      // The provider's own sentence, brackets and all - the reason no client
+      // can be asked to parse this back out of a formatted line.
+      detail: "fetch failed (ECONNRESET)",
+      terminal: false,
+    })
+  })
+
+  it("sends NO stream-drop rider for an ordinary text part", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle({
+      id: "evt_plain",
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_parent",
+        time: Date.now(),
+        part: {
+          id: "part_plain",
+          sessionID: "ses_parent",
+          messageID: "msg_plain",
+          type: "text",
+          text: "Stream dropped (fetch failed) - retrying, attempt 1 of 3.",
+        },
+      },
+    } as unknown as Event)
+
+    for (const item of harness.updates) {
+      expect((item.update as { _meta?: Record<string, unknown> })._meta ?? {}).not.toHaveProperty(
+        SessionStreamDrop.NOTICE_KEY,
+      )
+    }
+  })
+
+  it("leaves _meta untouched when the tool part carries no token metadata", async () => {
+    const harness = createHarness()
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle(
+      toolUpdated(taskCard({ parentSessionId: "ses_parent", sessionId: "ses_child" })),
+    )
+
+    for (const meta of riders(harness.updates)) {
+      expect(meta).not.toHaveProperty(TASK_TOKENS_KEY)
+    }
+  })
+
   it("turns the injected result turn's stamp into one terminal marker per settled child", async () => {
     const harness = createHarness()
     await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
@@ -1383,6 +1723,84 @@ describe("acp event — the sub-agent lifecycle riders", () => {
       { origami_task_session: "ses_child_b", origami_task_state: "error" },
     ])
     for (const meta of markers(harness.updates)) expect(typeof span(meta).ended).toBe("number")
+  })
+
+  // t-dkkd2o. The SETTLED figure. The child's last step-finish already posted
+  // one, but only this chunk is guaranteed to be sent after the child stopped -
+  // and it is also what a REPLAY has, so a reopened chat shows the real total
+  // instead of whatever the row happened to reach before the reload.
+  it("rides the child's final token total on the terminal marker", async () => {
+    const harness = createHarness(
+      {},
+      {},
+      {
+        ses_child_a: [
+          {
+            info: {
+              id: "msg_billed",
+              sessionID: "ses_child_a",
+              role: "assistant",
+              time: { created: Date.now() },
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+            parts: [
+              {
+                id: "part_step",
+                sessionID: "ses_child_a",
+                messageID: "msg_billed",
+                type: "step-finish",
+                cost: 0,
+                tokens: { input: 4600, output: 210, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+            ],
+          } as unknown as SessionMessageResponse,
+        ],
+      },
+      {
+        ses_child_a: { cost: 0, tokens: { input: 4600, output: 210, reasoning: 0, cache: { read: 0, write: 0 } }, steps: 1 },
+      },
+    )
+    await Effect.runPromise(harness.session.create({ id: "ses_parent", cwd: "/workspace" }))
+
+    await harness.subscription.handle({
+      id: "evt_inject",
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_parent",
+        time: Date.now(),
+        part: {
+          id: "part_inject",
+          sessionID: "ses_parent",
+          messageID: "msg_inject",
+          type: "text",
+          synthetic: true,
+          text: "<task id=\"ses_child_a\" state=\"completed\">…</task>",
+          metadata: {
+            origami_task_results: [
+              { sessionId: "ses_child_a", state: "completed" },
+              { sessionId: "ses_child_b", state: "error" },
+            ],
+          },
+        },
+      },
+    } as unknown as Event)
+
+    const posted = markers(harness.updates)
+    expect(posted[0]?.[TASK_TOKENS_KEY]).toEqual({
+      input: 4600,
+      output: 210,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      steps: 1,
+      context: 4600,
+    })
+    // The sibling measured nothing, so its marker carries no rider at all.
+    expect(posted[1]).not.toHaveProperty(TASK_TOKENS_KEY)
+    // t-ucndru. The sums come from the ROW, and `context` from ONE message read.
+    expect(harness.calls.wholeTranscripts).toEqual([])
   })
 
   it("an ordinary text part settles nothing", async () => {

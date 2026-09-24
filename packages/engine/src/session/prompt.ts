@@ -15,6 +15,8 @@ import { AgentBotMemory } from "../agent/bot-memory"
 import { CollabSystem } from "@/collab/collab-system"
 import { FlockTools } from "@/collab/flock-tools"
 import { SessionVision } from "./vision"
+import { SessionToolAging } from "./tool-aging"
+import { usable } from "./overflow"
 import { VisionRequest } from "@/tool/vision-request"
 import { FlockHealth } from "@/flock/health"
 import { FlockRouting } from "@/flock/routing"
@@ -42,8 +44,11 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@origami/core/util/error"
 import { SessionProcessor } from "./processor"
+import { SessionContinueNudge } from "./continue-nudge" // origami_change (t-3mxbyh)
+import { SessionChildTodoNudge } from "./child-todo-nudge" // origami_change (t-v4qvq1)
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
+import { writeSessionPermission } from "./permission-write"
 import { SessionStatus } from "./status"
 import { LLM } from "./llm"
 import { Shell } from "@origami/core/shell"
@@ -75,15 +80,11 @@ import { LLMEvent } from "@origami/llm"
 globalThis.AI_SDK_LOG_WARNINGS = false
 
 /**
- * Applies a per-turn CONTEXT-WINDOW override (t-lmqe0g — a sub-agent model
- * override's stored context length, carried onto this turn's user message by
- * task.ts) on top of a resolved model, the same way the main path applies a
- * model's own configured `limit.context`: it feeds compaction/overflow's
- * budget math and the (inert - no provider driver reads it) outbound
- * `limits.context`. Non-mutating — `model` is the SHARED provider-registry
- * object other sessions read too — and undefined/non-positive returns the
- * SAME object, which is what proves the main path (no caller ever sets
- * `contextOverride`) is byte-for-byte unaffected.
+ * Applies a per-turn context-window override on top of a resolved model, the
+ * same way the main path applies a model's own `limit.context`: it feeds
+ * compaction/overflow's budget math. Non-mutating, because `model` is the
+ * shared provider-registry object other sessions read too; undefined or
+ * non-positive returns the same object untouched.
  */
 export function applyContextOverride(model: Provider.Model, contextOverride: number | undefined): Provider.Model {
   if (!contextOverride || contextOverride <= 0) return model
@@ -112,31 +113,22 @@ IMPORTANT:
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
 // Absolute per-turn ceiling on agentic steps when the agent sets no explicit
-// `steps` budget. Last-resort backstop for a degenerate loop that never
-// terminates - e.g. a model that keeps emitting DIFFERENT tool calls (so the
-// per-message doom-loop detector never fires), or an "unknown" finish.
-// Deliberately generous (well above the ~150 steps a genuinely large single
-// turn reaches) so it never truncates honest work: an attended user has the
-// Stop button - this exists so an UNATTENDED runaway (background sub-agent,
-// overnight run) stops on its own instead of looping+compacting forever.
-// Per-agent `steps` overrides it, and this now enforces that budget as a hard
-// cap - the old nudge-only code never did.
+// `steps` budget. Last-resort backstop for a loop that never terminates - a
+// model emitting different tool calls each time, so the doom-loop detector
+// never fires, or an "unknown" finish. Deliberately generous, well above the
+// ~150 steps a genuinely large turn reaches, so it never truncates honest work:
+// it exists so an unattended runaway stops on its own. Per-agent `steps`
+// overrides it, and is enforced as a hard cap.
 const DEFAULT_MAX_STEPS = 500
 
 // origami_change-start (bounded unknown-continue)
 /**
  * Consecutive unreadable stop reasons the loop will carry on through before it
- * calls the turn complete.
- *
- * A finish of "unknown" means the provider ended a reply and nothing could map
- * how — so the exit gate cannot tell "it is done" from "it was cut off", and
- * the processor has already established the reply carried real prose (see
- * `session/processor.ts`, the drain-end route). Continuing lets the model
- * finish, or say it was already finished, which is the cheap and honest move
- * ONCE. It is not the cheap move forever: a gateway that mangles the reason
- * mangles it on every reply, and upstream opencode 1.18.21's unbounded version
- * of this rule spends the whole agent step budget discovering that. Two
- * continues is enough to distinguish a one-off from a broken route.
+ * calls the turn complete. A finish of "unknown" means the exit gate cannot
+ * tell "it is done" from "it was cut off", so continuing once is the honest
+ * move. Bounded because a gateway that mangles the reason mangles it on every
+ * reply, and an unbounded version spends the whole step budget discovering
+ * that.
  */
 const UNKNOWN_CONTINUE_LIMIT = 2
 
@@ -170,8 +162,29 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+// origami_change-start (t-3mxbyh): the prose ONE step produced, for the
+// continuation-nudge tail test. Every step gets its own assistant message, so
+// this is that step's words and nothing earlier. Engine notices
+// (`origami_truncated`, `origami_retry`, the unknown-finish line) are text
+// parts too and are left in: they carry none of the phrases, so the guard
+// simply fails closed when one of them is the last thing on the message.
+function assistantProse(message: SessionV1.WithParts | undefined) {
+  return (message?.parts ?? [])
+    .filter((part): part is SessionV1.TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("")
+}
+// origami_change-end
+
 // origami_change-start (interject): a message pushed INTO a running turn.
-export type InterjectInput = { readonly sessionID: SessionID; readonly text: string }
+/** `files` are the interjection's ATTACHMENTS, in the same `FilePartInput`
+ *  shape a fresh prompt's parts arrive as (acp/content.ts builds both from the
+ *  client's image blocks). Text-only interjections omit it. */
+export type InterjectInput = {
+  readonly sessionID: SessionID
+  readonly text: string
+  readonly files?: readonly SessionV1.FilePartInput[]
+}
 /** `busy` = a turn was running and will pick this up; `promoted` = how many
  *  blocking foreground shells were handed to the background to get there. */
 export type InterjectResult = { readonly messageID: MessageID; readonly busy: boolean; readonly promoted: number }
@@ -191,76 +204,254 @@ export class Service extends Context.Service<Service, Interface>()("@origami/Ses
 
 /**
  * Stands between the conversation and the trailing block on the one step where
- * they would otherwise put two `user` turns side by side.
- *
- * A separate assistant message rather than a fold - see
- * `withTrailingInjections`. Its text is the framing the fold never gave the
- * model: what follows is not something the user typed. Deliberately says
+ * they would otherwise put two `user` turns side by side. Deliberately says
  * "context" and names nothing more specific, because the block below it holds
- * whatever this step has - the memory index, a reminder, both or one. The
- * engine already appends a synthetic assistant message of its own on the last
- * step (`MAX_STEPS_PROMPT`), so this is an established shape here, not a new one.
+ * whatever this step has - the memory index, a reminder, both or one.
  */
 export const TRAILING_INJECTION_SEPARATOR =
   "<engine-note>The next message is not from the user. It is context the engine appends to this agent's requests.</engine-note>"
 
 /**
- * THE TRAILING LANE. Everything the engine adds to a request beyond the system
+ * The trailing lane. Everything the engine adds to a request beyond the system
  * prompt and the conversation itself goes here, in ONE message after the last
- * one the model has already seen, and nowhere else.
+ * one the model has already seen, and nowhere else. Two kinds ride it: the
+ * memory index, which `remember` rewrites mid-conversation, and the in-memory
+ * reminders recomputed every step from live state. The plan-mode briefs are NOT
+ * here - those are persisted into the transcript, so they hold still.
  *
- * WHAT GOES IN IT. Two kinds, and they are here for the same reason:
- *   - the MEMORY index, which the `remember` tool rewrites mid-conversation;
- *   - the in-memory REMINDERS (`session/reminders.ts`), recomputed every step
- *     from live state - the stored todo list, a wait or poll streak.
- * Both are prompt content that can differ between two steps of one turn. The
- * plan-mode briefs are NOT here: those are persisted into the transcript on
- * entry, so they are conversation and they hold still.
- *
- * WHY THE TAIL. A prefix cache is an exact match from byte 0, so any byte the
+ * Why the tail: a prefix cache is an exact match from byte 0, so any byte the
  * engine rewrites inside content it has already sent throws away everything
- * after it. Delivered last, this block sits past every breakpoint: it can
- * change on every single step and cost only itself.
+ * after it. Delivered last, this block can change on every step and cost only
+ * itself. It must not go inside the last user message: a sub-agent has ONE user
+ * message for its entire life, so that message IS the head of its conversation,
+ * and both a changed memory index and a fired reminder were measured rewriting
+ * that head and re-billing the whole body.
  *
- * WHY NOT INSIDE THE LAST USER MESSAGE, which is where both of these used to
- * live. A sub-agent has ONE user message for its entire life (tool/task.ts
- * prompts once), so that message IS the head of its conversation. Two measured
- * failures, both on the real prompt loop:
- *   - MEMORY, folded in on step 1 and absent from step 2: on a local model the
- *     head diverged at message index 1, byte 7277 of 8307, as the user message
- *     dropped from 880 bytes to 493. One rewrite, whole body re-billed.
- *   - REMINDERS, pushed onto that same message: `WAIT_LOOP_STREAK` fires at 3
- *     and 6 and is silent at 4 and 5, so a `task_list` poll loop rewrote the
- *     head on 4 of 8 requests; and a stored todo list edited mid-turn rewrote
- *     it again (294 bytes -> 335) with no tool call involved at all.
- * Anthropic's `groupIntoBlocks` merges adjacent user turns, so `user, user`
- * behaves exactly like a fold there - no provider can keep either shape.
- *
- * WHY THE SEPARATOR. The first step of a turn ends on the user's own message,
- * and a second user message after it is not portable: `@ai-sdk/google`'s
- * `convertToGoogleGenerativeAIMessages` pushes one `contents` entry per message,
- * so Gemini would receive `user, user`, which its multi-turn contract does not
- * promise to accept. One synthetic assistant note breaks the adjacency without
- * touching a byte of the conversation.
+ * Why the separator: on step 1 the conversation ends on the user's own message,
+ * and `user, user` is not portable - `@ai-sdk/google` pushes one `contents`
+ * entry per message, and Gemini's multi-turn contract does not promise to
+ * accept it. One synthetic assistant note breaks the adjacency.
  *
  * ORDER IS PINNED: memory first, then the reminders in the order
- * `SessionReminders.apply` emits them. Reference material above, the
- * time-sensitive instruction closest to the generation point - and, more to the
- * point, the same order every time, so two steps with the same state produce
- * the same bytes.
+ * `SessionReminders.apply` emits them - the same order every time, so two steps
+ * with the same state produce the same bytes.
+ */
+/**
+ * The framing the tail carries itself, opened here and closed below.
+ * `TRAILING_INJECTION_SEPARATOR` above cannot do this job alone: it is emitted
+ * only when the conversation ends on a user turn, and every later step ends on
+ * a tool result, so the tail would arrive as an unlabelled `user` message with
+ * nothing to say what it was - the shape a model answers instead of working.
+ * Living inside the tail message, the framing cannot be conditional on what
+ * came before it, and it is constant, so it moves nothing in the cached prefix.
+ *
+ * Every sentence is a statement. Framing that gives an order ("Do not reply to
+ * this") is one more sentence for the model to acknowledge. No second person
+ * and no imperative appears here, and `memory-tail.test.ts` asserts that over
+ * the whole lane.
+ */
+export const TRAILING_CONTEXT_OPEN =
+  "<engine-context>\nReference material the engine appends to every request. It is not a message from the user and not addressed to this agent. It needs no reply: the reply answers the user's own message above."
+
+export const TRAILING_CONTEXT_CLOSE = "</engine-context>"
+
+// origami_change-start (t-53vyxf): the trailing lane's shape is a run-time
+// choice, so the change can be measured against what it replaced.
+/**
+ * Which shape the trailing lane sends. `ORIGAMI_TRAILING_CONTEXT`.
+ *
+ *   - `on-change`   the DEFAULT: an unchanged block is not re-sent, a changed
+ *                   one folds into the last tool result.
+ *   - `every-step`  whenever the block is non-empty it is appended as a `user`
+ *                   message, digest ignored and nothing folded.
+ *   - `every-step-continue`
+ *                   `every-step` plus `TRAILING_CONTEXT_CONTINUE` as the
+ *                   block's last line.
+ *
+ * A switch, not a replacement: everything that is not `on-change` touches no
+ * default path.
+ */
+export type TrailingContextMode = "on-change" | "every-step" | "every-step-continue"
+
+export const TRAILING_CONTEXT_MODES = ["on-change", "every-step", "every-step-continue"] as const
+
+export const TRAILING_CONTEXT_DEFAULT_MODE: TrailingContextMode = "on-change"
+
+/**
+ * The one sentence `every-step-continue` adds, and the only place in the lane
+ * that addresses the model at all. It is the opposite bet to
+ * `TRAILING_CONTEXT_OPEN`'s deliberate absence of second person and
+ * imperatives, so it is quarantined in its own mode and its own constant -
+ * `memory-tail.test.ts` asserts the no-imperative rule over the framing
+ * constants, and this is not one of them. Exported so the panel and the test
+ * read the same bytes.
+ */
+export const TRAILING_CONTEXT_CONTINUE =
+  "Your turn is not over: this block is not a reply from the user and needs no acknowledgement. Continue the task now; keep calling tools until every part of the user's request is done, and only then write your final message."
+
+/**
+ * What one step's trailing lane DID, for the log line the panel reads.
+ *
+ *   - `none`       there was nothing to send
+ *   - `skipped`    a block existed and was identical to the last one sent
+ *   - `folded`     the block rode inside the last tool result
+ *   - `user`       the block went as a `user` message after a tool result
+ *   - `user-step0` separator + `user` message, the conversation ending on the
+ *                  user's own turn
+ */
+export type TrailingContextAction = "none" | "skipped" | "folded" | "user" | "user-step0"
+
+/**
+ * The env value as a mode, plus whatever it was when it was not one. Unset is
+ * not unknown: an empty value is the default, while a misspelled one is worth a
+ * warning, because a run that silently measured `on-change` under an
+ * `every-step` label would be a wrong answer rather than a missing one. The
+ * caller warns; this stays pure.
+ */
+export function trailingContextMode(value: string | undefined): {
+  readonly mode: TrailingContextMode
+  readonly unknown: string | undefined
+} {
+  const raw = (value ?? "").trim().toLowerCase()
+  if (raw === "") return { mode: TRAILING_CONTEXT_DEFAULT_MODE, unknown: undefined }
+  const match = TRAILING_CONTEXT_MODES.find((mode) => mode === raw)
+  if (match) return { mode: match, unknown: undefined }
+  return { mode: TRAILING_CONTEXT_DEFAULT_MODE, unknown: raw }
+}
+// origami_change-end
+
+/**
+ * The memory blocks one step of a turn sends. Full on a turn's first step, and
+ * again on any step where the index differs from what the last step carried
+ * (the agent wrote to it with `remember`). On a later step whose index did not
+ * change, nothing at all. `digest` is what the caller hands back as `previous`
+ * on the next step.
+ *
+ * Nothing, rather than an "unchanged" notice: the trailing lane is never
+ * persisted into the transcript, so a later step's request carries no index -
+ * such a notice would be false to the model reading it, and a bare imperative
+ * last in the request is what chatty models answer instead of working.
+ * Re-sending the full index every step is the other way to make the claim true
+ * and is deliberately not taken: ~6 KB per step past every cache breakpoint.
+ */
+export function memoryForStep(input: {
+  readonly first: boolean
+  readonly parts: readonly SessionPromptCapture.Part[]
+  readonly previous: string | undefined
+}): { readonly parts: SessionPromptCapture.Part[]; readonly digest: string } {
+  const digest = input.parts.map((entry) => entry.text).join("\n\n")
+  if (input.parts.length === 0) return { parts: [], digest }
+  if (input.first || input.previous === undefined || input.previous !== digest)
+    return { parts: [...input.parts], digest }
+  return { parts: [], digest }
+}
+
+/**
+ * Where the tail goes, and why it is not always a `user` message. A user-role
+ * item directly after tool output is what a completed turn looks like from
+ * inside the model, so the engine was drawing a turn boundary on every step.
+ *
+ * Three rules:
+ *
+ * 1. UNCHANGED IS NOT RE-SENT. The block is compared byte-for-byte against what
+ *    this turn last sent (`previous`). Identical means the model already holds
+ *    it, so the request carries nothing - no bytes, no cache movement. This is
+ *    the common case and removes the boundary from most post-tool steps.
+ *
+ * 2. A CHANGED BLOCK MID-TURN RIDES THE TOOL RESULT, appended inside the last
+ *    tool result's text and delimited by its own tags rather than opening a new
+ *    turn. The delimiter plus the block's own opening sentence is what keeps it
+ *    honest: the engine is not pretending to be the tool, it is labelling
+ *    itself inside the tool's envelope.
+ *
+ * 3. STEP 0 IS UNCHANGED. The conversation ends on the user's own message, the
+ *    synthetic assistant separator fires, and a following user message is not a
+ *    mid-turn boundary because no turn is in flight yet.
+ *
+ * Returns the block it sent (or `previous` when it sent nothing) so the caller
+ * can hand it back on the next step.
+ *
+ * Falls back rather than guessing: folding needs the last result to carry plain
+ * text (`output.type === "text"`). Anything else takes the user-message route,
+ * because a block written into a structure the provider parses would be worse
+ * than a boundary.
  */
 export function withTrailingInjections(
   messages: readonly ModelMessage[],
   memoryParts: readonly { readonly text: string }[],
   reminders: readonly string[] = [],
-): ModelMessage[] {
+  previous?: string,
+  // origami_change (t-53vyxf): which of the three shapes to send. Optional and
+  // defaulted, so every caller and test that predates the switch keeps the
+  // shipped behaviour by writing nothing.
+  mode: TrailingContextMode = TRAILING_CONTEXT_DEFAULT_MODE,
+): {
+  readonly messages: ModelMessage[]
+  readonly block: string | undefined
+  // origami_change-start (t-53vyxf): what this step did and how much it cost,
+  // reported rather than re-derived. The call site logs both, and a test can
+  // read the action instead of inferring it from the message array.
+  readonly action: TrailingContextAction
+  /** Length of the block this step actually APPENDED; 0 when it sent nothing.
+   *  `skipped` therefore reads 0: the digest matched, so no bytes left here. */
+  readonly bytes: number
+  // origami_change-end
+} {
   const blocks = [...memoryParts.map((entry) => entry.text), ...reminders]
-  if (blocks.length === 0) return [...messages]
-  const separator: ModelMessage[] =
-    messages[messages.length - 1]?.role === "user"
-      ? [{ role: "assistant", content: TRAILING_INJECTION_SEPARATOR }]
-      : []
-  return [...messages, ...separator, { role: "user", content: blocks.join("\n\n") }]
+  if (blocks.length === 0) return { messages: [...messages], block: previous, action: "none", bytes: 0 }
+  // origami_change (t-53vyxf): the continue sentence is the LAST line inside the
+  // block, so it is the last thing the model reads before the closing tag.
+  const body = mode === "every-step-continue" ? [...blocks, TRAILING_CONTEXT_CONTINUE] : blocks
+  const content = [TRAILING_CONTEXT_OPEN, ...body, TRAILING_CONTEXT_CLOSE].join("\n")
+  // origami_change (t-53vyxf): the digest gate and the fold are what 0.4.127
+  // added; both `every-step` modes are the shape from before it, which had
+  // neither. Nothing else differs between the three.
+  const everyStep = mode !== "on-change"
+  if (!everyStep && content === previous)
+    return { messages: [...messages], block: previous, action: "skipped", bytes: 0 }
+
+  const last = messages[messages.length - 1]
+  if (last?.role === "user") {
+    return {
+      messages: [
+        ...messages,
+        { role: "assistant", content: TRAILING_INJECTION_SEPARATOR },
+        { role: "user", content },
+      ],
+      block: content,
+      action: "user-step0",
+      bytes: content.length,
+    }
+  }
+
+  const folded = everyStep ? undefined : foldIntoToolResult(messages, content)
+  if (folded) return { messages: folded, block: content, action: "folded", bytes: content.length }
+  return {
+    messages: [...messages, { role: "user", content }],
+    block: content,
+    action: "user",
+    bytes: content.length,
+  }
+}
+
+/** The tool-result envelope, or undefined when the last message is not a tool
+ *  result whose final part carries plain text. */
+function foldIntoToolResult(messages: readonly ModelMessage[], content: string): ModelMessage[] | undefined {
+  const last = messages[messages.length - 1]
+  if (last?.role !== "tool" || !Array.isArray(last.content) || last.content.length === 0) return undefined
+  const parts = last.content
+  const target = parts[parts.length - 1]
+  if (!target || target.type !== "tool-result") return undefined
+  const output = target.output
+  if (!output || output.type !== "text" || typeof output.value !== "string") return undefined
+  const grafted = {
+    ...target,
+    output: { ...output, value: `${output.value}\n\n${content}` },
+  }
+  return [
+    ...messages.slice(0, -1),
+    { ...last, content: [...parts.slice(0, -1), grafted] } as ModelMessage,
+  ]
 }
 
 const layer = Layer.effect(
@@ -295,6 +486,19 @@ const layer = Layer.effect(
     const flock = yield* FlockRouting.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    // origami_change-start (t-53vyxf): the two panel switches, read ONCE per
+    // engine process. A per-step read would re-parse the same string on every
+    // request and could warn about the same typo forever.
+    const trailing = trailingContextMode(flags.trailingContext)
+    if (trailing.unknown !== undefined)
+      yield* Effect.logWarning("unknown ORIGAMI_TRAILING_CONTEXT, using the default", {
+        value: trailing.unknown,
+        using: trailing.mode,
+        modes: TRAILING_CONTEXT_MODES.join("|"),
+      })
+    const trailingMode = trailing.mode
+    const continueNudgeEnabled = flags.continueNudge.trim().toLowerCase() !== "off"
+    // origami_change-end
     const database = yield* Database.Service
     const interjections = yield* Interject.Service // origami_change
     const { db } = database
@@ -1253,18 +1457,22 @@ const layer = Layer.effect(
       // A `tools` map on the prompt authoritatively REPLACES the session
       // permission ruleset: { edit: true } allows edits, { "*": true } allows
       // everything, and an EMPTY map ({}) clears it back to the agent defaults
-      // (ask). Only an ABSENT (undefined) map leaves the ruleset untouched. This
-      // present-clears semantics is what lets the ACP permission-mode presets
-      // (default/auto/bypass) ride each prompt and reset cleanly - e.g.
-      // downgrading bypass -> default sends {} and the persisted rules are dropped
-      // (the old `permissions.length > 0` guard could never express that reset).
+      // (ask). Only an ABSENT (undefined) map leaves the ruleset untouched.
+      // These present-clears semantics are what let the ACP permission-mode
+      // presets ride each prompt and reset cleanly.
       if (input.tools !== undefined) {
         const permissions: PermissionV1.Rule[] = []
         for (const [t, enabled] of Object.entries(input.tools)) {
           permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
         }
         session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+        // Not `sessions.setPermission` directly: the map carries the chat's
+        // auto-approve PRESET, so it has to cascade to live sub-agents and
+        // release the asks already waiting on them.
+        yield* writeSessionPermission(
+          { sessions, permissions: permission },
+          { sessionID: session.id, permission: permissions },
+        )
       }
 
       if (input.noReply === true) return message
@@ -1279,15 +1487,124 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // origami_change-start (t-3mxbyh: bounded continuation nudge)
+    /**
+     * The injected turn. A user-role message, because that is the only role a
+     * model reads as an instruction to act on, and because it is what makes the
+     * exit gate's `lastUser.id < lastAssistant.id` false on the next pass.
+     *
+     * `synthetic: true` marks it as the engine's, so the user is not shown an
+     * instruction written on their behalf; the `<engine-note>` tag inside the
+     * text repeats that in the body, so the byline survives every renderer.
+     * `agent` and `model` are copied from the turn's own user message: a nudge
+     * must not silently re-route the turn.
+     */
+    const continueNudge = Effect.fn("SessionPrompt.continueNudge")(function* (
+      lastUser: SessionV1.User,
+      count: number,
+      kind: SessionContinueNudge.Kind,
+    ) {
+      const message: SessionV1.User = {
+        id: MessageID.ascending(),
+        sessionID: lastUser.sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: lastUser.agent,
+        model: lastUser.model,
+      }
+      yield* sessions.updateMessage(message)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: message.sessionID,
+        type: "text",
+        text: SessionContinueNudge.text(kind),
+        synthetic: true,
+        metadata: { [SessionContinueNudge.METADATA_KEY]: String(count) },
+      } satisfies SessionV1.TextPart)
+      yield* Effect.logInfo("continuation nudge injected", {
+        "session.id": message.sessionID,
+        kind,
+        count,
+        limit: SessionContinueNudge.LIMIT,
+      })
+    })
+    // origami_change-end
+
+    // origami_change-start (t-v4qvq1: child todo nudge)
+    /** The child todo nudge's turn. Same shape as `continueNudge` above: a new
+     *  synthetic user message appended at the end, agent and model copied. */
+    const childTodoNudge = Effect.fn("SessionPrompt.childTodoNudge")(function* (
+      lastUser: SessionV1.User,
+      open: number,
+    ) {
+      const message: SessionV1.User = {
+        id: MessageID.ascending(),
+        sessionID: lastUser.sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: lastUser.agent,
+        model: lastUser.model,
+      }
+      yield* sessions.updateMessage(message)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: message.sessionID,
+        type: "text",
+        text: SessionChildTodoNudge.TEXT,
+        synthetic: true,
+        metadata: { [SessionChildTodoNudge.METADATA_KEY]: String(open) },
+      } satisfies SessionV1.TextPart)
+      yield* Effect.logInfo("child todo nudge injected", { "session.id": message.sessionID, open })
+    })
+    // origami_change-end
+
     // origami_change-start (bounded unknown-continue)
     /**
-     * The engine's own line in the chat, written the way
-     * `session/processor.ts`'s `notice` writes one: create the part, publish the
-     * delta, then persist the text. The delta is what puts it in front of the
-     * user - a whole-part text update with no peer or task-result metadata is
-     * dropped by the ACP bridge's `handlePartUpdated`, so without it the line
-     * would surface only on a later history replay.
+     * The engine's own line in the chat: create the part, publish the delta,
+     * then persist the text. The delta is required - a whole-part text update
+     * with no peer or task-result metadata is dropped by the ACP bridge's
+     * `handlePartUpdated`, so the line would surface only on a history replay.
      */
+    // origami_change-start (t-46a74d)
+    /**
+     * The engine standing down, in the chat, after `LIMIT` nudges have not
+     * changed the reply. Written the way `unknownFinishNotice` below writes its
+     * line, and for the same ACP-bridge reason.
+     */
+    const nudgeExhaustedNotice = Effect.fn("SessionPrompt.nudgeExhaustedNotice")(function* (
+      message: SessionV1.Assistant,
+      kind: SessionContinueNudge.Kind,
+    ) {
+      const start = Date.now()
+      const part: SessionV1.TextPart = {
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: message.sessionID,
+        type: "text",
+        text: "",
+        time: { start },
+        metadata: { [SessionContinueNudge.EXHAUSTED_METADATA_KEY]: "true" },
+      }
+      const body = SessionContinueNudge.exhaustedNote(kind)
+      yield* sessions.updatePart(part)
+      yield* sessions.updatePartDelta({
+        sessionID: part.sessionID,
+        messageID: part.messageID,
+        partID: part.id,
+        field: "text",
+        delta: body,
+      })
+      yield* sessions.updatePart({ ...part, text: body, time: { start, end: Date.now() } })
+      yield* Effect.logInfo("continuation nudges exhausted", {
+        "session.id": message.sessionID,
+        messageID: message.id,
+        kind,
+      })
+    })
+    // origami_change-end
+
     const unknownFinishNotice = Effect.fn("SessionPrompt.unknownFinishNotice")(function* (
       message: SessionV1.Assistant,
     ) {
@@ -1313,29 +1630,71 @@ const layer = Layer.effect(
     })
     // origami_change-end
 
+    // origami_change-start (t-tc1mhl: summary once per turn)
+    // The user messages whose replies ran a model step in the running turn.
+    // One turn runs per session at a time (`ensureRunning`), so a key per
+    // session is enough. An interjected message adds a second id.
+    const turnUsers = new Map<SessionID, Set<MessageID>>()
+    // Runs when the turn ends for any reason (done, error, cancel), so a
+    // stopped turn still gets the diff of the steps it finished. Forked: the
+    // diff reads git and must not hold the turn open.
+    const summarizeTurn = (sessionID: SessionID) =>
+      Effect.suspend(() => {
+        const ids = turnUsers.get(sessionID)
+        turnUsers.delete(sessionID)
+        if (!ids) return Effect.void
+        return Effect.forEach(ids, (messageID) => summary.summarize({ sessionID, messageID }).pipe(Effect.ignore), {
+          discard: true,
+        }).pipe(Effect.forkIn(scope), Effect.asVoid)
+      })
+    // origami_change-end
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        // The memory index text the previous step of THIS turn carried, so a
+        // later step can tell "unchanged" from "changed by a remember call".
+        let memorySent: string | undefined
+        // origami_change (t-46a74d): the trailing block this turn last sent.
+        let tailSent: string | undefined
         // origami_change (bounded unknown-continue): consecutive steps this turn
         // that ended on an unreadable stop reason and were carried on anyway.
         let unknownContinues = 0
+        // origami_change-start (t-3mxbyh: bounded continuation nudge)
+        // Both are per-TURN by construction: `runLoop` is entered once per
+        // turn, so a local is the whole scope the bound needs.
+        let nudges = 0
+        // origami_change (t-v4qvq1): child todo nudges sent in this turn.
+        let childNudges = 0
+        let sawToolCall = false
+        // origami_change (t-tc20mj): the last step was refused for size and
+        // compacted; cleared by the next step that is not refused.
+        let overflowCompacted = false
+        // origami_change-end
+        // origami_change (t-tc1haz): the tree the previous step's step-finish
+        // recorded. Read once at the top of the next pass and cleared, so only a
+        // processor step that follows a processor step directly starts from it;
+        // a subtask, compaction or nudge pass in between drops it.
+        let carriedSnapshot: string | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
+          const startSnapshot = carriedSnapshot
+          carriedSnapshot = undefined
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
-          let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
-            Effect.provideService(Database.Service, database),
-          )
+          // t-u54x6w: the newest pages first. A pass that ends the turn below
+          // stops there; one that sends a request reads the rest (`window.all`).
+          const window = yield* MessageV2.window(sessionID).pipe(Effect.provideService(Database.Service, database))
 
-          const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
+          const { user: lastUser, assistant: lastAssistant } = window.latest
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
-          const lastAssistantMsg = msgs.findLast(
+          const lastAssistantMsg = window.head.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
           // Some providers return "stop" even when the assistant message contains
@@ -1345,6 +1704,15 @@ const layer = Layer.effect(
             lastAssistantMsg?.parts.some(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
+
+          // origami_change-start (t-3mxbyh: bounded continuation nudge)
+          // A tool ran in this TURN, not merely in this step - the condition
+          // that separates a stalled task from a one-shot conversational reply.
+          // Gated on the same ownership test the exit gate uses, so a PREVIOUS
+          // turn's assistant message - which is what `lastAssistantMsg` holds on
+          // the first pass, before any step has run - can never seed it.
+          if (hasToolCalls && lastAssistant && lastUser.id < lastAssistant.id) sawToolCall = true
+          // origami_change-end
 
           // origami_change-start (bounded unknown-continue)
           // A step this gate would have EXITED on, but for "unknown" now sitting
@@ -1384,7 +1752,81 @@ const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
-            yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
+            // origami_change-start (t-3mxbyh: bounded continuation nudge)
+            // The last thing tried before the turn is called over. Every
+            // condition lives in `session/continue-nudge.ts`; this asks.
+            const verdict = SessionContinueNudge.decide({
+              providerID: lastUser.model.providerID,
+              finish: lastAssistant.finish,
+              hasToolCallThisStep: hasToolCalls,
+              sawToolCallThisTurn: sawToolCall,
+              prose: assistantProse(lastAssistantMsg),
+              nudges,
+              // origami_change (t-53vyxf): ORIGAMI_CONTINUE_NUDGE=off
+              enabled: continueNudgeEnabled,
+            })
+            // origami_change (t-46a74d): every candidate stop leaves a line,
+            // nudged or not. Three tickets in a row have opened with a
+            // screenshot and no way to tell from the log why the guard stayed
+            // quiet; this is that way. Candidates only - the four cheap gates
+            // reject on every turn end of every other provider, and logging
+            // those would bury the answer.
+            if (verdict.nudge || verdict.considered) {
+              yield* Effect.logInfo("continuation decision", {
+                "session.id": sessionID,
+                messageID: lastAssistant.id,
+                nudged: verdict.nudge ? verdict.kind : "none",
+                reason: verdict.reason,
+                nudges,
+              })
+            }
+            if (verdict.nudge) {
+              nudges++
+              yield* continueNudge(lastUser, nudges, verdict.kind)
+              continue
+            }
+            // origami_change-start (t-v4qvq1: child todo nudge)
+            // A sub-agent that stops with its own list open. The list is read
+            // only for a child, so a primary turn end costs no extra query.
+            if (session.parentID) {
+              const open = SessionChildTodoNudge.openCount(yield* todo.get(sessionID))
+              const childVerdict = SessionChildTodoNudge.decide({
+                child: true,
+                finish: lastAssistant.finish,
+                hasToolCallThisStep: hasToolCalls,
+                sawToolCallThisTurn: sawToolCall,
+                summaryOrError: lastAssistant.summary === true || lastAssistant.error !== undefined,
+                open,
+                nudges: childNudges,
+                otherNudges: nudges,
+                enabled: continueNudgeEnabled,
+              })
+              yield* Effect.logInfo("child todo decision", {
+                "session.id": sessionID,
+                nudged: childVerdict.nudge,
+                reason: childVerdict.reason,
+              })
+              if (childVerdict.nudge) {
+                childNudges++
+                yield* childTodoNudge(lastUser, open)
+                continue
+              }
+            }
+            // origami_change-end
+            // The engine asked as often as it is allowed to and the reply has
+            // not changed. Say so where the user reads, so the turn ending
+            // reads as the engine standing down rather than as work finished.
+            if (verdict.exhausted && !lastAssistant.summary) {
+              yield* nudgeExhaustedNotice(lastAssistant, verdict.exhausted)
+            }
+            // origami_change-end
+            yield* Effect.logInfo("exiting loop", {
+              "session.id": sessionID,
+              // origami_change (t-3mxbyh): WHY the turn ended. 3862 of these
+              // lines in the owner's log carried no reason at all, so a stop
+              // could not be told from a truncation after the fact.
+              reason: lastAssistant.finish,
+            })
             break
           }
 
@@ -1407,6 +1849,9 @@ const layer = Layer.effect(
             break
           }
           // origami_change-end
+
+          let msgs = yield* window.all.pipe(Effect.provideService(Database.Service, database))
+          const { finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           step++
           if (step === 1)
@@ -1458,14 +1903,10 @@ const layer = Layer.effect(
             throw error
           }
           const maxSteps = agent.steps ?? DEFAULT_MAX_STEPS
-          // Hard backstop against a non-terminating loop. The soft nudge below
-          // (isLastStep -> MAX_STEPS_PROMPT) asks the model to wrap up on its
-          // last allowed step (step === maxSteps); if it ignores that and the
-          // loop reaches the step AFTER the cap, stop deterministically rather
-          // than run another model call forever. `step` was already incremented
-          // for this iteration above, and no assistant message is created until
-          // after this point, so breaking here exits cleanly like the other
-          // guarded loop exits.
+          // Hard backstop against a non-terminating loop: the soft nudge below
+          // asks the model to wrap up on its last allowed step, and this stops
+          // deterministically if it ignores that. `step` was incremented above
+          // and no assistant message exists yet, so breaking here exits cleanly.
           if (step > maxSteps) {
             const error = new NamedError.Unknown({
               message: `Stopped after reaching the ${maxSteps}-step limit for a single turn. This is a safety backstop against a runaway loop. If this was legitimate long-running work, raise the agent's "steps" budget or split the task across turns.`,
@@ -1486,15 +1927,11 @@ const layer = Layer.effect(
             break
           }
           const isLastStep = step >= maxSteps
-          // The STORED list, read fresh each step: the window `msgs` holds is
-          // post-compaction, so it is exactly the thing that cannot be trusted
-          // to still carry the todos.
-          //
-          // Two channels back (see `SessionReminders.Applied`): the window, with
-          // any PERSISTED plan brief already in it, and the in-memory reminder
-          // texts for this step. The second lot never enters a stored message -
-          // they ride the trailing lane with the memory index, because they are
-          // recomputed every step and rewriting a sent message costs the cache.
+          // The stored list, read fresh each step: the window `msgs` holds is
+          // post-compaction, so it cannot be trusted to still carry the todos.
+          // Two channels back (see `SessionReminders.Applied`): the window, and
+          // the in-memory reminder texts, which never enter a stored message
+          // because rewriting a sent message costs the cache.
           const applied = yield* SessionReminders.apply({
             messages: msgs,
             agent,
@@ -1539,6 +1976,7 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+              snapshot: startSnapshot,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1553,16 +1991,13 @@ const layer = Layer.effect(
             // roster to address and no budget to spend, so giving it `ask`
             // would be giving it a tool that can only fail.
             const collabTurn = yield* CollabSystem.Turn
-            // origami_change-start (prompt matrix): a COMPOSED turn is a
+            // origami_change-start (prompt matrix): a composed turn is a
             // character speaking - a bot session or a collab turn - and the
-            // workspace's own instruction files are not a character's to read.
-            // The other half of the matrix (which base prompt sits above the
-            // persona) is in session/llm/request.ts; this half has to live
-            // HERE, at the source, because the transparency capture is drafted
-            // from the very list built below. Filtering in the request layer
-            // instead would leave the capture claiming an `instructions` block
-            // the model never received, and the capture is the surface a user
-            // checks the prompt with.
+            // workspace's instruction files are not a character's to read. This
+            // half of the matrix must live HERE, at the source, because the
+            // transparency capture is drafted from the list built below;
+            // filtering in the request layer would leave the capture claiming
+            // an `instructions` block the model never received.
             const composed = collabTurn !== undefined || AgentBot.isBot(agent)
             // origami_change-end
             const flockTools = collabTurn
@@ -1572,16 +2007,12 @@ const layer = Layer.effect(
                 )
               : undefined
 
-            // t-kgtr6c. ONE gate, read once, spent twice: it decides both the
-            // tool below and the sys.vision block further down. Registering the
-            // tool without the prompt block gives the model something it never
+            // One gate, read once, spent twice: it decides both the tool below
+            // and the sys.vision block further down. Registering the tool
+            // without the prompt block gives the model something it never
             // reaches for; the block without the tool gives it an instruction
-            // it cannot follow. `session` is re-read per turn by the loop, so a
-            // profile set mid-conversation applies from the next message.
-            //
-            // Round 5 split the SECOND fact out. Arming is the toggle plus a
-            // blind model; whether a picture is actually on the turn is now
-            // only asked where it still matters - the media strip below.
+            // it cannot follow. `session` is re-read per turn, so a profile set
+            // mid-conversation applies from the next message.
             const visionProfile = SessionVision.activeProfile({
               profile: Session.visionProfile(session),
               model,
@@ -1637,10 +2068,58 @@ const layer = Layer.effect(
               })
             }
 
-            if (step === 1)
-              yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
+            // t-tc1mhl: note the turn's user message; `summarizeTurn` writes its
+            // diff once, when the turn ends, not at every step.
+            const noted = turnUsers.get(sessionID) ?? new Set<MessageID>()
+            turnUsers.set(sessionID, noted.add(lastUser.id))
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+
+            // origami_change-start (tool-result aging, token-burn 2.1)
+            //
+            // Decided here because `msgs` is settled - the plugin transform
+            // above has had its say - and the array below is built from it.
+            //
+            // A boundary is a turn's first step, or a later step where the last
+            // finished reply says the context has passed half the usable window.
+            // Between boundaries `plan` re-answers with the same map, so the
+            // aged region does not move and the provider's prefix cache still
+            // matches. Stubbing on every step would save tokens and lose the
+            // cache, which is the worse trade.
+            let agingBoundary = step === 1
+            if (!agingBoundary && lastFinished && !flags.disableToolAging) {
+              const limit = usable({
+                cfg: yield* config.get(),
+                model,
+                outputTokenMax: flags.outputTokenMax,
+                thresholdOverride: Session.compactionThreshold(session),
+              })
+              const tokens = lastFinished.tokens
+              agingBoundary = limit > 0 && tokens.input + tokens.cache.read > limit / 2
+            }
+            const aging = SessionToolAging.plan({
+              sessionID,
+              messages: msgs,
+              boundary: agingBoundary,
+              enabled: !flags.disableToolAging,
+            })
+            if (agingBoundary && !flags.disableToolAging)
+              yield* Effect.logInfo("tool aging", {
+                "session.id": sessionID,
+                step,
+                aged: aging.counts.aged,
+                superseded: aging.counts.superseded,
+                kept: aging.counts.kept,
+                total: aging.rewrites.size,
+              })
+            // Aging REWRITES tool results the model has already been sent, so it
+            // is one of the two engine-side causes of a lost prefix. Naming
+            // itself here is what lets the step-finish say `divergence.source`
+            // instead of "unknown" (t-rylleg).
+            if (aging.counts.aged + aging.counts.superseded > 0)
+              SessionPromptCapture.markRewrite(sessionID, "tool-aging")
+            const agingOptions = aging.rewrites.size > 0 ? { toolRewrites: aging.rewrites } : {}
+            // origami_change-end
 
             const [skills, botMemory, env, instructions, memory, mcpInstructions, flock, vision, modelMsgs] =
               yield* Effect.all([
@@ -1668,16 +2147,17 @@ const layer = Layer.effect(
                 sys.mcp(agent, session.permission),
                 sys.flock(agent),
                 sys.vision(visionProfile),
-                // t-kgtr6c. The SAME gate spent a third time, on the parent's own
-                // request. Without it this turn carries two contradictory
-                // instructions: `provider/transform.ts:408` swaps the image the
-                // model cannot read for "ERROR: Cannot read ... Inform the user",
-                // while `sys.vision` above tells it to call `vision_request`
-                // instead. Armed, the part is a neutral note instead - see
-                // `SessionVision.blindOptions` for what reaches the wire either
-                // way. Unarmed it is `undefined`, so an ordinary chat is
-                // unchanged.
-                MessageV2.toModelMessagesEffect(msgs, model, SessionVision.blindOptions(visionProfile, turnHasImage)),
+                // The same gate spent a third time, on the parent's own request.
+                // Without it the turn carries two contradictory instructions:
+                // `provider/transform.ts` swaps the unreadable image for an
+                // error line, while `sys.vision` above tells the model to call
+                // `vision_request`. Armed, the part is a neutral note instead;
+                // unarmed it is `undefined`, so an ordinary chat is unchanged.
+                // Spelled out here on purpose: vision.test.ts reads this call.
+                MessageV2.toModelMessagesEffect(msgs, model, {
+                  ...SessionVision.blindOptions(visionProfile, turnHasImage),
+                  ...agingOptions,
+                }),
               ])
             const format = lastUser.format ?? { type: "text" as const }
             // The blocks the model gets, each still knowing where it came from.
@@ -1694,19 +2174,42 @@ const layer = Layer.effect(
               structuredOutput: format.type === "json_schema" ? STRUCTURED_OUTPUT_SYSTEM_PROMPT : undefined,
             })
             const system = systemParts.map((entry) => entry.text)
-            // THE MEMORY BLOCKS DO NOT GO IN THE SYSTEM PROMPT.
-            //
-            // Everything above holds still across a conversation's steps, so
-            // it sits in the provider's cached prefix. The memory index is the
-            // one prompt input the agent REWRITES mid-turn (`remember`), and a
-            // prefix cache is an exact-match: one remembered fact invalidated
-            // the entire conversation and the next step re-read the whole
-            // context - measured at 190-240s on long sessions. Appended after
-            // the last message it sits past every breakpoint, so a write costs
-            // only the block itself. Delivered as `user` because a trailing
-            // `system` message is rejected by the Anthropic message format.
-            const memoryParts = SessionPromptCapture.memoryParts({ memory, botMemory })
+            // The memory blocks do NOT go in the system prompt. Everything
+            // above holds still across a conversation's steps, so it sits in
+            // the provider's cached prefix; the memory index is the one prompt
+            // input the agent rewrites mid-turn (`remember`), and a prefix cache
+            // is an exact match, so one remembered fact would invalidate the
+            // whole conversation. Appended after the last message it sits past
+            // every breakpoint. Delivered as `user` because a trailing `system`
+            // message is rejected by the Anthropic message format.
+            // origami_change (token-burn 2.3): the first step carries the index
+            // in full, a later step only if it changed, and nothing otherwise.
+            // See `memoryForStep`.
+            const memoryInjection = memoryForStep({
+              first: step === 1,
+              parts: SessionPromptCapture.memoryParts({ memory, botMemory }),
+              previous: memorySent,
+            })
+            memorySent = memoryInjection.digest
+            const memoryParts = memoryInjection.parts
             SessionPromptCapture.draft(sessionID, [...systemParts, ...memoryParts])
+            // origami_change (t-46a74d): the tail carries its own digest across the
+            // steps of a turn, so an unchanged block is not re-sent and a changed
+            // one rides the tool result instead of opening a user turn.
+            const tail = withTrailingInjections(modelMsgs, memoryParts, applied.reminders, tailSent, trailingMode)
+            tailSent = tail.block
+            // origami_change (t-53vyxf): one line per step, so a panel run can
+            // PROVE which shape it sent instead of trusting the env it set. The
+            // message text and the field names are read by a log grep, so they
+            // are a contract - `sessionID` is spelled the way the panel greps
+            // it and not the `"session.id"` used by the lines around it.
+            yield* Effect.logInfo("trailing context", {
+              mode: trailingMode,
+              step,
+              action: tail.action,
+              bytes: tail.bytes,
+              sessionID,
+            })
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1715,13 +2218,14 @@ const layer = Layer.effect(
               parentSessionID: session.parentID,
               system,
               messages: [
-                ...withTrailingInjections(modelMsgs, memoryParts, applied.reminders),
+                ...tail.messages,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
+            carriedSnapshot = handle.finishSnapshot?.()
 
             if (structured !== undefined) {
               handle.message.structured = structured
@@ -1765,13 +2269,32 @@ const layer = Layer.effect(
             }
 
             if (result === "stop") return "break" as const
+            // origami_change-start (t-tc20mj): a request refused for size gets
+            // ONE compaction. Refused again straight after it, the history still
+            // does not fit: another compaction or the same request again would
+            // only be refused again.
+            const refused = result === "compact" && handle.overflowed !== undefined
+            if (refused && overflowCompacted) {
+              handle.message.error = new SessionV1.ContextOverflowError({
+                message:
+                  "The conversation still does not fit the model's context window after compaction. Start a new chat, or use a model with a larger window.",
+              }).toObject()
+              handle.message.finish = "error"
+              yield* sessions.updateMessage(handle.message)
+              yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+              return "break" as const
+            }
+            overflowCompacted = refused
+            // origami_change-end
             if (result === "compact") {
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
                 model: lastUser.model,
                 auto: true,
-                overflow: !handle.message.finish,
+                // t-tc20mj: the engine's own window refusal sent nothing and is
+                // not the provider-size (media) overflow this flag stands for.
+                overflow: !handle.message.finish && handle.overflowed !== "window",
               })
             }
             return "continue" as const
@@ -1789,19 +2312,13 @@ const layer = Layer.effect(
     )
 
     /**
-     * GOAL MODE's post-turn hook (session/goal.ts).
+     * Goal mode's post-turn hook (session/goal.ts). Forked here rather than
+     * inside `runLoop` because the turn has to end first - the check spawns a
+     * whole critic session and an inline one would freeze the chat - and
+     * because `Runner.finishRun` runs `onIdle` before completing the caller's
+     * deferred, so by this line the session is demonstrably idle.
      *
-     * FORKED, and forked HERE rather than inside `runLoop`, for two reasons.
-     * The turn has to END first - the caller gets its answer, the UI settles,
-     * and the user can interject - because the check spawns a whole critic
-     * session and an inline one would freeze the chat behind it. And it has to
-     * be after `ensureRunning` rather than at the bottom of `runLoop`, because
-     * `Runner.finishRun` runs `onIdle` BEFORE it completes the caller's
-     * deferred: by this line the session is demonstrably idle, so the check
-     * never has to poll for a turn that has not finished letting go.
-     *
-     * `Effect.ignore` on top of the module's own guards: a goal check that
-     * fails must cost the turn that triggered it nothing at all.
+     * `Effect.ignore`: a goal check that fails must cost the turn nothing.
      */
     const goalDeps = Effect.fn("SessionPrompt.goalDeps")(function* (sessionID: SessionID) {
       const ctx = yield* InstanceState.context
@@ -1826,7 +2343,7 @@ const layer = Layer.effect(
       const result = yield* state.ensureRunning(
         input.sessionID,
         lastAssistant(input.sessionID),
-        runLoop(input.sessionID),
+        runLoop(input.sessionID).pipe(Effect.ensuring(summarizeTurn(input.sessionID))),
       )
       yield* goalDeps(input.sessionID)
         .pipe(
@@ -1841,18 +2358,16 @@ const layer = Layer.effect(
     // origami_change-start (interject): a message the user pushed INTO a
     // running turn instead of waiting for the turn to end.
     //
-    // Delivery needs no queue of its own. `runLoop` re-reads the whole message
-    // window from the store at the top of every step, so a user message
-    // persisted here is picked up at the next tool boundary by itself - and
-    // that same write is what a replay or a session restore reads back, in
-    // order, for free. It also flips the loop's exit test
-    // (`lastUser.id < lastAssistant.id`), so a turn that would otherwise have
-    // finished stays alive to answer it.
+    // Delivery needs no queue of its own. `runLoop` re-reads the message window
+    // at the top of every step, so a user message persisted here is picked up at
+    // the next tool boundary, and the same write is what a replay reads back. It
+    // also flips the loop's exit test (`lastUser.id < lastAssistant.id`), so a
+    // turn that would otherwise have finished stays alive to answer it.
     //
-    // The signal is the other half. A foreground shell that runs for minutes
-    // never REACHES a boundary; signalling promotes it to a background job -
+    // The signal is the other half: a foreground shell that runs for minutes
+    // never reaches a boundary, so signalling promotes it to a background job -
     // process untouched, output still streaming - which settles the blocking
-    // tool call and brings the boundary forward to now.
+    // call and brings the boundary forward to now.
     const interject: (input: InterjectInput) => Effect.Effect<InterjectResult> = Effect.fn(
       "SessionPrompt.interject",
     )(function* (input: InterjectInput) {
@@ -1888,13 +2403,40 @@ const layer = Layer.effect(
         text: Interject.ENVELOPE,
         synthetic: true,
       } satisfies SessionV1.TextPart)
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: message.id,
-        sessionID: input.sessionID,
-        type: "text",
-        text: input.text,
-      } satisfies SessionV1.TextPart)
+      // An interjection can be a PICTURE with no words at all ("look at this"),
+      // so the text part is written only when there is text to write - an empty
+      // one would reach the model as a blank user turn.
+      if (input.text)
+        yield* sessions.updatePart({
+          id: PartID.ascending(),
+          messageID: message.id,
+          sessionID: input.sessionID,
+          type: "text",
+          text: input.text,
+        } satisfies SessionV1.TextPart)
+      // The attachments, AFTER the words, exactly as `createUserMessage` orders
+      // a fresh prompt's parts - and normalised through the same Image service,
+      // so an oversized screenshot is resized here as it would be there rather
+      // than being handed to the provider whole. A resizer that cannot load is
+      // the one failure `prompt` also rides out with the original part; the
+      // others (undecodable, or too big to shrink) keep the picture too, because
+      // dropping it silently is the defect this path exists to remove.
+      for (const file of input.files ?? []) {
+        const part = {
+          id: PartID.ascending(),
+          messageID: message.id,
+          sessionID: input.sessionID,
+          type: "file",
+          mime: file.mime,
+          filename: file.filename,
+          url: file.url,
+        } satisfies SessionV1.FilePart
+        yield* sessions.updatePart(
+          file.mime.startsWith("image/")
+            ? yield* image.normalize(part).pipe(Effect.catch(() => Effect.succeed(part)))
+            : part,
+        )
+      }
       yield* sessions.touch(input.sessionID)
       const promoted = yield* interjections.signal(input.sessionID)
       // Not busy = the turn ended between the user queueing the message and

@@ -12,30 +12,34 @@
   // live agents and none finished must not carry a standing "Complete 0": the
   // drawer is a 240px glance surface, and a heading over no rows spends a line
   // of it saying nothing.
-  import type { SubagentRow as SubagentRowT } from '../panes/subagentRows';
+  import type { SubagentGroupProps } from '../panes/subagentProps';
   import SubagentRow from './SubagentRow.svelte';
 
-  interface Props {
-    /** 'Running' / 'Complete'. */
-    label: string;
-    rows: SubagentRowT[];
-    onDismiss: (key: string) => void;
-    onOpen: (row: SubagentRowT) => void;
-  }
-  let { label, rows, onDismiss, onOpen }: Props = $props();
+  // The prop SHAPE lives in subagentProps.ts — see that file's header.
+  let { label, rows, collapsed = false, onToggleCollapse, limitMs = 0, onOpen, onDismiss, onStop }: SubagentGroupProps = $props();
 </script>
 
 {#if rows.length > 0}
   <div class="sa-group">
-    <div class="sa-group-head">
-      <span class="sa-group-label">{label}</span>
-      <span class="sa-group-count">{rows.length}</span>
-    </div>
-    <ul class="sa-list">
-      {#each rows as row (row.key)}
-        <SubagentRow {row} {onDismiss} {onOpen} />
-      {/each}
-    </ul>
+    {#if onToggleCollapse}
+      <button class="sa-group-head sa-group-fold" aria-expanded={!collapsed} onclick={onToggleCollapse}>
+        <span class="sa-group-chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+        <span class="sa-group-label">{label}</span>
+        <span class="sa-group-count">{rows.length}</span>
+      </button>
+    {:else}
+      <div class="sa-group-head">
+        <span class="sa-group-label">{label}</span>
+        <span class="sa-group-count">{rows.length}</span>
+      </div>
+    {/if}
+    {#if !collapsed}
+      <ul class="sa-list">
+        {#each rows as row (row.key)}
+          <SubagentRow {row} {onDismiss} {onOpen} {onStop} {limitMs} />
+        {/each}
+      </ul>
+    {/if}
   </div>
 {/if}
 
@@ -44,6 +48,9 @@
   /* Quieter than the drawer's own .sa-head — this is a divider inside a panel
      that already named itself, not a second title competing with it. */
   .sa-group-head { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+  /* A foldable heading is a real <button> stripped back to the <div> look. */
+  .sa-group-fold { width: 100%; background: transparent; border: none; padding: 0; cursor: pointer; font-family: inherit; text-align: left; }
+  .sa-group-chevron { flex: 0 0 auto; font-size: 8px; color: var(--og-text-muted); }
   .sa-group-label {
     font-size: 9px;
     font-weight: 600;

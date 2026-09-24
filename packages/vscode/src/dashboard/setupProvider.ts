@@ -1,27 +1,12 @@
-// The "Add / re-key a provider" flow, extracted whole out of DashboardPanel.ts's
-// message switch (t-o92558 round 4). Dependency-injected exactly like
-// connectOllama.ts: no vscode import, no direct network, no disk — the panel
-// wires the real validator / catalog fetchers / writer / broadcaster in, and a
-// test wires fakes. That is what makes "a Zen key with only a key pasted ends up
-// written" an assertable fact instead of something only a human can see.
-//
-// It was extracted rather than patched in place because DashboardPanel.ts sat
-// EXACTLY on its 6334-line cap, and the house rule is extract-before-raise. The
-// flow is also the single thing this ticket is about, so it earns its own file.
-//
-// SHAPE OF THE FLOW, and where it used to go wrong:
-//
-//   key-only preset (OpenRouter / OpenCode Zen / Go)
-//     -> validate the key against THAT preset's own host (keyOnlyPresets.ts)
-//     -> fill the model: OpenRouter auto-picks from its keyed catalog, the Zen
-//        family takes whatever the add form chose, else the preset default
-//   local endpoint (no key, a base URL, no model)
-//     -> auto-pick the first loaded model, refusing to write a dead server
-//   everything else keeps the model id the form supplied
-//
-// The old code did step one ONLY for `providerId === 'openrouter'`, so every
-// other key-only preset skipped validation entirely and then died on the
-// "needs a model id" guard with nothing written.
+// The "Add / re-key a provider" flow, extracted whole out of DashboardPanel.ts's message switch.
+// Dependency-injected like connectOllama.ts — no vscode import, no direct network, no disk — so the
+// panel wires real fetchers/writer/broadcaster and a test wires fakes.
+// Shape: a key-only preset (OpenRouter/Zen/Go) validates the key against its own host first, then
+// fills the model (OpenRouter auto-picks from its catalog, Zen takes the form's choice, else the
+// preset default); a local endpoint (no key, a base URL, no model) auto-picks the first loaded
+// model; everything else keeps the form's model id. The old code validated only for `providerId ===
+// 'openrouter'`, so every other key-only preset skipped validation and died on "needs a model id"
+// with nothing written.
 
 import { claudeCatalogFor } from './anthropicCatalog';
 import { KEY_ONLY_PRESETS, checkProviderKey, keyRejectedMessage } from './keyOnlyPresets';
@@ -36,9 +21,8 @@ export interface CatalogModel {
   cost?: { input: number; output: number };
 }
 
-/** The `setupProvider` message as the ControlStrip posts it. The index signature
- *  is what lets the panel hand its raw switch value straight in — every field is
- *  `unknown` and coerced below, so an extra key from a future form is harmless. */
+/** The `setupProvider` message as the ControlStrip posts it; every field is `unknown` and coerced
+ *  below, so an extra key from a future form is harmless. */
 export interface SetupProviderMessage {
   [k: string]: unknown;
   providerId?: unknown;
@@ -57,10 +41,8 @@ export interface SetupProviderDeps {
   msg: SetupProviderMessage;
   /** Injected so this file carries no network import. */
   fetchImpl: typeof fetch;
-  /** List a local OpenAI-compatible server's model ids (fetchLmStudioModels).
-   *  `apiKey` is optional and usually absent — a self-hosted server that DOES
-   *  enforce auth needs it, or the probe 401s and the connection is refused for
-   *  "no model loaded" while the server is perfectly healthy. */
+  /** List a local OpenAI-compatible server's model ids. `apiKey` is optional — a self-hosted server
+   *  enforcing auth needs it or the probe 401s and reads as "no model loaded". */
   fetchLocalModels: (baseURL: string, apiKey?: string) => Promise<string[]>;
   /** The window this server reports for one model (fetchModelInfo) — see ModelChoice.servedContext. */
   fetchModelWindow?: (baseURL: string, modelId: string, apiKey?: string) => Promise<number>;
@@ -78,9 +60,8 @@ export interface SetupProviderDeps {
   refresh: (providerId: string) => void;
   /** Optional host toast offering a window reload (skipped in tests). */
   notifyReload?: (providerName: string, model: string) => void;
-  /** Optional host ERROR toast. `post` targets a chat session, and from the
-   *  CONFIG view none may be visible — a refused key then read as "nothing
-   *  happened" (owner-hit 2026-08-21). Every failure exit calls this too. */
+  /** Optional host ERROR toast — `post` targets a chat, invisible from the Config view, so every
+   *  failure exit calls this too. */
   notifyError?: (message: string) => void;
 }
 
@@ -105,10 +86,8 @@ export async function setupProvider(d: SetupProviderDeps): Promise<void> {
       return;
     }
 
-    // KEY-ONLY PRESETS ("the rest is handled"). The key is validated live
-    // against the preset's OWN base URL before anything is written — a rejected
-    // key never lands in origami.json — and a refusal is worded with the
-    // preset's own name.
+    // Key-only presets: the key is validated live against the preset's own base URL before anything
+    // is written, so a rejected key never lands in origami.json.
     const preset = KEY_ONLY_PRESETS[providerId];
     if (preset) {
       baseURL = baseURL || preset.baseURL;
@@ -132,15 +111,13 @@ export async function setupProvider(d: SetupProviderDeps): Promise<void> {
       }
       if (!modelId) {
         if (preset.defaultModel) {
-          // The preset ships a real default (the Zen family), so the form always
-          // had something to submit; this is the belt-and-braces path for a
-          // caller that posted no model at all.
+          // The preset ships a real default, so this is the belt-and-braces path for a caller that
+          // posted no model at all.
           modelId = preset.defaultModel;
           modelName = modelId;
         } else {
-          // OpenRouter: no default, because the right first model depends on the
-          // key's tier. Auto-pick a free one on a free-tier key so the first
-          // message works, and cache the priced catalog for the picker.
+          // OpenRouter has no default (the right first model depends on key tier) — auto-pick a
+          // free one so the first message works, and cache the catalog for the picker.
           const models = await d.fetchCatalog(apiKey, baseURL);
           d.cacheCatalog(models);
           const free = models.find(x => x.free);
@@ -159,19 +136,11 @@ export async function setupProvider(d: SetupProviderDeps): Promise<void> {
       });
     }
 
-    // LM Studio / a self-hosted endpoint: the setup is ENDPOINT-ONLY (the active
-    // model is chosen in the chat pane). Auto-pick the first loaded model as the
-    // provider's default so a config block can be written.
-    //
-    // THE GATE IS "IS THIS SELF-HOSTED?", NOT "IS THIS KEYLESS?". It used to be
-    // `!apiKey && baseURL && !modelId`, which quietly made a key and auto-pick
-    // mutually exclusive: a key arriving with a blank model skipped this probe and
-    // fell into the "needs a model id" guard below, writing nothing — precisely
-    // the shape a keyed LM Studio submits, so optional keys could not work at all.
-    // isSelfHostedBaseUrl is the same predicate the picker groups on
-    // (selfHosted.ts), so section and flow can never disagree. A REMOTE compat
-    // endpoint is still refused without a model id: the probe is node:http-only
-    // and cannot reach an https gateway, so guessing would only confuse the error.
+    // LM Studio / self-hosted: setup is endpoint-only, so auto-pick the first loaded model as the
+    // default. Gate is "is this self-hosted?" (isSelfHostedBaseUrl), not "is this keyless?" — the
+    // old `!apiKey` gate made a key and auto-pick mutually exclusive, so a keyed LM Studio
+    // submission fell into the "needs a model id" guard and wrote nothing. A remote compat endpoint
+    // still needs a model id: the probe is node:http-only and can't reach https.
     if (baseURL && !modelId && isSelfHostedBaseUrl(baseURL)) {
       const ids = await d.fetchLocalModels(baseURL, apiKey);
       if (ids.length === 0) {
@@ -197,14 +166,13 @@ export async function setupProvider(d: SetupProviderDeps): Promise<void> {
       modelId,
       modelName,
       cost: choiceCost,
-      // SELF-HOSTED ONLY: a gateway's window is refreshModelInfoFor's policy call
-      // (unpersisted). A failed probe degrades to 0 — it must never fail the connect.
+      // Self-hosted only: a gateway's window is a policy call, unpersisted. A failed probe degrades
+      // to 0, never fails the connect.
       servedContext: baseURL && isSelfHostedBaseUrl(baseURL) ? await d.fetchModelWindow?.(baseURL, modelId, apiKey).catch(() => 0) : 0,
       catalog: claudeCatalogFor(providerId), // the rest of the family — see anthropicCatalog.ts
     };
     const written = d.write(choice);
-    // Light the pill up immediately — bust the cache for the just-connected
-    // provider so it re-probes and shows now, not after the TTL.
+    // Bust the cache for the just-connected provider so its pill shows now, not after the TTL.
     d.refresh(providerId);
     post({ type: 'system', text: `${choice.providerName} connected — model ${written.model} (saved to your global origami.json).`, sessionId: sid });
     d.notifyReload?.(choice.providerName, written.model);

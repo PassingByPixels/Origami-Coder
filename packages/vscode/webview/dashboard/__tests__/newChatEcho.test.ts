@@ -62,7 +62,7 @@ function replayCatchUp(sid: string, log: Array<Record<string, unknown>>) {
 
 async function sendFromComposer(c: HTMLElement, text: string) {
   await fireEvent.input(c.querySelector('.input') as HTMLTextAreaElement, { target: { value: text } });
-  await fireEvent.click(c.querySelector('.btn.send') as HTMLButtonElement);
+  await fireEvent.click(c.querySelector('.action-btn') as HTMLButtonElement);
   await tick();
 }
 
@@ -148,7 +148,7 @@ describe('new chat — the host catches a view up on a session it already holds'
     post({ type: 'sessionCreated', sessionId: sid, sessionNumber: 1, agentName: 'Tsuru' });
     await tick();
     const inputs = c.querySelectorAll('.input');
-    const sends = c.querySelectorAll('.btn.send');
+    const sends = c.querySelectorAll('.action-btn');
     await fireEvent.input(inputs[inputs.length - 1] as HTMLTextAreaElement, { target: { value: ASK } });
     await fireEvent.click(sends[sends.length - 1] as HTMLButtonElement);
     await tick();

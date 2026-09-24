@@ -1,24 +1,13 @@
 <script lang="ts">
-  // The task board as a SLIDE-OUT DRAWER (M4.2 UAT), in the idiom the chat's
-  // run-time todo overlay already established: a panel floating on the right
-  // edge of the pane, vertically centred, that rides off toward that edge and
-  // leaves a pull-tab behind.
+  // The task board as a slide-out drawer, in the idiom the chat's run-time
+  // todo overlay already uses: a panel on the right edge, riding off toward
+  // it and leaving a pull-tab behind. A full-width band cost the transcript
+  // height on every collab, whether the room had tasks or not.
   //
-  // WHY: the board used to be a full-width band between the controls and the
-  // stream. It cost the transcript a slice of height on every collab, whether or
-  // not the room had a single task on it. A drawer costs 16px of tab.
-  //
-  // THE IDIOM IS COPIED, NOT FACTORED. TodoStrip.svelte owns the same pull-tab
-  // and the same `translateX(calc(100% - 16px))` collapse, and ChatPane.svelte
-  // owns the overlay box those sit in. Generalising the two into one component
-  // would mean one file serving a per-turn checklist and a persistent task board
-  // — two lifetimes, two data flows, one set of props pulling in both
-  // directions. The geometry is thirty lines of CSS; the coupling would be
-  // permanent.
-  //
-  // The BOARD itself is TaskBoard.svelte, mounted whole: its rows, its Add row,
-  // its Accept/Reopen transitions and its ledger footer are untouched by the
-  // move. What changed hands is only WHO owns the fold — see its header.
+  // The idiom is copied from TodoStrip.svelte, not factored into a shared
+  // component: a checklist and a persistent board have different lifetimes
+  // and data flows, so sharing one component would trade thirty lines of
+  // CSS for permanent coupling.
   import CollabDrawerTab from './CollabDrawerTab.svelte';
   import TaskBoard from './TaskBoard.svelte';
   import type { CollabCostTotal, LedgerEntry, TaskEntry } from '../../src/acpExtTypes';
@@ -38,19 +27,13 @@
   }
   let { tasks, costTotals, ledger, ledgerLoaded, archived, onAdd, onUpdate, onExpand }: Props = $props();
 
-  // Plain component state, so it lasts exactly as long as the pane does: the
-  // drawer is mounted unconditionally, and a collab tab left open all afternoon
-  // keeps whatever the user chose. Nothing is persisted past the tab, because a
-  // drawer is a glance, not a setting.
-  //
-  // CLOSED by default. The tab is always on screen, so an unopened drawer still
-  // says the board is there — which a hidden panel with no handle would not.
+  // Plain component state: it lasts as long as the pane does, and nothing
+  // persists past the tab. The drawer is closed by default, but the tab
+  // stays on screen, so a shut drawer still shows the board exists.
   let open = $state(false);
 
-  /** What the tab says it is holding. ACCEPTED tasks are closed and are not
-   *  work owed, so they are not counted — a handle claiming "6" on a board with
-   *  nothing left to do is the same lie as claiming "0" on an engine that has
-   *  no board. Zero prints no number at all. */
+  /** Count of tasks not yet accepted. Accepted tasks are done work, not work
+   *  owed, so they are excluded; zero shows no number at all. */
   const liveCount = $derived((tasks ?? []).filter((t) => t.state !== 'accepted').length);
 
   function toggle() {
@@ -59,9 +42,8 @@
   }
 </script>
 
-<!-- The outer box holds the POSITION (right edge, vertically centred); the inner
-     one carries the collapse transform, so the two transforms never fight. Same
-     split ChatPane's .todo-overlay / .todo-overlay-inner takes. -->
+<!-- Outer box holds position; inner box holds the collapse transform, so
+     the two transforms never fight (same split as ChatPane's overlay). -->
 <aside class="ctd-overlay" aria-label="Task board">
   <div class="ctd" class:collapsed={!open}>
     <CollabDrawerTab {open} count={liveCount} onToggle={toggle} />

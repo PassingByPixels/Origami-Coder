@@ -810,6 +810,61 @@
         ]
       }
     },
+    "/config/refresh": {
+      "get": {
+        "tags": ["config"],
+        "operationId": "config.refresh",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Config caches invalidated + instance reloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "boolean",
+                  "description": "Config caches invalidated + instance reloaded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "description": "Invalidate the global config cache and dispose this directory's instance so the next read re-reads config from disk (picks up a newly written model without a reload).",
+        "summary": "Refresh configuration",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOrigamiClient } from \"@origami/sdk\n\nconst client = createOrigamiClient()\nawait client.config.refresh({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/experimental/capabilities": {
       "get": {
         "tags": ["experimental"],
@@ -2811,6 +2866,9 @@
                         "type": "string"
                       },
                       "description": {
+                        "type": "string"
+                      },
+                      "category": {
                         "type": "string"
                       },
                       "location": {
@@ -6326,6 +6384,15 @@
                   "variant": {
                     "type": "string"
                   },
+                  "temperature": {
+                    "type": "number"
+                  },
+                  "topP": {
+                    "type": "number"
+                  },
+                  "contextOverride": {
+                    "type": "number"
+                  },
                   "parts": {
                     "type": "array",
                     "items": {
@@ -7207,6 +7274,15 @@
                   },
                   "variant": {
                     "type": "string"
+                  },
+                  "temperature": {
+                    "type": "number"
+                  },
+                  "topP": {
+                    "type": "number"
+                  },
+                  "contextOverride": {
+                    "type": "number"
                   },
                   "parts": {
                     "type": "array",
@@ -16028,6 +16104,21 @@
             "additionalProperties": {
               "type": "boolean"
             }
+          },
+          "temperature": {
+            "type": "number"
+          },
+          "topP": {
+            "type": "number"
+          },
+          "contextOverride": {
+            "type": "number"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceMessageID": {
+            "type": "string"
           }
         },
         "required": ["id", "sessionID", "role", "time", "agent", "model"],
@@ -16360,6 +16451,12 @@
             "type": "string"
           },
           "finish": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "sourceMessageID": {
             "type": "string"
           }
         },
@@ -17258,6 +17355,30 @@
           "priority": {
             "type": "string",
             "description": "Priority level of the task: high, medium, low"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["NaN"]
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity"]
+              },
+              {
+                "type": "string",
+                "enum": ["-Infinity"]
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity", "-Infinity", "NaN"]
+              }
+            ],
+            "description": "Nesting level. Omit or 0 for a top-level task; a sub-task is its parent's depth + 1 and must come directly after that parent in the list. Maximum 3."
           }
         },
         "required": ["content", "status", "priority"],
@@ -20053,6 +20174,10 @@
                       },
                       "status": {
                         "$ref": "#/components/schemas/SessionStatus"
+                      },
+                      "queued": {
+                        "type": "integer",
+                        "minimum": 0
                       }
                     },
                     "required": ["sessionID", "status"],
@@ -20560,6 +20685,43 @@
         "additionalProperties": false,
         "description": "Server configuration for origami serve and web commands"
       },
+      "AgentPluginEntry": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "spec": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": ["spec"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "FlockRoleName": {
+        "type": "string",
+        "enum": [
+          "read",
+          "locate",
+          "scout",
+          "plan",
+          "execute",
+          "transform",
+          "judge",
+          "repair",
+          "research",
+          "vision",
+          "embed",
+          "compact"
+        ]
+      },
       "PermissionActionConfig": {
         "type": "string",
         "enum": ["ask", "allow", "deny"]
@@ -20632,6 +20794,9 @@
               },
               "skill": {
                 "$ref": "#/components/schemas/PermissionRuleConfig"
+              },
+              "plugin": {
+                "$ref": "#/components/schemas/PermissionRuleConfig"
               }
             },
             "additionalProperties": {
@@ -20673,6 +20838,9 @@
           "mode": {
             "type": "string",
             "enum": ["subagent", "primary", "all"]
+          },
+          "role": {
+            "$ref": "#/components/schemas/FlockRoleName"
           },
           "hidden": {
             "type": "boolean"
@@ -20727,6 +20895,10 @@
           },
           "npm": {
             "type": "string"
+          },
+          "protocol": {
+            "type": "string",
+            "enum": ["openai-chat", "openai-responses", "anthropic-messages", "gemini", "bedrock-converse"]
           },
           "whitelist": {
             "type": "array",
@@ -20784,6 +20956,10 @@
               "chunkTimeout": {
                 "type": "integer",
                 "exclusiveMinimum": 0
+              },
+              "max_concurrent": {
+                "type": "integer",
+                "exclusiveMinimum": 0
               }
             },
             "additionalProperties": {}
@@ -20810,6 +20986,58 @@
                 },
                 "reasoning": {
                   "type": "boolean"
+                },
+                "reasoning_options": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": ["effort"]
+                          },
+                          "values": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": ["type", "values"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": ["toggle"]
+                          }
+                        },
+                        "required": ["type"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": ["budget_tokens"]
+                          },
+                          "min": {
+                            "type": "number"
+                          },
+                          "max": {
+                            "type": "number"
+                          }
+                        },
+                        "required": ["type"],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
                 },
                 "temperature": {
                   "type": "boolean"
@@ -20925,6 +21153,10 @@
                     },
                     "api": {
                       "type": "string"
+                    },
+                    "protocol": {
+                      "type": "string",
+                      "enum": ["openai-chat", "openai-responses", "anthropic-messages", "gemini", "bedrock-converse"]
                     }
                   },
                   "additionalProperties": false
@@ -21092,6 +21324,24 @@
         },
         "additionalProperties": false
       },
+      "FlockProfile": {
+        "type": "object"
+      },
+      "FlockConfig": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string"
+          },
+          "profiles": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FlockProfile"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Config": {
         "type": "object",
         "properties": {
@@ -21221,6 +21471,12 @@
                   "minItems": 2
                 }
               ]
+            }
+          },
+          "agentPlugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentPluginEntry"
             }
           },
           "share": {
@@ -21505,6 +21761,9 @@
             },
             "additionalProperties": false
           },
+          "flock": {
+            "$ref": "#/components/schemas/FlockConfig"
+          },
           "experimental": {
             "type": "object",
             "properties": {
@@ -21526,6 +21785,10 @@
               "continue_loop_on_deny": {
                 "type": "boolean"
               },
+              "subagent_permission_timeout_seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
               "mcp_timeout": {
                 "type": "integer",
                 "exclusiveMinimum": 0
@@ -21535,6 +21798,30 @@
                 "items": {
                   "$ref": "#/components/schemas/ConfigV2ExperimentalPolicy"
                 }
+              },
+              "tool_search": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "mcp": {
+                    "type": "boolean"
+                  },
+                  "defer": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "always": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -22512,6 +22799,9 @@
           "temperature": {
             "type": "number"
           },
+          "frequencyPenalty": {
+            "type": "number"
+          },
           "color": {
             "type": "string"
           },
@@ -22592,6 +22882,10 @@
           "status": {
             "type": "string",
             "enum": ["connected"]
+          },
+          "era": {
+            "type": "string",
+            "enum": ["modern", "legacy"]
           }
         },
         "required": ["status"],
@@ -23819,6 +24113,45 @@
           }
         ]
       },
+      "Todo1": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Brief description of the task"
+          },
+          "status": {
+            "type": "string",
+            "description": "Current status of the task: pending, in_progress, completed, cancelled"
+          },
+          "priority": {
+            "type": "string",
+            "description": "Priority level of the task: high, medium, low"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string",
+                "enum": ["NaN"]
+              },
+              {
+                "type": "string",
+                "enum": ["Infinity"]
+              },
+              {
+                "type": "string",
+                "enum": ["-Infinity"]
+              }
+            ],
+            "description": "Nesting level. Omit or 0 for a top-level task; a sub-task is its parent's depth + 1 and must come directly after that parent in the list. Maximum 3."
+          }
+        },
+        "required": ["content", "status", "priority"],
+        "additionalProperties": false
+      },
       "session.status": {
         "type": "object",
         "properties": {
@@ -23861,6 +24194,10 @@
               },
               "status": {
                 "$ref": "#/components/schemas/SessionStatus"
+              },
+              "queued": {
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": ["sessionID", "status"],
@@ -32508,7 +32845,7 @@
               "todos": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/Todo"
+                  "$ref": "#/components/schemas/Todo1"
                 }
               }
             },
@@ -36015,7 +36352,7 @@
               "todos": {
                 "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/Todo"
+                  "$ref": "#/components/schemas/Todo1"
                 }
               }
             },
@@ -36298,6 +36635,10 @@
               },
               "status": {
                 "$ref": "#/components/schemas/SessionStatus"
+              },
+              "queued": {
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": ["sessionID", "status"],

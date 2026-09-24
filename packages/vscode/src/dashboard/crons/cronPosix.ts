@@ -1,19 +1,8 @@
-// cronPosix.ts — the macOS (launchd) counterparts of cronCommand/cronLauncher's
-// Windows primitives. PURE: string in, string out, nothing spawns and nothing
-// touches disk, so every artifact a Mac cron registers — the sh launcher, the
-// plist, the label parse — is asserted VERBATIM in tests that run on any OS.
-// The exec/fs side lives in launchdBackend.ts, behind the same injectable seam
-// windowsBackend uses.
-//
-// The launcher mirrors cronLauncher.ts's batch script line for line — same
-// [start]/[cmd]/[end] audit trail, same covenant that the [cmd] record is
-// byte-identical to the line that runs. Two posix-only rules:
-//   1. `rc=$?` is captured on its OWN line before the [end] echo. Inside
-//      `echo "[end] $(date) exit=$?"` the $(date) substitution runs first and
-//      $? would then report date's exit, not the run's.
-//   2. Tokens are single-quoted (shQuote): inside single quotes the shell
-//      expands NOTHING, so a prompt reading `summarise $HOME please` reaches
-//      origami literally. The only escape needed is the quote itself.
+// cronPosix.ts — the macOS (launchd) counterparts of cronCommand/cronLauncher's Windows primitives.
+// Pure: string in, string out, asserted verbatim in tests on any OS.
+// Two posix-only rules: `rc=$?` is captured on its own line before the `[end]` echo, since a
+// `$(date)` substitution inside the echo would run first and overwrite `$?`; tokens are
+// single-quoted, since single quotes expand nothing in the shell.
 
 import { LAUNCHD_LABEL_PREFIX, type RunCommandSpec } from './cronCommand';
 import type { CronSchedule } from './cronSchedule';
@@ -65,10 +54,10 @@ function calendarDict(pad: string, time: string, weekday?: number): string {
   return `${pad}<dict>\n${day}${pad}  <key>Hour</key><integer>${hh}</integer>\n${pad}  <key>Minute</key><integer>${mm}</integer>\n${pad}</dict>`;
 }
 
-/** The schedule keys of the plist. daily/weekly are absolute → calendar
- *  entries; hourly/minutely are intervals counted from load — the same
- *  registered-at anchor schtasks /MO uses, which is what cronSchedule.nextRun
- *  already models (lastSyncedAt). */
+/**
+ * The schedule keys of the plist. daily/weekly are absolute calendar entries; hourly/minutely are
+ *  intervals counted from load, the same registered-at anchor schtasks /MO uses.
+ */
 export function launchdScheduleXml(schedule: CronSchedule): string {
   switch (schedule.kind) {
     case 'daily':
@@ -107,10 +96,8 @@ export function plistFor(label: string, scriptPath: string, schedule: CronSchedu
 }
 
 /**
- * Our labels out of `launchctl list` (three whitespace-separated columns:
- * PID, last-exit status, label). Rows for anything not carrying our prefix are
- * dropped, so a caller can never mistake somebody else's agent for a cron —
- * the exact rule parseQueriedTaskNames applies to schtasks output.
+ * Our labels out of `launchctl list`. Rows without our prefix are dropped, so a caller can never
+ *  mistake somebody else's agent for a cron.
  */
 export function parseLaunchctlList(stdout: string): string[] {
   const names: string[] = [];

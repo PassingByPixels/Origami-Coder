@@ -1,55 +1,26 @@
-// What a run REALLY cost, and on WHICH models.
+// What a run really cost, and on which models.
 //
-// The raw token total is not the bill. A cached-input token is charged at a
-// fraction of a fresh one, so a 189M-token run that was 81% cache reads is
-// nearer 50M in what it actually billed for — and a headline that prints the
-// raw number is off by that whole factor. This leaf owns the translation, the
-// cache-hit ratio it comes from, and the per-model price table the user can
-// supply to turn either into currency.
-//
-// It also owns WHICH MODELS RAN, for two reasons. The price table is keyed by
-// model, so the two questions are one question. And the session record's own
-// `model` field is the CURRENT SELECTION, not the history: a run that switched
-// provider mid-way billed at two rates, and presenting the selection as "what
-// ran" is the same class of lie as printing the raw total as the cost.
-//
-// Pure — no DOM — like labyrinthUsage beside it, and it SUMS THROUGH that
-// module's own accumulator rather than keeping a second copy of the arithmetic.
-// Nothing here invents a number: an absent measurement stays absent, and with
-// no prices entered there is no currency figure at all.
+// A cached-input token bills at a fraction of a fresh one, so raw tokens
+// are not the bill. This leaf owns that translation, the cache-hit ratio,
+// and the per-model price table — keyed by the session's current `model`,
+// not its history, since a provider switch mid-run bills at two rates.
+// Nothing here invents a number: absent stays absent, no prices means no
+// currency at all.
 
 import { accumulateUsage, emptyUsage, type UsageStep, type UsageTotal } from './labyrinthUsage';
 
-/**
- * What one cached-input token bills as, relative to a fresh one. A tenth is the
- * PROVIDER DEFAULT (the rate Anthropic, OpenAI and xAI all publish for a cache
- * read); a per-model `cachedPercent` in the price table overrides it. Named
- * rather than inlined because a bare 0.1 inside a headline is a claim the
- * reader cannot check.
- */
+/** What one cached-input token bills as, relative to a fresh one (default 0.1). */
 export const CACHED_INPUT_FACTOR = 0.1;
 
-/**
- * The headline count: input tokens plus cache reads DISCOUNTED to what they
- * bill as — "input equivalents". Output and reasoning are excluded on purpose;
- * they are priced on a different axis, and folding them in would make one
- * number mean two things.
- *
- * Absent when the run recorded neither input nor cache reads, so an unmeasured
- * run prints nothing rather than a confident 0.
- */
+/** The headline count: input tokens plus cache reads discounted to what
+ *  they bill as. Absent when the run recorded neither. */
 export function inputEquivalents(total: UsageTotal, factor = CACHED_INPUT_FACTOR): number | undefined {
   if (total.input === undefined && total.cacheRead === undefined) return undefined;
   return (total.input ?? 0) + (total.cacheRead ?? 0) * factor;
 }
 
-/**
- * The share of PREFILL that came from cache: `cacheRead / (cacheRead + input)`.
- *
- * Undefined when the provider never reported cache tokens at all — most local
- * servers do not — because 0% would read as "caching is broken here" when the
- * truth is that nobody measured. A reported 0 IS a measurement and is kept.
- */
+/** The share of prefill from cache. Undefined when the provider never
+ *  reported cache tokens; a reported 0 is a real measurement and kept. */
 export function cacheHitRatio(total: UsageTotal): number | undefined {
   if (total.cacheRead === undefined) return undefined;
   const prefill = total.cacheRead + (total.input ?? 0);
@@ -63,12 +34,8 @@ export function formatPercent(ratio: number | undefined): string | undefined {
   return `${Math.round(ratio * 100)}%`;
 }
 
-/**
- * A step is one BILLED REQUEST when its message recorded usage — the engine
- * attaches a message's usage to exactly one of the steps it produced, so this
- * counts assistant messages and never their parts. `usageMissing` counts too:
- * that request happened, we just do not know what it cost.
- */
+/** A step is one billed request when its message recorded usage. Counts
+ *  `usageMissing` too: the request happened, we just don't know its cost. */
 const billed = (s: UsageStep): boolean =>
   s.tokens !== undefined || s.cost !== undefined || s.usageMissing === true;
 
@@ -88,8 +55,7 @@ export interface ModelCutover {
   to: string;
 }
 
-/** A step whose message never recorded which model produced it. Named, not dropped —
- *  the same rule labyrinthUsage's `unknown` agent bucket follows. */
+/** A step whose message never recorded which model produced it. Named, not dropped. */
 const UNKNOWN_MODEL = 'unknown';
 
 /** Every model that actually ran, biggest spender first. */
@@ -109,11 +75,8 @@ export function modelsUsed(steps: readonly UsageStep[]): ModelUsage[] {
     .sort((a, b) => (b.total.tokens ?? 0) - (a.total.tokens ?? 0) || a.model.localeCompare(b.model));
 }
 
-/**
- * The switches, in run order. Only BILLED steps are read: a tool step inherits
- * its message's model, so walking every step would report a "cutover" each time
- * one message ended and the next began on the same model.
- */
+/** The switches, in run order. Only billed steps are read, since a tool
+ *  step inherits its message's model and would report a false cutover. */
 export function modelCutovers(steps: readonly UsageStep[]): ModelCutover[] {
   const out: ModelCutover[] = [];
   let previous: string | undefined;
@@ -145,14 +108,8 @@ export interface Indicative {
   models: number;
 }
 
-/**
- * A dollar figure from the user's own numbers — INDICATIVE, never a bill. It is
- * undefined when no model that ran has a price, so an empty table shows no
- * currency at all rather than "$0.00", which would read as a free run.
- *
- * A model priced for input but not output still contributes its input: a
- * partial price is a real constraint, and `priced`/`models` says how partial.
- */
+/** A dollar figure from the user's own numbers, indicative, never a bill.
+ *  Undefined when no model that ran has a price in the table. */
 export function indicativeCost(usage: readonly ModelUsage[], prices: PriceTable): Indicative | undefined {
   let amount = 0;
   let priced = 0;
@@ -164,8 +121,7 @@ export function indicativeCost(usage: readonly ModelUsage[], prices: PriceTable)
     const perInput = (p.input ?? 0) / 1_000_000;
     amount += (m.total.input ?? 0) * perInput;
     amount += (m.total.cacheRead ?? 0) * perInput * factor;
-    // Reasoning tokens are billed at the OUTPUT rate by every provider that
-    // reports them separately, so they ride with output rather than free.
+    // Reasoning tokens bill at the output rate, so they ride with output, not free.
     amount += ((m.total.output ?? 0) + (m.total.reasoning ?? 0)) * ((p.output ?? 0) / 1_000_000);
   }
   return priced > 0 ? { amount, priced, models: usage.length } : undefined;

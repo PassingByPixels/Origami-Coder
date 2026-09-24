@@ -8,9 +8,8 @@ import { errorMessage } from "@/util/error"
  * One line of prose for an AI SDK warning.
  *
  * The SDK's own `formatWarning` is module-private, so the three shapes of
- * `SharedV3Warning` are rendered here. Provider and model are deliberately NOT
- * folded into the string: they travel as their own structured log fields, so a
- * log query can group warnings by model without parsing prose.
+ * `SharedV3Warning` are rendered here. Provider and model stay out of the string
+ * deliberately: they travel as structured log fields instead.
  */
 export function warningMessage(warning: Warning): string {
   switch (warning.type) {
@@ -28,28 +27,25 @@ export function warningMessage(warning: Warning): string {
 /**
  * Send the AI SDK's own warnings to the engine log.
  *
- * They were being THROWN AWAY. `server/server.ts` and `session/prompt.ts` each
- * set `globalThis.AI_SDK_LOG_WARNINGS = false` at import time, and with good
- * reason: the SDK's default logger is `console.warn`, and the engine speaks a
- * protocol on stdout. But `false` silences the WHOLE channel, and that channel
- * carries the only notice the SDK gives when it discards content from the
- * request it is about to send. A function value keeps stdout clean and keeps
- * the signal.
+ * `server/server.ts` and `session/prompt.ts` set
+ * `globalThis.AI_SDK_LOG_WARNINGS = false` at import time, because the SDK's
+ * default logger is `console.warn` and the engine speaks a protocol on stdout.
+ * But `false` silences the only notice the SDK gives when it discards content
+ * from the request it is about to send. A function value keeps stdout clean and
+ * keeps the signal.
  *
- * Why per call and not once at import: this module is imported before both
- * `= false` assignments run, so a module-level install would be overwritten by
- * them. Installing from inside a request instead runs after every import, which
- * is what makes the function value win.
+ * It must be installed per call, not once at import: this module is imported
+ * before both `= false` assignments run, so a module-level install would be
+ * overwritten by them.
  *
- * `fork` carries the CALLING turn's fiber context, so a line lands with that
+ * `fork` carries the calling turn's fiber context, so a line lands with that
  * session's instance and loggers. Provider and model come from the SDK's own
- * arguments rather than from the closure, so a line is never wrong about which
- * model warned even when two turns overlap and the later one owns the context.
+ * arguments rather than the closure, so a line is never wrong about which model
+ * warned when two turns overlap.
  *
  * Reading `streamText`'s `result.warnings` instead is not an option: its getter
- * calls `consumeStream()` (ai@6 dist: `get warnings()` -> `this.steps` ->
- * `this.consumeStream()`), which would start draining the stream behind the
- * lazy `fullStream` consumption in llm.ts.
+ * calls `consumeStream()`, which would start draining the stream behind the lazy
+ * `fullStream` consumption in llm.ts.
  */
 export function installWarningLogger(fork: (effect: Effect.Effect<void>) => void): void {
   const logger: LogWarningsFunction = ({ warnings, provider, model }) => {
@@ -78,18 +74,15 @@ export function adapterState() {
     toolNames: {} as Record<string, string>,
     copilotTotalNanoAiu: undefined as number | undefined,
     // Local OpenAI-compatible servers (vLLM, LM Studio) leak `<think>` markup onto
-    // the CONTENT channel instead of `reasoning_content` — including a closer with
-    // no opener, which is what put a literal `</think>` into a session title. The
-    // scanner state is per-stream and MUST persist across deltas: a tag arrives
-    // split (`</thi` + `nk>`) whenever the server flushes mid-token, so per-chunk
-    // scanning would both leak the tag and drop text.
+    // the content channel instead of `reasoning_content`, including a closer with
+    // no opener. The scanner state is per-stream and must persist across deltas: a
+    // tag arrives split (`</thi` + `nk>`) whenever the server flushes mid-token,
+    // so per-chunk scanning would both leak the tag and drop text.
     think: ThinkTags.initial(),
-    // The reasoning block THIS scanner opened, in its own id namespace.
-    //
-    // Deliberately NOT `currentReasoningID`: the provider may be streaming a real
-    // `reasoning_content` block at the same time, and publish-llm-event.ts dies on
-    // a duplicate start ("Duplicate reasoning start") and on a delta before start.
-    // Sharing the namespace would turn a mixed-channel model into a dead session.
+    // The reasoning block this scanner opened, in its own id namespace.
+    // Deliberately not `currentReasoningID`: the provider may be streaming a real
+    // `reasoning_content` block at the same time, and publish-llm-event.ts treats
+    // a duplicate start or a delta before start as fatal.
     thinkBlockID: undefined as string | undefined,
     thinkBlocks: 0,
   }
@@ -99,10 +92,8 @@ export function adapterState() {
  * Route scanned segments into the event lifecycle, mirroring the native OpenAI
  * Chat adapter's `emitSegment`: a reasoning segment joins (or opens) the scanner's
  * own reasoning block, and a text segment closes that block first so the two never
- * interleave inside one block.
- *
- * Every start/end is emitted exactly once because `thinkBlockID` is the only gate —
- * the consumer treats an unmatched delta or a repeated start as a fatal defect.
+ * interleave. `thinkBlockID` is the only gate on start/end, because the consumer
+ * treats an unmatched delta or a repeated start as a fatal defect.
  */
 function emitSegments(
   state: ReturnType<typeof adapterState>,
@@ -130,13 +121,10 @@ function emitSegments(
 }
 
 /**
- * Close the scanner down for a text block: release whatever is still HELD, then
- * close any reasoning block it opened.
- *
- * The flush is the load-bearing half. A trailing `<` is held back so the next
- * chunk can prove whether it was the head of a tag; if the stream ends there and
- * nothing drains it, the reply silently loses its last characters — a worse bug
- * than the stray tag this exists to remove.
+ * Close the scanner down for a text block: release whatever is still held, then
+ * close any reasoning block it opened. The flush is the load-bearing half — a
+ * trailing `<` is held back so the next chunk can prove whether it was the head
+ * of a tag, and if nothing drains it the reply loses its last characters.
  */
 function closeScan(state: ReturnType<typeof adapterState>, textID: string): LLMEvent[] {
   const tail = ThinkTags.flush(state.think)
@@ -153,17 +141,14 @@ function closeScan(state: ReturnType<typeof adapterState>, textID: string): LLME
  * Release whatever the scanner is still holding, wherever the stream stopped.
  *
  * `closeScan` is reachable only through the events the adapter is handed, so a
- * stream that ends by failing, by aborting, or by simply running out of events
- * never reaches it and the held characters die with the scanner. This is the
- * seam the stream itself calls on those exits (see `llm.ts`).
+ * stream that ends by failing or aborting never reaches it and the held
+ * characters die with the scanner. This is the seam the stream calls on those
+ * exits (see `llm.ts`).
  *
- * Idempotent by construction: `closeScan` resets the scanner, so the drain that
- * runs on a normal end and the one that runs on a failure cannot emit the same
- * characters twice. It emits nothing when no text block is open — a delta into a
- * block that was never started is a fatal defect downstream, so a fabricated id
- * would be worse than the truncation it avoided. `pending` is only ever non-empty
- * after a text delta, and every text delta sets `currentTextID`, so that branch
- * is a guard rather than a policy.
+ * Idempotent: `closeScan` resets the scanner, so the normal-end drain and the
+ * failure drain cannot emit the same characters twice. It emits nothing when no
+ * text block is open, because a delta into a block that was never started is a
+ * fatal defect downstream.
  */
 export function drain(state: ReturnType<typeof adapterState>): LLMEvent[] {
   if (state.currentTextID === undefined) return []
@@ -262,10 +247,8 @@ export function toLLMEvents(
 
     case "finish":
       return Effect.sync(() => {
-        // A stream that finished WITHOUT text-end still has a text block open, so
-        // held characters have somewhere legal to go. Only then — emitting a delta
-        // into a block that was never started is a fatal defect downstream, so a
-        // fabricated id would be worse than the truncation it tried to avoid.
+        // A stream that finished without text-end still has a text block open, so
+        // held characters have somewhere legal to go. Only then: see `drain`.
         const events: LLMEvent[] = state.currentTextID !== undefined ? closeScan(state, state.currentTextID) : []
         events.push(
           LLMEvent.finish({
@@ -275,7 +258,7 @@ export function toLLMEvents(
           }),
         )
         // Reset so the adapter can be reused for a follow-up stream without leaking
-        // counters or block IDs. adapterState() is the single source of truth for shape.
+        // counters or block IDs.
         Object.assign(state, adapterState())
         return events
       })
@@ -296,9 +279,9 @@ export function toLLMEvents(
         const id = currentTextID(state, event.id)
         const metadata = providerMetadata(event.providerMetadata)
         // Hot path, every delta of every turn: a chunk with nothing held over and
-        // no `<` in it cannot contain or begin a tag, so it skips the scanner's
-        // concat/allocate entirely. Safe as long as both tags start with `<`,
-        // which is the whole grammar think-tags.ts watches for.
+        // no `<` in it cannot contain or begin a tag, so it skips the scanner
+        // entirely. Safe only while both tags start with `<`, which is the whole
+        // grammar think-tags.ts watches for.
         if (!state.think.pending && !event.text.includes("<"))
           return [LLMEvent.textDelta({ id, text: event.text, providerMetadata: metadata })]
         const scanned = ThinkTags.scan(state.think, event.text)
@@ -309,7 +292,7 @@ export function toLLMEvents(
     case "text-end":
       return Effect.sync(() => {
         const id = currentTextID(state, event.id)
-        // Drain BEFORE the block closes — after textEnd there is no block left to
+        // Drain before the block closes — after textEnd there is no block left to
         // put held characters into.
         const events = closeScan(state, id)
         state.currentTextID = undefined

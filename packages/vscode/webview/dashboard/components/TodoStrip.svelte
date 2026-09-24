@@ -11,19 +11,17 @@
   // The list arithmetic (what a depth means, who owns which children, the
   // status tally) is a pure leaf; one row's markup is another. This file keeps
   // the panel, the header, the drawer and the collapse.
+  import type { Snippet } from 'svelte';
   import { annotate, counts } from './todoTree';
   import { autoCollapsed, visible } from './todoCollapse';
+  import { hasCompleted, hiddenAfterClear } from '../panes/todoClear';
   import TodoRow from './TodoRow.svelte';
-
-  interface TodoView {
-    id: number;
-    content: string;
-    activeForm: string;
-    status: 'pending' | 'in_progress' | 'completed';
-    /** Nesting level as the engine/model sent it — absent means top level.
-     *  Normalised for the whole list at once by todoTree's `annotate`. */
-    depth?: number;
-  }
+  import TodoClearButton from './TodoClearButton.svelte';
+  import TodoProgressBar from './TodoProgressBar.svelte';
+  // The row shape is the pane's own `TodoInfo` (panes/chatMessage.ts), imported
+  // rather than re-declared here: it was the same five fields twice, and a
+  // second copy is a second thing to forget when the wire gains a field.
+  import type { TodoInfo as TodoView } from '../panes/chatMessage';
 
   interface Props {
     todos: TodoView[];
@@ -46,9 +44,31 @@
     collapsible?: boolean;
     collapsed?: boolean;
     onToggleCollapse?: () => void;
+    /**
+     * t-fh4zpc — an optional first row INSIDE the panel box, drawn above the
+     * header. TodoOverlay passes its list-tab strip here so the two are ONE UI
+     * piece: the collapse moves the panel and the tabs go with it. Before this
+     * the tabs were a sibling of the whole strip and stayed on screen after the
+     * owner shut the panel. A snippet, not tab props: what a tab IS stays the
+     * overlay's business (TodoTabs.svelte + todoTabs.ts), and this file keeps
+     * owning only where the row sits.
+     */
+    tabs?: Snippet;
+    /** t-h8gv8w — the rows "Clear completed" has hidden on THIS list, by
+     *  todoClear.ts's content+status key. A view filter over the model's list:
+     *  the header count still reads the true done/total, and a row the model
+     *  reopens keys differently and comes straight back. */
+    hiddenKeys?: ReadonlySet<string>;
+    /** Report a click. Absent = no control at all (the inline end-of-turn
+     *  snapshot has nothing to clear away from). */
+    onClearCompleted?: () => void;
   }
 
-  let { todos, source, interactive = false, collapsible = false, collapsed = false, onToggleCollapse }: Props = $props();
+  let { todos, source, interactive = false, collapsible = false, collapsed = false, onToggleCollapse, tabs, hiddenKeys, onClearCompleted }: Props = $props();
+
+  // The list as DRAWN. The header's tally is computed from `todos`, the model's
+  // own list, so hiding rows never moves the count the owner is reading.
+  const shown = $derived(hiddenAfterClear(todos, hiddenKeys ?? new Set<string>()));
 
   // Local expand state — only consulted in `interactive` mode. Starts
   // collapsed so a completed snapshot reads as a tidy one-liner.
@@ -73,9 +93,30 @@
   };
 </script>
 
+<!-- The pull-tab handle, ONE snippet for both branches: the empty branch used to
+     leave it out, so a Main tab with no list of its own could not close the drawer. -->
+{#snippet handle()}
+  <button
+    class="todo-tab"
+    aria-expanded={!collapsed}
+    aria-label={collapsed ? 'Show task list' : 'Hide task list'}
+    title={collapsed ? 'Show tasks' : 'Hide tasks'}
+    onclick={onToggleCollapse}
+  >
+    <span class="todo-tab-glyph" aria-hidden="true">{collapsed ? '⟨' : '⟩'}</span>
+  </button>
+{/snippet}
+
 {#if todos.length === 0}
-  <div class="todo-strip empty" title="Todos will appear here when the agent starts tracking work">
-    <span class="todo-empty">Todos: none yet</span>
+  <!-- t-gyp8fj: the tabs belong to the PANEL, so a chat with no list of its own can
+       still reach a child's. Drawer mode: same shape as the full branch (handle + panel). -->
+  <div class="todo-strip empty" class:drawer={collapsible} class:collapsed={collapsible && collapsed}
+    title="Todos will appear here when the agent starts tracking work">
+    {#if collapsible}{@render handle()}{/if}
+    <div class="todo-panel">
+      {#if tabs}{@render tabs()}{/if}
+      <span class="todo-empty">Todos: none yet</span>
+    </div>
   </div>
 {:else}
   <!-- LEAVES only: a row with children is a container, so it is neither a task
@@ -83,18 +124,11 @@
        "3/5" with nothing outstanding. -->
   {@const cnt = counts(todos)}
   {@const allDone = cnt.completed === cnt.total}
-  <!-- When every item is done, un-pin the strip (drop the sticky float so
-       it scrolls away with the history) and collapse the item list to a
-       one-line summary — a finished checklist shouldn't keep hogging the
-       top of the pane. In `interactive` mode the header is a toggle so a
-       collapsed snapshot can be re-opened to show the items again. -->
-  <!-- In collapsible (drawer) mode the item list is ALWAYS mounted — the
-       collapsed state slides the panel off toward the edge (CSS) rather than
-       dropping the list, so reopening is instant and preserves items. -->
+  <!-- All done: un-pin the strip and collapse the list to a one-line summary; in
+       `interactive` mode the header re-opens it. Drawer mode keeps the list MOUNTED
+       (the collapsed state slides the panel off by CSS), so reopening is instant. -->
   {@const showList = collapsible ? true : (!allDone || (interactive && expanded))}
-  <!-- Only a finished (all-done) snapshot is re-expandable, so the header
-       toggle affordance is offered only then; a still-running list is always
-       expanded and isn't announced as a button. -->
+  <!-- Only a finished snapshot is re-expandable; a running list is never a button. -->
   {@const canToggle = interactive && allDone}
   <div
     class="todo-strip"
@@ -103,21 +137,9 @@
     class:collapsed={collapsible && collapsed}
     title={SOURCE_LABEL[source] ?? source}
   >
-    {#if collapsible}
-      <!-- The pull-tab handle. Rides with the strip on collapse so it lands
-           flush at the docked edge; always present so a hidden drawer can be
-           pulled back out. aria-expanded + aria-label carry the drawer state. -->
-      <button
-        class="todo-tab"
-        aria-expanded={!collapsed}
-        aria-label={collapsed ? 'Show task list' : 'Hide task list'}
-        title={collapsed ? 'Show tasks' : 'Hide tasks'}
-        onclick={onToggleCollapse}
-      >
-        <span class="todo-tab-glyph" aria-hidden="true">{collapsed ? '⟨' : '⟩'}</span>
-      </button>
-    {/if}
+    {#if collapsible}{@render handle()}{/if}
     <div class="todo-panel">
+      {#if tabs}{@render tabs()}{/if}
       <div
         class="todo-header"
         class:clickable={canToggle}
@@ -139,12 +161,17 @@
           {#if !allDone && cnt.in_progress > 0}· {cnt.in_progress} active{/if}
           {#if allDone}· complete{/if}
         </span>
+        {#if onClearCompleted}
+          <TodoClearButton disabled={!hasCompleted(shown)} onClear={onClearCompleted} />
+        {/if}
       </div>
+      <!-- The header's fraction as a bar, from `cnt` — the MODEL's tally, so "Clear completed" cannot run progress backwards. -->
+      <TodoProgressBar completed={cnt.completed} total={cnt.total} />
       {#if showList}
       <!-- Depths are normalised for the WHOLE list at once (a row's legal depth
            depends on the row before it), so the rows are annotated here rather
            than each row working it out from its own field. -->
-      {@const rows = annotate(todos)}
+      {@const rows = annotate(shown)}
       <!-- A container's own flag: the user's click if there is one, otherwise the
            automatic rule (a settled branch opens shut). Carried ON the row so the
            filtered list still knows it — `visible` drops whole subtrees, so the
@@ -192,6 +219,8 @@
     border-left-color: var(--og-muted, #6c7086);
     box-shadow: none;
   }
+  .todo-strip.empty.drawer { padding: 0 0 0 16px; }
+  .todo-strip.empty.drawer .todo-panel { border-left-color: var(--og-muted, #6c7086); }
 
   /* All todos complete — un-pin (stop the sticky float), drop the lift,
      and recede so a finished list scrolls away instead of hogging the top. */

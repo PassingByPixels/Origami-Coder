@@ -1,21 +1,8 @@
-// The static artifact's INLINE behaviour, part two: the two rails. Search, the
-// kind and pillar filters, the flow list, the view toggles, and the grips that
-// resize a rail or fold it away entirely.
-//
-// THIS STRING IS SPLICED INSIDE mapHtmlScript.ts's IIFE, on purpose, and it reads
-// that closure directly: `byId`, `nodeEls`, `captionEls`, `stage`, `k`,
-// `selectFlow`, `clearSel` and `home`. It also DEFINES the two functions the core
-// calls back into — `applyFilters` and `autoLabels` — which reach the core
-// through function-declaration hoisting, so the order of the two halves in the
-// emitted file does not matter.
-//
-// It is a text splice rather than a second IIFE because the alternative is a
-// global handshake on `window` inside a sealed offline document, and a split for
-// a LINE CAP should not change the artifact's shape. The split itself is real:
-// the core owns the drawing surface, this owns the controls around it.
-//
-// Every control is server-rendered by mapHtml.ts (escaped there); nothing here
-// builds markup, and nothing here writes a cartographer string into innerHTML.
+// The static artifact's rails: search, kind/pillar filters, flow list, view toggles,
+// resize/fold grips. Spliced inside mapHtmlScript.ts's IIFE, reading its closure directly
+// and defining applyFilters/autoLabels which the core calls back via hoisting. A text splice
+// (not a second IIFE) because the alternative is a global handshake on `window` inside a
+// sealed offline document.
 
 export const MAP_RAILS_JS = `
   // ---- find / kind / pillar --------------------------------------------------

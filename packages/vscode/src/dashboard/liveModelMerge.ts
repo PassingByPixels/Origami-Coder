@@ -1,28 +1,13 @@
-// liveModelMerge.ts — the model picker's LIVE-MIRROR projection: reconcile the
-// engine's config-built model catalog against what each self-hosted server
-// ACTUALLY serves right now, so a tab shows the server's truth and not an
+// The model picker's live-mirror projection: reconcile the engine's config-built catalog against
+// what each self-hosted server actually serves now, so a tab shows the server's truth, not an
 // accumulated history of everything origami.json ever held.
 //
-// EXTRACTED from DashboardPanel.broadcastModelOptions, which was carrying this
-// inline at its line cap — and which had a defect the extraction fixes:
-// the polls ran under a bare `Promise.all` inside one `try/catch {}`, so a
-// SINGLE rejecting poll discarded EVERY provider's live list. node:http's
-// `http.get` throws synchronously on a non-`http:` URL (ERR_INVALID_PROTOCOL),
-// so one https provider block in origami.json (e.g. opencode.ai) silently
-// disabled the live mirror for lmstudio, vllm and every other local server at
-// once. Two independent guards now stop that class of failure:
-//   1. pollableProviders() offers `http:` URLs (node:http territory) plus the
-//      https keyless-catalog gateway presets (Zen/Go — fetched by the caller's
-//      protocol-dispatching fetcher, never by node:http). Every other https
-//      cloud provider is never polled at all (it keeps its own configured
-//      catalog). This also subsumes the old openrouter.ai name check.
-//   2. every poll is caught PER PROVIDER, so one bad server can only ever cost
-//      its own tab, never its neighbours'.
+// Two guards stop one bad provider taking every other one down: pollableProviders() only offers
+// http: URLs plus the https keyless-catalog gateway presets (any other https cloud provider keeps
+// its own configured catalog), and every poll is caught PER PROVIDER.
 //
-// Display-prune only. Nothing here writes origami.json: a per-model block that
-// is temporarily unserved (server stopped, model deleted upstream) keeps its
-// options — `variants`, `limit.context`, vision `modalities` — so they are all
-// still there when the server comes back. Only the ROWS disappear.
+// Display-prune only — nothing here writes origami.json; an unserved model keeps its config
+// options, only its row disappears.
 
 import type { ConfiguredProvider } from './firstFold';
 import { KEY_ONLY_PRESETS } from './keyOnlyPresets';
@@ -34,30 +19,20 @@ export interface ModelOptionRow {
   name: string;
   /** True when origami.json already holds this model (picking it needs no write). */
   configured: boolean;
+  /** Whether this model reads images and who said so (visionPin.ts's
+   *  `VisionState`). Optional because the merge cannot invent one for a served id
+   *  origami.json has never held: the PANEL fills every row in afterwards, and
+   *  the merge's only duty is not to LOSE one it was given. */
+  visionState?: string;
 }
 
 /**
- * The providers whose `/v1/models` we can actually poll.
- *
- * Two shapes qualify, and the CALLER's fetcher must dispatch on protocol:
- *
- *   · `http:` — a self-hosted server the node:http poller can dial. An https
- *     cloud provider (OpenRouter, any OAuth connection) is never offered by
- *     this branch: node:http throws on https, and a cloud catalog is its own
- *     source of truth. No provider is matched by NAME.
- *   · `https:` ONLY when the provider id is a keyless-catalog gateway preset
- *     (KEY_ONLY_PRESETS[pid].keylessCatalog — the OpenCode Zen/Go family).
- *     Those gateways answer GET /models with no key, so ONE connection can
- *     offer the whole catalog in the picker instead of a connection per
- *     model. Gated by PRESET ID — the same load-bearing id rule every Zen
- *     feature gate uses — never by URL or name; OpenRouter stays out because
- *     its preset says `keylessCatalog: false` (its ~343-model priced catalog
- *     has its own dedicated flow).
- *
- * Each entry carries the block's `apiKey` when it has one, because a self-hosted
- * server MAY enforce auth: without it the poll 401s, the live list comes back
- * empty and the picker silently stops tracking what the server is really
- * serving. Almost always undefined — the keyless path is unchanged.
+ * The providers whose `/v1/models` can actually be polled. Two shapes qualify: `http:` self-hosted
+ *  servers the node:http poller can dial (an https cloud provider is never matched by name), or
+ *  `https:` when the provider id is a keyless-catalog gateway preset (OpenCode Zen/Go), gated by
+ *  preset id, never by URL or name.
+ * Each entry carries the block's apiKey when set, since a self-hosted server may enforce auth —
+ *  without it the poll 401s and the live list silently stops tracking what the server serves.
  */
 export function pollableProviders(
   providers: Record<string, ConfiguredProvider>,
@@ -74,20 +49,12 @@ export function pollableProviders(
 }
 
 /**
- * Merge each pollable provider's LIVE model list into the configured catalog.
- *
- * Per provider, when the server answers with at least one id:
- *   · rows for that provider whose id is no longer served are REMOVED (a vLLM
- *     that loads exactly one model therefore shows exactly one row, however
- *     many that provider has accumulated in origami.json);
- *   · served ids missing from the catalog are ADDED, and a served id that
- *     matches a config key is reconciled onto that config entry — its display
- *     name and `configured: true` — so the engine's per-model options apply to
- *     the row the user picks.
- *
- * When the server does NOT answer (empty list, refused, timed out, threw) that
- * provider is left exactly as configured. A running chat must never face an
- * empty picker because a server was restarting.
+ * Merge each pollable provider's LIVE model list into the configured catalog. When a server answers
+ *  with at least one id: rows no longer served are removed, served ids missing from the catalog are
+ *  added, and a served id matching a config key is reconciled onto it (display name + `configured:
+ *  true`).
+ * When the server does not answer at all, that provider is left exactly as configured — a running
+ *  chat must never face an empty picker because a server was restarting.
  */
 export async function mergeLiveModels(
   options: ReadonlyArray<ModelOptionRow>,

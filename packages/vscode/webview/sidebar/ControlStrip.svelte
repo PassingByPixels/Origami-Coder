@@ -25,6 +25,8 @@
 
   import { getVsCodeApi } from '../shared/vscodeApi';
   import { useGrid, lightOf, gridLabel } from './providerGrid';
+  import ConnectionPill from './ConnectionPill.svelte';
+  import ConnectionCarousel from './ConnectionCarousel.svelte';
   import { classifySection, SECTION_ORDER, SECTION_LABEL, type ConnectionSection } from './connectionSection';
   const vscode = getVsCodeApi();
 
@@ -36,6 +38,10 @@
   // right fold), baseURL is shown per-pill, and primary marks the one local that
   // drives the global engine URL (only its pill edits that URL).
   let providerStatus = $state<Array<{ id: string; name: string; live: boolean; reason?: string; kind?: 'local' | 'compat' | 'cloud'; baseURL?: string; primary?: boolean }>>([]);
+  // `tooltip` is composed by the HOST (claudeCode/discoveryReport.ts) so the
+  // sentence shown here and the blob "copy diagnostics" writes cannot drift.
+  // Empty from a host that predates it - the inline fallback below covers that.
+  let claudeCode = $state<{ installed: boolean; version: string; binary: string; tooltip: string }>({ installed: false, version: '', binary: '', tooltip: '' });
   // Draft for the in-fold "Pill name" rename input; seeded when a fold opens.
   let renameDraft = $state('');
   // Which pill's settings fold is open ('' = none).
@@ -50,6 +56,9 @@
   let openRouterModels = $state<Array<{ id: string; name: string; free?: boolean }>>([]);
   // Filter text for the currently-open fold's model list (reset on each open).
   let modelFilter = $state('');
+  // The fold's model list is COLLAPSED until "See model list" is clicked (reset
+  // on each fold open) — drawn open, the list read as the model PICKER (UAT).
+  let modelListOpen = $state(false);
 
   // Monthly OpenRouter spend + cap (USD). Driven by the host's spendUpdate /
   // budgetUpdate broadcasts; the cap is set from the OpenRouter fold.
@@ -64,6 +73,13 @@
   // LM Studio pill; saving posts `setEngineUrl` (persists + respawns origami-acp).
   let engineUrl = $state('');
   let engineInput = $state('');
+  // change 30 — the provider the ACTIVE chat's model is currently on, so its
+  // tile can carry the accent border. `modelStatus` already carries
+  // `providerId` per session (sessionModelStatus, DashboardPanel.ts); the
+  // active session's own post is the one that ALSO carries `engineUrl` (only
+  // sent once per broadcast, on the active post) — reusing that, rather than
+  // tracking activeSessionId ourselves or asking the host for a new field.
+  let activeConnProviderId = $state('');
 
   // REP — repetition (frequency) penalty, a GLOBAL engine setting written to
   // origami.json (agent.build.frequency_penalty). Off (0) by default; blank and 0
@@ -82,7 +98,10 @@
   //   oauth  (OpenAI OAuth / Grok OAuth)  → no fields at all: pick a sign-in
   //          method, the host opens your browser, the engine holds the flow.
   import { SETUP_PROVIDERS, type ProviderKind, type SetupProvider } from './setupCatalog';
-  import { setupProviderPayload, oauthEntryFor, reKeyTemplate } from './providerIdentity';
+  import { setupProviderPayload, reKeyTemplate } from './providerIdentity';
+  import { oauthCardState, signInOptions } from './oauthCard';
+  import { deviceCodeOf, oauthFormHint } from './oauthForm';
+  import ClaudeSubscriptionCard, { CLAUDE_SUB_TILE_ID, claudeSubscriptionTiles } from './ClaudeSubscriptionCard.svelte';
   // The add/re-key picker is a collapsible accordion (a native <optgroup>
   // can't collapse), grouped by CONNECTION SECTION — Local/Self Hosted /
   // Providers / Labs / Other (t-kgt7wh) — not by form-shape `kind`.
@@ -130,7 +149,7 @@
   // `connected` holds only oauth credentials, so an api key stored for the
   // same provider never lights this pill.
   let oauthMethods = $state<Record<string, Array<{ index: number; label: string }>>>({});
-  let oauthConnected = $state<Record<string, { type: string; expires?: number }>>({});
+  let oauthConnected = $state<Record<string, { type: string; expires?: number; needsReauth?: string }>>({});
   let oauthError = $state('');
   type OauthState =
     | { phase: 'idle' }
@@ -145,6 +164,13 @@
   let oauthUsage = $state<Record<string, string[]>>({});
   let usageAsked = $state<Record<string, boolean>>({});
   let oauthCode = $state('');
+  // DEVICE CODE — the whole flow for GitHub Copilot. Read out of the plugin's
+  // own `instructions` (oauthForm.ts), never invented or reformatted here.
+  let deviceCode = $derived(oauthState.phase === 'waiting' ? deviceCodeOf(oauthState.instructions) : '');
+  let deviceCodeCopied = $state(false);
+  // "Copied" only on a RESOLVED write — a denied/absent clipboard must not make
+  // the label claim a copy that never happened. The code stays hand-selectable.
+  function copyDeviceCode() { navigator.clipboard?.writeText(deviceCode).then(() => { deviceCodeCopied = true; }, () => {}); }
 
   function renamePill(id: string) {
     const name = renameDraft.trim();
@@ -177,7 +203,7 @@
   /** The engine provider id the open oauth form signs into ('' when the open
    *  form is not an oauth one). */
   let oauthTarget = $derived(setupProvider.kind === 'oauth' ? (setupProvider.authProvider ?? '') : '');
-  let oauthTargetMethods = $derived(oauthTarget ? (oauthMethods[oauthTarget] ?? []) : []);
+  let oauthTargetMethods = $derived(oauthTarget ? signInOptions(oauthMethods[oauthTarget]) : []);
 
   // An EFFECT, not a call in the markup: asking mutates state, and Svelte 5
   // treats a state write during render as an error (state_unsafe_mutation).
@@ -190,7 +216,7 @@
 
   function startOauth(methodIndex: number) {
     if (!oauthTarget) return;
-    oauthCode = '';
+    oauthCode = ''; deviceCodeCopied = false; // a retry must not claim the OLD code is on the clipboard
     oauthState = { phase: 'waiting', providerId: oauthTarget, methodIndex, url: '', instructions: '', needsCode: false };
     vscode.postMessage({ type: 'providerAuthStart', providerId: oauthTarget, methodIndex });
   }
@@ -257,6 +283,8 @@
     // Picking a catalog entry is always an ADD — never leave a stale re-key target armed.
     reKeyProviderId = '';
     const p = SETUP_PROVIDERS.find(x => x.id === id) ?? SETUP_PROVIDERS[0];
+    // No fields to fill — ClaudeSubscriptionCard.svelte owns the rest (t-tsw90t).
+    if (p.kind === 'claude-subscription') { providerSetupOpen = false; openSettingsFor = CLAUDE_SUB_TILE_ID; vscode.postMessage({ type: 'claudeSubscriptionAdd' }); return; }
     setupProviderId = p.id;
     setupName = p.name;
     setupBaseURL = p.baseURL ?? '';
@@ -336,12 +364,30 @@
         // broadcast doesn't clobber what the user is typing.
         if (openSettingsFor === '') engineInput = msg.engineUrl;
       }
+      // `engineUrl` is present ONLY on the active session's post (see the
+      // comment on activeConnProviderId above), which is what makes this the
+      // right moment to read `providerId` as "the in-use connection".
+      if ('engineUrl' in msg) {
+        activeConnProviderId = typeof msg.providerId === 'string' ? msg.providerId : '';
+      }
     }
     if (msg.type === 'modelOptions') {
       modelOptions = Array.isArray(msg.options) ? msg.options : [];
     }
     if (msg.type === 'providerStatus') {
       providerStatus = Array.isArray(msg.providers) ? msg.providers : [];
+    }
+    // The chat pane's model picker has no connection to offer and no business
+    // writing one, so its empty state hands the job back here (NoConnections.
+    // svelte -> openConnections -> the host focuses this view and relays this).
+    // Same fold the "＋ Add provider" button opens; nothing else is bypassed.
+    if (msg.type === 'openProviderSetup') {
+      openProviderSetup();
+    }
+    if (msg.type === 'claudeCodeStatus') {
+      // Deliberately NOT merged into providerStatus: those rows feed the model
+      // picker's provider tabs, and this has no endpoint, key or model list.
+      claudeCode = { installed: !!msg.installed, version: String(msg.version || ''), binary: String(msg.binary || ''), tooltip: String(msg.tooltip || '') };
     }
     if (msg.type === 'openRouterModels') {
       openRouterModels = Array.isArray(msg.models) ? msg.models : [];
@@ -407,6 +453,7 @@
   // On mount: probe provider status, pull the model list (for View models), and
   // seed the rep penalty — covers a webview that mounted after the first broadcast.
   vscode.postMessage({ type: 'requestProviderStatus' });
+  vscode.postMessage({ type: 'requestClaudeCodeStatus' });
   vscode.postMessage({ type: 'requestModels' });
   vscode.postMessage({ type: 'requestFrequencyPenalty' });
   vscode.postMessage({ type: 'requestSpend' });
@@ -418,6 +465,38 @@
   // The rendered grid: the host's probe, with the engine's credential store
   // overriding it for OAuth-connected providers.
   let gridProviders = $derived(providerStatus.map(p => ({ ...p, oauth: !!oauthConnected[p.id] })));
+  // The carousel's tiles. `useGrid` still decides whether a connection surface
+  // is drawn at all; below it the strip shows only the Add control.
+  // Claude Code is a HARNESS, not a provider (see the dotted card below), but
+  // it is a CONNECTION the user reads in the same row, so it rides in the
+  // track with the rest (t-qhzy4k) rather than standing outside it.
+  let claudeTitle = $derived(claudeCode.tooltip || (claudeCode.installed
+    ? `Claude Code ${claudeCode.version} — passthrough (${claudeCode.binary}); click to open a Claude Code chat`
+    : 'Claude Code — passthrough not available; install the CLI, then reload the window'));
+  function openClaudeCode(): void {
+    vscode.postMessage(claudeCode.installed
+      ? { type: 'newClaudeCodeSession' }
+      : { type: 'requestClaudeCodeStatus', refresh: true });
+  }
+  const CLAUDE_TILE_ID = '__claude-code';
+  let carouselTiles = $derived(useGrid(providerStatus.length)
+    ? [...gridProviders.map(pv => ({
+        id: pv.id,
+        label: pv.name.slice(0, 2).toUpperCase(),
+        title: gridLabel(pv),
+        light: lightOf(pv) as 'green' | 'red' | 'yellow' | '',
+        open: openSettingsFor === pv.id,
+        dotted: false,
+        inuse: pv.id === activeConnProviderId,
+      })), {
+        id: CLAUDE_TILE_ID, label: 'CC', title: claudeTitle,
+        light: '' as const, open: false, dotted: true, inuse: false,
+      }, ...claudeSubscriptionTiles(openSettingsFor === CLAUDE_SUB_TILE_ID, activeConnProviderId === 'claude-subscription')]
+    : []);
+  function pickTile(id: string): void {
+    if (id === CLAUDE_TILE_ID) openClaudeCode();
+    else toggleSettings(id);
+  }
 
   // Open / close a provider's settings fold. Seed the endpoint + rep inputs from
   // the live values each time it opens.
@@ -425,6 +504,7 @@
     if (openSettingsFor === id) { openSettingsFor = ''; return; }
     openSettingsFor = id;
     modelFilter = '';
+    modelListOpen = false;
     engineInput = engineUrl;
     // Seed the rename box from this pill's current name.
     renameDraft = providerStatus.find(p => p.id === id)?.name ?? '';
@@ -476,40 +556,37 @@
        then green "Live" (see providerGrid.ts). The grid IS the layout, from
        the first configured provider on; there is no pill phase. Click opens
        the settings fold via toggleSettings. -->
-  {#if providerStatus.length > 0}
-    {#if useGrid(providerStatus.length)}
-      <div class="provider-grid" role="list" aria-label="Providers">
-        {#each gridProviders as pv (pv.id)}
-          <button
-            class="grid-square"
-            class:light-green={lightOf(pv) === 'green'}
-            class:light-red={lightOf(pv) === 'red'}
-            class:light-yellow={lightOf(pv) === 'yellow'}
-            class:open={openSettingsFor === pv.id}
-            title={gridLabel(pv)}
-            aria-label={gridLabel(pv)}
-            onclick={() => toggleSettings(pv.id)}
-          >{pv.name.slice(0, 2).toUpperCase()}</button>
-        {/each}
-      </div>
-    {/if}
-    <button class="add-provider small" onclick={() => openProviderSetup()} title="Add another provider (OpenRouter / OpenAI / xAI / Anthropic / a 2nd local)">＋ Add</button>
-  {:else}
-    <!-- Empty state: no providers yet. LM Studio is the default; its setup is
-         endpoint-only (the model is chosen in the chat pane). -->
-    <button class="add-provider" onclick={() => openProviderSetup()} title="Connect a provider — LM Studio (local) is the default">
-      ＋ Add provider
-    </button>
+  <ConnectionCarousel tiles={carouselTiles} onPick={pickTile} onAdd={() => openProviderSetup()} />
+  <!-- Claude Code: a HARNESS, not a provider. Same square as the connections
+       beside it (one component, so the dimensions cannot drift) but DOTTED in
+       the crane tone, because a chat passed through it runs on the user's own
+       CLI — their settings, MCP, hooks and subscription — not on a connection
+       we configured. Undetected keeps the square and says so in the tooltip:
+       a row that silently loses a member teaches the user nothing.
+       With providers configured it is a CARD IN the carousel (above); this
+       standalone square is the no-carousel case, where there is no track for
+       it to ride in. -->
+  {#if carouselTiles.length === 0}
+    <ConnectionPill label="CC" dotted title={claudeTitle} onclick={openClaudeCode} />
   {/if}
-</div>
+</div>{#if openSettingsFor === CLAUDE_SUB_TILE_ID || carouselTiles.length === 0}<ClaudeSubscriptionCard />{/if}
 
 {#snippet modelListBlock()}
   <!-- Read-only "view models" list for the open fold (LM Studio / OpenRouter),
-       with a filter search + its own scroll so a long catalog stays contained. -->
+       COLLAPSED by default behind "See model list": drawn open, it read as the
+       model PICKER (UAT — users tried to pick here). The redirect note sits on
+       the toggle row; the list itself (filter + scroll) is unchanged. -->
   <div class="fold-label with-action">
-    <span>Models{visibleModels.length ? ` (${visibleModels.length})` : ''}</span>
-    <button class="fold-linkbtn" onclick={refreshModels} title="Refresh the list">Refresh</button>
+    <button class="model-toggle" aria-expanded={modelListOpen} onclick={() => (modelListOpen = !modelListOpen)}>
+      <span class="provider-group-chevron" aria-hidden="true">{modelListOpen ? '▾' : '▸'}</span>
+      <span>See model list{visibleModels.length ? ` (${visibleModels.length})` : ''}</span>
+    </button>
+    {#if modelListOpen}
+      <button class="fold-linkbtn" onclick={refreshModels} title="Refresh the list">Refresh</button>
+    {/if}
   </div>
+  <span class="fold-hint">Read-only — pick the active model in the chat pane.</span>
+  {#if modelListOpen}
   <!-- Only worth a filter box when the list is long (OpenRouter's ~343, a big LM
        Studio library) — a single-model server (e.g. a remote vLLM) doesn't need it. -->
   {#if visibleModels.length > 8}
@@ -537,18 +614,18 @@
   {#if visibleModels.length > MODEL_LIST_CAP}
     <span class="fold-hint">Showing {MODEL_LIST_CAP} of {visibleModels.length} — type above to filter.</span>
   {/if}
-  <span class="fold-hint">Read-only — pick the active model in the chat pane.</span>
+  {/if}
 {/snippet}
 
 {#each providerStatus as pv (pv.id)}
   {#if openSettingsFor === pv.id}
     {@const kind = pv.kind ?? providerKind(pv.id)}
-    {@const signedIn = !!oauthConnected[pv.id]}
+    {@const card = oauthCardState(pv.id, pv.name, oauthConnected, !!pv.live)}
     <!-- Provider settings fold — connection settings only. -->
     <div class="settings-fold">
       <div class="settings-head">
         <span class="settings-title">{pv.name}</span>
-        <span class="settings-status" class:live={pv.live || signedIn}>{signedIn ? 'Signed in' : pv.live ? 'Live' : 'Idle'}</span>
+        <span class="settings-status" class:live={(pv.live || card.signedIn) && !card.needsReauth}>{card.statusLabel}</span>
       </div>
 
       <!-- Pill name (the instance label) — separate from the provider type. Rename
@@ -654,12 +731,12 @@
         </span>
 
         {@render modelListBlock()}
-      {:else if signedIn}
-        <!-- OAuth credential present — but an API key may ALSO exist (both entries
-             share one provider id), so never claim key absence and keep Re-key. -->
-        <span class="fold-hint">Signed in with your {pv.name} subscription. Re-authorize if sign-in has expired; Re-key manages the separate API-key connection if you use one. Pick a model in the chat pane.</span>
+      {:else if card.canAuthorize}
+        <!-- OAuth-capable. An API key may ALSO exist (one id, two entries) so Re-key stays. Every line here is oauthCard.ts's. -->
+        {#if card.needsReauth}<span class="fold-alert" role="alert">Needs reauthorization — {card.needsReauth}</span>{/if}
+        <span class="fold-hint">{card.hint}</span>
         <div class="fold-row">
-          <button class="fold-go" onclick={() => openProviderSetup(oauthEntryFor(pv.id))} title="Sign in to this provider again">Re-authorize…</button>
+          <button class="fold-go" onclick={() => openProviderSetup(card.entryId)} title="Sign in to this provider again">{card.actionLabel}</button>
           <button class="fold-go" onclick={() => openReKey(pv)} title="Replace this provider's API key">Re-key…</button>
         </div>
       {:else}
@@ -819,23 +896,28 @@
            per method the plugin offers — typically "browser" and a headless /
            device-code variant for a machine with no browser on it. -->
       <div class="fold-label sub" id="oauth-methods-label">Sign in</div>
-      {#if oauthTargetMethods.length === 0}
-        <span class="fold-hint">{oauthError || 'No sign-in method reported yet — open a chat so the engine is running, then reopen this form.'}</span>
-      {:else}
-        <div class="provider-group-body" aria-labelledby="oauth-methods-label">
-          {#each oauthTargetMethods as om (om.index)}
-            <button
-              class="provider-option"
-              type="button"
-              disabled={oauthState.phase === 'waiting'}
-              onclick={() => startOauth(om.index)}
-            >{om.label}</button>
-          {/each}
-        </div>
-      {/if}
+      <div class="provider-group-body" aria-labelledby="oauth-methods-label">
+        {#each oauthTargetMethods as om (om.index)}
+          <button
+            class="provider-option"
+            type="button"
+            disabled={oauthState.phase === 'waiting'}
+            onclick={() => startOauth(om.index)}
+          >{om.label}</button>
+        {/each}
+      </div>
+      {#if oauthError}<span class="fold-hint">{oauthError}</span>{/if}
 
       {#if oauthState.phase === 'waiting'}
         <span class="fold-hint" role="status">Waiting for sign-in… complete it in your browser. {oauthState.instructions}</span>
+        <!-- The code on its OWN: for a device-code method it is the one thing the user must transcribe. -->
+        {#if deviceCode}
+          <div class="fold-label sub" id="oauth-device-code-label">Your code</div>
+          <div class="fold-row">
+            <div class="fold-readonly device-code" data-testid="oauth-device-code" aria-labelledby="oauth-device-code-label">{deviceCode}</div>
+            <button class="fold-go" onclick={copyDeviceCode}>{deviceCodeCopied ? 'Copied' : 'Copy code'}</button>
+          </div>
+        {/if}
         {#if oauthState.url}
           <div class="fold-readonly">{oauthState.url}</div>
         {/if}
@@ -872,13 +954,9 @@
       <div class="fold-row">
         <button class="fold-cancel" onclick={closeProviderSetup}>Close</button>
       </div>
-      <span class="fold-hint">
-        {#if oauthTarget === 'xai'}
-          Signs in with your SuperGrok subscription. xAI gates OAuth by subscription tier — if sign-in or the first message comes back 403, your plan does not carry OAuth access; use the "Grok (API)" API-key entry instead. No API key is stored for this connection.
-        {:else}
-          Signs in with your ChatGPT Plus/Pro account. The models come from the ChatGPT subscription backend (the gpt-5.x Codex family), not the OpenAI platform API — a platform key is a different, metered catalog under the "OpenAI (API)" entry. No API key is stored for this connection.
-        {/if}
-      </span>
+      <!-- One hint per provider, in oauthForm.ts. This was an if/else on
+           `oauthTarget === 'xai'`, so any THIRD provider read OpenAI's copy. -->
+      <span class="fold-hint">{oauthFormHint(oauthTarget)}</span>
     {:else}
     <div class="fold-row">
       <button class="fold-go" onclick={submitProviderSetup} disabled={!canSubmitSetup} title="Validate + save this provider to origami.json">Connect</button>
@@ -913,78 +991,13 @@
     background: var(--og-pane-header);
     border-bottom: 1px solid var(--og-border);
     flex-shrink: 0;
-    flex-wrap: wrap;
+    /* NOWRAP since the connection surface became a carousel: the track is what
+       absorbs a dozen providers now, and a wrapping strip would drop the Add
+       icon and the Claude Code square onto a second line instead of letting
+       the track scroll. The surface itself, its Add control and its empty
+       state all live in ConnectionCarousel.svelte. */
+    flex-wrap: nowrap;
   }
-
-  /* PROVIDER GRID — the connection surface from the first configured provider
-     on: a compact grid of traffic-light squares (colour + initials). Small
-     fixed squares that wrap, so anywhere from one to a dozen keys stay usable
-     even at the sidebar's narrowest (~200px) — never overflow. */
-  .provider-grid {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 4px;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .grid-square {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    flex-shrink: 0;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
-    color: var(--og-text-secondary);
-    background: var(--og-input-bg);
-    border: 1px solid var(--og-border);
-    border-radius: 5px;
-    cursor: pointer;
-    font-family: inherit;
-    transition: border-color 0.12s ease, box-shadow 0.12s ease;
-  }
-  /* The square IS the light — a filled colour block, not an outline. At a dozen
-     providers the whole point is reading STATUS at a glance; 9px initials in a
-     coloured border makes you read text instead. color-mix keeps one rule
-     working across all five themes (light + dark) off the same status var. The
-     initials stay for the colour-blind + colour-only-control problem, and the
-     full name always lives in title/aria-label. */
-  .grid-square.light-green {
-    border-color: var(--og-success);
-    background: color-mix(in srgb, var(--og-success) 34%, var(--og-input-bg));
-    color: var(--og-text);
-  }
-  .grid-square.light-red {
-    border-color: var(--og-error);
-    background: color-mix(in srgb, var(--og-error) 34%, var(--og-input-bg));
-    color: var(--og-text);
-  }
-  .grid-square.light-yellow {
-    border-color: var(--og-warning);
-    background: color-mix(in srgb, var(--og-warning) 34%, var(--og-input-bg));
-    color: var(--og-text);
-  }
-  .grid-square.open { box-shadow: 0 0 0 1px var(--og-chat); }
-
-  .add-provider {
-    display: inline-flex;
-    align-items: center;
-    padding: 5px 12px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--og-chat);
-    background: var(--og-input-bg);
-    border: 1px dashed color-mix(in srgb, var(--og-chat) 55%, var(--og-border));
-    border-radius: 8px;
-    cursor: pointer;
-    font-family: inherit;
-    transition: border-color 0.12s ease, background 0.12s ease;
-  }
-  .add-provider:hover { border-color: var(--og-chat); background: var(--og-surface-alt, var(--og-input-bg)); }
-  .add-provider.small { flex-shrink: 0; padding: 4px 9px; }
 
   /* Provider settings fold — a calm fold below the strip. */
   .settings-fold {
@@ -1122,6 +1135,9 @@
     transition: border-color 0.12s ease;
   }
   .fold-input:focus { border-color: var(--og-chat); }
+  /* The device code is transcribed by hand into GitHub's page, so it is set
+     big and wide-tracked: 8 characters read once, not scanned. */
+  .device-code { flex: 1; font-size: 18px; font-weight: 600; letter-spacing: 0.16em; color: var(--og-text); text-align: center; user-select: all; }
 
   .fold-readonly {
     padding: 5px 8px;
@@ -1178,6 +1194,17 @@
   }
   .fold-remove:hover { background: color-mix(in srgb, var(--og-error, #ef5350) 12%, transparent); }
 
+  /* "See model list" — the fold-label look on a button, with the accordion's
+     ▸/▾ chevron (.provider-group-chevron): the same collapse idiom as the
+     provider-setup sections. */
+  .model-toggle {
+    display: inline-flex; align-items: center; gap: 5px; padding: 0;
+    font-family: inherit; font-size: 10px; font-weight: 600; letter-spacing: 0.4px;
+    text-transform: uppercase; color: var(--og-text-secondary);
+    background: none; border: none; cursor: pointer;
+  }
+  .model-toggle:hover { color: var(--og-text); }
+
   /* Read-only "View models" list (LM Studio / OpenRouter). Its own scroll so a
      long catalog stays contained; legible row height so 300+ ids don't read as a
      grey wall. */
@@ -1222,4 +1249,7 @@
     color: var(--og-text-muted);
     line-height: 1.35;
   }
+  /* The one line in a fold that has to be READ, not scanned: the provider has
+     refused the stored credential. Same --og-error as .fold-remove. */
+  .fold-alert { font-size: 10px; line-height: 1.35; font-weight: 600; color: var(--og-error, #ef5350); }
 </style>

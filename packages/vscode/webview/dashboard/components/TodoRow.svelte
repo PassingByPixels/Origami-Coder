@@ -15,6 +15,7 @@
   // ellipsis flex cell — padding there is eaten by the truncation instead of
   // moving the row.
   import { INDENT_PX } from './todoTree';
+  import TodoStatusDot from './TodoStatusDot.svelte';
 
   interface Props {
     content: string;
@@ -29,12 +30,6 @@
     onToggle?: () => void;
   }
   let { content, activeForm, status, depth, childDone, childTotal, collapsed = false, onToggle }: Props = $props();
-
-  const STATUS_ICON: Record<Props['status'], string> = {
-    pending: '☐',
-    in_progress: '▶',
-    completed: '✓',
-  };
 </script>
 
 <li class="todo-item {status}" style="padding-left: {depth * INDENT_PX}px" data-depth={depth}>
@@ -43,7 +38,7 @@
     <button class="todo-twisty" aria-expanded={!collapsed} onclick={onToggle}
       aria-label={collapsed ? 'Expand sub-tasks' : 'Collapse sub-tasks'}>{collapsed ? '▸' : '▾'}</button>
   {/if}
-  <span class="todo-status-icon">{STATUS_ICON[status]}</span>
+  <TodoStatusDot {status} />
   <span class="todo-content">{content}</span>
   {#if childTotal > 0}
     <!-- The row's OWN status stays whatever the model set it to. This counts its
@@ -57,24 +52,38 @@
 </li>
 
 <style>
+  /* ONE LINE, 22px. `align-items: center` rather than `baseline` since the
+     status became a dot (TodoStatusDot.svelte): a circle has no baseline. */
   .todo-item {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
-    font-size: 12px;
+    align-items: center;
+    gap: 7px;
+    min-height: 22px;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 11px;
     color: var(--og-text, #cdd6f4);
     line-height: 1.4;
   }
 
+  /* A FINISHED TASK IS DONE, NOT CANCELLED. The strike-through that used to
+     sit here read as "this was struck off the plan"; muted is the whole of
+     what a completed row has to say. */
   .todo-item.completed {
     color: var(--og-muted, #6c7086);
-    text-decoration: line-through;
-    text-decoration-color: var(--og-muted, #6c7086);
   }
 
   .todo-item.in_progress {
-    color: var(--og-accent, #89b4fa);
+    color: var(--og-text, #cdd6f4);
     font-weight: 500;
+  }
+
+  /* DEPTH IS A HAIRLINE, not bare white space: a sub-task has to visibly belong
+     to something. The <li>'s own padding-left (inline, depth × INDENT_PX) still
+     does the stepping — this draws the line the step hangs from. */
+  .todo-item[data-depth]:not([data-depth='0']) {
+    margin-left: 9px;
+    border-left: 1px solid var(--og-border, #45475a);
   }
 
   /* The container twisty. Same muted weight as the chip: an affordance about the row,
@@ -94,13 +103,6 @@
     color: var(--og-accent, #89b4fa);
   }
 
-  .todo-status-icon {
-    font-family: var(--vscode-editor-font-family, monospace);
-    flex: 0 0 auto;
-    width: 12px;
-    display: inline-block;
-  }
-
   .todo-content {
     flex: 1 1 auto;
     /* min-width:0 lets the flex item shrink below its content size so the
@@ -112,21 +114,19 @@
     white-space: nowrap;
   }
 
-  /* The sub-task tally. Same muted treatment as the header's own done-count so
-     it reads as metadata about the row, not as another task on it. */
+  /* The sub-task tally, as a bare FIGURE. The pill it used to wear was a second
+     border on a row that now has none, for a number nobody clicks. */
   .todo-child-count {
     flex: 0 0 auto;
-    font-size: 10px;
+    font-size: 9px;
     color: var(--og-muted, #6c7086);
-    border: 1px solid var(--og-border, #45475a);
-    border-radius: 8px;
-    padding: 0 5px;
+    font-variant-numeric: tabular-nums;
   }
 
   .todo-active-form {
     color: var(--og-muted, #6c7086);
-    font-style: italic;
-    font-size: 11px;
+    font-size: 10px;
+    opacity: 0.75;
     /* Shrinkable + single-line. Previously `flex: 0 0 auto` with no truncation,
        so a long active-form pushed the row off-screen and wrapped in muted
        italic — reading as a big blank gap above the rest of the list. */

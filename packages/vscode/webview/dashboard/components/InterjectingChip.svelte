@@ -1,22 +1,24 @@
 <script lang="ts">
-  // "interjecting…" — the one thing the composer shows between the keypress and
-  // the host's answer. What is LEFT of QueuedChip.svelte after the queue it was
-  // named for was retired: no queued text, because Enter no longer parks a line
-  // to fire later; no Interject button, because Enter is the gesture; no ✕,
-  // because a line already handed to the host cannot be taken back.
+  // The composer's one-line answer to "where did my message go?", in two states.
   //
-  // It is not decoration. The transcript row deliberately waits for the host to
-  // answer (interjectSplit.ts), and Enter clears the composer immediately — so
-  // without this the user's words would be nowhere on screen for the length of
-  // one ext-method round trip, which is exactly the "did that send?" the whole
-  // change was meant to remove.
+  // "interjecting…" — what is LEFT of QueuedChip.svelte after the queue it was
+  // named for was retired: no queued text, no button, no ✕, because Enter IS the
+  // gesture and a line handed to the host cannot be taken back. Not decoration:
+  // the row waits for the host answer (interjectSplit.ts) and Enter clears the
+  // composer at once, so the words would be nowhere for one round trip.
+  //
+  // The REASON — the same slot saying the opposite: this line is not on its way
+  // in, and here is why (interjectHold.ts owns the sentence). A dead Send with
+  // no word was the defect a picture attached mid-turn used to hit (t-4ahs3u).
 
   interface Props {
     /** At least one line is with the host, unanswered. */
     interjecting?: boolean;
+    /** Why the last mid-turn Enter did not go into the turn. Empty = nothing to say. */
+    reason?: string;
   }
 
-  let { interjecting = false }: Props = $props();
+  let { interjecting = false, reason = '' }: Props = $props();
 </script>
 
 {#if interjecting}
@@ -24,11 +26,15 @@
     <span class="chip-label">Interject</span>
     <span class="chip-text">interjecting…</span>
   </div>
+{:else if reason}
+  <div class="interjecting-chip held" title="This draft stays in the composer">
+    <span class="chip-label">Waiting</span>
+    <span class="chip-text">{reason}</span>
+  </div>
 {/if}
 
 <style>
-  /* Carried over from the retired chip, minus the queue's dashed edge: this
-     state reads as ACTIVE, so the accent border is SOLID. */
+  /* From the retired chip, minus the queue's dashed edge: ACTIVE reads SOLID. */
   .interjecting-chip {
     display: flex;
     align-items: center;
@@ -54,4 +60,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* The refusal reads as a NOTE, not as work in progress: no accent edge. Its
+     sentence WRAPS — a reason cut off at the composer's width cannot be read,
+     which is the defect again in smaller type. */
+  .interjecting-chip.held { border-color: var(--og-border, rgba(255, 255, 255, 0.18)); }
+  .interjecting-chip.held .chip-label { color: var(--og-text-muted); }
+  .interjecting-chip.held .chip-text { overflow: visible; white-space: normal; }
 </style>

@@ -1,0 +1,3 @@
+Compare two versions of one artifact and list which files were added, removed or changed between them.
+
+This is a file-level comparison based on content hashes, not a line-by-line diff. Use artifact_get on each version to read the content of a file that changed.

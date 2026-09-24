@@ -1,28 +1,12 @@
-// botContractView.ts — what a BOT CARD and the bot FORM say about a contract.
+// botContractView.ts: what a bot card and the bot form say about a contract.
+// Every contract key is optional; a card must distinguish three states per
+// field: chosen, chosen-as-default, and never stated. `chosen` marks the
+// first two.
 //
-// Pure, and its own module rather than markup inside the card, for the reason
-// every leaf on this board is: the interesting cases are the ones a screenshot
-// cannot show. "An unstated tier is not `open`" and "a bot with no ticks is not
-// a bot with no block" are sentences about DATA, and they are exactly the
-// distinctions a card loses first.
-//
-// THE THREE STATES. Every contract key is optional and every default is today's
-// behaviour, so a card has three things to draw per field, not two: chosen,
-// chosen-as-the-default, and never stated. `chosen` is what lets the card render
-// the third quietly — an unconfigured def that reads as "standard / memory on"
-// looks deliberately set up, and nobody looks for a decision never made.
-//
-// THE SHAPES BELOW ARE A MIRROR, and have to be. tsconfig.webview.json pins
-// rootDir to `webview/`, so a .ts file on this side cannot import from `src/`
-// at all — not even a type (TS6059). The same constraint produced
-// repoMapPillars.ts and repoMapPalette.ts, and it comes with the same house
-// obligation: botContractView.test.ts reads src/dashboard/botContract.ts and
-// fails when the two field sets disagree.
-//
-// (A .svelte file CAN import across the seam — tsc never processes one — which
-// is why the card types its prop as the real CollabAgentDef and hands it to
-// these functions structurally, and why BotContractFields.svelte reads the tool
-// catalogue straight out of src/dashboard/botTools.ts.)
+// The shapes below mirror src/dashboard/botContract.ts. tsconfig.webview.json
+// pins rootDir to `webview/`, so a .ts file here cannot import from `src/`,
+// not even a type; botContractView.test.ts fails if the two field sets
+// disagree.
 
 /** Mirror of botContract.ts's BotTier. */
 export type BotTier = 'strict' | 'standard' | 'open';
@@ -56,41 +40,25 @@ export interface ContractFact {
   bad?: boolean;
 }
 
-/** The tiers the engine expands. The editor no longer offers them as a control
- *  (W6: the checklist is the permission surface), but a def may still STATE one
- *  by hand, so the card has to name what it means. */
+/** Tiers the engine expands. The editor no longer offers them as a control,
+ *  but a def may still state one by hand, so the card must name it. */
 export const TIER_CHOICES: Array<{ id: BotTier; label: string; hint: string }> = [
   { id: 'strict', label: 'Strict', hint: 'Reads only — read, search, list and skills. No file edits, no commands.' },
   { id: 'standard', label: 'Standard', hint: 'Can build — everything Strict allows, plus editing files and running commands.' },
   { id: 'open', label: 'Open', hint: 'Adds no rules at all; whatever the engine permits by default stands.' },
 ];
 
-// THE CONTRACT A NEW BOT IS BORN WITH is nothing at all, and it is written as
-// the literal `{}` at the one place a new def is built (CollabAgentsPane's
-// `blank`). It used to be a `QUICK_DEFAULTS` constant here, back when it carried
-// `tier: 'standard'`; W6 emptied it and W9 removed it, because an exported name
-// for `{}` is a place a default can quietly grow back — which is the exact
-// "looks deliberately set up" failure this module exists to prevent. What makes
-// a new bot usable in one pass is its TICK SET, and that is every tool.
+// A new bot's contract is `{}` (built once, in CollabAgentsPane's `blank`).
+// No exported default constant exists on purpose: one would let a default
+// quietly grow back. What makes a fresh bot usable is its tick set: every tool.
 
-/**
- * The persona's opening PARAGRAPH, flattened to one line.
- *
- * A bot is picked on who it is as much as on what it may do, and the persona is
- * the only field carrying that — but a card cannot hold a prompt, so this is
- * the opening and the card hangs the rest on a title attribute.
- */
+/** Persona's opening paragraph, flattened to one line: a bot is picked on
+ *  who it is, and the persona is the only field carrying that. */
 export function personaLine(def: BotDefView): string {
   return (def.persona || '').split(/\n\s*\n/)[0].replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Why an UNPINNED bot may not run, or '' when it will.
- *
- * A `model_prefer:` chain used to silence this. W6 deleted that key outright —
- * "a bot simply needs a pinned model, period" — so there is one statement about
- * a bot's model again and exactly one condition on this warning.
- */
+/** Why an unpinned bot may not run, or '' when it will. */
 export function modelWarning(def: BotDefView): string {
   if (def.model) return '';
   return def.visionProfile
@@ -98,9 +66,8 @@ export function modelWarning(def: BotDefView): string {
     : 'No model pinned - a turn falls back to whatever the engine defaults to, which a fresh install may not have. Pin one.';
 }
 
-/** The EDITOR's model hint — the same fact `modelWarning` puts on the card,
- *  said where the pin is actually made. One module for both, so the two cannot
- *  drift into disagreeing about what an unpinned def does. */
+/** The editor's model hint: the same fact `modelWarning` puts on the card,
+ *  said where the pin is made, so the two can't drift apart. */
 export function modelHint(kind: 'collab' | 'vision', model: string): string {
   if (kind === 'vision') {
     return model
@@ -113,24 +80,15 @@ export function modelHint(kind: 'collab' | 'vision', model: string): string {
 }
 
 export function tierSummary(bot: BotContract): ContractFact {
-  // A value the engine cannot read adds NO rules at all, so a def with a typo
-  // is running on the engine defaults while its file claims otherwise. That is
-  // the one contract state a card must never draw quietly.
+  // A value the engine can't read adds no rules at all, so a def with a
+  // typo runs on engine defaults while its file claims otherwise.
   if (bot.unknownTier) return { text: `${bot.unknownTier}?`, chosen: true, bad: true, title: `"${bot.unknownTier}" is not a permission tier — the engine ignores it, so no tier rules apply.` };
   if (bot.tier) return { text: bot.tier, chosen: true, title: TIER_CHOICES.find((c) => c.id === bot.tier)?.hint };
   return { text: 'engine default', chosen: false, title: 'No tier stated — whatever the engine permits by default stands, plus this def’s own permission block.' };
 }
 
-/**
- * WHICH TOOLS this bot has, compactly.
- *
- * A card cannot list thirty checkboxes, and a bare count would not say whether
- * this is a bot set up the ordinary way or one somebody tuned. So a set that IS
- * a preset is named, a set that started as one and was adjusted is named with
- * how far it has moved, and anything else falls back to the count. `preset` is
- * passed in rather than recomputed here because the rule for what a set is
- * called lives host-side with the tick sets themselves (botTools.ts).
- */
+/** Which tools this bot has, compactly: a card can't list thirty checkboxes.
+ *  `preset`'s naming rule lives host-side, in botTools.ts. */
 export function toolsSummary(def: BotDefView, preset: string): ContractFact {
   const tools = def.tools;
   if (!tools) {
@@ -142,15 +100,8 @@ export function toolsSummary(def: BotDefView, preset: string): ContractFact {
   return { text: n === 1 ? '1 tool' : `${n} tools`, chosen: true, title };
 }
 
-/**
- * Memory: on unless the def opted out, plus what the bot has actually KEPT.
- *
- * The fact count is the difference between "configured to remember" and "has
- * remembered" — the only one of the fields whose real state lives outside the
- * def file. A bot that opted out never shows a count, even when a store from
- * before the opt-out is still on disk: the number would suggest the bot is
- * reading something it is not.
- */
+/** Memory: on unless the def opted out, plus facts actually kept. An opted-
+ *  out bot never shows a count, even from a store still on disk. */
 export function memorySummary(bot: BotContract, facts: number): ContractFact & { on: boolean } {
   if (bot.memory === false) {
     return { on: false, text: 'off', chosen: true, title: 'memory: false — this bot starts every session blank.' };

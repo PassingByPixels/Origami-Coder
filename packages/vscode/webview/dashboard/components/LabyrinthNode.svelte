@@ -102,6 +102,7 @@
   .tone-thinking { color: var(--og-text-muted); }
   .tone-tool { color: var(--og-success); }
   .tone-subagent { color: var(--og-accent-2); }
+  .tone-compaction { color: var(--og-accent); }
   .tone-error { color: var(--og-error); }
   .hit { fill: transparent; }
   /* Flock call = not ordinary work; a `[Collab:]` baton is the runner, not a person, so it DIMS. */

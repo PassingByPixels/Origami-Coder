@@ -4,7 +4,8 @@
   // carried working/blocked/queued counts that duplicated what the In progress
   // and Blocked columns already say two inches below. A card is one REPOSITORY
   // (every entry sharing a git common dir) and its face is deliberately lean —
-  // the name and the branch its primary checkout is on, nothing else.
+  // the name, nothing else. The branch line came off in t-qn09vr (round-3
+  // change 51): the primary's branch is already RepoDetail's own line.
   //
   // Selecting a card fills the top strip's DETAIL pane (RepoDetail.svelte) with
   // that repository's checkouts and branches. 0.4.53 revealed them under the
@@ -12,11 +13,15 @@
   // strip of faces and nothing hangs off it.
   //
   // Selection itself posts NOTHING: which repo you are looking at is view state.
-  // Only the ghost "+ Add repo" and a missing repo's unregister talk to the host.
+  // Only the ghost "+ Add repo" and a missing repo's unregister talk to the host;
+  // the unregister ✕ is RepoRemoveControl, so it asks with the toolbar's confirm.
   // Rename lives on the repo toolbar's pencil (RepoHeader), not on a card — a card
   // pencil shipped in round 4 and UAT round 5 removed it as noise.
   import type { RepoBoard } from './boardBuckets';
   import { groupRepos } from './repoGroups';
+  import RepoCarousel from './RepoCarousel.svelte';
+  import WorktreeDot from './WorktreeDot.svelte'; // t-ru1i84 — same host message as the composer's pill
+  import RepoRemoveControl from './RepoRemoveControl.svelte';
 
   interface Props {
     repos: RepoBoard[];
@@ -34,43 +39,36 @@
 </script>
 
 <div class="am-cards">
-  {#each cards as card (card.key)}
-    {@const lead = card.lead}
-    {@const open = isOpen(card)}
-    <div class="am-repocard-wrap" class:missing={lead.missing}>
-      <button class="am-repocard" class:on={open} aria-pressed={open}
-        title={card.entries.map((e) => e.root).join('\n')}
-        onclick={() => onselect(lead.root)}>
-        <span class="am-repocard-name">{label(lead)}{lead.workspace ? ' (this window)' : ''}</span>
+  <RepoCarousel rows={2}>
+    {#each cards as card (card.key)}
+      {@const lead = card.lead}
+      {@const open = isOpen(card)}
+      <div class="am-repocard-wrap" class:missing={lead.missing}>
+        <button class="am-repocard" class:on={open} aria-pressed={open}
+          title={card.entries.map((e) => e.root).join('\n')}
+          onclick={() => onselect(lead.root)}>
+          <span class="am-repocard-name">{label(lead)}{lead.workspace ? ' (this window)' : ''}</span>
+          <WorktreeDot dir={lead.root} counts />
+        </button>
         {#if lead.missing}
-          <span class="am-repocard-branch">folder missing from disk</span>
-        {:else}
-          <span class="am-repocard-branch">{lead.branch || 'detached'}</span>
+          <RepoRemoveControl name={label(lead)} root={lead.root} post={post} card />
         {/if}
-      </button>
-      {#if lead.missing}
-        <button class="am-repocard-x" title="Unregister from the board — worktrees on disk are untouched"
-          aria-label="Unregister {lead.name}" onclick={() => post({ type: 'amRemoveRepo', root: lead.root })}>✕</button>
-      {/if}
-    </div>
-  {/each}
-  <button class="am-repocard ghost" title="Register another repository — it does not need to be open in this window"
-    onclick={() => post({ type: 'amAddRepo' })}>+ Add repo</button>
+      </div>
+    {/each}
+    <button class="am-repocard ghost" title="Register another repository — it does not need to be open in this window"
+      onclick={() => post({ type: 'amAddRepo' })}>+ Add repo</button>
+  </RepoCarousel>
 </div>
 
 <style>
-  /* TWO rows, filled COLUMN first (UAT round 3). One short row of cards floated
-     in a pane tall enough for two, so the strip wasted the height it already
-     had. An extra card now adds a COLUMN, never a third row, and `.am-strip`
-     around it is still the element that scrolls — so the board below never
-     moves. The two rows SHARE the strip's height (`1fr` each, never smaller
-     than a card), which is what makes the pane read as two cards tall. */
+  /* A two-row grid of FIXED cards (t-qn09vr, round-3 change 50): every card is
+     the same 156x52 object at the same size, so twice as many repos fit in
+     the same strip and the eye stops measuring card widths against each
+     other. Replaces the single stretched-height row from t-q8zufa/change 7. */
   .am-cards {
-    display: grid;
-    grid-template-rows: repeat(2, minmax(min-content, 1fr));
-    grid-auto-flow: column;
-    grid-auto-columns: max-content;
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     height: 100%;
   }
   .am-repocard-wrap { display: inline-flex; align-items: stretch; }
@@ -78,9 +76,10 @@
   .am-repocard {
     display: flex;
     flex-direction: column;
+    justify-content: center;
     align-items: flex-start;
-    gap: 2px;
-    min-width: 132px;
+    width: 156px;
+    height: 52px;
     padding: 4px 10px;
     background: var(--og-surface, rgba(255, 255, 255, 0.06));
     color: var(--og-text);
@@ -92,13 +91,10 @@
   }
   .am-repocard:hover { filter: brightness(1.15); }
   .am-repocard.on { border-color: var(--og-accent, #3b6ea5); background: var(--og-accent, #3b6ea5); }
-  .am-repocard.ghost { border-style: dashed; background: transparent; justify-content: center; min-width: 0; }
-  .am-repocard-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
-  .am-repocard-branch { font-size: 10px; opacity: 0.75; white-space: nowrap; }
-  .am-repocard-x {
-    align-self: center; margin-left: -6px; padding: 1px 5px; font-size: 11px;
-    background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer;
-    color: #ff9d9d;
+  .am-repocard.ghost { border-style: dashed; background: transparent; justify-content: center; }
+  .am-repocard-name {
+    font-size: 12px; font-weight: 600;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; line-height: 1.25;
   }
-  .am-repocard-x:hover { border-color: #c05050; }
 </style>

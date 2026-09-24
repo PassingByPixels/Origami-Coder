@@ -24,11 +24,18 @@ describe('subagentRows — who is still out', () => {
       {
         key: 'child-1',
         taskSessionId: 'child-1',
+        // T1: the first sub-agent this transcript spawned (subagentLabel.ts).
+        ordinal: 1,
         title: 'task: audit the bundle',
         state: 'running',
         elapsedMs: 5_000,
+        settled: false,
         model: undefined,
         activity: '',
+        // Not reasoning: both halves of the thinking heartbeat are blank until a
+        // reasoning delta arrives (subagentThinking.ts, t-gvz8t0).
+        thinking: '',
+        thought: '',
       },
     ]);
   });
@@ -110,6 +117,7 @@ describe('subagentRows — who is still out', () => {
     ], NOW);
     expect(rows.map((r) => r.taskSessionId)).toEqual(['first', 'second', 'third']);
   });
+
 
   it('an empty transcript yields nothing at all', () => {
     expect(subagentRows([], NOW)).toEqual([]);
@@ -214,14 +222,23 @@ describe('subagentRows — a spawn that never produced a child', () => {
     expect(subagentRows([denied()], NOW)).toEqual([
       {
         key: 'tc-1',
+        ordinal: 1,
         // No child was created, so there is no session to name — and nothing
         // to go and look at. Saying so beats printing the tool call id here.
         taskSessionId: undefined,
         title: 'task: audit the bundle',
         state: 'failed',
-        elapsedMs: 5_000,
+        // A spawn that NEVER HAPPENED has no duration to report: `failed` is a
+        // settled state, so the card's own build stamp is refused rather than
+        // aged (subagentTiming.ts). It used to print the time since the denial.
+        elapsedMs: 0,
+        settled: true,
         model: undefined,
         activity: '',
+        // Not reasoning: both halves of the thinking heartbeat are blank until a
+        // reasoning delta arrives (subagentThinking.ts, t-gvz8t0).
+        thinking: '',
+        thought: '',
       },
     ]);
   });

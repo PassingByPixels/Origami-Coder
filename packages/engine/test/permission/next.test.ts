@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@origami/core/v1/permission"
+import * as TestClock from "effect/testing/TestClock"
 import { test, expect } from "bun:test"
 import os from "os"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
@@ -1314,4 +1315,91 @@ it.instance(
       yield* Fiber.await(fiber)
     }),
   { git: true, config: { experimental: { subagent_permission_timeout_seconds: 0 } } },
+)
+
+
+// ---------------------------------------------------------------------------
+// t-dcl8fe. The deadline is FOUR HOURS, and it is read over the SUBTREE.
+//
+// A fake clock, not a real wait: these are the two facts that cannot be
+// observed live at their real size.
+// ---------------------------------------------------------------------------
+
+it.instance(
+  "ask - the SUB-AGENT deadline defaults to four hours, not five minutes",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* ask({
+        sessionID: SessionID.make("session_child"),
+        parentSessionID: SessionID.make("session_parent"),
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "bash", pattern: "*", action: "ask" }],
+      }).pipe(Effect.forkScoped)
+
+      // Let the ask reach `pending` and park.
+      yield* TestClock.adjust("10 millis")
+      expect(yield* list()).toHaveLength(1)
+
+      // Red before the fix: the shipped default was 300 s, so the child's whole
+      // context died here - five minutes into a question a human CAN see and is
+      // simply not back at their desk for. The deadline itself still exists
+      // (the 1 s override test above fires it); this is only about its size.
+      yield* TestClock.adjust("59 minutes")
+      expect(yield* list()).toHaveLength(1)
+      yield* TestClock.adjust("2 hours")
+      expect(yield* list()).toHaveLength(1)
+      expect(Permission.DEFAULT_SUBAGENT_ASK_TIMEOUT_SECONDS).toBe(14_400)
+
+      yield* rejectAll()
+      yield* Fiber.await(fiber)
+    }).pipe(Effect.provide(TestClock.layer())),
+  { git: true },
+)
+
+it.instance(
+  "blockedMs - a GRANDCHILD's open ask credits the child and the parent, not a stranger",
+  () =>
+    Effect.gen(function* () {
+      const permission = yield* Permission.Service
+      const parent = SessionID.make("session_parent")
+      const child = SessionID.make("session_child")
+      const grandchild = SessionID.make("session_grandchild")
+      // The links tool/task.ts records when it launches each generation.
+      yield* permission.link({ sessionID: child, parentSessionID: parent })
+      yield* permission.link({ sessionID: grandchild, parentSessionID: child })
+
+      const fiber = yield* ask({
+        sessionID: grandchild,
+        parentSessionID: child,
+        permission: "bash",
+        patterns: ["ls"],
+        metadata: {},
+        always: [],
+        ruleset: [{ permission: "bash", pattern: "*", action: "ask" }],
+      }).pipe(Effect.forkScoped)
+
+      yield* TestClock.adjust("10 millis")
+      expect(yield* list()).toHaveLength(1)
+      yield* TestClock.adjust("10 minutes")
+
+      // The grandchild is the session that asked; the CHILD is the session
+      // whose job ceiling is burning while it waits. Red before the fix: the
+      // child and the parent both read 0 and the child was stopped as a
+      // runaway for waiting on a human.
+      expect(yield* permission.blockedMs(grandchild)).toBeGreaterThanOrEqual(600_000)
+      expect(yield* permission.blockedMs(child)).toBeGreaterThanOrEqual(600_000)
+      expect(yield* permission.blockedMs(parent)).toBeGreaterThanOrEqual(600_000)
+      // A session that is not an ancestor gets nothing. The walk goes UP from
+      // the blocked session, so a sibling or an unrelated chat is untouched.
+      expect(yield* permission.blockedMs(SessionID.make("session_stranger"))).toBe(0)
+      // ...and the grandchild's own ask does not credit its DESCENDANTS either.
+      expect(yield* permission.blockedMs(SessionID.make("session_great_grandchild"))).toBe(0)
+
+      yield* rejectAll()
+      yield* Fiber.await(fiber)
+    }).pipe(Effect.provide(TestClock.layer())),
+  { git: true },
 )

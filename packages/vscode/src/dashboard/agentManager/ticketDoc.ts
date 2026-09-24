@@ -1,22 +1,12 @@
-// Agent Manager - ticketDoc.ts (Folds board): the ticket DOCUMENT format, split
-// out of tickets.ts at its line cap. Pure text <-> Ticket and nothing else: the
-// frontmatter round-trip (every line kept as raw bytes so unknown keys ride
-// through verbatim), the scalar/list readers, the targeted single-line edit that
-// inserts a missing key where the slim template would have put it, and the two
-// body sections this layer reads or writes (`## Acceptance` counts, `## Log`
-// appends).
-//
-// Split here because this half needs no disk: a round-trip assertion is a string
-// in and a string out, so the bug class that matters most - a rewrite eating a
-// hand-added frontmatter key, the collabAgentDef serializer bug - is provable
-// without a temp dir. tickets.ts keeps the fs, the lifecycle and the routing, and
-// re-exports what its callers already import from it.
+// The ticket DOCUMENT format: pure text <-> Ticket and nothing else — the frontmatter
+// round-trip (every line kept as raw bytes so unknown keys ride through verbatim),
+// scalar/list readers, targeted single-line edits, and the two body sections this layer
+// touches. Split out so a round-trip assertion needs no disk.
 
 import * as path from 'node:path';
 
-/** One frontmatter line. `key` is '' for a line that is not `key: value`
- *  (a blank line, a comment) - kept so a rewrite preserves it byte for byte.
- *  `raw` is everything AFTER the colon, verbatim, leading space included. */
+/** One frontmatter line; `key` is '' for a non-`key: value` line (kept so a rewrite
+ *  preserves it byte for byte). */
 interface FmLine { key: string; raw: string }
 
 export interface Ticket {
@@ -27,15 +17,13 @@ export interface Ticket {
   malformed: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Parse / serialize (round-trip preserving)
-// ---------------------------------------------------------------------------
+// ---- Parse / serialize (round-trip preserving) ----
 
 const FM_LINE = /^([A-Za-z0-9_][A-Za-z0-9_-]*):(.*)$/;
 
-/** Split a ticket file into frontmatter lines + body. A file with no leading
- *  `---` block, no `id` or no `title` is MALFORMED: it still yields a Ticket (so
- *  the board can warn about it) but every mutation below refuses to rewrite it. */
+/** Split a ticket file into frontmatter + body. A malformed file (no `---`, no id, no
+ *  title) still yields a Ticket so the board can warn, but every mutation refuses to rewrite
+ *  it. */
 export function parseTicket(text: string, file: string): Ticket {
   const fallbackId = path.basename(file).replace(/\.md$/i, '');
   const lines = text.split(/\r?\n/);
@@ -53,10 +41,9 @@ export function parseTicket(text: string, file: string): Ticket {
   return { id, file, fm, body, malformed };
 }
 
-/** Back to file text. Untouched keys keep their exact bytes; the body is written
- *  back verbatim. Always LF: a hand-edited CRLF file is normalized on the first
- *  stamp (deliberate - a mixed-ending ticket makes every later diff unreadable),
- *  which is the ONLY byte a rewrite is allowed to change beyond its own fields. */
+/** Back to file text. Untouched keys keep exact bytes; always LF — a hand-edited CRLF file
+ *  is normalized on the first stamp, the one byte a rewrite may change beyond its own
+ *  fields. */
 export function serializeTicket(t: Ticket): string {
   return `---\n${t.fm.map((l) => (l.key ? `${l.key}:${l.raw}` : l.raw)).join('\n')}\n---\n${t.body}`;
 }
@@ -88,9 +75,7 @@ export function setScalar(t: Ticket, key: string, value: string): void {
   t.fm.splice(at, 0, { key, raw });
 }
 
-// ---------------------------------------------------------------------------
-// Acceptance + log (body sections)
-// ---------------------------------------------------------------------------
+// ---- Acceptance + log (body sections) ----
 
 /** Count the `## Acceptance` section's checkbox lines. No section = 0/0. */
 export function acceptance(body: string): { done: number; total: number } {

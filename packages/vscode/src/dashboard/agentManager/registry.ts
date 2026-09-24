@@ -1,10 +1,7 @@
-// Agent Manager - registry.ts (S3.5): the multi-repo "hub" layer. The board no
-// longer requires the window's own workspace folder to be a git repo - the user
-// registers any repo on disk (folder picker) and drives its worktree agents from
-// one window. The pure list logic (composeRepoList + path helpers) is unit-tested
-// with no vscode; the thin VS Code glue (picker + Memento storage) sits at the
-// bottom. `vscode` is import-analysed but only touched by the glue, so vitest
-// (which aliases vscode to a stub) loads this module for the pure tests fine.
+// The multi-repo "hub" layer: the board no longer requires the window's own folder to be a
+// git repo — the user registers any repo and drives its worktree agents from one window.
+// Pure list logic is unit-tested with no vscode; the folder-picker/Memento glue sits at the
+// bottom.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -38,14 +35,10 @@ export function isGitRepo(root: string): boolean {
   return fs.existsSync(path.join(root, '.git'));
 }
 
-/**
- * Build the ordered, deduped repo list for the board. The workspace repo (when
- * defined AND a real git repo) is always first with workspace:true; the known
- * (user-registered) repos follow in order, deduped against the workspace entry
- * and each other by comparison key. A known repo whose dir/.git no longer exists
- * is KEPT and flagged missing:true - the user registered it, they get to see and
- * unregister it rather than have it silently vanish.
- */
+/** Build the ordered, deduped repo list for the board: the workspace repo first (when it's a
+ *  real git repo), then known repos, deduped by comparison key. A known repo whose folder
+ *  vanished is kept and flagged missing — the user registered it, they unregister it, it
+ *  doesn't silently disappear. */
 export function composeRepoList(workspaceRepo: string | undefined, known: string[]): RepoEntry[] {
   const out: RepoEntry[] = [];
   const seen = new Set<string>();
@@ -73,9 +66,7 @@ export function findEntry(list: RepoEntry[], root: string | undefined): RepoEntr
   return list.find((e) => repoKey(e.root) === key);
 }
 
-// ---------------------------------------------------------------------------
-// VS Code glue (folder picker + Memento storage) - the only part touching vscode
-// ---------------------------------------------------------------------------
+// VS Code glue (folder picker + Memento storage) — the only part touching vscode.
 
 const REPOS_KEY = 'origami.agentManager.repos';
 
@@ -99,10 +90,9 @@ export function saveKnownRepos(memento: vscode.Memento, paths: string[]): void {
   void memento.update(REPOS_KEY, paths);
 }
 
-// S5.2 - board-level "auto-approve agent permissions" toggle. Persisted here as a
-// sibling of the repo list (same Memento helper pattern). Default ON: a
-// background agent session has no webview to answer a permission ask, so without
-// auto-approve it hangs forever - the safe-by-default is to consent.
+// Board-level "auto-approve agent permissions" toggle, persisted as a sibling of the repo
+// list. Default ON: a background agent session has no webview to answer a permission ask,
+// so the safe default is to consent.
 const AUTO_APPROVE_KEY = 'origami.agentManager.autoApprove';
 
 /** The auto-approve setting; absent (never set) reads as the default ON. */
@@ -115,17 +105,12 @@ export function saveAutoApprove(memento: vscode.Memento, on: boolean): void {
   void memento.update(AUTO_APPROVE_KEY, on);
 }
 
-// S6a - the persisted agent-type roster: the engine's real agent modes (build /
-// plan / any custom primaries), harvested from a live board session. A sibling
-// of the repo list + auto-approve toggle (same Memento helper pattern). Each
-// entry is a mode {id,name,default?}; the board's picker derives its options
-// from this (see AgentTypeSelect - it hides the entry flagged as the engine
-// default behind "Tsuru", whatever `default_agent` resolves to).
+// The persisted agent-type roster: the engine's real agent modes, harvested from a live
+// board session, a sibling of the repo list (same Memento pattern). The board's picker
+// derives its options from this.
 const AGENT_TYPES_KEY = 'origami.agentManager.agentTypes';
 
-/** The harvested agent-type roster; a missing / malformed value reads as empty
- *  (each surviving entry must be a {id,name} of strings; the optional default
- *  flag rides through untouched). */
+/** The harvested agent-type roster; a missing/malformed value reads as empty. */
 export function loadAgentTypes(memento: vscode.Memento): Array<{ id: string; name: string; default?: boolean }> {
   const v = memento.get<Array<{ id: string; name: string; default?: boolean }>>(AGENT_TYPES_KEY);
   return Array.isArray(v) ? v.filter((t) => t && typeof t.id === 'string' && typeof t.name === 'string') : [];

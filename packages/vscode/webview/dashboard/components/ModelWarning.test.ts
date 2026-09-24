@@ -14,7 +14,7 @@
 import { render } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import ModelWarning from './ModelWarning.svelte';
-import { PROVIDER_PROBING } from './modelBanner';
+import { NO_CONNECTIONS, NO_CONNECTIONS_TEXT, PROVIDER_PROBING } from './modelBanner';
 
 const strip = (c: HTMLElement) => c.querySelector('.model-warning') as HTMLElement | null;
 
@@ -58,6 +58,19 @@ describe('ModelWarning — which of the three, and what the tooltip says', () =>
     const el = strip(container)!;
     expect(el.textContent).toContain('start LM Studio');
     expect(el.textContent).not.toMatch(/unreachable/i);
+  });
+
+  it('nothing configured: it says so, and never names a product the user has not installed', () => {
+    // The wire defaults providerIsLocal to true, which is exactly how this case
+    // used to inherit LM Studio's copy on a machine that has no LM Studio.
+    const { container } = render(ModelWarning, { reason: NO_CONNECTIONS, providerIsLocal: true });
+    const el = strip(container)!;
+    expect(el.textContent).toContain(NO_CONNECTIONS_TEXT);
+    expect(el.textContent).not.toMatch(/LM Studio/i);
+    expect(el.textContent).not.toMatch(/unreachable/i);
+    // Not an alarm: nothing is broken, setup has not happened.
+    expect(el.classList.contains('probing')).toBe(true);
+    expect(el.title).toContain('add a provider');
   });
 
   it('offline with NO reason still says something true in the tooltip', () => {

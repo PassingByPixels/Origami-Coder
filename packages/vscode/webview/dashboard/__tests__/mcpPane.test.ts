@@ -845,3 +845,98 @@ describe('MCPPane — the add box', () => {
     expect((container.querySelector('.mcp-new-go') as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('MCPPane — the section selector', () => {
+  // UAT: the two stacked headings drew both halves at once and the pane read
+  // as one long undivided list. Two selector cards now pick which half
+  // renders. What these pin: exactly ONE half on screen, servers by default,
+  // and a caption on each card saying how much is behind it.
+  const deliver = (data: Record<string, unknown>) =>
+    window.dispatchEvent(new MessageEvent('message', { data }));
+  const card = (container: HTMLElement, name: string) =>
+    Array.from(container.querySelectorAll<HTMLButtonElement>('.mcp-pick-card')).find(
+      (b) => b.querySelector('.mcp-pick-name')?.textContent === name,
+    )!;
+
+  const mounted = async () => {
+    const { container } = render(MCPPane);
+    await tick();
+    deliver({ type: 'mcpData', servers: SERVERS });
+    deliver({
+      type: 'webmcpData',
+      sites: [{ url: 'https://folio.example/mcp', name: 'folio', purpose: '', addedAt: 1 }],
+      file: 'C:/h/webmcp.json',
+    });
+    await tick();
+    return container;
+  };
+
+  it('defaults to MCP Servers — the server UI renders, the Web MCP section does not', async () => {
+    const container = await mounted();
+
+    expect(card(container, 'MCP Servers').getAttribute('aria-pressed')).toBe('true');
+    expect(card(container, 'Web MCP').getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelector('.mcp-grid')).not.toBeNull();
+    expect(container.querySelector('.mcp-new')).not.toBeNull();
+    expect(container.querySelector('.wmcp')).toBeNull();
+  });
+
+  it('the cards are real buttons — reachable and pressable without a mouse', async () => {
+    const container = await mounted();
+    // A div with a click handler is not focusable and answers neither Enter
+    // nor Space; a <button> gives all three for free, so THAT is the assert.
+    expect(card(container, 'MCP Servers').tagName).toBe('BUTTON');
+    expect(card(container, 'Web MCP').tagName).toBe('BUTTON');
+  });
+
+  it('picking Web MCP shows ONLY that section, and picking back restores the servers', async () => {
+    const container = await mounted();
+
+    await fireEvent.click(card(container, 'Web MCP'));
+    await tick();
+    // Both halves at once is the stacked-headings pane this selector replaced.
+    expect(container.querySelector('.wmcp')).not.toBeNull();
+    expect(container.querySelector('.mcp-grid')).toBeNull();
+    expect(container.querySelector('.mcp-new')).toBeNull();
+    expect(card(container, 'Web MCP').getAttribute('aria-pressed')).toBe('true');
+    expect(card(container, 'MCP Servers').getAttribute('aria-pressed')).toBe('false');
+
+    await fireEvent.click(card(container, 'MCP Servers'));
+    await tick();
+    expect(container.querySelector('.mcp-grid')).not.toBeNull();
+    expect(container.querySelector('.wmcp')).toBeNull();
+  });
+
+  it('captions each card with the size of what is behind it, singular included', async () => {
+    const container = await mounted();
+    expect(card(container, 'MCP Servers').querySelector('.mcp-pick-count')!.textContent).toBe('4 servers');
+    expect(card(container, 'Web MCP').querySelector('.mcp-pick-count')!.textContent).toBe('1 site');
+
+    // ...and the captions follow the lists — they are not a mount-time snapshot.
+    deliver({ type: 'mcpData', servers: [SERVERS[0]] });
+    deliver({ type: 'webmcpData', sites: [], file: 'C:/h/webmcp.json' });
+    await tick();
+    expect(card(container, 'MCP Servers').querySelector('.mcp-pick-count')!.textContent).toBe('1 server');
+    expect(card(container, 'Web MCP').querySelector('.mcp-pick-count')!.textContent).toBe('0 sites');
+  });
+
+  it('each view owns its search box; the refresh serves both halves', async () => {
+    const container = await mounted();
+    expect(container.querySelector('.mcp-search')).not.toBeNull();
+    // The sites box belongs to the OTHER half (webmcpPane.test.ts drives it).
+    expect(container.querySelector('.wmcp-search')).toBeNull();
+
+    await fireEvent.click(card(container, 'Web MCP'));
+    await tick();
+    // A "Search servers…" box over the site list would search nothing visible —
+    // the sites get their OWN box instead, with its own query state.
+    expect(container.querySelector('.mcp-search')).toBeNull();
+    expect(container.querySelector('.wmcp-search')).not.toBeNull();
+    // The refresh re-reads BOTH lists, so it must stay reachable from here.
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    await fireEvent.click(container.querySelector('.mcp-refresh') as HTMLButtonElement);
+    const types = globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0]?.type);
+    expect(types).toContain('mcpRequest');
+    expect(types).toContain('webmcpRequest');
+  });
+});

@@ -31,6 +31,9 @@ function makeHandlers(over: Partial<AcpEventHandlers> = {}): AcpEventHandlers {
     onTurnEnd: vi.fn(),
     onAssessmentUpdate: vi.fn(),
     onFeedMessage: vi.fn(),
+    onFlockMailbox: vi.fn(),
+    onArtifactsChanged: vi.fn(),
+    onCacheState: vi.fn(),
     onClose: vi.fn(),
     onError: vi.fn(),
     ...over,
@@ -364,9 +367,55 @@ describe('first-class origami/* notification decode (U2)', () => {
     });
   });
 
+  it('origami/cacheState → onCacheState, window and all', async () => {
+    await impl.extNotification('_origami/cacheState', {
+      sessionId: 'sess-abc', state: 'warm', until: 1_700_000_300_000, ttlSeconds: 300, source: 'request',
+    });
+    expect(handlers.onCacheState).toHaveBeenCalledWith({
+      sessionId: 'sess-abc', state: 'warm', until: 1_700_000_300_000, ttlSeconds: 300, source: 'request',
+    });
+  });
+
+  // A provider that publishes no window sends no `until`, and the decode must
+  // not manufacture one: a zero would render as a countdown that already ran out.
+  it('origami/cacheState with no window keeps until/ttlSeconds ABSENT', async () => {
+    await impl.extNotification('_origami/cacheState', {
+      sessionId: 'sess-abc', state: 'warm', source: 'request',
+    });
+    const push = (handlers.onCacheState as any).mock.calls[0][0];
+    expect(push).toEqual({ sessionId: 'sess-abc', state: 'warm', source: 'request' });
+    expect('until' in push).toBe(false);
+    expect('ttlSeconds' in push).toBe(false);
+  });
+
+  it('origami/cacheState with an unknown state falls to unmeasured, and a push with no session id is dropped', async () => {
+    await impl.extNotification('_origami/cacheState', { sessionId: 'sess-abc', state: 'toasty', source: 'warm' });
+    expect(handlers.onCacheState).toHaveBeenCalledWith({
+      sessionId: 'sess-abc', state: 'unmeasured', source: 'warm',
+    });
+    (handlers.onCacheState as any).mockClear();
+    await impl.extNotification('_origami/cacheState', { state: 'cold', source: 'request' });
+    expect(handlers.onCacheState).not.toHaveBeenCalled();
+  });
+
   it('origami/arbiterDecision → onArbiterDecision (the M1 per-turn verdict)', async () => {
     await impl.extNotification('_origami/arbiterDecision', { decision: 'done', reason: 'tests green' });
     expect(handlers.onArbiterDecision).toHaveBeenCalledWith({ decision: 'done', reason: 'tests green' });
+  });
+
+  // PUSH, NOT POLL. `flock.json` moved in some engine on this machine and the
+  // engine said so; before this the pane learned about a reply by asking every
+  // thirty seconds. Asserted on the COUNTS as well as the rows, because the
+  // sidebar badge does arithmetic with them.
+  it('origami/flockMailbox → onFlockMailbox, rows verbatim and counts coerced', async () => {
+    const threads = [{ id: 't1', direction: 'in', state: 'pending' }];
+    await impl.extNotification('_origami/flockMailbox', { threads, waiting: 1, unread: 2 });
+    expect(handlers.onFlockMailbox).toHaveBeenCalledWith({ threads, waiting: 1, unread: 2 });
+  });
+
+  it('a malformed flockMailbox payload renders an EMPTY mailbox, never NaN counts', async () => {
+    await impl.extNotification('_origami/flockMailbox', { threads: 'not an array', waiting: 'x' });
+    expect(handlers.onFlockMailbox).toHaveBeenCalledWith({ threads: [], waiting: 0, unread: 0 });
   });
 
   it('origami/turnEnd → onPlanStatus with status `turn_end` (NOT self_review)', async () => {
@@ -434,6 +483,70 @@ describe('prompt() usage — the cache-write field the cast used to drop (t-kgtw
     await client.prompt('hi');
 
     expect(handlers.onUsageUpdate).toHaveBeenCalledWith(expect.objectContaining({ cacheWriteTokens: 0 }));
+  });
+});
+
+// t-q90gj9 — a dropped provider stream. The engine used to say this as agent
+// PROSE; it is a rider on an EMPTY agent_message_chunk now, and the host must
+// route it away from the transcript before anything can render it as the agent.
+describe('the stream-drop rider', () => {
+  const chunk = (meta: unknown) => ({
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: '' },
+      _meta: meta,
+    },
+  });
+
+  it('routes a whole notice to onStreamDrop and NOT to the transcript', async () => {
+    const handlers = makeHandlers({ onStreamDrop: vi.fn() });
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate(chunk({
+      origami_stream_drop: {
+        kind: 'retrying', attempt: 2, max: 3, detail: 'fetch failed (ECONNRESET)', terminal: false,
+      },
+    }));
+    expect(handlers.onStreamDrop).toHaveBeenCalledWith({
+      kind: 'retrying', attempt: 2, max: 3, detail: 'fetch failed (ECONNRESET)', terminal: false,
+    });
+    // The whole point: it never reaches the agent bubble.
+    expect(handlers.onAgentMessageChunk).not.toHaveBeenCalled();
+  });
+
+  it('marks a stopped notice terminal, which is the card that offers Retry', async () => {
+    const handlers = makeHandlers({ onStreamDrop: vi.fn() });
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate(chunk({
+      origami_stream_drop: { kind: 'stopped', attempt: 3, max: 3, detail: 'idle timeout' },
+    }));
+    expect(handlers.onStreamDrop).toHaveBeenCalledWith(expect.objectContaining({ terminal: true }));
+  });
+
+  // Fail-closed. A half-written rider must draw NO card - and it must not fall
+  // through into an empty agent bubble either.
+  it('ignores a rider missing its detail', async () => {
+    const handlers = makeHandlers({ onStreamDrop: vi.fn() });
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate(chunk({ origami_stream_drop: { kind: 'retrying', attempt: 1, max: 3 } }));
+    expect(handlers.onStreamDrop).not.toHaveBeenCalled();
+  });
+
+  // An engine that still sends the OLD text form keeps working: it is ordinary
+  // agent prose here, matched by nothing. Replacing it is the ENGINE's job.
+  it('leaves the old text form as an ordinary agent chunk', async () => {
+    const handlers = makeHandlers({ onStreamDrop: vi.fn() });
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Stream dropped (fetch failed) - retrying, attempt 1 of 3.' },
+      },
+    });
+    expect(handlers.onStreamDrop).not.toHaveBeenCalled();
+    expect(handlers.onAgentMessageChunk).toHaveBeenCalledWith(
+      'Stream dropped (fetch failed) - retrying, attempt 1 of 3.',
+      undefined,
+    );
   });
 });
 
@@ -568,5 +681,266 @@ describe('replayed content honours annotations.audience', () => {
     });
     expect(onPeerMessage).toHaveBeenCalledWith({ from: 'Scout', replyTo: 'Scout#ses_1', text: 'handing over' });
     expect(onUserMessageChunk).not.toHaveBeenCalled();
+  });
+});
+
+// t-dkkd2o. A BACKGROUND sub-agent's launcher tool call completes the instant
+// the child is spawned, so its counters can no longer ride a `tool_call_update`.
+// The engine posts them on an empty chunk tagged with the child's session id.
+describe('sub-agent token counters — the running child`s side channel', () => {
+  it('routes a counters-only chunk to onSubagentTokens and renders nothing', async () => {
+    const onSubagentTokens = vi.fn();
+    const handlers = makeHandlers({ onSubagentTokens });
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '' },
+        _meta: {
+          origami_task_session: 'ses_child',
+          origami_task_tokens: { input: 16_077, output: 46, reasoning: 47, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        },
+      },
+    });
+    expect(onSubagentTokens).toHaveBeenCalledWith({
+      childSessionId: 'ses_child',
+      tokens: { input: 16_077, output: 46, reasoning: 47, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    // An empty bubble in the parent transcript per child step is the failure
+    // this branch exists to prevent.
+    expect(handlers.onAgentMessageChunk).not.toHaveBeenCalled();
+  });
+
+  it('reads BOTH riders off the settling chunk: the final total and the terminal marker', async () => {
+    const onSubagentTokens = vi.fn();
+    const onSubagentDone = vi.fn();
+    const impl = buildImpl(new AcpClient(makeHandlers({ onSubagentTokens, onSubagentDone })));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '' },
+        _meta: {
+          origami_task_session: 'ses_child',
+          origami_task_state: 'completed',
+          origami_task_ended: 1_789_425_347_621,
+          origami_task_tokens: { input: 46_724, output: 96, reasoning: 58, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        },
+      },
+    });
+    // The settled figure must land BEFORE the row is retired, or the row keeps
+    // whatever the last live step reported.
+    expect(onSubagentTokens).toHaveBeenCalledWith({
+      childSessionId: 'ses_child',
+      tokens: { input: 46_724, output: 96, reasoning: 58, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+    // The marker carries the final total TOO (t-fdvr2a): it is the only
+    // sub-agent frame the host writes to the message log, so a figure left on
+    // the live channel alone does not survive a window reload.
+    expect(onSubagentDone).toHaveBeenCalledWith({
+      taskSessionId: 'ses_child',
+      state: 'completed',
+      endedAt: 1_789_425_347_621,
+      tokens: { input: 46_724, output: 96, reasoning: 58, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    });
+  });
+
+  it('a marker from an engine that rides no counters carries no `tokens` key', async () => {
+    // The host keeps the last live figure when the marker has none
+    // (sessionLogSubagent.ts); a `tokens: undefined` rider would read the same
+    // way here, but the absent key is what makes that rule readable.
+    const onSubagentDone = vi.fn();
+    const impl = buildImpl(new AcpClient(makeHandlers({ onSubagentDone })));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '' },
+        _meta: { origami_task_session: 'ses_child', origami_task_state: 'error' },
+      },
+    });
+    expect(onSubagentDone).toHaveBeenCalledWith({ taskSessionId: 'ses_child', state: 'error' });
+    expect(Object.keys(onSubagentDone.mock.calls[0][0])).not.toContain('tokens');
+  });
+
+  it('leaves an ordinary forwarded child chunk alone', async () => {
+    const onSubagentTokens = vi.fn();
+    const onSubagentChunk = vi.fn();
+    const impl = buildImpl(new AcpClient(makeHandlers({ onSubagentTokens, onSubagentChunk })));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '> bash\n' },
+        _meta: { origami_child_session: 'ses_child' },
+      },
+    });
+    expect(onSubagentTokens).not.toHaveBeenCalled();
+    expect(onSubagentChunk).toHaveBeenCalledWith({ childSessionId: 'ses_child', text: '> bash\n' });
+  });
+
+  // t-gvz8t0. The child's THOUGHT rides the same channel with one extra key.
+  // Routed apart from its prose because `onSubagentChunk` writes `taskStream`,
+  // which is the row's activity tail AND the transcript card's reply text.
+  it('routes a chunk MARKED as reasoning to the thought handler, never to the stream', async () => {
+    const onSubagentChunk = vi.fn();
+    const onSubagentThought = vi.fn();
+    const impl = buildImpl(new AcpClient(makeHandlers({ onSubagentChunk, onSubagentThought })));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'weighing two approaches' },
+        _meta: { origami_child_session: 'ses_child', origami_task_part: 'reasoning' },
+      },
+    });
+    expect(onSubagentThought).toHaveBeenCalledWith({ childSessionId: 'ses_child', text: 'weighing two approaches' });
+    expect(onSubagentChunk).not.toHaveBeenCalled();
+  });
+
+  it('treats an UNKNOWN part marker as prose — a marker cannot hide a line', async () => {
+    const onSubagentChunk = vi.fn();
+    const onSubagentThought = vi.fn();
+    const impl = buildImpl(new AcpClient(makeHandlers({ onSubagentChunk, onSubagentThought })));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: '> bash\n' },
+        _meta: { origami_child_session: 'ses_child', origami_task_part: 'something_new' },
+      },
+    });
+    expect(onSubagentChunk).toHaveBeenCalledWith({ childSessionId: 'ses_child', text: '> bash\n' });
+    expect(onSubagentThought).not.toHaveBeenCalled();
+  });
+});
+
+// t-gw71a9. The todo panel must fill in the moment the model writes the list,
+// even when the call is batched behind two sub-agent spawns in the same step.
+// The engine now publishes every parsed call in a step before it runs any of
+// them, so the todowrite's list is on the wire while the spawns are still
+// going. These pin the client end of that: whichever frame of the lifecycle
+// carries `rawInput.todos` first, the strip is updated from it and no generic
+// tool card leaks.
+describe('todowrite — the list is taken from the FIRST frame that carries it (t-gw71a9)', () => {
+  const TODOS = [
+    { content: 'read the ticket', status: 'in_progress', priority: 'high' },
+    { content: 'write the test', status: 'pending', priority: 'high' },
+  ];
+  const ROWS = [
+    { id: 0, content: 'read the ticket', activeForm: 'read the ticket', status: 'in_progress', depth: 0 },
+    { id: 1, content: 'write the test', activeForm: 'write the test', status: 'pending', depth: 0 },
+  ];
+
+  it('a PENDING tool_call carrying rawInput.todos posts todoUpdate and renders no card', async () => {
+    const handlers = makeHandlers();
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call_todo',
+        title: 'todowrite',
+        kind: 'other',
+        status: 'pending',
+        rawInput: { todos: TODOS },
+        _meta: { origami_tool_name: 'todowrite' },
+      },
+    });
+    expect(handlers.onTodoUpdate).toHaveBeenCalledWith({ source: 'model_write', todos: ROWS });
+    // The strip owns this tool; a generic card beside it would double-render it.
+    expect(handlers.onToolCallStart).not.toHaveBeenCalled();
+  });
+
+  it('the RUNNING tool_call_update carrying the list posts it too — that is the frame the engine sends first', async () => {
+    const handlers = makeHandlers();
+    const impl = buildImpl(new AcpClient(handlers));
+    // The pending frame the engine really sends has an EMPTY input: the part is
+    // created before its arguments are parsed. It must still be swallowed, and
+    // must not post an empty list.
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call_todo',
+        title: 'todowrite',
+        kind: 'other',
+        status: 'pending',
+        rawInput: {},
+        _meta: { origami_tool_name: 'todowrite' },
+      },
+    });
+    expect(handlers.onTodoUpdate).not.toHaveBeenCalled();
+    expect(handlers.onToolCallStart).not.toHaveBeenCalled();
+
+    await impl.sessionUpdate({
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_todo',
+        status: 'in_progress',
+        rawInput: { todos: TODOS },
+      },
+    });
+    expect(handlers.onTodoUpdate).toHaveBeenCalledWith({ source: 'model_write', todos: ROWS });
+    expect(handlers.onToolCallUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('the artifact ext methods — the wire contract the pane codes against (t-rz3gfr)', () => {
+  // DRIFT GUARD. These five names and their parameter fields are the engine's
+  // `acp/artifacts.ts` switch arms; the pane's own copy of the same contract
+  // lives in src/dashboard/artifactAcp.ts. A rename on either side that is not
+  // made on the other turns into "method not found" at runtime, on a pane that
+  // then draws its empty state and looks merely empty. Asserted on the WIRE
+  // call, because that is the thing both sides actually share.
+  it('sends each method under its wire name, with only the fields the engine reads', async () => {
+    const { client, extMethod } = clientWithFakeConnection(makeHandlers());
+
+    await client.listArtifacts();
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_list', {});
+    await client.listArtifacts({ all: true, projectPath: 'C:/Repos/x' });
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_list', { all: true, projectPath: 'C:/Repos/x' });
+
+    await client.listArtifactVersions('art_1');
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_versions', { artifactId: 'art_1' });
+
+    // No version means the LATEST, and the field is omitted rather than sent
+    // as null — the engine rejects a version that is not a whole number.
+    await client.openArtifact('art_1');
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_open', { artifactId: 'art_1' });
+    await client.openArtifact('art_1', 2);
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_open', { artifactId: 'art_1', version: 2 });
+
+    await client.restoreArtifact('art_1', 1);
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_restore', { artifactId: 'art_1', version: 1 });
+
+    await client.diffArtifact('art_1', 1, 3);
+    expect(extMethod).toHaveBeenLastCalledWith('_artifact_diff', { artifactId: 'art_1', from: 1, to: 3 });
+  });
+
+  it('passes the engine result through with the row fields the pane reads', async () => {
+    const client = new AcpClient(makeHandlers());
+    const row = {
+      id: 'art_1',
+      title: 'Release notes',
+      latest: 2,
+      updated: 1700000000000,
+      ownerDevice: '5090',
+      here: true,
+      unopened: false,
+      sessionID: 'ses_1',
+      project: 'C:/Repos/x',
+    };
+    (client as unknown as { connection: unknown }).connection = {
+      extMethod: async () => ({ artifacts: [row], homeDevice: 'this machine' }),
+    };
+    const result = await client.listArtifacts();
+    expect(result.artifacts[0]).toEqual(row);
+    expect(result.homeDevice).toBe('this machine');
+  });
+
+  it('origami/artifactsChanged → onArtifactsChanged, renderable whatever arrives', async () => {
+    const handlers = makeHandlers();
+    const impl = buildImpl(new AcpClient(handlers));
+    await impl.extNotification('_origami/artifactsChanged', { artifactId: 'art_1', version: 3, kind: 'published' });
+    expect(handlers.onArtifactsChanged).toHaveBeenCalledWith({ artifactId: 'art_1', version: 3, kind: 'published' });
+    // A prune carries no version; a garbled frame must still not poison the pane.
+    await impl.extNotification('_origami/artifactsChanged', { artifactId: 'art_2', kind: 'pruned' });
+    expect(handlers.onArtifactsChanged).toHaveBeenLastCalledWith({ artifactId: 'art_2', kind: 'pruned' });
+    await impl.extNotification('_origami/artifactsChanged', { artifactId: 7, version: 'x' });
+    expect(handlers.onArtifactsChanged).toHaveBeenLastCalledWith({ artifactId: '', kind: 'published' });
   });
 });

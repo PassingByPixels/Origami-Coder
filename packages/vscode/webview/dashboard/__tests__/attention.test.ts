@@ -13,6 +13,7 @@ import {
   aggregateText,
   resolvePermission,
   drainPermissions,
+  releaseBypassedPermissions,
 } from '../../../src/dashboard/agentManager/attention';
 
 describe('isSessionMounted', () => {
@@ -113,17 +114,68 @@ describe('resolvePermission — the onPermissionRequest composition (real produc
 describe('drainPermissions — cancel every pending ask so an agent never hangs', () => {
   it('resolves each pending respond with null (deny) and empties the map', () => {
     const answered: Array<string | null> = [];
-    const pending = new Map<string, (o: string | null) => void>([
-      ['tc-1', (o) => answered.push(o)],
-      ['tc-2', (o) => answered.push(o)],
+    const pending = new Map<string, { respond: (o: string | null) => void }>([
+      ['tc-1', { respond: (o) => answered.push(o) }],
+      ['tc-2', { respond: (o) => answered.push(o) }],
     ]);
     drainPermissions(pending);
     expect(answered).toEqual([null, null]); // both asks cancelled, none left hanging
     expect(pending.size).toBe(0);
   });
   it('is a no-op on an empty map', () => {
-    const pending = new Map<string, (o: string | null) => void>();
+    const pending = new Map<string, { respond: (o: string | null) => void }>();
     expect(() => drainPermissions(pending)).not.toThrow();
     expect(pending.size).toBe(0);
+  });
+});
+
+// A real ask's option triple, the shape onPermissionRequest forwards (permissionOptions.ts's mirror).
+const allowTriple = [
+  { optionId: 'opt-once', name: 'Allow once', kind: 'allow_once' },
+  { optionId: 'opt-always', name: 'Allow always', kind: 'allow_always' },
+  { optionId: 'opt-reject', name: 'Reject', kind: 'reject_once' },
+];
+const rejectOnly = [{ optionId: 'opt-reject', name: 'Reject', kind: 'reject_once' }];
+
+describe('releaseBypassedPermissions — a session entering YOLO closes out asks the ENGINE already approved', () => {
+  it('answers every pending ask with its REAL allow_once id (not null) and reports each APPROVED', () => {
+    const answered: Array<string | null> = [];
+    const pending = new Map<string, { respond: (o: string | null) => void; options: typeof allowTriple }>([
+      ['tc-1', { respond: (o) => answered.push(o), options: allowTriple }],
+      ['tc-2', { respond: (o) => answered.push(o), options: allowTriple }],
+    ]);
+    const audits: Array<{ toolCallId: string; action: string; optionId: string }> = [];
+    releaseBypassedPermissions(pending, (msg) => audits.push(msg));
+    // `null` (ACP "cancelled") reads as "reject" engine-side and cascades to
+    // reject every OTHER pending ask on the session — a real allow id is the
+    // only answer that does not lie about what bypass actually did.
+    expect(answered).toEqual(['opt-once', 'opt-once']);
+    expect(pending.size).toBe(0);
+    expect(audits.map((a) => a.toolCallId).sort()).toEqual(['tc-1', 'tc-2']);
+    expect(audits.every((a) => a.action === 'approved' && a.optionId === 'opt-once')).toBe(true);
+  });
+  it('an ask offering ONLY a reject option is answered null and audited denied — a deny is the one honest answer', () => {
+    const answered: Array<string | null> = [];
+    const pending = new Map<string, { respond: (o: string | null) => void; options: typeof rejectOnly }>([
+      ['tc-3', { respond: (o) => answered.push(o), options: rejectOnly }],
+    ]);
+    const audits: Array<{ toolCallId: string; action: string; optionId: string }> = [];
+    releaseBypassedPermissions(pending, (msg) => audits.push(msg));
+    expect(answered).toEqual([null]);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ toolCallId: 'tc-3', action: 'denied', optionId: 'cancelled' });
+  });
+  it('never touches another session — only the entries in the map it was given', () => {
+    const otherSessionPending = new Map<string, { respond: (o: string | null) => void; options: typeof allowTriple }>([['other-tc', { respond: () => { throw new Error('must not be called'); }, options: allowTriple }]]);
+    const thisSessionPending = new Map<string, { respond: (o: string | null) => void; options: typeof allowTriple }>([['this-tc', { respond: () => {}, options: allowTriple }]]);
+    expect(() => releaseBypassedPermissions(thisSessionPending, () => {})).not.toThrow();
+    expect(thisSessionPending.size).toBe(0);
+    expect(otherSessionPending.size).toBe(1); // untouched — a different session's map, never passed in
+  });
+  it('is a no-op on an empty map (an Ask-mode revert must never call this at all)', () => {
+    const pending = new Map<string, { respond: (o: string | null) => void; options: typeof allowTriple }>();
+    let posted = false;
+    expect(() => releaseBypassedPermissions(pending, () => { posted = true; })).not.toThrow();
+    expect(posted).toBe(false);
   });
 });

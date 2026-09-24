@@ -5,22 +5,13 @@ import { errorMessage } from "./run-steps"
 import { withTaskSession } from "./event"
 
 /**
- * Read-only projection of ONE sub-agent's stored session into the shape the
- * live chat already renders: the child's prose, and one settled `ToolCall` per
- * tool it ran.
+ * Read-only projection of ONE sub-agent's stored session into the shape the live
+ * chat already renders: the child's prose, and one settled `ToolCall` per tool it
+ * ran. Used by the `subagent_transcript` ext method.
  *
- * Used by the `subagent_transcript` ext method so the shell's sub-agent panel
- * can draw a child the way the Chat panel draws a session, instead of the flat
- * forwarded log string `childChunk` (acp/event.ts) hands it today.
- *
- * EVERY projection comes from acp/tool.ts — the same functions the live chat's
- * cards are built from. Nothing is re-derived here on purpose: a duplicated
- * projection drifts, and the sub-agent view would slowly stop matching the
- * chat. It is also what makes a fix land in both at once — apply_patch's real
- * path and one-line title are inherited, not copied.
- *
- * Nothing mutates: only the `{ info, parts }` records `session.messages`
- * already returns are read.
+ * EVERY projection comes from acp/tool.ts - the same functions the live chat's
+ * cards are built from. Nothing is re-derived here: a duplicated projection would
+ * drift, and a fix has to land in both at once. Nothing mutates.
  */
 
 type ToolPart = Extract<Part, { type: "tool" }>
@@ -38,6 +29,18 @@ export type TranscriptText = {
   readonly truncated?: true
 }
 
+/** t-gvz8t0. The child's THOUGHT, kept apart from its prose by its own type so
+ *  the panel can only ever draw it as a thought block. A reader who wants to
+ *  know why a child spent two minutes on its first step has nowhere else to
+ *  look — the tool cards beside it say what it did, never what it weighed. */
+export type TranscriptReasoning = {
+  readonly type: "reasoning"
+  readonly messageId: string
+  readonly text: string
+  /** Present only when a cap cut this entry — see TEXT_LIMIT. */
+  readonly truncated?: true
+}
+
 export type TranscriptTool = {
   readonly type: "tool"
   readonly messageId: string
@@ -47,11 +50,8 @@ export type TranscriptTool = {
   readonly truncated?: true
 }
 
-/**
- * A turn the MODEL CALL failed on. Emitted because without it a child that
- * died to a rate limit or an abort simply stops mid-transcript, which reads as
- * a child that finished and said nothing — the one thing this must never do.
- */
+/** A turn the MODEL CALL failed on. Without it a child that died to a rate limit
+ *  stops mid-transcript, which reads as a child that finished and said nothing. */
 export type TranscriptError = {
   readonly type: "error"
   readonly messageId: string
@@ -59,50 +59,73 @@ export type TranscriptError = {
   readonly message: string
 }
 
-export type TranscriptEntry = TranscriptText | TranscriptTool | TranscriptError
+export type TranscriptEntry = TranscriptText | TranscriptReasoning | TranscriptTool | TranscriptError
 
 export type SubagentTranscriptResult = {
   readonly sessionId: string
-  /**
-   * False when the child's messages could not be read at all — an id that
-   * never existed, a session deleted since, or a store that refused. The three
-   * are not distinguishable here (`session.messages` rejects the same way for
-   * each) and the panel's job is to render, not to diagnose: it gets an empty
-   * transcript it can draw rather than an error that kills it.
-   */
+  /** False when the child's messages could not be read at all - an id that never
+   *  existed, a session deleted since, or a store that refused. The three are not
+   *  distinguishable here, so the panel gets an empty transcript it can draw. */
   readonly found: boolean
-  /**
-   * True while the child has not settled. A partial transcript comes back
-   * either way — the entries in it are real — but it must never LOOK complete
-   * when it is not.
-   */
+  /** True while the child has not settled. A partial transcript comes back either
+   *  way - the entries are real - but it must never LOOK complete when it is not. */
   readonly running: boolean
   readonly entries: readonly TranscriptEntry[]
   /** True when at least one entry was cut, so the UI can say so too. */
   readonly truncated: boolean
+  /** t-krxap7. True when stored messages OLDER than this page exist. Always false
+   *  on an unpaged read, which by definition carries the whole session. */
+  readonly hasMore?: boolean
+  /** t-krxap7. Opaque `before` cursor for the block preceding this page. Absent
+   *  when nothing older exists. Format is MessageV2's own cursor - encoded in
+   *  acp/service.ts, never parsed here. */
+  readonly cursor?: string
+}
+
+/** t-krxap7. One page of stored messages as delivered, and what lies before it.
+ *  `kept` is the page to project; `oldest` names the first row of `kept`, which is
+ *  the row the NEXT page must stop short of. */
+export type PageSlice = {
+  readonly kept: readonly SessionMessageResponse[]
+  readonly hasMore: boolean
+  readonly oldest?: { readonly id: string; readonly time: number }
 }
 
 /**
- * Cap on any single string this transcript carries, in code points.
+ * t-krxap7. Split an over-fetched page into the `limit` newest rows and the verdict
+ * on whether older rows exist.
  *
- * There is deliberately NO cap on the number of entries. That is the position
- * run-steps settled on when its MAX_STEPS ceiling was removed: the part a
- * reader wants is usually the END of a run, so shipping a prefix is worse than
- * shipping a large payload. The bound is per string instead, which is enough
- * because the engine has already truncated tool output at 50 KiB upstream
- * (tool/truncate.ts MAX_BYTES) before any of it reached the store — what is
- * left to cut here is a write/edit payload and a read's display text. The
- * result is a transcript strictly SMALLER than what the main chat already
- * holds for the same session, since the chat rendered every one of these bytes
- * live and uncut.
+ * The caller asks the store for `limit + 1` rows; the store answers OLDEST-FIRST
+ * (`MessageV2.page` reverses its own descending read). So a reply longer than
+ * `limit` proves an older block, and its extra row is the FRONT one, which is
+ * dropped. The cursor is taken from the first row we keep, because the `before`
+ * predicate selects rows strictly older than the row it names.
+ *
+ * A limit of zero or less is not a page; the caller must not have asked for one.
+ */
+export function pageSlice(messages: readonly SessionMessageResponse[], limit: number): PageSlice {
+  const rows = messages ?? []
+  if (limit <= 0) return { kept: rows, hasMore: false }
+  const hasMore = rows.length > limit
+  const kept = hasMore ? rows.slice(rows.length - limit) : rows
+  const first = kept[0]?.info as { id?: unknown; time?: { created?: unknown } } | undefined
+  const id = typeof first?.id === "string" ? first.id : undefined
+  const time = typeof first?.time?.created === "number" ? first.time.created : undefined
+  // No cursor without BOTH halves: a half-built cursor would decode-fail on the
+  // next request and turn "there is more" into an error the reader cannot act on.
+  return { kept, hasMore, ...(hasMore && id !== undefined && time !== undefined ? { oldest: { id, time } } : {}) }
+}
+
+/**
+ * Cap on any single string this transcript carries, in code points. There is
+ * deliberately NO cap on the number of entries: the part a reader wants is usually
+ * the END of a run, so shipping a prefix is worse than a large payload. The engine
+ * has already truncated tool output at 50 KiB upstream (tool/truncate.ts).
  */
 export const TEXT_LIMIT = 20_000
 
-/**
- * Deepest nesting walked when capping. Stored parts are decoded JSON and so
- * are acyclic; this guards a pathological metadata blob, not a cycle. Deeper
- * values are left uncut — that is not where the bulk lives.
- */
+/** Deepest nesting walked when capping. Stored parts are decoded JSON and so are
+ *  acyclic; this guards a pathological metadata blob, not a cycle. */
 const MAX_DEPTH = 8
 
 type Cut = { any: boolean }
@@ -116,13 +139,9 @@ function boundText(text: string, cut: Cut): string {
   return `${points.slice(0, TEXT_LIMIT - 1).join("")}…`
 }
 
-/**
- * Cap every string reachable in a wire value. ONE rule over `content`,
- * `rawInput` and `rawOutput` alike, rather than a cap per field: a per-field
- * cap only bounds the fields it was written for, and the megabyte then arrives
- * through whichever one it was not — a `read`'s `metadata.display.text`, an
- * `edit`'s `newString`. That is how a bound becomes decorative.
- */
+/** Cap every string reachable in a wire value. ONE rule over `content`, `rawInput`
+ *  and `rawOutput` alike: a per-field cap only bounds the fields it was written
+ *  for, and the megabyte then arrives through whichever one it was not. */
 function bound(value: unknown, cut: Cut, depth = 0): unknown {
   if (typeof value === "string") return boundText(value, cut)
   if (depth >= MAX_DEPTH || !value || typeof value !== "object") return value
@@ -132,14 +151,10 @@ function bound(value: unknown, cut: Cut, depth = 0): unknown {
   return out
 }
 
-/**
- * The overlay an ACP client applies when a `tool_call_update` lands on the
- * `tool_call` it already holds: a named field REPLACES, an absent one is left
- * alone. Reproducing it is what collapses a stored tool part into the single
- * card the chat ends up showing, instead of the three frames it saw arrive.
- * A null field is dropped rather than written, because `ToolCall` requires a
- * real title and a client handed `null` renders nothing.
- */
+/** The overlay an ACP client applies when a `tool_call_update` lands on the
+ *  `tool_call` it already holds: a named field REPLACES, an absent one is left
+ *  alone. A null field is dropped rather than written, because `ToolCall` requires
+ *  a real title and a client handed `null` renders nothing. */
 function apply(base: ToolCall, update: ToolCallUpdate): ToolCall {
   return {
     ...base,
@@ -160,13 +175,9 @@ function statedTitle(state: unknown): { title?: string } {
   return typeof title === "string" && title ? { title } : {}
 }
 
-/**
- * The card this tool part would have become in the chat: the pending frame the
- * engine sends first (kind, locations, rawInput, the `origami_tool_name`
- * rider), with the terminal frame overlaid the way a client overlays it. A
- * `pending` part never got a second frame, so it stays as the first one — the
- * honest record of a call the child accepted and never started.
- */
+/** The card this tool part would have become in the chat: the pending frame the
+ *  engine sends first, with the terminal frame overlaid the way a client overlays
+ *  it. A `pending` part never got a second frame, so it stays as the first one. */
 function toolCall(part: ToolPart, cwd: string): ToolCall {
   const state = part.state
   const base = pendingToolCall({
@@ -184,10 +195,8 @@ function toolCall(part: ToolPart, cwd: string): ToolCall {
         : state.status === "running"
           ? runningToolUpdate({ ...common, state })
           : undefined
-  // The task rider (`origami_task_session` and friends) rides every task card
-  // the chat gets, and is the only key that names a GRANDCHILD's session.
-  // Without it a `task` call inside a sub-agent transcript is a dead end — the
-  // same flat-log problem this method exists to remove, one level down.
+  // The task rider (`origami_task_session` and friends) is the only key that names
+  // a GRANDCHILD's session; without it a `task` call here is a dead end.
   return withTaskSession(update ? apply(base, update) : base, part)
 }
 
@@ -198,10 +207,9 @@ function messageEntries(info: Message, parts: readonly Part[], cwd: string, cut:
     if (!part || typeof part !== "object") continue
 
     if (part.type === "text") {
-      // The same filter run-steps applies to a stored run: a `synthetic` part
-      // is engine bookkeeping (the injected <task_result> turns, the reminder
-      // blocks) and an `ignored` one was deliberately kept off the reader's
-      // screen. Neither is something the child said.
+      // The same filter run-steps applies: a `synthetic` part is engine bookkeeping
+      // (the injected <task_result> turns, the reminder blocks) and an `ignored` one
+      // was kept off the reader's screen. Neither is something the child said.
       if (part.synthetic || part.ignored) continue
       const text = part.text ?? ""
       if (!text.trim()) continue
@@ -228,9 +236,23 @@ function messageEntries(info: Message, parts: readonly Part[], cwd: string, cut:
       continue
     }
 
-    // Reasoning is dropped for the reason acp/event.ts already drops a
-    // sub-agent's: it is scratchpad, it is the bulk of the volume, and the
-    // tool cards beside it already answer "what was it doing".
+    // t-gvz8t0. Reasoning used to be dropped here, for the reason acp/event.ts
+    // used to drop a sub-agent's live reasoning. Both now carry it: a child that
+    // thinks for two minutes before its first tool call has an EMPTY transcript
+    // under the old rule, which reads as a child that did nothing.
+    if (part.type === "reasoning") {
+      const text = part.text ?? ""
+      if (!text.trim()) continue
+      const inner: Cut = { any: false }
+      const bounded = boundText(text, inner)
+      cut.any ||= inner.any
+      out.push({
+        type: "reasoning",
+        messageId: info.id,
+        text: bounded,
+        ...(inner.any ? { truncated: true as const } : {}),
+      })
+    }
   }
 
   if (info.role === "assistant") {
@@ -261,16 +283,11 @@ function unsettledTool(messages: readonly SessionMessageResponse[]): boolean {
 /**
  * Has the child settled?
  *
- * `time.completed` on the last assistant message is the engine's OWN test —
- * session/prompt.ts stamps it on every exit including the failed ones, and its
- * comment names a message with neither an error nor a completed time as
- * "indistinguishable from a turn still in flight". An unsettled tool part says
- * the same thing one level down.
- *
- * A child with no assistant message at all — spawned, nothing written back yet
- * — counts as running. Every ambiguous case resolves toward "still out" on
- * purpose: a child wrongly shown as running is a visible, correctable
- * annoyance; one wrongly shown as finished is a child nobody is waiting for.
+ * `time.completed` on the last assistant message is the engine's OWN test
+ * (session/prompt.ts stamps it on every exit, failures included); an unsettled tool
+ * part says the same one level down. Every ambiguous case resolves toward "still
+ * out": a child wrongly shown as running is a correctable annoyance, one wrongly
+ * shown as finished is a child nobody is waiting for.
  */
 function isRunning(messages: readonly SessionMessageResponse[]): boolean {
   if (unsettledTool(messages)) return true
@@ -285,17 +302,19 @@ export function missing(sessionId: string): SubagentTranscriptResult {
 }
 
 /**
- * Project one child session's stored messages into the chat's own shapes.
- * Message order is preserved as the engine returned it, parts in their stored
- * order within each message.
+ * Project one child session's stored messages into the chat's own shapes, in the
+ * order the engine returned them.
  *
- * `cwd` is the directory the read was scoped to; a message's own recorded cwd
- * wins over it, because that is where the child's relative paths resolved.
+ * `cwd` is the directory the read was scoped to; a message's own recorded cwd wins,
+ * because that is where the child's relative paths resolved.
  */
 export function project(
   sessionId: string,
   messages: readonly SessionMessageResponse[],
   cwd?: string,
+  /** t-krxap7. Present only on a paged read; the whole-transcript path passes
+   *  nothing and the two page fields stay off the wire entirely. */
+  page?: { readonly hasMore: boolean; readonly cursor?: string },
 ): SubagentTranscriptResult {
   const cut: Cut = { any: false }
   const entries: TranscriptEntry[] = []
@@ -305,7 +324,14 @@ export function project(
     const at = (info as { path?: { cwd?: string } }).path?.cwd ?? cwd ?? process.cwd()
     entries.push(...messageEntries(info, message.parts ?? [], at, cut))
   }
-  return { sessionId, found: true, running: isRunning(messages ?? []), entries, truncated: cut.any }
+  return {
+    sessionId,
+    found: true,
+    running: isRunning(messages ?? []),
+    entries,
+    truncated: cut.any,
+    ...(page ? { hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) } : {}),
+  }
 }
 
 export * as SubagentTranscript from "./subagent-transcript"

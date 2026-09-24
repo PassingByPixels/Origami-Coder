@@ -253,6 +253,93 @@ export const StepFinishPart = Schema.Struct({
       write: Schema.Finite,
     }),
   }),
+  /**
+   * Digests of the two halves of the CACHED PREFIX this step was sent, each
+   * the first 16 hex characters of a SHA-256. A prefix cache is an exact match
+   * from byte 0, so two consecutive steps whose digests differ could not have
+   * shared a cache entry - which turns "the cache dropped and nobody knows
+   * why" into a fact with a named cause.
+   *
+   * ABSENT rather than zeroed when the request staged no prompt capture
+   * (compaction, title generation), because an unmeasured prefix is a
+   * different fact from an unchanged one.
+   */
+  prefix: Schema.optional(
+    Schema.Struct({
+      system: Schema.String,
+      tools: Schema.String,
+      /**
+       * SHA-256 over the per-message digest list of the outbound array, first
+       * 16 hex characters. The system and tool halves can both hold still while
+       * an already-sent message comes back rewritten, which is a cache miss no
+       * other digest here can see. ABSENT when the request layer handed the
+       * capture no message array.
+       */
+      history: Schema.optional(Schema.String),
+    }),
+  ),
+  /**
+   * Why this step read nothing from the provider's prefix cache, and the facts
+   * the answer was derived from. The engine derives it where it prepares the
+   * request, because that is the only place that knows whether the array it is
+   * about to send is byte-identical to the last one - a reader cannot recover
+   * that from the stored rows.
+   *
+   * ABSENT entirely on a cache-BLIND provider (one whose usage reports no cache
+   * tokens at all) and on a request that staged no prompt capture, because an
+   * unmeasured cache is a different fact from a measured miss. Every member is
+   * omitted when it was not measured; none is ever zeroed to stand in.
+   */
+  cache: Schema.optional(
+    Schema.Struct({
+      /** Present only on a MISS, and then exactly one: the precedence is fixed
+       *  at cold > compaction > model > system > tools > history > idle > small
+       *  > provider. `provider` is the residue - the prefix was byte-identical,
+       *  inside the window, on the same model, and the provider missed anyway. */
+      cause: Schema.optional(
+        Schema.Literals([
+          "cold",
+          "model",
+          "compaction",
+          "idle",
+          "system",
+          "tools",
+          "history",
+          "provider",
+          "small",
+        ]),
+      ),
+      /** Whether the previous request's whole array survived as a byte-identical
+       *  prefix of this one. Absent on a session's first measured request. */
+      preserved: Schema.optional(Schema.Boolean),
+      /** Where the outbound array first differed from the previous request's. */
+      divergence: Schema.optional(
+        Schema.Struct({
+          message: Schema.Finite,
+          role: Schema.String,
+          offset: Schema.Finite,
+          source: Schema.optional(Schema.Literals(["tool-aging", "reminder", "plugin", "unknown"])),
+        }),
+      ),
+      /** Milliseconds since the previous request of this session. */
+      idleMs: Schema.optional(Schema.Finite),
+      /** The window the engine believes for this provider, and the one `idle`
+       *  was judged against. ABSENT where the provider publishes none, and no
+       *  `idle` is then claimed. */
+      ttlSeconds: Schema.optional(Schema.Finite),
+      /** A cache warm succeeded inside the gap before this request. */
+      warmed: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  /**
+   * Milliseconds from the moment the request started draining to the step's
+   * first content-bearing event. The cache-blind providers (LM Studio, sglang)
+   * report no cache tokens at all, and TTFT is the only signal left: a prefix
+   * hit is flat, a miss scales with the prompt.
+   *
+   * ABSENT when the step produced no content event, never zero.
+   */
+  ttftMs: Schema.optional(Schema.Finite),
 }).annotate({ identifier: "StepFinishPart" })
 export type StepFinishPart = Types.DeepMutable<Schema.Schema.Type<typeof StepFinishPart>>
 
@@ -329,6 +416,30 @@ const messageBase = {
   sessionID: partBase.sessionID,
 }
 
+/**
+ * origami_change: a message MIRRORED from another harness rather than produced
+ * by a turn of this engine — today only a Claude Code passthrough turn, copied
+ * in so History, the Labyrinth and the usage tables (all of which read engine
+ * truth) stop showing an empty chat.
+ *
+ * DECLARED rather than carried as an excess property. The HTTP API encodes its
+ * answers THROUGH this schema, and an effect Struct drops every key it does not
+ * declare — so an undeclared stamp survives the SQLite round trip and then
+ * vanishes on the way to `sdk.session.messages`, which is exactly where the
+ * pricing guard reads it.
+ *
+ * Absent on every engine-written message; readers must treat "no source" as
+ * "this engine ran it".
+ */
+const foreignSource = {
+  /** WHICH harness produced it, e.g. `claude-code`. */
+  source: Schema.optional(Schema.String),
+  /** That harness's OWN id for the message. The only thing it is ever compared
+   *  against, and the whole idempotency guard: a re-sync of the same transcript
+   *  must not double it. */
+  sourceMessageID: Schema.optional(Schema.String),
+}
+
 export const User = Schema.Struct({
   ...messageBase,
   role: Schema.Literal("user"),
@@ -358,6 +469,7 @@ export const User = Schema.Struct({
    *  stored context length, read fresh at turn time to replace this turn's
    *  resolved model's `limit.context` for compaction/overflow math. */
   contextOverride: Schema.optional(Schema.Finite),
+  ...foreignSource,
 }).annotate({ identifier: "UserMessage" })
 export type User = Types.DeepMutable<Schema.Schema.Type<typeof User>>
 
@@ -489,6 +601,7 @@ export const Assistant = Schema.Struct({
   structured: Schema.optional(Schema.Any),
   variant: Schema.optional(Schema.String),
   finish: Schema.optional(Schema.String),
+  ...foreignSource,
 }).annotate({ identifier: "AssistantMessage" })
 export type Assistant = Omit<Types.DeepMutable<Schema.Schema.Type<typeof Assistant>>, "error"> & {
   error?: AssistantError
@@ -555,6 +668,10 @@ export const SessionInfo = Schema.Struct({
   directory: Schema.String,
   path: optional(Schema.String),
   parentID: optional(SessionID),
+  /** t-uhxos2. The chat this one was FORKED from, and the fork point: the source's
+   *  sub-agents created before `time` are in this chat's copied history. Absent = not a
+   *  fork, or a fork made before this field existed. */
+  fork: optional(Schema.Struct({ sessionID: SessionID, time: NonNegativeInt })),
   summary: optional(SessionSummary),
   cost: optional(Schema.Finite),
   tokens: optional(SessionTokens),

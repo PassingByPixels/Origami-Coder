@@ -61,6 +61,9 @@ export function toToolKind(toolName: string): ToolKind {
     case "context7_get_library_docs":
       return "search"
 
+    // show_image rides the read card: same kind, so the dashboard's
+    // KIND_REGISTRY picks ReadFileCard with no new card component.
+    case "show_image":
     case "read":
       return "read"
 
@@ -223,6 +226,13 @@ export function completedToolUpdate(input: {
     status: "completed",
     ...(title ? { title } : {}),
     content: completedToolContent(input.toolName, input.state),
+    // origami_change (t-q90p6v): the COMPLETED frame carries the call's input too. A tool that
+    // finishes without ever emitting a running frame (read, glob, grep) used to leave the client
+    // with nothing but the PENDING frame's partial input — bash carried only `{cwd}` — so a client
+    // that persists the stream, and any restore built from it, could no longer derive the card's
+    // title or shell fields. Same shape as the running frame's, so a client merging frames by
+    // toolCallId sees no change.
+    rawInput: shellDisplayInput(input.toolName, rawInput(input.toolName, input.state.input, input.cwd), input.state.metadata),
     rawOutput: completedToolRawOutput(input.state),
     _meta: { origami_tool_name: input.toolName },
   }

@@ -18,7 +18,7 @@ import { migrateZenProviderId } from "@/origami/zen-provider-migrate" // origami
 import type { ConsoleState } from "@origami/core/v1/config/console-state"
 import { FSUtil } from "@origami/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
-import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
+import { Context, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { EffectFlock } from "@origami/core/util/effect-flock"
 import { containsPath, type InstanceContext } from "../project/instance-context"
@@ -35,6 +35,7 @@ import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@origami/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import { cachedInvalidateForever } from "@origami/core/effect/cached"
 
 // Custom merge function that concatenates array fields instead of replacing them
 // Keep remeda's deep conditional merge type out of hot config-loading paths; TS profiling showed it dominates here.
@@ -410,14 +411,13 @@ const layer = Layer.effect(
       return result
     })
 
-    const [cachedGlobal, invalidateGlobal] = yield* Effect.cachedInvalidateWithTTL(
+    const [cachedGlobal, invalidateGlobal] = yield* cachedInvalidateForever(
       loadGlobal().pipe(
         Effect.tapError((error) =>
           Effect.logError("failed to load global config, using defaults", { error: String(error) }),
         ),
         Effect.orElseSucceed((): Info => ({})),
       ),
-      Duration.infinity,
     )
 
     const getGlobal = Effect.fn("Config.getGlobal")(function* () {

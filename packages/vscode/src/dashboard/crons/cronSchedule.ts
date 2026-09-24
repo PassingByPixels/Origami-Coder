@@ -1,19 +1,8 @@
-// cronSchedule.ts — the schedule shapes a cron may take, and the ONE
-// translation of each into Windows Task Scheduler flags.
-//
-// The governing rule: a schedule that silently fires at the WRONG TIME is far
-// worse than one we refused to accept. So this module supports only the four
-// shapes that map 1:1 onto a `schtasks /SC` mode, and REJECTS everything else
-// with a reason the pane can show. There is deliberately NO general 5-field
-// cron parser here — `parseCronExpression` accepts only the four expression
-// forms that round-trip back through these same shapes, and rejects the rest
-// (`0 9 * * 1-5`, step-in-range, `@reboot`, seconds fields, …) rather than
-// approximating them.
-//
-// The bounds are schtasks' own, not ours: /SC MINUTE takes /MO 1..1439 and
-// /SC HOURLY takes /MO 1..23. "every 24 hours" is therefore NOT expressible as
-// HOURLY — it is rejected and the user is pointed at `daily`, because quietly
-// re-reading it as a daily run would invent a fire time we were never told.
+// cronSchedule.ts — the schedule shapes a cron may take, and their translation to Windows Task
+// Scheduler flags.
+// Only the four shapes that map 1:1 onto a `schtasks /SC` mode are supported; everything else is
+// rejected with a reason, since a schedule that silently fires at the wrong time is worse than one
+// we refused.
 
 export const WEEKDAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
@@ -48,9 +37,9 @@ function wholeNumber(v: unknown): number | null {
 }
 
 /**
- * Validate an untrusted schedule (pane form OR a hand-edited crons.json).
- * `{ kind: 'cron', expr }` is delegated to parseCronExpression so a pasted
- * expression must survive OUR translator or be refused.
+ * Validate an untrusted schedule (pane form or a hand-edited crons.json). `{ kind: 'cron', expr }`
+ *  is delegated to parseCronExpression, so a pasted expression must survive our translator or be
+ *  refused.
  */
 export function parseSchedule(input: unknown): ScheduleResult {
   if (!input || typeof input !== 'object') return { ok: false, reason: 'schedule must be an object' };
@@ -101,11 +90,9 @@ export function parseSchedule(input: unknown): ScheduleResult {
 }
 
 /**
- * A five-field cron expression, accepted ONLY where it round-trips exactly
- * onto one of our four shapes. This is not a cron engine and does not pretend
- * to be one: ranges, lists of hours, step-within-range, day-of-month and month
- * fields are all REFUSED, because Task Scheduler has no faithful equivalent and
- * the alternative is a job that fires at a time nobody asked for.
+ * A five-field cron expression, accepted only where it round-trips exactly onto one of our four
+ *  shapes. Ranges, lists, step-within-range, day-of-month and month fields are all refused, since
+ *  Task Scheduler has no faithful equivalent.
  */
 export function parseCronExpression(expr: string): ScheduleResult {
   const f = expr.trim().split(/\s+/);
@@ -178,13 +165,9 @@ export function scheduleLabel(schedule: CronSchedule): string {
 }
 
 /**
- * The next local-time firing, or null when it is genuinely not knowable.
- *
- * daily/weekly are absolute, so they are computed exactly. An interval
- * schedule has no absolute anchor of its own — Task Scheduler counts from when
- * the task was REGISTERED — so it needs `anchor` (the cron's lastSyncedAt).
- * Without one this returns null and the pane says "unknown" rather than
- * printing a confident guess.
+ * The next local-time firing, or null when not knowable. daily/weekly are absolute and computed
+ *  exactly; an interval schedule has no absolute anchor of its own — Task Scheduler counts from
+ *  registration — so it needs `anchor` (lastSyncedAt) or returns null rather than a guess.
  */
 export function nextRun(schedule: CronSchedule, from: Date, anchor?: number): Date | null {
   if (schedule.kind === 'hourly' || schedule.kind === 'minutely') {

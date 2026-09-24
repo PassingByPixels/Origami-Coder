@@ -147,7 +147,15 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | Git.Service | EffectFl
                 const existing = yield* git.repo.discover(AbsolutePath.make(localPath))
                 const origin = existing ? yield* git.remote.get(existing) : undefined
                 const originReference = origin ? Repository.parse(origin) : undefined
-                const reuse = Boolean(existing && originReference && Repository.same(originReference, cloneTarget))
+                // A checkout that exists and whose origin matches is not reusable
+                // by itself: an interrupted clone leaves `.git` and `origin` set
+                // but no commit fetched, so `rev-parse HEAD` fails. Reusing that
+                // (finding 12) offers the agent a reference that is only a `.git`
+                // folder, forever, since nothing before this checked HEAD at all.
+                const existingHead = existing ? yield* git.history.head(existing) : undefined
+                const reuse = Boolean(
+                  existing && originReference && Repository.same(originReference, cloneTarget) && existingHead,
+                )
                 if (exists && !reuse) {
                   yield* cacheOperation(fs.remove(localPath, { recursive: true }), "remove stale cache", localPath)
                 }

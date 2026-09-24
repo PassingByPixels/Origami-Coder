@@ -1,0 +1,289 @@
+{
+ "source": "Derived from packages/engine/test/cassettes/anthropic/anthropic-tool-loop.json (interactions 0 and 1) and anthropic-reasoning.json (interaction 0): real Messages API SSE, recorded on Haiku 4.5. The Claude CLI wraps each native SSE event as stream_event.event under --include-partial-messages.",
+ "toolCall": [
+  {
+   "type": "message_start",
+   "message": {
+    "model": "claude-haiku-4-5-20251001",
+    "id": "msg_011Cei8WWm5xiKtcZXV1xk8a",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 622,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 22,
+     "service_tier": "standard",
+     "inference_geo": "not_available"
+    }
+   }
+  },
+  {
+   "type": "content_block_start",
+   "index": 0,
+   "content_block": {
+    "type": "tool_use",
+    "id": "toolu_01MuamBREobLmGWAugkcHRhH",
+    "name": "get_weather",
+    "input": {},
+    "caller": {
+     "type": "direct"
+    }
+   }
+  },
+  {
+   "type": "ping"
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "input_json_delta",
+    "partial_json": ""
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "input_json_delta",
+    "partial_json": "{\"city\": \"Paris"
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "input_json_delta",
+    "partial_json": "\"}"
+   }
+  },
+  {
+   "type": "content_block_stop",
+   "index": 0
+  },
+  {
+   "type": "message_delta",
+   "delta": {
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "stop_details": null
+   },
+   "usage": {
+    "input_tokens": 622,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 54
+   }
+  },
+  {
+   "type": "message_stop"
+  }
+ ],
+ "toolAnswer": [
+  {
+   "type": "message_start",
+   "message": {
+    "model": "claude-haiku-4-5-20251001",
+    "id": "msg_011Cei8WeD4EytxbYy5hpVd1",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 697,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 1,
+     "service_tier": "standard",
+     "inference_geo": "not_available"
+    }
+   }
+  },
+  {
+   "type": "content_block_start",
+   "index": 0,
+   "content_block": {
+    "type": "text",
+    "text": ""
+   }
+  },
+  {
+   "type": "ping"
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "text_delta",
+    "text": "Paris"
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "text_delta",
+    "text": " is sunny."
+   }
+  },
+  {
+   "type": "content_block_stop",
+   "index": 0
+  },
+  {
+   "type": "message_delta",
+   "delta": {
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "stop_details": null
+   },
+   "usage": {
+    "input_tokens": 697,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 7
+   }
+  },
+  {
+   "type": "message_stop"
+  }
+ ],
+ "reasoning": [
+  {
+   "type": "message_start",
+   "message": {
+    "model": "claude-haiku-4-5-20251001",
+    "id": "msg_011Cei8Whu4YybVgJtu9MPNT",
+    "type": "message",
+    "role": "assistant",
+    "content": [],
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 66,
+     "cache_creation_input_tokens": 0,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 0
+     },
+     "output_tokens": 1,
+     "service_tier": "standard",
+     "inference_geo": "not_available"
+    }
+   }
+  },
+  {
+   "type": "content_block_start",
+   "index": 0,
+   "content_block": {
+    "type": "thinking",
+    "thinking": "",
+    "signature": ""
+   }
+  },
+  {
+   "type": "ping"
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "thinking_delta",
+    "thinking": "I"
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "thinking_delta",
+    "thinking": " need to calculate 17 * 23.\n\nLet me break this down:\n17 * 23 = 17 * (20 + 3)\n= 17 * 20"
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "thinking_delta",
+    "thinking": " + 17 * 3\n= 340 + 51\n= 391\n\nLet me verify: 17 * 23\n= (10 + "
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "thinking_delta",
+    "thinking": "7) * 23\n= 10 * 23 + 7 * 23\n= 230 + 161\n= 391\n\nYes, that's correct."
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 0,
+   "delta": {
+    "type": "signature_delta",
+    "signature": "EtIDCpoBCBEYAipACNUaFlvhE6ZRx8CR17RQXD0h+lLpOnQc0dwHicMB//QZE8b+fDnsq0x4LrUf2o3FAvw0jJBY8eu1B5Lx1jXSNjIZY2xhdWRlLWhhaWt1LTQtNS0yMDI1MTAwMTgAQgh0aGlua2luZ1okZWU4OTQ3YjYtNWM4ZS00ZjlmLWIzMGItOTI1ODIwZjQ3ZmZiqAH3kurUBhIM7UQoz0xtc0yZP24OGgx/p8JATl2fwpDuUOciMH3MDdEgVh6FBiExYmA5I/g5qRQkCFhHDG/+XUm5AP3F/QliIY+IIUSVQsL6kU+mryrkAXOrDwaSO8q5AIaej+h1fbbYq9gD/pI+RGMY00zUkeOFDuJmj0hwVGqIoAZut4dFkPwJQ40OY0K24WHU60YP4+GdM8DddTWV7GeIN0zoQSOpjMomc4HgnjsxPW4yV8BiB1ekcAizw2bCSAgJFJ/ZUeDYaXPQt8subYOZ1Rfcoz7YMyUJpvRCVHiPHXrOuZx5wZSW43vFd0rCRI1olOSfFZClOUt6UiBSKNwDrTBux85agGSH3x6vSMStAJoARdixp9zU6GRb7nVng/ftm2Vo2ehNeJtBFYgynvWa43T8asRlR2GpaxgB"
+   }
+  },
+  {
+   "type": "content_block_stop",
+   "index": 0
+  },
+  {
+   "type": "content_block_start",
+   "index": 1,
+   "content_block": {
+    "type": "text",
+    "text": ""
+   }
+  },
+  {
+   "type": "content_block_delta",
+   "index": 1,
+   "delta": {
+    "type": "text_delta",
+    "text": "391"
+   }
+  },
+  {
+   "type": "content_block_stop",
+   "index": 1
+  },
+  {
+   "type": "message_delta",
+   "delta": {
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "stop_details": null
+   },
+   "usage": {
+    "input_tokens": 66,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 135,
+    "output_tokens_details": {
+     "thinking_tokens": 128
+    }
+   }
+  },
+  {
+   "type": "message_stop"
+  }
+ ]
+}

@@ -9,6 +9,7 @@ When NOT to use the Task tool:
 - If you are searching for a specific class definition like "class Foo", use the Grep tool instead, to find the match more quickly
 - If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
 - If no available agent is a good fit for the task, use other tools directly
+- NEVER spawn a sub-agent to "launch a side quest": a side quest is follow-up work RECORDED for the owner to review later, never run. Raise it with the side_quest tool, searching your tool catalog by that name if it is not loaded yet; if the tool is unavailable, say so in your own text instead of starting an agent
 
 
 Usage notes:

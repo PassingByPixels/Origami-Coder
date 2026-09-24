@@ -4,7 +4,7 @@
   "name": "@origami/http-recorder",
   "description": "Record and replay Effect HTTP client traffic with deterministic cassettes",
   "type": "module",
-  "license": "Origami-Proprietary",
+  "license": "MIT",
   "keywords": [
     "effect",
     "http",

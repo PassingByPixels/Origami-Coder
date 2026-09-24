@@ -1,11 +1,5 @@
-// The `prompt_capture` host leaf — what the engine ACTUALLY sent the model on
-// this chat's last turn. Sibling of boardData.ts's instructionsPayload, and
-// separate from it (and from AcpClient) only because both of those are at
-// their architecture caps; the ratchet's remedy is a new module, not a raise.
-//
-// No `vscode` import, so the decisions here — the no-session guard, the
-// failure-into-an-`error`-field shape, and the defensive read of a response
-// that crossed a JSON-RPC wire — are testable without an extension host.
+// The prompt_capture host leaf — what the engine actually sent the model on this chat's last turn.
+// Its own module because boardData.ts and AcpClient are both at their architecture caps.
 import type { PromptCapture, PromptCaptureResult } from '../acpExtTypes';
 
 /** Just the two public members of AcpClient this needs, so a test can fake it. */
@@ -24,11 +18,8 @@ const NO_SESSION = 'Open a chat first — this needs a live engine connection.';
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /**
- * The last turn's captured prompt, or null when there has not been one.
- *
- * A null capture is NOT an error and must not be reported as one: a chat that
- * has been opened but never sent a message legitimately has nothing to show,
- * and an error banner there would read as a broken feature.
+ * The last turn's captured prompt, or null when there has not been one. A null capture is NOT an
+ *  error — a chat opened but never sent a message legitimately has nothing to show.
  */
 export async function promptCapturePayload(
   client: PromptCaptureSource | null | undefined,
@@ -46,12 +37,9 @@ export async function promptCapturePayload(
   }
 }
 
-/** The same capture for a session named EXPLICITLY — a collab participant's,
- *  which is never the chat client's `currentSessionId`. An absent id is the
- *  ordinary case, not a fault (a participant that has not taken a turn carries
- *  none), so it answers empty rather than erroring. The engine keeps only the
- *  last few captures process-wide, so a null can equally mean "evicted" — the
- *  CALLER separates the two, since only it knows if there was a session. */
+/** The same capture for a session named EXPLICITLY — a collab participant's, never the chat
+ *  client's currentSessionId. An absent id is the ordinary case, not a fault; the caller separates
+ *  "never took a turn" from "evicted" since only it knows which applies. */
 export async function promptCaptureForSession(
   client: PromptCaptureSource | null | undefined,
   sessionId: string | undefined,

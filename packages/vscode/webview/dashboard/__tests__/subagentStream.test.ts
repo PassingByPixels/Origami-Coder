@@ -50,7 +50,10 @@ async function mountWithTaskCard(opts: { result?: string; status?: string } = {}
     type: 'toolCall',
     sessionId: SESSION,
     toolCallId: CALL,
-    title: 'write story 1',
+    // The wire's real shape: the pending frame's title is the bare tool name,
+    // and the model's brief rides rawInput (t-f6u661 — subagentLabel.ts).
+    title: 'task',
+    rawInput: { description: 'write story 1', subagent_type: 'general-purpose', prompt: 'go' },
     kind: 'think',
     status: 'in_progress',
     toolName: 'task',

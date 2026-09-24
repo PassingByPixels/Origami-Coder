@@ -1,9 +1,5 @@
-// Board data leaves for the Labyrinth and Instructions views. The ACP calls
-// themselves already live on AcpClient (getRunSteps / listInstructions); what
-// lives here is the bit DashboardPanel would otherwise carry inline — the
-// no-session guard, the failure-into-an-`error`-field shape, and the defensive
-// read of a response that crossed a JSON-RPC wire. No `vscode` import, so the
-// decisions are testable without an extension host.
+// Board data for the Labyrinth and Instructions views: the no-session guard,
+// the failure-into-`error`-field shape, and a defensive read of the ACP reply.
 import type { InstructionSet, RunStep, RunStepsResult } from '../acpExtTypes';
 
 interface RunStepsSource {
@@ -41,11 +37,8 @@ const message = (e: unknown): string => (e instanceof Error ? e.message : String
 export async function runStepsPayload(
   client: RunStepsSource | null | undefined,
   sessionId: string,
-  /** The run's OWN directory, from its history row. A listed run does not
-   *  always belong to the active workspace (listSessions widens to every
-   *  workspace when the scoped query is empty), and the engine resolves a
-   *  run against its process cwd when none is given — which would silently
-   *  yield an empty run rather than an error. Blank = let the engine decide. */
+  /** The run's own directory. A listed run may not belong to the active
+   *  workspace, so blank lets the engine decide rather than risk an empty run. */
   cwd = '',
 ): Promise<RunStepsPayload> {
   const empty = { sessionId, steps: [], truncated: false, total: 0 };

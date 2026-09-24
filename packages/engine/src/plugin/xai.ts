@@ -1,38 +1,34 @@
 import type { Hooks, PluginInput } from "@origami/plugin"
 import { OAUTH_DUMMY_KEY } from "../auth"
+import { ProviderReauth } from "../provider/reauth"
 import { createServer } from "http"
 import { InstallationVersion } from "@origami/core/installation/version"
 import { OauthCallbackPage } from "@origami/core/oauth/page"
+import { applyCapabilityDefaults } from "./capabilityDefaults"
+import { fetchXaiCatalog } from "./xai-catalog"
 
 // Public Grok-CLI OAuth client. xAI's auth server rejects loopback OAuth from
-// non-allowlisted clients, so we reuse the Grok-CLI client_id that xAI ships
-// for desktop OAuth flows. Source of truth: hermes-agent PR #26534.
+// non-allowlisted clients, so we reuse the Grok-CLI client_id xAI ships for desktop OAuth.
 const CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 const AUTHORIZE_URL = "https://auth.x.ai/oauth2/authorize"
 const TOKEN_URL = "https://auth.x.ai/oauth2/token"
-// RFC 8628 device authorization grant. Confirmed exposed by xAI's
-// /.well-known/openid-configuration as `device_authorization_endpoint`
-// with the matching `urn:ietf:params:oauth:grant-type:device_code` grant
-// in `grant_types_supported`. This is the headless / VPS path: no
-// loopback callback server, no SSH port forwarding, no inbound firewall
-// holes — the user opens the URL on any device with a browser, types
-// the short user_code, and the CLI long-polls the token endpoint.
+// RFC 8628 device authorization grant, exposed by xAI's
+// /.well-known/openid-configuration. This is the headless path: no loopback
+// server — the user types the short user_code elsewhere and the CLI long-polls.
 const DEVICE_AUTHORIZATION_URL = "https://auth.x.ai/oauth2/device/code"
 const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 const SCOPE = "openid profile email offline_access grok-cli:access api:access"
 
-// Bounds for the device-code poll loop. xAI returns `interval` (seconds)
-// but we floor it to avoid hammering and we add the spec's slow_down
-// increment when xAI explicitly asks us to back off.
+// Bounds for the device-code poll loop. xAI returns `interval` (seconds); it is
+// floored to avoid hammering, and the spec's slow_down increment is added on request.
 const DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000
 const DEVICE_CODE_MIN_INTERVAL_MS = 1_000
 const DEVICE_CODE_SLOW_DOWN_INCREMENT_MS = 5_000
 const DEVICE_CODE_DEFAULT_EXPIRES_MS = 5 * 60 * 1000
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3_000
 
-// xAI rejects redirect_uris that don't match what was registered for the
-// Grok-CLI client. The host:port pair is part of the registration, so we have
-// to bind the loopback server to this exact port.
+// xAI rejects redirect_uris that do not match the Grok-CLI client registration. The host:port pair
+// is part of that registration, so the loopback server must bind this exact port.
 const OAUTH_HOST = "127.0.0.1"
 const OAUTH_PORT = 56121
 const OAUTH_REDIRECT_PATH = "/callback"
@@ -92,11 +88,9 @@ function authHeaders() {
   }
 }
 
-// Parse the `exp` claim out of a JWT access_token without verifying the
-// signature. We only use this to decide whether to proactively refresh, never
-// to make trust decisions, so unsigned decode is safe. Returns false for
-// opaque tokens (no JWT shape), which conservatively skips the proactive
-// refresh and lets the 401-on-call path drive the refresh instead.
+// Parse the `exp` claim out of a JWT access_token WITHOUT verifying the
+// signature. Used only to decide whether to refresh proactively, never to make
+// a trust decision. Opaque tokens return false and fall back to the 401 path.
 export function accessTokenIsExpiring(
   token: string | undefined,
   skewMs: number = ACCESS_TOKEN_REFRESH_SKEW_MS,
@@ -122,10 +116,8 @@ export function buildAuthorizeUrl(
   options: XaiAuthPluginOptions = {},
 ): string {
   // `plan=generic` opts the consent screen into xAI's generic OAuth plan tier;
-  // without it, accounts.x.ai rejects loopback OAuth from non-allowlisted
-  // clients. `referrer=origami` lets xAI attribute origami-originated
-  // logins in their OAuth server logs (best-effort attribution while we
-  // continue to reuse the Grok-CLI client_id).
+  // without it, accounts.x.ai rejects loopback OAuth from non-allowlisted clients.
+  // `referrer=origami` lets xAI attribute origami-originated logins.
   const params = new URLSearchParams({
     response_type: "code",
     client_id: CLIENT_ID,
@@ -176,8 +168,13 @@ async function refreshAccessToken(refreshToken: string, options: XaiAuthPluginOp
   })
   if (!response.ok) {
     const detail = await response.text().catch(() => "")
-    throw new Error(`xAI token refresh failed (${response.status})${detail ? `: ${detail}` : ""}`)
+    const message = `xAI token refresh failed (${response.status})${detail ? `: ${detail}` : ""}`
+    // A refused grant (refresh_token rotated elsewhere, revoked, or expired) leaves
+    // auth.json otherwise valid, so record it and the connection can say "reauthorize".
+    ProviderReauth.markIfRefused("xai", response.status, message)
+    throw new Error(message)
   }
+  ProviderReauth.clear("xai")
   return response.json() as Promise<TokenResponse>
 }
 
@@ -221,14 +218,9 @@ async function defaultSleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
-// Normalize a server-supplied seconds value to milliseconds, falling back to
-// the supplied default when the input is missing, non-positive, or not a
-// finite number. Defends the polling loop against garbage like `NaN`, `"NaN"`,
-// `null`, or `-5` from a misbehaving device-code endpoint — without this,
-// a NaN interval would slip through `?? default` (NaN is typeof number),
-// reach `setTimeout(_, NaN)` which is treated as 0, and busy-loop until the
-// hard deadline. Matches the defensive normalization Codex uses for the same
-// field (`parseInt(deviceData.interval) || 5`).
+// Normalize a server-supplied seconds value to milliseconds, falling back when it
+// is missing, non-positive or not finite. Without this a NaN interval slips past
+// `?? default` (NaN is typeof number), reaches `setTimeout(_, NaN)` = 0, and busy-loops.
 function positiveSecondsToMs(value: unknown, defaultMs: number): number {
   const seconds = Number(value)
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : defaultMs
@@ -261,9 +253,8 @@ export async function pollDeviceCodeToken(
 
     const body = (await response.json().catch(() => ({}))) as DeviceTokenErrorBody
     const remaining = Math.max(0, deadline - now())
-    // RFC 8628 §3.5: authorization_pending = keep polling at the same
-    // interval; slow_down = bump the interval by ≥5s and keep polling.
-    // Anything else is terminal.
+    // RFC 8628 §3.5: authorization_pending = keep polling at the same interval;
+    // slow_down = bump the interval by ≥5s and keep polling. Anything else is terminal.
     if (body.error === "authorization_pending") {
       await sleep(Math.min(intervalMs + OAUTH_POLLING_SAFETY_MARGIN_MS, remaining))
       continue
@@ -285,10 +276,9 @@ export async function pollDeviceCodeToken(
   throw new Error("xAI device authorization timed out")
 }
 
-// CORS allowlist for the loopback callback. The redirect_uri itself is
-// already bound to 127.0.0.1 and gated by PKCE+state, so we only accept
-// xAI's own auth origins for additional defense-in-depth on the OPTIONS
-// preflight.
+// CORS allowlist for the loopback callback. The redirect_uri is already bound to
+// 127.0.0.1 and gated by PKCE+state, so only xAI's own auth origins are accepted,
+// as defence-in-depth on the OPTIONS preflight.
 const CORS_ALLOWED_ORIGINS = new Set(["https://accounts.x.ai", "https://auth.x.ai"])
 
 interface PendingOAuth {
@@ -381,10 +371,9 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
     res.end("Not found")
   })
 
-  // listen() failures (e.g. EADDRINUSE because Grok-CLI is bound to the same
-  // pinned port) must clear `oauthServer` and remove our error listener,
-  // otherwise the next startOAuthServer() short-circuits on the truthy check
-  // and returns a redirect_uri pointing at nothing.
+  // listen() failures (EADDRINUSE, e.g. Grok-CLI on the same pinned port) must
+  // clear `oauthServer` and remove our error listener, or the next
+  // startOAuthServer() short-circuits and returns a redirect_uri pointing at nothing.
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error) => {
       oauthServer = undefined
@@ -393,12 +382,9 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
     server.once("error", onError)
     server.listen(OAUTH_PORT, OAUTH_HOST, () => {
       server.removeListener("error", onError)
-      // After listen() succeeds, install a permanent log-only listener so
-      // that subsequent server errors (e.g. accept() failures, socket-level
-      // errors) don't trip Node's default "unhandled error event = throw"
-      // behavior and crash the entire origami process. Matches the silent-
-      // swallow behavior the Codex plugin gets from its permanent
-      // `oauthServer!.on("error", reject)`.
+      // After listen() succeeds, install a permanent log-only listener so later
+      // server errors (accept() or socket-level) do not trip Node's default
+      // "unhandled error event = throw" and crash the whole origami process.
       resolve()
     })
     oauthServer = server
@@ -415,10 +401,8 @@ function stopOAuthServer() {
 }
 
 function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResponse> {
-  // A previous in-flight authorize() that the user abandoned (or that is
-  // being superseded by a fresh attempt) still owns `pendingOAuth`. Reject
-  // it eagerly so its caller stops waiting on a state value that can never
-  // match the next callback.
+  // A previous in-flight authorize() the user abandoned still owns `pendingOAuth`.
+  // Reject it eagerly so its caller stops waiting on a state that can never match.
   if (pendingOAuth) {
     pendingOAuth.reject(new Error("Superseded by a newer xAI authorize request"))
     pendingOAuth = undefined
@@ -457,13 +441,26 @@ interface RefreshResult {
 
 export async function XaiAuthPlugin(input: PluginInput, options: XaiAuthPluginOptions = {}): Promise<Hooks> {
   return {
+    /** Grok ids typed into origami.json by hand — or written there by picking a
+     *  DISCOVERED row — resolve every capability to `false` without this, which is
+     *  how an image reaches "Cannot read image" before it reaches xAI. A declaration still wins. */
+    async config(cfg) {
+      applyCapabilityDefaults(cfg, "xai")
+    },
     provider: {
       id: "xai",
+      /** Ask xAI what this credential is served. Only ADDS rows — a seed id keeps
+       *  its declared limits and prices. An api-key credential is asked too:
+       *  unlike the ChatGPT backend, the same list endpoint answers for both. */
+      async discoverModels(ctx) {
+        const auth = ctx.auth
+        const token = auth?.type === "oauth" ? auth.access : auth?.type === "api" ? auth.key : undefined
+        if (!token) return {}
+        return fetchXaiCatalog({ accessToken: token })
+      },
       // A SuperGrok subscription turn costs nothing per token, but the shipped
-      // model catalogue is models.dev's public price list and knows nothing
-      // about which credential this session holds - so every Grok OAuth turn
-      // was priced at xai's API rates. Same correction codex.ts makes for a
-      // ChatGPT subscription. An API key is left priced, because it is billed.
+      // catalogue is models.dev's public price list and knows nothing about the
+      // credential — so OAuth turns are zeroed. An API key stays priced; it is billed.
       async models(provider, ctx) {
         if (ctx.auth?.type !== "oauth") return provider.models
 
@@ -493,25 +490,19 @@ export async function XaiAuthPlugin(input: PluginInput, options: XaiAuthPluginOp
         let refreshPromise: Promise<RefreshResult> | undefined
 
         return {
-          // Dummy bearer keeps the AI SDK from bailing on "missing apiKey"; the
-          // real OAuth token is injected by the fetch override below.
-          // We intentionally do NOT set baseURL — @ai-sdk/xai already defaults
-          // to https://api.x.ai/v1 and overriding here would silently route
-          // around a user-configured gateway.
+          // Dummy bearer keeps the AI SDK from bailing on "missing apiKey"; the real
+          // OAuth token is injected by the fetch override below. Deliberately NO
+          // baseURL — overriding would silently route around a user-configured gateway.
           apiKey: OAUTH_DUMMY_KEY,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
             let currentAuth = await getAuth()
-            // Auth can flip from oauth to api mid-session (user re-runs
-            // /connect with a pasted key). When that happens, pass the
-            // request through untouched so the AI SDK's own apiKey-based
-            // Authorization header reaches xAI unmodified.
+            // Auth can flip from oauth to api mid-session (a pasted key). Pass the
+            // request through untouched so the SDK's own apiKey header reaches xAI.
             if (currentAuth.type !== "oauth") return fetch(requestInput, init)
 
-            // Refresh either when the stored expires timestamp is within the
-            // skew window, or — for JWT access tokens — when the JWT exp
-            // claim itself is. The stored expires field is best-effort
-            // (xAI doesn't always return expires_in) so the JWT check is the
-            // load-bearing one for tokens that lack a fresh stored deadline.
+            // Refresh when the stored expires timestamp is within the skew window,
+            // or — for JWT access tokens — when the JWT exp claim itself is. The
+            // stored field is best-effort, so the JWT check is the load-bearing one.
             const expiresSoon =
               !currentAuth.expires ||
               currentAuth.expires - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS ||
@@ -523,11 +514,9 @@ export async function XaiAuthPlugin(input: PluginInput, options: XaiAuthPluginOp
                   .then(async (tokens) => {
                     const refreshedExpires = Date.now() + (tokens.expires_in ?? 3600) * 1000
                     const refreshedRefresh = tokens.refresh_token || refreshToken
-                    // Persist the rotated pair as best-effort. xAI has already consumed the
-                    // old refresh_token by the time we get here; an auth.set failure leaves
-                    // the on-disk state stale but the in-memory result is still valid for
-                    // this turn. The next live refresh against the stale disk state will
-                    // 4xx and force re-login — a known cross-process limitation.
+                    // Persist the rotated pair best-effort. xAI has already consumed the old
+                    // refresh_token, so an auth.set failure leaves disk stale while this turn
+                    // stays valid; the next refresh against stale disk 4xx's and forces re-login.
                     await input.client.auth
                       .set({
                         path: { id: "xai" },
@@ -549,10 +538,9 @@ export async function XaiAuthPlugin(input: PluginInput, options: XaiAuthPluginOp
               currentAuth = { ...currentAuth, ...refreshed }
             }
 
-            // Copy the caller's headers into a fresh Headers (case-insensitive)
-            // so we never mutate the RequestInit the AI SDK may reuse on retry.
-            // Headers.set overwrites case-insensitively, which kills the dummy
-            // bearer the AI SDK injected from apiKey in a single line.
+            // Copy the caller's headers into a fresh Headers so we never mutate the
+            // RequestInit the AI SDK may reuse on retry. Headers.set overwrites
+            // case-insensitively, which kills the dummy bearer in a single line.
             const headers = new Headers(requestInput instanceof Request ? requestInput.headers : undefined)
             if (init?.headers) {
               const entries =
@@ -608,14 +596,9 @@ export async function XaiAuthPlugin(input: PluginInput, options: XaiAuthPluginOp
           },
         },
         {
-          // RFC 8628 device-code flow. The CLI prints a verification URL
-          // and a short user_code that the user enters in a browser on
-          // any device. No loopback callback server runs on the CLI host,
-          // so this works on VPS / SSH / Docker / CI / WSL / any
-          // environment where 127.0.0.1:56121 isn't reachable from the
-          // user's browser. Defends the only attack surface (the polling
-          // loop) with the standard authorization_pending / slow_down
-          // backoff and a hard deadline from xAI's `expires_in`.
+          // RFC 8628 device-code flow: the CLI prints a verification URL and a short
+          // user_code entered in a browser on any device. No loopback server runs, so
+          // it works wherever 127.0.0.1:56121 is unreachable from the user's browser.
           label: "xAI Grok OAuth (Headless / Remote / VPS)",
           type: "oauth",
           authorize: async () => {

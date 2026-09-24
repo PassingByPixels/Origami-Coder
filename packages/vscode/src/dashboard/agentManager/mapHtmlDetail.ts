@@ -1,19 +1,8 @@
-// The static artifact's DETAIL PANEL: the right rail's contents in each of its
-// three states — a selected component with its connections, a traced flow with
-// its steps, and the idle state, which is the map's own index (summary, key
-// files, conventions).
-//
-// THIS STRING IS SPLICED INSIDE mapHtmlScript.ts's IIFE and reads that closure
-// directly: `detail`, `byId`, `keyWhy`, `MAP`, and the `put` / `clear` / `chip` /
-// `kindColour` / `flowColour` helpers. It defines the three writers the core and
-// the rails call, which reach them through function-declaration hoisting.
-//
-// EVERY string that came from the cartographer reaches the DOM through
-// textContent, never innerHTML. That rule is why this file exists in this shape
-// at all: the mockup this artifact is ported from builds the same three panels
-// with escaped innerHTML, and one missed escape there is a live handler armed by
-// a node name. The runtime JSDOM tests in mapHtml.test.ts click a flow AND a box
-// AND hover a solid precisely to keep that shut.
+// The static artifact's detail panel: selected component, traced flow, or idle index.
+// Spliced inside mapHtmlScript.ts's IIFE, reading its closure directly. Every cartographer
+// string reaches the DOM through textContent, never innerHTML — the mockup this ported from
+// used escaped innerHTML, and one missed escape there is a live handler armed by a node
+// name; runtime JSDOM tests click a flow and a box to keep that shut.
 
 export const MAP_DETAIL_JS = `
   // ---- the right rail ---------------------------------------------------------

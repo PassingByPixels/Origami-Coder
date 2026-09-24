@@ -45,12 +45,26 @@ interface State {
 
 // Service
 
+/** What `ask` takes. `id` and `relay` exist for the SUB-AGENT route
+ *  (t-po041k): a child's question is not shown to the user, it is posted into
+ *  the parent chat, and the envelope has to name the request id BEFORE the ask
+ *  parks — so the caller mints the id, and `relay` runs after the entry is in
+ *  `pending` so a parent that answers instantly cannot arrive before the thing
+ *  it answers exists. */
+export interface AskInput {
+  sessionID: SessionID
+  questions: ReadonlyArray<Info>
+  tool?: Tool
+  /** A caller-minted id, when the caller has already told somebody about it. */
+  id?: QuestionID
+  /** Run once the request is pending and published. Its failure FAILS the ask:
+   *  an envelope that never left is a question nobody can answer, and parking
+   *  on it would be the hang this route exists to remove. */
+  relay?: (request: Request) => Effect.Effect<void, RejectedError>
+}
+
 export interface Interface {
-  readonly ask: (input: {
-    sessionID: SessionID
-    questions: ReadonlyArray<Info>
-    tool?: Tool
-  }) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
+  readonly ask: (input: AskInput) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
   readonly reply: (input: {
     requestID: QuestionID
     answers: ReadonlyArray<Answer>
@@ -84,13 +98,9 @@ const layer = Layer.effect(
       }),
     )
 
-    const ask = Effect.fn("Question.ask")(function* (input: {
-      sessionID: SessionID
-      questions: ReadonlyArray<Info>
-      tool?: Tool
-    }) {
+    const ask = Effect.fn("Question.ask")(function* (input: AskInput) {
       const pending = (yield* InstanceState.get(state)).pending
-      const id = QuestionID.ascending()
+      const id = input.id ?? QuestionID.ascending()
       yield* Effect.logInfo("asking", { id, questions: input.questions.length })
 
       const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
@@ -102,6 +112,18 @@ const layer = Layer.effect(
       }
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
+      if (input.relay) {
+        // Not inside the `ensuring` below, which would be wrong twice over: the
+        // entry must be removed when the relay fails, and the relay has to run
+        // BEFORE the await rather than around it.
+        yield* input.relay(info).pipe(
+          Effect.onError(() =>
+            Effect.sync(() => {
+              pending.delete(id)
+            }),
+          ),
+        )
+      }
 
       return yield* Effect.ensuring(
         Deferred.await(deferred),

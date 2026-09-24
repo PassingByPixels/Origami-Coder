@@ -1,41 +1,27 @@
 // The map exported AS A PAGE — one self-contained .html carrying the picture
-// AND the data the picture drops. This file ASSEMBLES it; the parts live in
+// and the data it drops. This file ASSEMBLES it; the parts live in
 // labyrinthAtlasCss.ts (layout), labyrinthStrip.ts (spend), labyrinthAtlas.ts
 // (chrome), labyrinthLedger.ts (the table) and labyrinthReport.ts (the
 // interactive layer).
 //
-// Owner's UAT, in order:
-//  1. "the corridor is just circles otherwise" — corridor prints no per-step
-//     labels by design, so the page ships the step LEDGER beside the picture.
-//  2. "click a node and you get the stream's information" — every surface is a
-//     click target and fills one pinned inspector.
-//  3. the ledger must not BE the page, the thread is the hero, the panel is
-//     pinned, and the totals speak Flock — so the page is now an ATLAS: a
-//     full-bleed console with the usage strip in a sticky header, the thread
-//     centred in the one scrolling pane, a permanent inspector rail beside it,
-//     and the ledger demoted to a drawer.
-//
 // THE MAP IS NOT REDRAWN HERE. `doc.svg` is the very picture the Thread view
-// rendered, serialized by labyrinthExport.ts — so branches departing and
-// merging back, the clock axis, collision avoidance and threshold marks all
-// arrive from labyrinthLayout.ts & co. by construction. An exporter that
-// painted its own braid would be a second geometry to keep in step, and it
-// would drift the first time either surface was touched. Pinned by test:
-// labyrinthAtlas.test.ts recomputes threadLayout/threadBranchPaths from the
-// pure modules and asserts the artifact's coordinates ARE those numbers.
+// rendered, serialized by labyrinthExport.ts, so branches, the clock axis,
+// collision avoidance and threshold marks all arrive by construction. An
+// exporter that painted its own braid would be a second geometry to keep in
+// step. Pinned by labyrinthAtlas.test.ts, which asserts the artifact's
+// coordinates against the pure layout modules.
 //
-// SELF-CONTAINED is the contract: no stylesheet, no script FILE, no font and
-// no image is fetched. It has to render off a file:// URL with the network
-// gone, because that is the state a saved artifact is actually opened in.
+// SELF-CONTAINED is the contract: no stylesheet, script file, font or image
+// is fetched, since a saved artifact opens off a file:// URL with the
+// network gone.
 //
-// HONESTY, carried over from the pane verbatim: a TRUNCATED run says so; an
-// absent field renders empty, never "undefined" and never a fabricated 0; and
-// every value that came from run content is escaped.
+// HONESTY, carried over from the pane: a TRUNCATED run says so; an absent
+// field renders empty, never "undefined" or a fabricated 0; and every value
+// from run content is escaped.
 //
-// No literal colour lives here either: the CSS is written in `var(--og-*)`
-// terms and handed to labyrinthExport.ts's resolver — the same pass the map
-// markup takes — so the concrete values still come only from the running
-// document, and the theme-discipline guard covers this file.
+// No literal colour lives here either: the CSS uses `var(--og-*)` terms,
+// resolved by labyrinthExport.ts against the running document, so the
+// theme-discipline guard covers this file too.
 
 import { ATLAS_JS, drawer, esc, railWrap, toolsRow } from './labyrinthAtlas';
 import { ATLAS_CSS } from './labyrinthAtlasCss';
@@ -47,7 +33,6 @@ import { usageStrip } from './labyrinthStrip';
 export type { HtmlStep };
 
 export interface LabyrinthDoc {
-  /** Which layout the inline picture is. */
   mode: string;
   /** The map, already standalone — see labyrinthExport.ts. */
   svg: string;
@@ -68,12 +53,9 @@ function whenLabel(iso: string | undefined): string {
   return Number.isFinite(t) ? new Date(t).toLocaleString() : '';
 }
 
-// The one cross-product line in the artifact: a small top-right pill for
-// Origami Folio. A LINK, not a tracker — the page stays zero-network (nothing
-// fetches; navigation only happens if the reader clicks). Theme-var colours
-// only. No print-hide: the pane's export test forbids display:none anywhere
-// in the artifact (hidden content in a saved page reads as deception), and
-// that guard outranks an advert nicety.
+// The one cross-product line in the artifact: a link to Origami Folio, not
+// a tracker (zero-network). No print-hide: the export test forbids
+// display:none anywhere, since hidden content in a saved page is deception.
 const FOLIO_AD_CSS = '.folio-ad{position:fixed;top:10px;right:12px;z-index:60;font-size:11px;padding:4px 10px;'
   + 'border-radius:999px;background:var(--og-surface);border:1px solid var(--og-border);'
   + 'color:var(--og-text-secondary);text-decoration:none}'
@@ -82,8 +64,8 @@ const FOLIO_AD = '<a class="folio-ad" href="https://chromewebstore.google.com/de
   + 'Want Office Free in your browser? Try Origami Folio</a>';
 
 /**
- * The whole artifact. `vars` reads one `--og-*` off the live document root, so
- * every colour in the file came from the theme the map was drawn under.
+ * The whole artifact. `vars` reads `--og-*` off the live document root, so
+ * every colour came from the theme the map was drawn under.
  */
 export function labyrinthHtmlDoc(doc: LabyrinthDoc, vars: VarReader): string {
   const heading = doc.title?.trim() ? doc.title : 'Labyrinth map';

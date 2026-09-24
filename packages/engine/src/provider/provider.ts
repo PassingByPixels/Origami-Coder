@@ -5,7 +5,6 @@ import fuzzysort from "fuzzysort"
 import { Config } from "@/config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
 import { NoSuchModelError, type Provider as SDK } from "ai"
-import { Npm } from "@origami/core/npm"
 import { Hash } from "@origami/core/util/hash"
 import { Plugin } from "../plugin"
 import { serviceUse } from "@origami/core/effect/service-use"
@@ -17,7 +16,6 @@ import { InstallationVersion } from "@origami/core/installation/version"
 import { iife } from "@/util/iife"
 import { Global } from "@origami/core/global"
 import path from "path"
-import { pathToFileURL } from "url"
 import { Effect, Layer, Context, Schema, Types } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -26,11 +24,19 @@ import { FSUtil } from "@origami/core/fs-util"
 import { isRecord } from "@/util/record"
 import { optional } from "@origami/core/schema"
 import { ProviderTransform } from "./transform"
+import { ProviderConcurrency } from "./concurrency"
+import { ProviderRequestIdentity } from "./request-identity"
+import { SessionProviderQueue } from "@/session/provider-queue"
+import { ProviderEffortDemotion } from "./effort-demotion"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { ModelStatus } from "./model-status"
+import { discoveryKey, memoizeDiscovery, runDiscoveryLoaders } from "./discovery"
+import { discoverOpenAICompatContext } from "../origami/openai-compat-context"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { ProviderProtocol } from "./protocol"
+import { ClaudeSubscription } from "./claude-subscription"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -92,143 +98,6 @@ function timeoutController(ms: number) {
 }
 
 /**
- * Minimal Promise-based counting semaphore. The provider `fetch` wrapper runs
- * outside the Effect runtime (it's a plain async function handed to the AI SDK),
- * so the per-provider concurrency cap can't use Effect's Semaphore there. A
- * released permit is handed straight to the next waiter (no re-increment) to
- * keep the in-flight count exact.
- */
-class AsyncSemaphore {
-  private permits: number
-  private readonly waiters: Array<() => void> = []
-  constructor(permits: number) {
-    this.permits = permits
-  }
-  async acquire(): Promise<void> {
-    if (this.permits > 0) {
-      this.permits--
-      return
-    }
-    await new Promise<void>((resolve) => this.waiters.push(resolve))
-  }
-  /**
-   * Bounded acquire: resolves true when a permit is granted, false after `ms`.
-   * A timed-out waiter REMOVES itself from the queue — if it stayed, the next
-   * release() would hand its permit to the dead resolver and the permit would
-   * be lost (the same silent-block shape the bound exists to prevent).
-   */
-  acquireWithin(ms: number): Promise<boolean> {
-    if (this.permits > 0) {
-      this.permits--
-      return Promise.resolve(true)
-    }
-    return new Promise<boolean>((resolve) => {
-      const waiter = () => {
-        clearTimeout(timer)
-        resolve(true)
-      }
-      const timer = setTimeout(() => {
-        const index = this.waiters.indexOf(waiter)
-        if (index < 0) return
-        this.waiters.splice(index, 1)
-        resolve(false)
-      }, ms)
-      this.waiters.push(waiter)
-    })
-  }
-  release(): void {
-    const next = this.waiters.shift()
-    if (next) next()
-    else this.permits++
-  }
-}
-
-// One semaphore per provider block id (the origami.json key), so two separate
-// vLLM/LM-Studio servers get independent caps. Lazily created at the provider's
-// configured max_concurrent; the cap only re-reads on engine reload.
-const providerSemaphores = new Map<string, AsyncSemaphore>()
-function providerSemaphore(providerID: string, max: number): AsyncSemaphore {
-  let sem = providerSemaphores.get(providerID)
-  if (!sem) {
-    sem = new AsyncSemaphore(max)
-    providerSemaphores.set(providerID, sem)
-  }
-  return sem
-}
-
-// Grace window before an unconsumed response is declared abandoned and its
-// permit reclaimed. A live consumer attaches its reader within milliseconds of
-// the headers landing, so this only needs to be long enough to never misfire —
-// it is NOT a generation timeout (a locked body is left alone forever).
-const ABANDONED_RESPONSE_MS = 120_000
-
-/**
- * Wrap a Response so `release` fires exactly once when the body stream ends, is
- * cancelled, or errors — i.e. when the provider has finished generating and the
- * server-side sequence slot frees. The per-provider cap holds a permit for the
- * whole generation (matching vLLM's max_num_seqs), not just until the response
- * headers arrive. Because the body ends BEFORE the AI SDK executes client-side
- * tools (task/subagents), a parent never holds a permit while waiting on a
- * child — so the cap can't deadlock a foreground subagent fan-out.
- *
- * Abandonment backstop: the AI SDK can drop a response it never reads and
- * never cancels (an error thrown between receiving headers and consuming the
- * stream). None of the release paths above ever fire for it, so the permit
- * would be held forever and every later request would block silently in
- * acquire() — the "second chat stuck composing" shape. If the body is still
- * UNLOCKED after the grace window, nobody is coming: reclaim the permit and
- * cancel the upstream generation. A locked body means a live consumer owns the
- * stream, however slowly the provider feeds it — the normal paths release it.
- */
-function releaseOnBodyEnd(res: Response, release: () => void, abandonAfterMs: number = ABANDONED_RESPONSE_MS): Response {
-  if (!res.body) {
-    release()
-    return res
-  }
-  const reader = res.body.getReader()
-  let watchdog: ReturnType<typeof setTimeout> | undefined
-  let settled = false
-  const settle = () => {
-    if (settled) return
-    settled = true
-    if (watchdog !== undefined) clearTimeout(watchdog)
-    watchdog = undefined
-    release()
-  }
-  const body = new ReadableStream<Uint8Array>({
-    async pull(ctrl) {
-      try {
-        const { done, value } = await reader.read()
-        if (done) {
-          ctrl.close()
-          settle()
-          return
-        }
-        ctrl.enqueue(value)
-      } catch (err) {
-        settle()
-        ctrl.error(err)
-      }
-    },
-    async cancel(reason) {
-      settle()
-      await reader.cancel(reason)
-    },
-  })
-  watchdog = setTimeout(() => {
-    watchdog = undefined
-    if (body.locked) return
-    settle()
-    void reader.cancel(new ProviderError.ResponseStreamError("response abandoned unread — provider permit reclaimed"))
-  }, abandonAfterMs)
-  return new Response(body, {
-    headers: new Headers(res.headers),
-    status: res.status,
-    statusText: res.statusText,
-  })
-}
-
-/**
  * True for baseURLs that point at a self-hosted server (loopback, RFC1918 LAN,
  * CGNAT/Tailscale, .local/.lan/.ts.net, bare LAN hostnames). Used to default
  * chunkTimeout: a wedged local generation hangs its SSE stream forever with no
@@ -274,16 +143,16 @@ const LOCAL_CHUNK_TIMEOUT_DEFAULT = 300_000
 // server-side queue can hold headers until the request is dequeued.
 const LOCAL_HEADER_TIMEOUT_DEFAULT = 300_000
 
-// Ceiling on waiting for a provider permit. Queuing behind a long generation
-// is the cap working as intended, so this is generous — but a wait this long
-// means something upstream is wedged, and a visible error beats composing
-// forever.
-const ACQUIRE_TIMEOUT_MS = 600_000
-
 /** Test-only surface for the provider fetch internals (permit lifecycle,
  *  self-hosted detection), so they are verifiable without the whole SDK stack
- *  (test/provider/semaphore-leak.test.ts). Not part of the public API. */
-export const _concurrencyInternals = { AsyncSemaphore, releaseOnBodyEnd, isSelfHostedURL }
+ *  (test/provider/semaphore-leak.test.ts). Not part of the public API. The
+ *  permit halves live in provider/concurrency.ts, shared with the native
+ *  runtime. */
+export const _concurrencyInternals = {
+  AsyncSemaphore: ProviderConcurrency.AsyncSemaphore,
+  releaseOnBodyEnd: ProviderConcurrency.releaseOnBodyEnd,
+  isSelfHostedURL,
+}
 
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
   if (!project) return
@@ -322,10 +191,28 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "@ai-sdk/vercel": () => import("@ai-sdk/vercel").then((m) => m.createVercel),
   "@ai-sdk/alibaba": () => import("@ai-sdk/alibaba").then((m) => m.createAlibaba),
   "gitlab-ai-provider": () => import("gitlab-ai-provider").then((m) => m.createGitLab),
+  // origami_change: this package IS in the bundle (packages/engine/package.json
+  // "ai-gateway-provider") and the entry has to be here or the provider stops
+  // loading, now that the npm-install path is gone. The factory it returns is a
+  // callable with `.chat`, not a `languageModel` SDK - the
+  // `cloudflare-ai-gateway` model loader above ignores the client it is handed
+  // and builds its own.
+  "ai-gateway-provider": () =>
+    import("ai-gateway-provider").then((m) => m.createAiGateway as unknown as (opts: any) => BundledSDK),
   "@ai-sdk/github-copilot": () =>
     import("@origami/core/github-copilot/copilot-provider").then((m) => m.createOpenaiCompatible),
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
+  // origami_change (t-tija5f): not a package. The subscription family runs only
+  // on the native runtime; this SDK's models refuse every AI SDK call.
+  [ClaudeSubscription.NPM]: () => Promise.resolve(ClaudeSubscription.createSDK),
 }
+
+/**
+ * The provider packages this build ships. An `npm` outside this list is
+ * refused at model load - see `ProviderProtocol`. Exported so
+ * `test/provider/protocol.test.ts` can hold the shipped catalog against it.
+ */
+export const BUNDLED_PROVIDER_IDS: readonly string[] = Object.keys(BUNDLED_PROVIDERS)
 
 type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>, model?: Model) => Promise<any>
 type CustomVarsLoader = (options: Record<string, any>) => Record<string, string>
@@ -371,20 +258,28 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         },
       }),
     // OpenCode Zen. Keyed on `opencode` because that is the id the shipped
-    // models.dev catalog serves; with no key the paid models are dropped and the
-    // free tier autoloads under the public key.
+    // models.dev catalog serves.
+    //
+    // FORK: it is NEVER auto-enabled. Upstream autoloads the free tier under a
+    // public key with no credential, which would send a fresh install's prompts
+    // to opencode.ai by default. A prompt leaving the machine is the one thing
+    // this fork does not do unasked, so Zen appears only once the user OPTS IN:
+    // an env var, `origami providers login opencode`, or a `provider.opencode`
+    // block in origami.json. Only the keyless autoload is gone.
+    //
+    // An opted-in block with no key of its own KEEPS the old free-tier
+    // behaviour (paid models dropped, public key) -- that user did ask.
     opencode: Effect.fnUntraced(function* (input: Info) {
       const env = yield* dep.env()
       const hasKey = iife(() => {
         if (input.env.some((item) => env[item])) return true
         return false
       })
-      const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
+      const cfg = yield* dep.config()
+      const ok = hasKey || Boolean(yield* dep.auth(input.id)) || Boolean(cfg.provider?.["opencode"]?.options?.apiKey)
 
       if (!ok) {
+        if (!cfg.provider?.["opencode"]) return { autoload: false }
         for (const [key, value] of Object.entries(input.models)) {
           if (value.cost.input === 0) continue
           delete input.models[key]
@@ -540,10 +435,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         region: defaultRegion,
       }
 
-      // Only use credential chain if no bearer token exists
-      // Bearer token takes precedence over credential chain (profiles, access keys, IAM roles, web identity tokens)
+      // A bearer token takes precedence over the credential chain (profiles,
+      // access keys, IAM roles, web identity tokens).
       if (!awsBearerToken && !configApiKey) {
-        // Build credential provider options (only pass profile if specified)
         const credentialProviderOptions = profile ? { profile } : {}
 
         providerOptions.credentialProvider = fromNodeProviderChain(credentialProviderOptions)
@@ -571,10 +465,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
             return sdk.languageModel(modelID)
           }
 
-          // Region resolution precedence (highest to lowest):
-          // 1. options.region from origami.json provider config
-          // 2. defaultRegion from AWS_REGION environment variable
-          // 3. Default "us-east-1" (baked into defaultRegion)
+          // A per-model `options.region` outranks the resolved default above.
           const region = options?.region ?? defaultRegion
 
           let regionPrefix = region.split("-")[0]
@@ -837,7 +728,6 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
           if (modelID.startsWith("duo-workflow-")) {
             const workflowRef = typeof options?.workflowRef === "string" ? options.workflowRef : undefined
-            // Use the static mapping if it exists, otherwise use duo-workflow with selectedModelRef
             const sdkModelID = isWorkflowModel(modelID) ? modelID : "duo-workflow"
             const workflowDefinition =
               typeof options?.workflowDefinition === "string" ? options.workflowDefinition : undefined
@@ -1223,6 +1113,11 @@ const ProviderLimit = Schema.Struct({
   context: Schema.Finite,
   input: optional(Schema.Finite),
   output: Schema.Finite,
+  // origami_change: how many IMAGES this endpoint takes in one prompt. Absent
+  // for every hosted model (models.dev does not publish it), so
+  // `ProviderTransform.IMAGE_WINDOW_DEFAULT` applies; an operator whose own
+  // server was started with `--limit-mm-per-prompt` declares the real number.
+  images: optional(Schema.Finite),
 })
 
 export const Model = Schema.Struct({
@@ -1361,14 +1256,13 @@ export interface Interface {
    * The PAIR to `Config.invalidateInstance()`, and useless without it: config
    * alone re-reads the files, but this list is a second `InstanceState` built
    * from them and survives that untouched. Both together are what makes a
-   * credential written while the engine runs take effect with no restart - see
-   * the `provider_refresh` ext method in `acp/service.ts`.
+   * credential written while the engine runs take effect with no restart.
    *
-   * Neither state registers a finalizer or a scoped fork, so this is a memo
-   * drop and not a teardown: a turn already in flight keeps the client it is
-   * holding, and its next step rebuilds. That is exactly why the ext method
-   * uses this instead of the HTTP `config.refresh` route's whole-instance
-   * disposal, which tears down session and MCP state with it.
+   * Neither state registers a finalizer or a scoped fork, so this is a memo drop
+   * and not a teardown: a turn already in flight keeps the client it holds and
+   * rebuilds on its next step. That is why `provider_refresh` uses this instead
+   * of the HTTP `config.refresh` route's whole-instance disposal, which tears
+   * down session and MCP state with it.
    */
   readonly invalidate: () => Effect.Effect<void>
 }
@@ -1428,7 +1322,15 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     api: {
       id: model.id,
       url: model.provider?.api ?? provider.api ?? "",
-      npm: model.provider?.npm ?? provider.npm ?? "@ai-sdk/openai-compatible",
+      // The shipped catalog carries no `protocol`, so this resolves exactly as
+      // it always did; it goes through the same function only so ONE place
+      // decides what an `npm`/`protocol` pair means.
+      npm: ProviderProtocol.resolveProviderPackage({
+        providerID: provider.id,
+        modelID: model.id,
+        model: model.provider,
+        provider,
+      }),
     },
     status: model.status ?? "active",
     headers: {},
@@ -1606,16 +1508,43 @@ const layer = Layer.effect(
 
         for (const hook of plugins) {
           const p = hook.provider
-          const models = p?.models
-          if (!p || !models) continue
+          if (!p) continue
 
           const providerID = ProviderV2.ID.make(p.id)
           if (disabled.has(providerID)) continue
-
-          const provider = database[providerID]
-          if (!provider) continue
           const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
 
+          // origami_change: registered BEFORE the database-miss guard below,
+          // deliberately. `models` filters rows the database already has, but
+          // `discoverModels` is a SOURCE of rows, and the providers that need it
+          // most are the ones with no database entry, so registering it behind
+          // that guard would make it dead code. The merge still needs a provider
+          // row to land in, which the config pass above has built by then.
+          if (p.discoverModels) {
+            const discover = p.discoverModels
+            const credential =
+              pluginAuth?.type === "oauth"
+                ? pluginAuth.access
+                : pluginAuth?.type === "api"
+                  ? pluginAuth.key
+                  : undefined
+            discoveryLoaders[providerID] = memoizeDiscovery(discoveryKey(providerID, credential), async () => {
+              const discovered = await discover({ auth: pluginAuth })
+              return Object.fromEntries(
+                Object.entries(discovered).map(([id, model]) => [
+                  id,
+                  { ...model, id: ModelV2.ID.make(id), providerID } as Model,
+                ]),
+              )
+            })
+          }
+
+          const models = p.models
+          if (!models) continue
+          const provider = database[providerID]
+          if (!provider) continue
+
+          const before = Object.keys(provider.models).length
           provider.models = yield* Effect.promise(async () => {
             const next = await models(toPublicInfo(provider), { auth: pluginAuth })
             return Object.fromEntries(
@@ -1629,7 +1558,39 @@ const layer = Layer.effect(
               ]),
             )
           })
+          // A hook that answers with NOTHING is the one outcome nobody sees: the
+          // config pass below rebuilds every declared model on top of it, so the
+          // picker still shows the seed rows and the empty live list leaves no
+          // trace — while the endpoint refuses those seed rows at inference.
+          if (Object.keys(provider.models).length === 0) {
+            yield* Effect.logWarning("provider models hook returned no models; only config-declared rows will show", {
+              providerID,
+              catalogBefore: before,
+            })
+          }
         }
+
+        // origami_change (t-tija5f, t-ty02bb): Claude through the owner's
+        // subscription, only while its flag is on. It goes into the DATABASE,
+        // before the config pass, so a config block named `claude-subscription`
+        // merges over the family's rows the way config merges over any catalog
+        // row: what the block leaves out (npm, URL, window, effort ladder) stays
+        // the family's. Merged AFTER the config pass (0.4.169-0.4.170), the
+        // block's rows replaced the family's with the protocol default,
+        // `@ai-sdk/openai-compatible`, and a request on an unready CLI reached
+        // that adapter's "requires a base URL" instead of Gate B. The extension
+        // writes such a block on every pick (firstFold.writeModelConfig). The
+        // probe runs `claude --version` and `claude auth status` only; see
+        // provider/claude-subscription.ts. A copy: the memoised row is shared.
+        const claudeSubscriptionID = ProviderV2.ID.make(ClaudeSubscription.PROVIDER_ID)
+        const claudeSubscription =
+          runtimeFlags.experimentalClaudeSubscription && isProviderAllowed(claudeSubscriptionID)
+        if (claudeSubscription)
+          database[claudeSubscriptionID] = structuredClone(yield* Effect.promise(() => ClaudeSubscription.providerInfo()))
+        // Flag off, but a config block still names the family: its rows, not
+        // probed, so a request says the route is off instead of failing there.
+        else if (isProviderAllowed(claudeSubscriptionID) && configProviders.some(([id]) => id === claudeSubscriptionID))
+          database[claudeSubscriptionID] = ClaudeSubscription.offInfo()
 
         // extend database from config
         for (const [providerID, provider] of configProviders) {
@@ -1646,12 +1607,13 @@ const layer = Layer.effect(
           for (const [modelID, model] of Object.entries(provider.models ?? {})) {
             const existingModel = parsed.models[model.id ?? modelID]
             const apiID = model.id ?? existingModel?.api.id ?? modelID
-            const apiNpm =
-              model.provider?.npm ??
-              provider.npm ??
-              existingModel?.api.npm ??
-              modelsDev[providerID]?.npm ??
-              "@ai-sdk/openai-compatible"
+            const apiNpm = ProviderProtocol.resolveProviderPackage({
+              providerID,
+              modelID,
+              model: model.provider,
+              provider,
+              fallback: [existingModel?.api.npm, modelsDev[providerID]?.npm],
+            })
             const name = iife(() => {
               if (model.name) return model.name
               if (model.id && model.id !== modelID) return modelID
@@ -1709,19 +1671,18 @@ const layer = Layer.effect(
                 context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
                 input: model.limit?.input ?? existingModel?.limit?.input,
                 output: model.limit?.output ?? existingModel?.limit?.output ?? 0,
+                images: model.limit?.images ?? existingModel?.limit?.images,
               },
               headers: mergeDeep(existingModel?.headers ?? {}, model.headers ?? {}),
               family: model.family ?? existingModel?.family ?? "",
               release_date: model.release_date ?? existingModel?.release_date ?? "",
               variants: {},
             }
-            // origami_change: a config model may DECLARE its reasoning
-            // controls the models.dev way, and the declaration WINS over the
-            // name-regex heuristic - the heuristic guesses from a model name it
-            // may never have seen, while the operator knows what the endpoint
-            // takes. No declaration means `undefined` here, so the fallback is
-            // byte-for-byte what this line did before. Explicit `variants`
-            // still merge on top of whichever source produced the base.
+            // origami_change: a config model may DECLARE its reasoning controls
+            // the models.dev way, and the declaration WINS over the name-regex
+            // heuristic - the operator knows what the endpoint takes. No
+            // declaration means `undefined` here, so the heuristic still applies.
+            // Explicit `variants` merge on top of whichever source won.
             const declared = ProviderTransform.reasoningOptionVariants(model.reasoning_options, parsedModel)
             const variants =
               declared ??
@@ -1732,6 +1693,15 @@ const layer = Layer.effect(
             parsedModel.variants = mapValues(
               pickBy(merged, (v) => !v.disabled),
               (v) => omit(v, ["disabled"]),
+            )
+            // origami_change (t-48ffvz): a tier this model has ANSWERED 400 on
+            // is struck off the ladder the picker reads, for this user, for
+            // good. Applied LAST so it outranks every source above it - those
+            // are claims made before the request; a refusal is made after it.
+            parsedModel.variants = ProviderEffortDemotion.filterVariants(
+              providerID,
+              modelID,
+              parsedModel.variants,
             )
             parsed.models[modelID] = parsedModel
           }
@@ -1774,13 +1744,11 @@ const layer = Layer.effect(
           if (!stored) continue
           if (!plugin.auth.loader) continue
           // A credential can exist for a provider the DATABASE has never heard
-          // of: this fork ships no models.dev data (core/models-dev.ts FORK
-          // STRIP), so until a config block declares it, `openai` / `xai` are
-          // absent here even with a stored OAuth token. `toPublicInfo(undefined)`
-          // then threw and took the WHOLE provider list down — every provider,
-          // not just this one. Skipping is also exactly equivalent: with no
-          // database entry `mergeProvider` returns early on `!match`, so the
-          // loader's contribution was being discarded anyway.
+          // of: this fork ships no models.dev data, so until a config block
+          // declares it, `openai` / `xai` are absent here even with a stored
+          // OAuth token. `toPublicInfo(undefined)` would throw and take the whole
+          // provider list down. Skipping is equivalent anyway: with no database
+          // entry `mergeProvider` returns early on `!match`.
           if (!database[providerID]) continue
 
           const options = yield* Effect.promise(() =>
@@ -1805,7 +1773,11 @@ const layer = Layer.effect(
           if (result && (result.autoload || providers[providerID])) {
             if (result.getModel) modelLoaders[providerID] = result.getModel
             if (result.vars) varsLoaders[providerID] = result.vars
-            if (result.discoverModels) discoveryLoaders[providerID] = result.discoverModels
+            // Memoised on the same ten-minute clock as the plugin loaders: the
+            // provider list is rebuilt per instance AND on every
+            // `provider_refresh`, so without this a picker open would put the
+            // credential back on the wire every time.
+            if (result.discoverModels) discoveryLoaders[providerID] = memoizeDiscovery(discoveryKey(providerID, data.key), result.discoverModels)
             const opts = result.options ?? {}
             const patch: Partial<Info> = providers[providerID] ? { options: opts } : { source: "custom", options: opts }
             mergeProvider(providerID, patch)
@@ -1822,19 +1794,52 @@ const layer = Layer.effect(
           mergeProvider(providerID, partial)
         }
 
-        const gitlab = ProviderV2.ID.make("gitlab")
-        if (discoveryLoaders[gitlab] && providers[gitlab] && isProviderAllowed(gitlab)) {
-          yield* Effect.promise(async () => {
-            try {
-              const discovered = await discoveryLoaders[gitlab]()
-              for (const [modelID, model] of Object.entries(discovered)) {
-                if (!providers[gitlab].models[modelID]) {
-                  providers[gitlab].models[modelID] = model
-                }
-              }
-            } catch (e) {}
-          })
+        // origami_change (t-d94t8t): a bare config block for an OpenAI-compatible
+        // endpoint (a raw "Other" connection, vLLM, sglang) carries no models.dev
+        // row, so any model it declares with no `limit.context` sits at 0 -
+        // disabling auto-compaction and hiding the context meter, unlike a NAMED
+        // provider whose window models.dev already knows. These servers publish
+        // it themselves on GET /v1/models (`max_model_len` / `max_context_length`
+        // / `context_length`), so probe it here. Registered as a `discoverModels`
+        // loader so the merge rule in discovery.ts applies: only a model already
+        // at 0 gets backfilled, and only models the config already named are ever
+        // candidates - see `discoverOpenAICompatContext`.
+        for (const [providerID, provider] of configProviders) {
+          const id = ProviderV2.ID.make(providerID)
+          if (disabled.has(id) || discoveryLoaders[providerID]) continue
+          const built = database[providerID]
+          const baseURL = typeof provider.options?.baseURL === "string" ? provider.options.baseURL : undefined
+          if (!built || !baseURL) continue
+          const targets = Object.keys(built.models).filter(
+            (modelID) => built.models[modelID].api.npm === "@ai-sdk/openai-compatible" && built.models[modelID].limit.context <= 0,
+          )
+          if (targets.length === 0) continue
+          discoveryLoaders[providerID] = memoizeDiscovery(discoveryKey(providerID, baseURL), () =>
+            discoverOpenAICompatContext(baseURL, built.models, targets),
+          )
         }
+
+        // The family's row (seeded into the database above) is listed with no
+        // key or config block, and before the variants pass below. A config
+        // block of the same id already put it here, merged.
+        if (claudeSubscription && !providers[claudeSubscriptionID])
+          providers[claudeSubscriptionID] = database[claudeSubscriptionID]!
+
+        // origami_change: EVERY registered loader, not just gitlab. The guards
+        // are unchanged (the provider must exist here and must not be disabled);
+        // the merge rule itself lives in discovery.ts, stated once.
+        //
+        // Placement is load-bearing and must not drift: AFTER the config pass,
+        // so an operator declaration always wins over a discovered row, and
+        // BEFORE the variants pass below, so a discovered row that carries no
+        // variants of its own still gets the heuristic ones.
+        yield* Effect.promise(() =>
+          runDiscoveryLoaders({
+            loaders: discoveryLoaders,
+            providers,
+            isAllowed: (id) => isProviderAllowed(ProviderV2.ID.make(id)),
+          }),
+        )
 
         for (const [id, provider] of Object.entries(providers)) {
           const providerID = ProviderV2.ID.make(id)
@@ -1953,14 +1958,12 @@ const layer = Layer.effect(
       })
 
       if (baseURL !== undefined) options["baseURL"] = baseURL
-      // FALSY, not `=== undefined`. A config block can carry `"apiKey": ""` -
-      // a hand edit, or a form submitted with the field blank - and an empty
-      // string is not a credential. The strict check treated it as one, so it
-      // SHADOWED a perfectly good auth.json / env credential: the provider held
-      // a valid `key`, nothing was allowed to use it, and the request went out
-      // with NO Authorization header at all. Measured, not assumed - see
-      // test/provider/credential-resolution.test.ts, which reads the header off
-      // a real server rather than off `provider.options`.
+      // FALSY, not `=== undefined`. A config block can carry `"apiKey": ""` and
+      // an empty string is not a credential: a strict check treats it as one and
+      // SHADOWS a good auth.json / env credential, sending the request with no
+      // Authorization header at all. Covered by
+      // test/provider/credential-resolution.test.ts, which reads the header off a
+      // real server rather than off `provider.options`.
       if (!options["apiKey"] && provider.key) options["apiKey"] = provider.key
       if (model.headers)
         options["headers"] = {
@@ -1992,10 +1995,9 @@ const layer = Layer.effect(
           options["chunkTimeout"] ?? (isSelfHostedURL(options["baseURL"]) ? LOCAL_CHUNK_TIMEOUT_DEFAULT : undefined)
         const headerTimeout =
           options["headerTimeout"] ?? (isSelfHostedURL(options["baseURL"]) ? LOCAL_HEADER_TIMEOUT_DEFAULT : undefined)
-        // Per-provider concurrency cap: how many generations may be in flight to
-        // this provider at once (e.g. match a vLLM server's max_num_seqs). Undefined
-        // = unlimited (unchanged behaviour). Read + strip here so it never reaches
-        // the SDK factory below, exactly like chunkTimeout/headerTimeout.
+        // Per-provider concurrency cap: generations in flight to this provider at
+        // once (e.g. match a vLLM server's max_num_seqs); undefined = unlimited.
+        // Read + strip here so it never reaches the SDK factory below.
         const maxConcurrent = typeof options["max_concurrent"] === "number" ? options["max_concurrent"] : undefined
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
@@ -2018,44 +2020,56 @@ const layer = Layer.effect(
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined
 
-          // Acquire a provider permit before the request and release it when the
-          // response body finishes (generation done → server slot freed). The
-          // permit is NOT held across client-side tool execution, so a foreground
-          // parent waiting on subagents can't starve its own children.
-          const sem =
-            maxConcurrent !== undefined && maxConcurrent > 0
-              ? providerSemaphore(model.providerID, maxConcurrent)
-              : undefined
-          if (sem) {
-            const granted = await sem.acquireWithin(ACQUIRE_TIMEOUT_MS)
-            if (!granted)
-              throw new ProviderError.ConcurrencyTimeoutError(model.providerID, maxConcurrent!, ACQUIRE_TIMEOUT_MS)
-          }
-          let released = false
-          const release = () => {
-            if (sem && !released) {
-              released = true
-              sem.release()
-            }
-          }
-          // A permit must not outlive its request: if the caller aborts (turn
-          // cancel, chunk/header timeout), free the slot even when the SDK
-          // never reads or cancels the response body.
-          if (sem && combined) combined.addEventListener("abort", release, { once: true })
-
-          try {
-            const res = await fetchFn(input, {
-              ...opts,
-              // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-              timeout: false,
-            }).finally(() => headerTimeoutCtl?.clear())
-
-            const streamed = chunkAbortCtl ? wrapSSE(res, chunkTimeout, chunkAbortCtl) : res
-            return sem ? releaseOnBodyEnd(streamed, release) : streamed
-          } catch (err) {
-            release()
-            throw err
-          }
+          // Who is asking, read off the request's own headers — the AI SDK
+          // client is built once per provider, so this wrapper's closure knows
+          // nothing about the step. PARENT PRIORITY, the same rule the native
+          // runtime applies (`native-runtime.ts gatedFetch`): a step with no
+          // parent session is a parent and jumps the permit queue ahead of every
+          // queued child, so a fan-out of N children against a cap of N cannot
+          // starve the turn that spawned them. A NESTED child keeps its parent id
+          // and is therefore ordinary on both runtimes: one rule, one meaning of
+          // "parent" (the root step), and no way for a middle layer to outrank
+          // the root. It can still queue behind its own grandchildren, bounded by
+          // the generations in flight.
+          const identity = ProviderRequestIdentity.read(opts)
+          const noticeSessionID = identity.sessionID
+          const notice = noticeSessionID
+            ? {
+                onWait: (ahead: number) =>
+                  SessionProviderQueue.publishProviderQueue({
+                    sessionID: noticeSessionID,
+                    providerID: model.providerID,
+                    state: { type: "waiting", ahead },
+                  }),
+                onStart: () =>
+                  SessionProviderQueue.publishProviderQueue({
+                    sessionID: noticeSessionID,
+                    providerID: model.providerID,
+                    state: { type: "started" },
+                  }),
+              }
+            : undefined
+          // The permit is taken INSIDE this wrapper, after the timeouts above are
+          // composed and armed on `opts.signal`: `limitFetch` reads the signal
+          // back off `init` to free the slot on an abort, and a queued request
+          // must not be burning its header timeout while it waits.
+          const send = ProviderConcurrency.limitFetch(
+            model.providerID,
+            maxConcurrent,
+            async (target: any, requestInit?: BunFetchRequestInit) => {
+              const res = await fetchFn(target, {
+                ...requestInit,
+                // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+                timeout: false,
+              }).finally(() => headerTimeoutCtl?.clear())
+              return chunkAbortCtl ? wrapSSE(res, chunkTimeout as number, chunkAbortCtl) : res
+            },
+            {
+              priority: identity.sessionID !== undefined && identity.parentSessionID === undefined,
+              ...(notice ? { notice } : {}),
+            },
+          )
+          return await send(input, opts)
         }
 
         const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]
@@ -2069,27 +2083,14 @@ const layer = Layer.effect(
           return loaded as SDK
         }
 
-        const installedPath = await (async () => {
-          if (model.api.npm.startsWith("file://")) {
-            return model.api.npm
-          }
-          const item = await Npm.add(model.api.npm)
-          if (!item.entrypoint) throw new Error(`Package ${model.api.npm} has no import entrypoint`)
-          return item.entrypoint
-        })()
-
-        // `installedPath` is a local entry path or an existing `file://` URL. Normalize
-        // only path inputs so Node on Windows accepts the dynamic import.
-        const importSpec = installedPath.startsWith("file://") ? installedPath : pathToFileURL(installedPath).href
-        const mod = await import(importSpec)
-
-        const fn = mod[Object.keys(mod).find((key) => key.startsWith("create"))!]
-        const loaded = fn({
-          name: model.providerID,
-          ...options,
-        })
-        s.sdk.set(key, loaded)
-        return loaded as SDK
+        // origami_change: a model id outside the bundled table used to install
+        // the named npm package (or import a `file://` entrypoint) and call
+        // whatever `create*` export it found. That downloaded and ran arbitrary
+        // code from a config file, so it is gone. Declare the wire protocol
+        // instead; every protocol has a client in the bundle.
+        throw new ProviderProtocol.ProtocolError(
+          `Provider "${model.providerID}" asks for the package "${model.api.npm}", which this build does not ship. Origami no longer downloads provider packages. Declare the wire protocol instead - set "protocol" on the provider (or on the model's "provider" block) to one of: ${ProviderProtocol.PROTOCOLS.join(", ")}.`,
+        )
       } catch (e) {
         throw new InitError({ providerID: model.providerID, cause: e })
       }
@@ -2129,12 +2130,11 @@ const layer = Layer.effect(
       const provider = s.providers[model.providerID]
       // origami_change: memoise on the SDK CACHE KEY, not on `providerID/modelID`
       // alone. The `s.sdk` map below is credential-sensitive - its key hashes the
-      // RESOLVED options, apiKey and per-model headers included - but this map
-      // was not, so a second resolution whose options had changed was handed the
-      // language model built with the FIRST credential and the hash below never
-      // got a say. `provider` is missing only for a model no `getModel`
-      // produced; `sdkOptions` would throw on it, so key plainly there and let
-      // `resolveSDK` raise the InitError it has always raised.
+      // RESOLVED options, apiKey and per-model headers included - so keying this
+      // map by id alone hands a resolution whose options changed the language
+      // model built with the FIRST credential. `provider` is missing only for a
+      // model no `getModel` produced; `sdkOptions` would throw on it, so key
+      // plainly there and let `resolveSDK` raise its InitError.
       const key = provider
         ? `${model.providerID}/${model.id}/${sdkOptions(model, s, envs).key}`
         : `${model.providerID}/${model.id}`

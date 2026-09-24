@@ -1,15 +1,8 @@
-// Agent Manager - run.ts (S3.7): the agent-run lifecycle, extracted from
-// manager.ts (which keeps only routing, board shape, repos and the poller) so
-// the owner stays under its line cap while the queue lands. Each function takes
-// a narrow RunContext the AgentManager builds (host + shared runtime/busy/cancel
-// maps + patch/broadcast/record). runCreate provisions a worktree+record, runs
-// the optional setup script, then EITHER starts it now (start:true: session ->
-// pin -> prompt -> idle) OR persists the task and settles 'queued' (start:false,
-// no session). runStart runs a queued record's task: session -> pin (effective =
-// queuedTask.model || repo default || none) -> clear the task -> working ->
-// prompt -> idle. A create Cancel tears the half-built agent fully down; a start
-// Cancel does NOT (the worktree pre-existed it) - close the session, restore
-// 'queued', task untouched.
+// The agent-run lifecycle, extracted from manager.ts. runCreate provisions a
+// worktree+record, runs the optional setup script, then either starts now (session -> pin ->
+// prompt -> idle) or persists the task as queued. runStart runs a queued record's task the
+// same way. A create Cancel tears the half-built agent fully down; a start Cancel restores
+// 'queued' without touching the pre-existing worktree.
 
 import { findSetupScript } from './setupScript';
 import { createWorktree, removeWorktree } from './worktrees';
@@ -36,9 +29,8 @@ export interface RunContext {
   record(root: string, id: string): WorktreeRecord | undefined;
 }
 
-/** Resolve the model to pin: the raw per-task pick, else the repo default, else
- *  none. Read at use time so a later default change still applies to a queued
- *  task that named no model of its own. */
+/** Resolve the model to pin: the raw per-task pick, else the repo default, else none — read
+ *  at use time so a later default change still applies to a queued task. */
 export function effectiveModel(root: string, taskModel: string): string {
   return taskModel || (loadState(root).defaultModel ?? '');
 }
@@ -105,9 +97,8 @@ export async function runCreate(
     if (rec) { rec.sessions.push(sessionId); rec.engineSessionId = host.engineSessionId(sessionId); rec.agentName = agentName; saveState(root, st2); }
     ctx.patch(recId, { sessionId }); // record before pinning so a teardown can close it
 
-    // Pin the effective model on THIS session only, before the task runs. A
-    // throw here is fatal to the create (never silently run on the wrong
-    // model) and lands on the row via the catch as a 'model pin failed' error.
+    // Pin the effective model on this session only, before the task runs; a throw here is
+    // fatal (never silently run on the wrong model).
     if (effModel) {
       try {
         await host.setSessionModel(sessionId, effModel);
@@ -124,9 +115,8 @@ export async function runCreate(
     ctx.busy.delete(recId); // session is live - cancel/delete work normally now
     ctx.broadcast();
 
-    // Run to completion: the single prompt settles through the shared death-proof
-    // resolution + persisted done marker + idle patch (completion.completeRun). A
-    // valid repo map prefixes a one-line brief so the agent reads it first (S15).
+    // Run to completion via the shared death-proof resolution + persisted done marker; a valid
+    // repo map prefixes a one-line brief.
     await completeRun(ctx, root, recId, sessionId, await withMapBrief(root, prompt));
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
@@ -185,9 +175,8 @@ export async function runStart(ctx: RunContext, root: string, id: string): Promi
   if (rt?.sessionId && host.sessionAlive(rt.sessionId)) host.closeSession(rt.sessionId); // supersede a reopened viewer session, else the fresh run leaks it
   try {
     clearCompletion(root, id); // a (re)start supersedes prior done/merged markers
-    // 'provisioning' so the card shows a live Cancel during the start window;
-    // amCancel routes it to cancelRequested, honoured by the abort checkpoints
-    // below WITHOUT tearing down the pre-existing worktree.
+    // 'provisioning' shows a live Cancel during the start window; amCancel honours it at the
+    // abort checkpoints below without tearing down the pre-existing worktree.
     ctx.patch(id, { state: 'provisioning', agentName: task.agentName, model: effModel, startedAt: Date.now() });
     ctx.broadcast();
 
@@ -258,10 +247,9 @@ export function startAllQueued(ctx: RunContext, root: string): void {
   }
 }
 
-/** Open a card's chat (amOpenChat): a live session opens directly; a Done card
- *  with a persisted engine id reopens its transcript in a fresh agent session
- *  (new ui id -> runtime, so later clicks reuse it); else amError. Re-entry is
- *  guarded so a double-click can't spawn two engines for one card. */
+/** Open a card's chat: a live session opens directly; a Done card with a persisted engine id
+ *  reopens its transcript in a fresh session; else amError. Re-entry is guarded against a
+ *  double-click spawning two engines. */
 export async function openChat(ctx: RunContext, root: string, id: string): Promise<void> {
   const { host } = ctx;
   const rt = ctx.runtime.get(id);

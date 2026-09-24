@@ -1,18 +1,13 @@
 // browserResult.ts — what VS Code ANSWERED, and what it means.
 //
-// Extracted from browserTools.ts (282/310, no room) when the bridge was taught
-// to read failure. The split is along the line the two halves already had:
-// browserTools.ts says what VS Code publishes and what to send it, this file
-// reads what comes back — the page list, the opened page id, the withheld-page
-// tail, the declined open, and the split of a tool result into text, image and
-// ERROR. Pure and vscode-free, like the file it came out of.
-//
-// It exists because the first version of this bridge had no notion of failure
-// at all: it returned ok:true for every verb whose tool did not THROW, and a
-// click on a selector that is not on the page does not throw. Every value below
-// was read off the SHIPPED bundle (VS Code 1.132.0,
-// out/vs/workbench/workbench.desktop.main.js) — the function names in the
-// comments are that bundle's, so a claim here can be checked against it.
+// browserTools.ts says what VS Code publishes and what to send it; this file reads
+// what comes back — the page list, the opened page id, the withheld-page tail, the
+// declined open, and the split of a tool result into text, image and ERROR. Pure
+// and vscode-free. It exists because the first version of this bridge returned
+// ok:true for every verb whose tool did not THROW, and a click on a selector that
+// is not on the page does not throw. Every value below was read off the SHIPPED
+// bundle (VS Code 1.132.0), and the function names in these comments are that
+// bundle's.
 
 import type { DrivenAction } from './browserTools';
 
@@ -39,18 +34,12 @@ export function parsePageList(text: string): ListedPage[] {
   return pages;
 }
 
-/**
- * Which page a bare "read the page" means when several are shared.
- *
- * VS Code marks one line (active) — the browser page the user is LOOKING at —
- * but that is the uncommon case: while the agent works, the user is focused on
- * a source file or the chat view, so no browser page is active at all. Falling
- * straight from there to registration order drove an OFF-SCREEN page over the
- * one on screen. All three states are therefore used: active, then visible,
- * then VS Code's own order (the sort is stable, so ties keep it). Never a guess
- * by title or url — the model named no page, so where the user is looking is
- * the only honest answer.
- */
+/** Which page a bare "read the page" means when several are shared. VS Code marks
+ *  one line (active), but while the agent works the user is usually on a source
+ *  file or the chat view, so no browser page is active at all — falling straight
+ *  from there to registration order drove an OFF-SCREEN page over the one on
+ *  screen. All three states are used: active, then visible, then VS Code's own
+ *  order (the sort is stable). Never a guess by title or url. */
 const RANK: Record<PageState, number> = { active: 0, visible: 1, 'not visible': 2 };
 
 export function choosePageId(pages: readonly ListedPage[]): string | undefined {
@@ -82,15 +71,11 @@ export function unsharedPages(text: string): number {
   return Number(UNSHARED.exec(text)?.[1] ?? 0);
 }
 
-/**
- * `open_browser_page` opens NOTHING when a page it judges SIMILAR is already
- * shared (`_mi`): it lists the candidates and asks for one to be reused, or for
- * `forceNew`. "Similar" is far wider than same-url — `IPo` matches equal hosts,
- * OR both file: scheme, OR either host a subdomain of the other, with blanks
- * included — so opening a local report.html while ANY other local .html is
- * shared lands here. There is no page id in that reply, so an open that only
- * looked for one read the decline as the reduced open and called it a success.
- */
+/** `open_browser_page` opens NOTHING when a page it judges SIMILAR is already
+ *  shared: it lists the candidates and asks for one to be reused, or for `forceNew`.
+ *  "Similar" is far wider than same-url — equal hosts, OR both file: scheme, OR
+ *  either host a subdomain of the other. There is no page id in that reply, so an
+ *  open that only looked for one read the decline as a success. */
 const DECLINED_OPEN = /^At least one similar page is already open:/m;
 
 export function declinedOpen(text: string): boolean {
@@ -105,34 +90,20 @@ export interface ToolParts {
   imageMime?: string;
 }
 
-/**
- * Whether VS Code said the action FAILED. Two signals, because the workbench
- * emits two and `MainThreadLanguageModelTools.$invokeTool` forwards only
- * `{content, toolMetadata, toolResultError}` — nothing else survives.
- *
- *  1. Every `Nm(msg)` refusal — no pageId, "No browser page found with ID …",
- *     "No page summary available." — sets `toolResultError`, which the ext-host
- *     converter turns into `hasError` on the result the extension receives.
- *     Read by SHAPE, not off the type: @types/vscode 1.125.0 declares neither
- *     `hasError` nor `toolResultError` on LanguageModelToolResult, and this
- *     object has already crossed the ext-host boundary — the same reason the
- *     content parts are duck-typed below. A build that never sets it loses
- *     nothing; signal 2 still runs.
- *  2. A Playwright failure inside a driven verb sets NEITHER. PlaywrightSession
- *     .invokeFunction CATCHES the throw into `{result, error, summary}`, `xmi`
- *     pushes that error as a text part AHEAD of the summary, and the
- *     `toolResultDetails.isError` beside it is exactly what `$invokeTool`
- *     drops. Position is the only signal left: the LAST part is the summary, so
- *     an earlier part that is not one of the three notes `xmi` and
- *     `navigate_page` legitimately prepend is the message the verb failed with.
- */
+/** Whether VS Code said the action FAILED. Two signals, because the workbench emits
+ *  two and `$invokeTool` forwards only `{content, toolMetadata, toolResultError}`.
+ *   1. Every refusal sets `toolResultError`, which the ext-host converter turns into
+ *      `hasError`. Read by SHAPE, not off the type: @types/vscode declares neither
+ *      field, and this object has already crossed the ext-host boundary.
+ *   2. A Playwright failure inside a driven verb sets NEITHER: the error is pushed
+ *      as a text part AHEAD of the summary, and the `isError` beside it is what
+ *      `$invokeTool` drops. Position is the only signal left — the LAST part is the
+ *      summary, so an earlier part that is not a legitimate note is the failure. */
 const NOTE_PART = /^(?:Result: |\[deferredResultId=|Note: `)/;
 
-/** The verbs whose tool runs through `fT`/`xmi` — on 1.133.0 that pair is
- *  `IT`/`cfi`, and `cfi` still pushes Result, then the error, then the summary.
- *  `hover_element` and `drag_element` go through the same `IT`; `raw` is here
- *  because `run_playwright_code` builds its reply with `cfi` directly, so a
- *  Playwright throw INSIDE a snippet arrives the same way. `read_page`,
+/** The verbs whose tool pushes Result, then the error, then the summary.
+ *  `hover_element` and `drag_element` go through the same helper; `raw` is here
+ *  because `run_playwright_code` builds its reply the same way. `read_page`,
  *  `screenshot_page` and `handle_dialog` answer in one part and fail through
  *  `toolResultError`, so a second text part from THEM is content, not an error. */
 const XMI_ACTIONS: ReadonlySet<string> = new Set(['navigate', 'click', 'type', 'hover', 'drag', 'raw']);
@@ -140,12 +111,10 @@ const XMI_ACTIONS: ReadonlySet<string> = new Set(['navigate', 'click', 'type', '
 function toolError(result: unknown, texts: string[], action?: DrivenAction): string | undefined {
   const said = result as { hasError?: unknown; toolResultError?: unknown };
   if (said?.hasError) {
-    // The reason is not always in the CONTENT. A throw out of
-    // `playwrightService.openPage` is caught into `v ??= { content: [] };
-    // v.toolResultError = …`, which leaves the message in the signal and
-    // nothing in the parts — so an error read out of the parts alone reports
-    // a timeout as "without saying why". Read second, not first, because every
-    // `Nm(msg)` refusal puts the same words in both.
+    // The reason is not always in the CONTENT: a throw out of
+    // `playwrightService.openPage` leaves the message in `toolResultError` and nothing
+    // in the parts. Read second, not first, because every refusal puts the same words
+    // in both.
     const spoken = typeof said.toolResultError === 'string' ? said.toolResultError.trim() : '';
     return texts.splice(0).join('\n').trim() || spoken || 'VS Code reported the action failed, without saying why.';
   }
@@ -157,28 +126,15 @@ function toolError(result: unknown, texts: string[], action?: DrivenAction): str
   return errors.join('\n');
 }
 
-/**
- * Split a LanguageModelToolResult into the text, the FIRST image, and the error.
- * Duck-typed on shape, not `instanceof`: the result crosses an extension-host
- * boundary and the part classes are extended over time (the type itself admits
- * `unknown` members), so a class check would silently drop real content.
- *
- * ONLY an `image/*` part is a picture. A data part of any other type (a build
- * that answers `read` with an application/json accessibility snapshot, say) is
- * TEXT the model must still see — taking it for the screenshot loses it twice
- * over: the card shows a broken image, and `read` reports "no readable text"
- * about a page that answered in full.
- *
- * `action` is what tells signal 2 above apart from page content, so a caller
- * that omits it gets the structured signal only — never a false failure.
- */
-/**
- * A tool result whose failure signals HAVE been read, and the ONLY way to get
- * one: the brand is a symbol with no runtime value, so `check` below is the
- * sole expression of this type. `browserTools.succeeded` demands one, which is
- * what makes a success unreachable without having come through here — see the
- * response constructors there for why that ceremony is worth its lines.
- */
+/** Split a LanguageModelToolResult into the text, the FIRST image, and the error.
+ *  Duck-typed on shape, not `instanceof`: the result crosses an extension-host
+ *  boundary and the part classes are extended over time, so a class check would
+ *  silently drop real content. ONLY an `image/*` part is a picture — a data part of
+ *  any other type is TEXT the model must still see. `action` is what tells signal 2
+ *  apart from page content. */
+/** A tool result whose failure signals HAVE been read, and the ONLY way to get one:
+ *  the brand is a symbol with no runtime value, so `check` is its sole expression,
+ *  and `browserTools.succeeded` demands one. */
 declare const CHECKED: unique symbol;
 
 export type Checked = ToolParts & { readonly [CHECKED]: true };

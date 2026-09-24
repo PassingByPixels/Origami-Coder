@@ -13,6 +13,7 @@ import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(MCP.node))
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
+const chattyStderrFixture = path.join(import.meta.dir, "../fixture/mcp-chatty-stderr-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
 
@@ -555,6 +556,29 @@ it.instance("local stdio timeout terminates the real server process", () =>
       "15 seconds",
     )
   }),
+)
+
+it.instance(
+  "local stdio: a chatty server's stderr does not block the connection (finding 10)",
+  () =>
+    Effect.gen(function* () {
+      const mcp = yield* MCP.Service
+      const result = yield* mcp.add("chatty-stdio", {
+        type: "local",
+        // Without a stderr reader, this fixture's 256 KB of unread stderr fills
+        // the OS pipe and its own writes never drain, so the connection times
+        // out here well before it reaches `tools/list`.
+        command: [process.execPath, chattyStderrFixture],
+        timeout: 10_000,
+      })
+
+      expect(statusName(result.status, "chatty-stdio")).toBe("connected")
+      expect(Object.keys(yield* mcp.tools())).toEqual(["chatty-stdio_ping"])
+    }),
+  // bun's own test timeout (default 5s) wraps mcp.add's 10s connect timeout,
+  // so give the whole test enough room that the assertions are what fail, not
+  // the harness cutting it off first.
+  { timeout: 15_000 },
 )
 
 it.instance("remote timeout aborts both real HTTP transport attempts", () =>

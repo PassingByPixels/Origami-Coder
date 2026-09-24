@@ -2,7 +2,7 @@ import { APICallError } from "ai"
 import { STATUS_CODES } from "http"
 import { iife } from "@/util/iife"
 import type { ProviderV2 } from "@origami/core/provider"
-import { isContextOverflow } from "@origami/llm"
+import { isContextOverflow, type LLMError } from "@origami/llm"
 
 export class HeaderTimeoutError extends Error {
   public override readonly name = "ProviderHeaderTimeoutError"
@@ -17,6 +17,32 @@ export class ResponseStreamError extends Error {
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
+  }
+}
+
+/**
+ * A provider-written ERROR FRAME the engine has read (t-h8s3xg).
+ *
+ * `session/processor.ts` throws the provider's bare sentence for an ordinary
+ * frame, because the stream-drop classifier is written against those words.
+ * The two frames `session/provider-error-frame.ts` lifts out - an
+ * uninformative sentence and a mid-stream rate limit - carry the fields an
+ * `APIError` is made of, so the transcript's error row gets a status, a
+ * retryable flag and the raw payload instead of `UnknownError: ERROR`.
+ */
+export class StreamFrameError extends Error {
+  public override readonly name = "ProviderStreamFrameError"
+
+  constructor(
+    message: string,
+    public readonly api: {
+      readonly statusCode?: number
+      readonly isRetryable: boolean
+      readonly responseBody?: string
+      readonly metadata?: Record<string, string>
+    },
+  ) {
+    super(message)
   }
 }
 
@@ -83,7 +109,9 @@ function isOpenAiErrorRetryable(e: APICallError) {
 
 // Providers not reliably handled in this function:
 // - z.ai: can accept overflow silently (needs token-count/context-window checks)
-function message(providerID: ProviderV2.ID, e: APICallError) {
+type ErrorShape = Pick<APICallError, "message" | "statusCode" | "responseBody">
+
+function message(providerID: ProviderV2.ID, e: ErrorShape) {
   return iife(() => {
     const msg = e.message
     if (msg === "") {
@@ -101,7 +129,6 @@ function message(providerID: ProviderV2.ID, e: APICallError) {
 
     try {
       const body = JSON.parse(e.responseBody)
-      // try to extract common error message fields
       const errMsg = body.message || body.error || body.error?.message
       if (errMsg && typeof errMsg === "string") {
         return `${msg}: ${errMsg}`
@@ -122,6 +149,25 @@ function message(providerID: ProviderV2.ID, e: APICallError) {
 
     return `${msg}: ${e.responseBody}`
   }).trim()
+}
+
+/**
+ * The words an HTTP failure of this status produces, for a fault that arrived
+ * with no headers of its own (t-h8s3xg). The SAME `message()` the AI SDK and
+ * native branches call, starting from the same status text `parseLLMError`
+ * starts from, so a mid-stream 429 and a header 429 read alike.
+ */
+export function statusMessage(
+  providerID: ProviderV2.ID | string,
+  input: { statusCode: number; responseBody?: string },
+): string {
+  return redactSecrets(
+    message(providerID as ProviderV2.ID, {
+      message: STATUS_CODES[input.statusCode] ?? "",
+      statusCode: input.statusCode,
+      responseBody: input.responseBody,
+    }),
+  )
 }
 
 function json(input: unknown) {
@@ -237,6 +283,51 @@ export function parseAPICallError(input: { providerID: ProviderV2.ID; error: API
     responseHeaders: redactHeaders(input.error.responseHeaders),
     responseBody,
     metadata,
+  }
+}
+
+
+/**
+ * The native runtime's typed failure, read into the same shape the AI SDK
+ * path produces, so every classifier downstream (`SessionDegrade`,
+ * `SessionImageCap`, `SessionRetry`, the overflow gate) sees one vocabulary.
+ * `@origami/llm` already carries the HTTP status, headers and redacted body on
+ * `reason.http`; a missing-credential failure has no HTTP exchange at all and
+ * is reported as a 401 so the auth short-circuit fires for it too.
+ */
+export function parseLLMError(input: { providerID: ProviderV2.ID; error: LLMError }): ParsedAPICallError {
+  const reason = input.error.reason
+  const http = "http" in reason ? reason.http : undefined
+  const statusCode =
+    http?.response?.status ??
+    ("status" in reason && typeof reason.status === "number" ? reason.status : undefined) ??
+    (reason._tag === "Authentication" ? 401 : undefined)
+  const responseBody = http?.body ? redactSecrets(http.body) : undefined
+  const body = json(http?.body)
+  // The executor's own sentence ("Provider request failed with HTTP 400: …")
+  // would double the body; the AI SDK path starts from the status text and
+  // `message` appends the provider's sentence once. Same words on both paths.
+  const base =
+    statusCode !== undefined && reason.message.startsWith("Provider request failed with HTTP")
+      ? (STATUS_CODES[statusCode] ?? "")
+      : reason.message
+  const m = redactSecrets(message(input.providerID, { message: base, statusCode, responseBody: http?.body }))
+  if (
+    (reason._tag === "InvalidRequest" && reason.classification === "context-overflow") ||
+    isContextOverflow(m) ||
+    statusCode === 413 ||
+    body?.error?.code === "context_length_exceeded"
+  ) {
+    return { type: "context_overflow", message: m, responseBody }
+  }
+  return {
+    type: "api_error",
+    message: m,
+    statusCode,
+    isRetryable: reason.retryable || (statusCode !== undefined && statusCode >= 500),
+    responseHeaders: redactHeaders(http?.response?.headers),
+    responseBody,
+    metadata: http?.request?.url ? { url: redactSecrets(http.request.url) } : undefined,
   }
 }
 

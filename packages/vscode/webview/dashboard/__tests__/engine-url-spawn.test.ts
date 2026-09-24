@@ -11,6 +11,8 @@
 // real JSON-RPC handshake runs — leaving the spawn wiring under test.
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 // --- capture spawn args/options without launching a process ---
 const { spawnMock } = vi.hoisted(() => {
@@ -48,6 +50,10 @@ vi.mock('node:stream', () => {
   const Writable = { toWeb: () => ({}) };
   return { Readable, Writable, default: { Readable, Writable } };
 });
+
+// t-vd9s7z: the claude binary this window's discovery chose, as the engine sees it.
+const { cliMock } = vi.hoisted(() => ({ cliMock: vi.fn(async (): Promise<unknown> => null) }));
+vi.mock('../../../src/dashboard/claudeCodeDetect', () => ({ claudeCli: cliMock }));
 
 import { AcpClient, type AcpEventHandlers } from '../../../src/acpClient';
 
@@ -106,5 +112,22 @@ describe('AcpClient.start — spawns `origami acp --cwd <cwd>`', () => {
     // start() passes process.env straight through, so a value already in
     // the environment is simply inherited.
     expect(opts.env.ORIGAMI_API_BASE).toBe('http://setx-endpoint:1234/v1');
+  });
+});
+
+describe('AcpClient.connect never waits for Claude Code discovery (t-vd9s7z)', () => {
+  beforeEach(() => { spawnMock.mockClear(); cliMock.mockReset(); });
+
+  it('spawns the engine at once, even while discovery never answers', async () => {
+    cliMock.mockReturnValue(new Promise(() => {})); // a hung `claude --version`
+    void new AcpClient(noopHandlers()).connect('/tmp/ws');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts no claude path in the engine env: the engine reads the hand-off file when it needs one', async () => {
+    cliMock.mockResolvedValue({ binary: '/x/claude', version: '2.1.281', source: 'path' });
+    await new AcpClient(noopHandlers()).start('/tmp/ws');
+    expect(lastSpawn()[2].env.ORIGAMI_CLAUDE_CLI).toBeUndefined();
   });
 });

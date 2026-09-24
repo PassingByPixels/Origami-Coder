@@ -12,14 +12,12 @@ const CMD = new Set(["cmd"])
 // that hour. Work that legitimately runs longer belongs in a background task.
 export const MAX_TIMEOUT_MS = 10 * 60 * 1_000
 
-// Silence, not total elapsed time, is what separates a slow command from a hung
-// one. The wall clock cannot: a dev server that prints "listening on 3000" and
-// then waits forever looks exactly like a build that is still working. This is
-// the window with no output bytes after which a FOREGROUND call is treated as
-// hung. It is deliberately equal to the default wall clock, so it changes
-// nothing until the model asks for a LONGER timeout - which is precisely the
-// call that can hold a turn for ten minutes. Background calls are exempt:
-// silence is the normal state of a server, and a background job blocks nobody.
+// Silence, not total elapsed time, separates a slow command from a hung one: a
+// dev server that prints "listening on 3000" and then waits forever looks
+// exactly like a build still working. This is the window with no output bytes
+// after which a FOREGROUND call is treated as hung. It equals the default wall
+// clock, so it changes nothing until the model asks for a longer timeout.
+// Background calls are exempt: silence is the normal state of a server.
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60 * 1_000
 
 export type Limits = {

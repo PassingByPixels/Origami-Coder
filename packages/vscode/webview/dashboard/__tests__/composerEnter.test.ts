@@ -23,7 +23,7 @@
 // landed. Every OTHER failure keeps the annotated shape (the row, then the error
 // under it), because the engine may well have taken the line.
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { readFileSync } from 'node:fs';
@@ -32,6 +32,7 @@ import path from 'node:path';
 import ChatPane from '../panes/ChatPane.svelte';
 import { flushQueuedSend } from '../panes/queuedFlush';
 import { NEVER_REACHED_ENGINE, retryAsPrompt } from '../panes/interjectRetry';
+import { SLASH_WAITS } from '../components/interjectHold';
 
 const LINE = 'also check the migration';
 const post = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent('message', { data }));
@@ -131,6 +132,141 @@ describe('Enter, mid-turn: the line goes into the running turn at once', () => {
     expect(posted().filter((m) => m.type === 'slashCommand')).toEqual([]);
     expect((c.querySelector('.input') as HTMLTextAreaElement).value,
       'and the draft is kept, not eaten').toBe('/compact');
+  });
+});
+
+// The IMAGE half of the same keypress.
+//
+// It used to do NOTHING. The wire carried `{ type:'interject', sessionId, text }`
+// and nothing else, so `doSend`'s in-flight branch HELD a draft with a picture
+// on it — no post, no chip, no word — and the draft simply sat there until the
+// turn ended. On a long turn that is indistinguishable from a broken button,
+// which is how the owner met it (t-4ahs3u): an image plus two paragraphs, a
+// composer showing Send and Cancel, and no way to send.
+//
+// The wire carries the pictures now, in the SAME `{dataUrl,name}` shape a fresh
+// prompt's `sendWithImages` uses, so a mid-turn message is the mid-turn message
+// it would have been without the attachment. What genuinely cannot go into a
+// running turn — a slash command, a composer with no turn to reach — says so in
+// one line instead (interjectHold.ts).
+describe('Enter, mid-turn, WITH an image: it goes INTO the turn, picture and all', () => {
+  let realImage: typeof Image;
+  beforeAll(() => {
+    realImage = globalThis.Image;
+    // jsdom decodes nothing, so `resizeIfNeeded`'s `new Image()` settles
+    // neither way and the intake promise would hang forever. A stub reporting
+    // a small picture takes the no-resize branch — the path a pasted
+    // screenshot under 2048px takes in the real composer.
+    class StubImage {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      width = 8;
+      height = 8;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    }
+    globalThis.Image = StubImage as unknown as typeof Image;
+  });
+  afterAll(() => { globalThis.Image = realImage; });
+
+  const withImages = () => posted().filter((m) => m.type === 'sendWithImages');
+  const shot = { dataUrl: expect.stringContaining('data:image/png'), name: 'shot.png' };
+
+  /** Paste one PNG into the composer, the way a screenshot arrives. */
+  async function attach(c: HTMLElement) {
+    const box = c.querySelector('.input') as HTMLTextAreaElement;
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' });
+    await fireEvent.paste(box, { clipboardData: { items: [{ type: 'image/png', getAsFile: () => file }] } });
+    await vi.waitFor(() => expect(c.querySelector('.image-strip')).not.toBeNull());
+  }
+
+  it('posts the interjection WITH the picture — the defect was nothing being posted at all', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+    await enter(c, LINE);
+
+    expect(interjects()).toEqual([{ type: 'interject', sessionId: sid, text: LINE, images: [shot] }]);
+    expect(withImages(), 'it goes INTO the turn, not behind it as a fresh prompt').toEqual([]);
+  });
+
+  it('clears the composer and the strip, exactly as an idle send does', async () => {
+    const { c } = await mountBusy();
+    await attach(c);
+    await enter(c, LINE);
+
+    expect((c.querySelector('.input') as HTMLTextAreaElement).value).toBe('');
+    expect(c.querySelector('.image-strip')).toBeNull();
+  });
+
+  it('sends a picture with NO words on it — "look at this" is a whole message', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+    await enter(c, '');
+
+    expect(interjects()).toEqual([{ type: 'interject', sessionId: sid, text: '', images: [shot] }]);
+  });
+
+  it('draws the picture in the transcript row the host answer opens', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+    await enter(c, LINE);
+
+    post({ type: 'interjected', sessionId: sid });
+    await tick();
+
+    const row = [...c.querySelectorAll('.cell-messages .row.user')].at(-1)!;
+    expect(row.textContent).toContain(LINE);
+    // The row an ordinary prompt draws carries its attachments; an interjected
+    // one that showed the words alone would be a different transcript for the
+    // same message.
+    expect(row.querySelector('img.chat-image')?.getAttribute('src')).toContain('data:image/png');
+  });
+
+  it('goes out ONCE — the turn ending does not send it again', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+    await enter(c, LINE);
+
+    post({ type: 'turnDone', sessionId: sid });
+    await settle();
+
+    expect(interjects().length).toBe(1);
+    expect(withImages(), 'nothing was left behind for the boundary to flush').toEqual([]);
+  });
+
+  it('a SLASH command with a picture on it is still refused — and now says why', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+    await enter(c, '/compact');
+
+    post({ type: 'turnDone', sessionId: sid });
+    await settle();
+
+    expect(interjects()).toEqual([]);
+    expect(withImages()).toEqual([]);
+    expect(posted().filter((m) => m.type === 'slashCommand')).toEqual([]);
+    expect((c.querySelector('.input') as HTMLTextAreaElement).value).toBe('/compact');
+  });
+
+  it('says WHY a refused mid-turn line went nowhere, instead of a dead Send', async () => {
+    const { c } = await mountBusy();
+    await attach(c);
+    await enter(c, '/compact');
+
+    // The sentence is the deliverable: a composer that swallows the keypress in
+    // silence is the whole defect, picture or no picture.
+    expect(c.querySelector('.interjecting-chip.held')?.textContent).toContain(SLASH_WAITS);
+  });
+
+  it('an image attached but never entered is not sent when the turn ends', async () => {
+    const { c, sid } = await mountBusy();
+    await attach(c);
+
+    post({ type: 'turnDone', sessionId: sid });
+    await settle();
+
+    expect(withImages(), 'nothing was ever submitted').toEqual([]);
+    expect(interjects()).toEqual([]);
+    expect(c.querySelector('.image-strip')).not.toBeNull();
   });
 });
 

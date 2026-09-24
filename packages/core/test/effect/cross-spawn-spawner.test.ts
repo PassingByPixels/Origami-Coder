@@ -192,12 +192,20 @@ describe("cross-spawn spawner", () => {
   })
 
   describe("combined output (all)", () => {
+    // t-ru0by6 item 3: this asserted the POSIX shape unconditionally and
+    // failed alone on Windows, where `echo` is a cmd.exe builtin rather than
+    // an executable. cross-spawn routes it through `cmd /c` and wraps an
+    // argument containing spaces in literal double quotes for cmd's own
+    // parsing; cmd's `echo` never strips them back off, so the captured
+    // output carries them too. Asserted per-platform instead of removed,
+    // since the underlying claim (stdout reaches `.all` with no stderr) is
+    // still real and still worth pinning on both platforms.
     fx.effect(
       "captures stdout via .all when no stderr",
       Effect.gen(function* () {
         const handle = yield* ChildProcess.make("echo", ["hello from stdout"])
         const all = yield* decodeByteStream(handle.all)
-        expect(all).toBe("hello from stdout")
+        expect(all).toBe(process.platform === "win32" ? '"hello from stdout"' : "hello from stdout")
       }),
     )
 

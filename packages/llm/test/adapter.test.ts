@@ -49,6 +49,7 @@ const fakeProtocol = Protocol.make<FakeBody, FakeEvent, FakeEvent, void>({
     schema: Schema.Struct({
       body: Schema.String,
     }),
+    structure: ["body"],
     from: (request) =>
       Effect.succeed({
         body: [

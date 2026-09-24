@@ -1,26 +1,14 @@
-// cronCommand.ts — the quoting primitives, the `origami run` invocation, and
-// the schtasks argv. PURE: string in, string/array out, nothing spawns, so
-// everything here can be asserted VERBATIM in tests. That matters more than
-// usual: the failure mode is a task that registers cleanly and then does the
-// wrong thing at 3am, unattended, for weeks.
-//
-// The invocation is assembled here but EXECUTED from a launcher script
-// (cronLauncher.ts), because schtasks caps `/TR` at 261 characters. The batch
-// escaping rules — which are NOT the command-line rules — are documented there.
-//
-// CRONS RUN AUTO-APPROVED (`--auto`). A cron fires with the editor closed and
-// nobody to answer a permission ask, so without the flag the run cannot get
-// past the first one. Every cron is therefore write-capable and its log is the
-// audit trail.
+// cronCommand.ts — the quoting primitives, the `origami run` invocation, and the schtasks argv.
+// Pure: string in, string/array out, asserted verbatim in tests, since a wrong quote here means a
+// task that does the wrong thing at 3am, unattended. Crons run auto-approved (`--auto`): nothing is
+// there to answer a permission ask, so every cron is write-capable and its log is the audit trail.
 
 import * as path from 'node:path';
 import { scheduleFlags, type CronSchedule } from './cronSchedule';
 
-/** Task Scheduler folder for everything this view owns, so a stray task is
- *  identifiable and the user's own tasks are never in scope. */
+/** Task Scheduler folder for everything this view owns, so a stray task is identifiable. */
 export const TASK_FOLDER = '\\Origami';
-/** launchd label prefix — the macOS equivalent of TASK_FOLDER: it is how a
- *  registered job is recognised as ours (and ONLY ours) in `launchctl list`. */
+/** launchd label prefix — the macOS TASK_FOLDER: how a registered job is recognised as ours. */
 export const LAUNCHD_LABEL_PREFIX = 'com.origami.cron.';
 
 export const CRON_LOG_DIR = path.join('.origami', 'cron-logs');
@@ -58,10 +46,8 @@ export function cronScriptPath(workspace: string, id: string, platform: string =
 }
 
 /**
- * Quote one token. Embedded quotes are DOUBLED (`"` -> `""`), never
- * backslash-escaped: doubling keeps cmd's quote-state parity even AND the CRT
- * parser origami is handed reads `""` inside a quoted argument as one literal
- * `"`. A `\"` escape satisfies only the second.
+ * Quote one token. Embedded quotes are doubled (`"` -> `""`), never backslash-escaped — doubling
+ *  keeps cmd's quote-state parity even, which a `\"` escape does not.
  */
 export function cmdQuote(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
@@ -73,22 +59,18 @@ export function batchPercent(value: string): string {
 }
 
 /**
- * Escape BARE (unquoted) text for a batch `echo` — the cron's display name is
- * the only such text we emit. Quoted tokens must NOT go through this: `^` is
- * literal inside quotes, so escaping there would record `^&` for a command that
- * really ran with `&`, i.e. an audit line that lies.
+ * Escape bare (unquoted) text for a batch `echo` — the cron's display name is the only such text
+ *  emitted. Quoted tokens must not go through this, since `^` is literal inside quotes and escaping
+ *  there would log a command that did not really run that way.
  */
 export function batchBareText(value: string): string {
   return batchPercent(value.replace(/[\^&|<>()]/g, (c) => `^${c}`));
 }
 
 /**
- * Why this prompt cannot be scheduled, or null if it can.
- *
- * A line break cannot survive the single-line batch invocation, and there is no
- * escape for it. `%VAR%` used to be refused here; it no longer needs to be,
- * because the launcher doubles every `%` and the text reaches origami literally
- * (verified by execution — see cronLauncher.ts (1)).
+ * Why this prompt cannot be scheduled, or null if it can. A line break cannot survive the
+ *  single-line batch invocation. `%VAR%` no longer needs refusing, since the launcher doubles every
+ *  `%` and the text reaches origami literally.
  */
 export function promptHazard(prompt: string): string | null {
   if (prompt.trim().length === 0) return 'prompt is empty';
@@ -120,11 +102,9 @@ export function runInvocation(spec: RunCommandSpec): string {
 }
 
 /**
- * argv for `schtasks /Create`. Passed to execFile as an ARRAY with no shell, so
- * OS-level quoting of these elements is Node's job — this module must not
- * pre-quote them or the task name would arrive with literal quotes in it.
- *
- * `/F` overwrites an existing task of the same name, which is what an edit is.
+ * argv for `schtasks /Create`, passed to execFile as an array with no shell — this module must not
+ *  pre-quote elements or the task name would arrive with literal quotes. `/F` overwrites an
+ *  existing task of the same name.
  */
 export function schtasksCreateArgs(taskName: string, schedule: CronSchedule, command: string): string[] {
   return ['/Create', '/TN', taskName, '/TR', command, ...scheduleFlags(schedule), '/F'];
@@ -135,23 +115,17 @@ export function schtasksDeleteArgs(taskName: string): string[] {
 }
 
 /**
- * Query OUR folder. The TRAILING SEPARATOR is load-bearing: without it schtasks
- * reads `\Origami` as a task NAME and answers "The system cannot find the file
- * specified." even when the folder is full of tasks. Verified against a real
- * registered task — `/TN "\Origami"` failed while `/TN "\Origami\"` listed it.
- *
- * Fast (~25ms) but it CANNOT distinguish "no folder yet" from "query failed":
- * both 404. schedulerBackend pairs it with the enumerate form below.
+ * Query our folder. The trailing separator is load-bearing: `/TN "\Origami"` fails while `/TN
+ *  "\Origami\"` lists it. Fast (~25ms) but cannot distinguish "no folder yet" from "query failed" —
+ *  schedulerBackend pairs it with the enumerate form below.
  */
 export function schtasksFolderQueryArgs(): string[] {
   return ['/Query', '/TN', `${TASK_FOLDER}\\`, '/FO', 'CSV', '/NH'];
 }
 
 /**
- * Every task on the machine, filtered to ours by parseQueriedTaskNames. Slower
- * (~520ms over ~257 tasks here) but it SUCCEEDS whether or not our folder
- * exists — so a failure unambiguously means the query failed, and an empty
- * result unambiguously means no crons. Read-only.
+ * Every task on the machine, filtered to ours. Slower (~520ms) but succeeds whether or not our
+ *  folder exists, so a failure unambiguously means the query failed.
  */
 export function schtasksQueryAllArgs(): string[] {
   return ['/Query', '/FO', 'CSV', '/NH'];
@@ -162,10 +136,8 @@ export function schtasksRunArgs(taskName: string): string[] {
 }
 
 /**
- * Task names out of `schtasks /Query /FO CSV /NH`. The first CSV column is the
- * task name; rows for other folders (and the informational rows schtasks emits
- * for an empty folder) are dropped, so a caller can never mistake somebody
- * else's scheduled task for one of ours.
+ * Task names out of `schtasks /Query /FO CSV /NH`. Rows for other folders are dropped, so a caller
+ *  can never mistake somebody else's scheduled task for one of ours.
  */
 export function parseQueriedTaskNames(stdout: string): string[] {
   const names: string[] = [];

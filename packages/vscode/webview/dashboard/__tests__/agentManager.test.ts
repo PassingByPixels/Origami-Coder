@@ -14,6 +14,7 @@ import { AgentManager, findSetupScript, type ManagerHost } from '../../../src/da
 import { parseShortstat, statsKey, readWorktreeStats } from '../../../src/dashboard/agentManager/pollers';
 import { createWorktree, runGit } from '../../../src/dashboard/agentManager/worktrees';
 import { loadState, saveState } from '../../../src/dashboard/agentManager/state';
+import { quickAdd } from '../../../src/dashboard/agentManager/tickets';
 import { normalizeRepoPath, repoKey } from '../../../src/dashboard/agentManager/registry';
 import { ARCHETYPES } from '../../../src/dashboard/agentManager/archetypes';
 import { withMapBrief } from '../../../src/dashboard/agentManager/mapRun';
@@ -1636,6 +1637,108 @@ describe('AgentManager S3.6 kanban (fake host, real git)', () => {
     await mgr2.handle({ type: 'amApply', root: repo2, id: f.id, files: ['app.txt'], force: true });
     expect(loadState(repo2).worktrees.find((r) => r.id === f.id)!.merged).toBeUndefined();
     mgr2.dispose();
+  }, 30_000);
+
+  // ---- board git truth: Apply MERGES a committed, clean fold (--no-ff) ----
+
+  /** A worktree + record whose work is COMMITTED and whose tree is CLEAN — the
+   *  only shape a whole-branch merge can describe. `ticketId` links a real
+   *  ticket file so the merge SUBJECT and the ticket stamp are both assertable. */
+  async function seedCommittedWorktree(repo: string, name: string, edit: (wt: string) => void, ticketId?: string): Promise<{ id: string; path: string; branch: string }> {
+    await runGit(['config', 'core.autocrlf', 'false'], repo);
+    const created = await createWorktree(repo, name);
+    edit(created.path);
+    await runGit(['add', '-A'], created.path);
+    expect((await runGit(['commit', '-m', `work in ${name}`], created.path)).ok).toBe(true);
+    const id = `w-${name}`;
+    const st = loadState(repo);
+    st.worktrees.push({
+      id, name: created.name, branch: created.branch, path: created.path,
+      baseSha: created.baseSha, createdAt: Date.now(), sessions: [], ...(ticketId ? { ticketId } : {}),
+    });
+    saveState(repo, st);
+    return { id, path: created.path, branch: created.branch };
+  }
+  const headSha = async (repo: string) => (await runGit(['rev-parse', 'HEAD'], repo)).output.trim();
+
+  it('(g1) Apply on a COMMITTED, clean fold makes a real merge commit on the primary (not a patch)', async () => {
+    const repo = await makeGitRepo();
+    const host = makeHost(undefined); host.known = [repo];
+    const mgr = new AgentManager(host);
+    const ticketId = quickAdd(repo, 'Scroll block needs a max-width');
+    const { id, branch } = await seedCommittedWorktree(repo, 'g1', (wt) => fs.writeFileSync(path.join(wt, 'app.txt'), 'v1\nfrom the fold\n'), ticketId);
+    const before = await headSha(repo);
+    await mgr.handle({ type: 'amApply', root: repo, id, files: ['app.txt'] });
+
+    // `<merge> <parent1> <parent2>` — a real merge commit, and exactly ONE new
+    // commit on the primary's own line (its first parent is the old HEAD).
+    const parents = (await runGit(['rev-list', '--parents', '-n', '1', 'HEAD'], repo)).output.trim().split(/\s+/);
+    expect(parents).toHaveLength(3);
+    expect(parents[1]).toBe(before);
+    expect((await runGit(['log', '-1', '--format=%s'], repo)).output.trim())
+      .toBe(`merge ${branch}: Scroll block needs a max-width (${ticketId})`);
+    // The work is COMMITTED in the primary, not left as a dirty tree to re-commit.
+    expect(fs.readFileSync(path.join(repo, 'app.txt'), 'utf8')).toBe('v1\nfrom the fold\n');
+    expect((await runGit(['status', '--porcelain', '--', 'app.txt'], repo)).output.trim()).toBe('');
+    const res = lastPost(host, 'amApplyResult') as { id: string; ok: boolean; mode?: string } | undefined;
+    expect(res).toMatchObject({ id, ok: true, mode: 'merge' });
+    expect(loadState(repo).worktrees.find((r) => r.id === id)!.merged).toEqual({ at: expect.any(Number) });
+    const ticket = fs.readFileSync(path.join(repo, '.origami', 'tickets', `${ticketId}.md`), 'utf8');
+    expect(ticket).toContain('status: merged');
+    expect(ticket).toContain(`branch: ${branch}`);
+    expect(host.infos.some((m) => m.startsWith(`Merged ${branch} into main as `))).toBe(true);
+    mgr.dispose();
+  }, 30_000);
+
+  it('(g2) a fold with working-tree edits still PATCHES — with or without commits behind them', async () => {
+    // Uncommitted only: the long-standing path, unchanged except for the mode tag.
+    const repo = await makeGitRepo();
+    const host = makeHost(undefined); host.known = [repo];
+    const mgr = new AgentManager(host);
+    const { id } = await seedChangedWorktree(repo, 'g2', (wt) => fs.writeFileSync(path.join(wt, 'app.txt'), 'v1\nfrom the agent\n'));
+    const before = await headSha(repo);
+    await mgr.handle({ type: 'amApply', root: repo, id, files: ['app.txt'] });
+    expect(await headSha(repo)).toBe(before);                                            // nothing committed
+    expect(fs.readFileSync(path.join(repo, 'app.txt'), 'utf8')).toBe('v1\nfrom the agent\n'); // tree patched
+    expect(lastPost(host, 'amApplyResult')).toMatchObject({ id, ok: true, mode: 'patch' });
+    mgr.dispose();
+
+    // Commits PLUS edits: a merge would silently leave the edits behind, so this
+    // shape must stay on the patch path too (mergeable() is both halves).
+    const repo2 = await makeGitRepo();
+    const host2 = makeHost(undefined); host2.known = [repo2];
+    const mgr2 = new AgentManager(host2);
+    const both = await seedCommittedWorktree(repo2, 'g2b', (wt) => fs.writeFileSync(path.join(wt, 'app.txt'), 'v1\ncommitted\n'));
+    fs.writeFileSync(path.join(both.path, 'app.txt'), 'v1\ncommitted\nand then edited\n');
+    const before2 = await headSha(repo2);
+    await mgr2.handle({ type: 'amApply', root: repo2, id: both.id, files: ['app.txt'] });
+    expect(await headSha(repo2)).toBe(before2);                                          // no merge commit
+    expect(fs.readFileSync(path.join(repo2, 'app.txt'), 'utf8')).toBe('v1\ncommitted\nand then edited\n');
+    expect(lastPost(host2, 'amApplyResult')).toMatchObject({ id: both.id, ok: true, mode: 'patch' });
+    mgr2.dispose();
+  }, 40_000);
+
+  it('(g3) a committed fold that conflicts with a primary commit ABORTS — primary byte-identical, diverged', async () => {
+    const repo = await makeGitRepo();
+    const host = makeHost(undefined); host.known = [repo];
+    const mgr = new AgentManager(host);
+    const { id } = await seedCommittedWorktree(repo, 'g3', (wt) => fs.writeFileSync(path.join(wt, 'app.txt'), 'v1\nfrom the fold\n'));
+    fs.writeFileSync(path.join(repo, 'app.txt'), 'v1\nfrom the human\n');
+    expect((await runGit(['commit', '-am', 'human'], repo)).ok).toBe(true); // same line, committed
+    const before = await headSha(repo);
+    const statusBefore = (await runGit(['status', '--porcelain'], repo)).output.trim();
+    await mgr.handle({ type: 'amApply', root: repo, id, files: ['app.txt'] });
+
+    expect(await headSha(repo)).toBe(before);                                  // no commit
+    expect((await runGit(['status', '--porcelain'], repo)).output.trim()).toBe(statusBefore);
+    expect(fs.readFileSync(path.join(repo, 'app.txt'), 'utf8')).toBe('v1\nfrom the human\n'); // no markers
+    const res = lastPost(host, 'amApplyResult') as { ok: boolean; conflicts: string[]; diverged?: boolean } | undefined;
+    expect(res!.ok).toBe(false);
+    expect(res!.diverged).toBe(true);
+    expect(res!.conflicts).toContain('app.txt');
+    expect(loadState(repo).worktrees.find((r) => r.id === id)!.merged).toBeUndefined();
+    expect(host.infos).toHaveLength(0);
+    mgr.dispose();
   }, 30_000);
 
   it('(m4) runStart clears a stale merged marker (and done); the restarted row has mergedAt 0', async () => {

@@ -1,23 +1,10 @@
-// MCP pane — host side. Routed out of DashboardPanel.ts the same way
-// tools/skills/plugins are, so the monolith carries only the one-line dispatch.
+// MCP pane, host side — routed out of DashboardPanel.ts like tools/skills/plugins, so the monolith
+// carries only the one-line dispatch. Every job goes through the active session's extMethod, since
+// the ENGINE owns the config files, the plugin-server merge, live clients and the OAuth flow.
 //
-// Every job goes through the active session's generic `extMethod`, the same
-// seam pluginsPane.ts uses, because the ENGINE owns the config files, the
-// merge with plugin-provided servers, every live client and the OAuth flow:
-// read the list (`mcp_list`), add (`mcp_add`), remove (`mcp_remove`), toggle
-// (`mcp_set_enabled`), connect/disconnect, authenticate (`mcp_authenticate`)
-// and forget a credential (`mcp_auth_remove`).
-//
-// Every write re-reads and re-posts the list afterward, success or failure, so
-// the pane never renders a state the engine does not itself believe — the same
-// shape pluginsPane.ts and toolsPane.ts already use. No optimistic patching
-// here (unlike pluginsPane's enabled flag): `mcp_set_enabled` writes the config
-// AND drives the live client, and `mcp_list` reads `MCP.status()`, which is the
-// runtime map — so the re-read already carries the post-write truth.
-//
-// What an `mcpAdd` MEANS — the argv split, the optional cwd/environment/headers
-// — lives in mcpAddServer.ts: it grew past what this file had room for, and it
-// is the one part of the MCP surface worth checking with no host around it.
+// Every write re-reads and re-posts the list afterward, success or failure, so the pane never
+// renders a state the engine does not itself believe. What an mcpAdd MEANS lives in
+// mcpAddServer.ts, extracted once it grew past what this file had room for.
 
 import * as vscode from 'vscode';
 import type { McpListResult, McpWriteResult } from '../acpExtTypes';
@@ -59,9 +46,8 @@ async function listPayload(host: McpPaneHost): Promise<Record<string, unknown>> 
 }
 
 /**
- * Run one write and report it. The engine's own message is shown VERBATIM on
- * failure — it names the config file, the schema issue or the server, and a
- * rewrite here would drop exactly the part the user needs.
+ * Run one write and report it. The engine's own message is shown VERBATIM on failure — it names the
+ *  config file, schema issue or server, and a rewrite here would drop what the user needs.
  */
 async function write(
   host: McpPaneHost,

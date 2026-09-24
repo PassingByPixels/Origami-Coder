@@ -1,20 +1,9 @@
-// Agent Manager - repoMerge.ts (Folds board, repo cards): the MERGE MODEL for
-// ~/.origami/repos.json, extracted from repoFile.ts (at its line cap) when that
-// file stopped being an extension-owned mirror.
-//
-// The old rule - "the extension is the only writer" - died when the engine's
-// board_register landed: repos.json is now a SHARED file with more than one
-// writer, so a rewrite that rebuilt repos[] from the extension's own known list
-// silently dropped everything it did not author (a foreign entry, a hand-added
-// key, a primary pointer). The rule every writer follows instead:
-//
-//   read the current file -> key entries by `root`, case-insensitively on
-//   Windows -> change ONLY the entries your operation touches -> preserve every
-//   other entry AND every unknown field on every entry verbatim -> write
-//   atomically (tmp + rename, in repoFile.ts).
-//
-// Pure over plain objects: no fs, no vscode, so the whole rule is unit-tested
-// on literals. The fs half (path / read / atomic write / sync) stays next door.
+// The MERGE MODEL for ~/.origami/repos.json, extracted from repoFile.ts. The old rule —
+// "the extension is the only writer" — died when the engine's board_register landed:
+// repos.json is now shared, so a rewrite that rebuilt repos[] from the extension's own list
+// silently dropped anything it didn't author. Every writer now: reads the current file, keys
+// entries by root, changes only the entries its operation touches, preserves every other
+// entry and unknown field verbatim, and writes atomically.
 
 import * as path from 'node:path';
 
@@ -27,9 +16,9 @@ export interface RepoFileEntry {
   addedAt: number;
   /** Board display-name override (cosmetic; `name` above is the real one). */
   displayName?: string;
-  /** Absolute path of the checkout that OWNS this repository's tickets, fold
-   *  branching and apply-to-main. Absent = `root` itself. Written by the board's
-   *  "Make primary" and by the engine; never cleared by an ordinary sync. */
+  /** Absolute path of the checkout that owns this repository's tickets/folds/apply. Absent =
+   *  `root`; written by the board's Make Primary and by the engine, never cleared by an
+   *  ordinary sync. */
   primary?: string;
   /** Unknown keys from another writer ride through every rewrite untouched. */
   [k: string]: unknown;
@@ -46,25 +35,16 @@ export function repoFileKey(root: string): string {
   return process.platform === 'win32' ? root.toLowerCase() : root;
 }
 
-/** The checkout an entry's work happens in: its `primary` when set, else the
- *  entry root. Pure - the caller decides what to do about a primary that has
- *  since vanished from disk (repoFile.primaryFor degrades it back to root). */
+/** The checkout an entry's work happens in: its `primary` when set, else the entry root. */
 export function primaryRoot(entry: Pick<RepoFileEntry, 'root' | 'primary'>): string {
   return entry.primary || entry.root;
 }
 
-/**
- * Project the board's composed repo list onto the file, MERGING rather than
- * replacing. Entries the extension composes are refreshed in place (name /
- * workspace, and addedAt only when the entry is genuinely new); every other
- * entry in `prior` survives after them, in its own order.
- *
- * `displayNames` is an OVERLAY the extension owns: when it is PASSED the
- * extension is speaking about display names, so an omitted root clears its
- * override; when the argument is omitted entirely the caller is not speaking
- * about them at all and the prior value rides through. `primary` has no such
- * argument - it is never the extension's to clear from a plain sync.
- */
+/** Project the board's composed repo list onto the file, MERGING rather than replacing.
+ *  Composed entries refresh in place; every other prior entry survives after them.
+ *  `displayNames`, when passed, is an overlay the extension owns (an omitted root clears its
+ *  override); when omitted entirely, the prior value rides through unchanged. `primary` has
+ *  no such argument — never the extension's to clear from a plain sync. */
 export function mergeRepoFile(
   entries: Array<{ root: string; name: string; workspace: boolean }>,
   prior: RepoFile | undefined,
@@ -79,7 +59,9 @@ export function mergeRepoFile(
     const old = before.get(key);
     const merged: RepoFileEntry = {
       ...(old ?? {}),                     // unknown keys + primary ride through
-      root: e.root, name: e.name, workspace: e.workspace,
+      // A name another writer set (board_register / board_repoint) is the key the board_*
+      // tools use: the folder name only fills an entry that has none.
+      root: e.root, name: typeof old?.name === 'string' && old.name ? old.name : e.name, workspace: e.workspace,
       addedAt: old?.addedAt ?? now,       // never re-date a long-registered repo
     };
     if (displayNames) {
@@ -94,12 +76,9 @@ export function mergeRepoFile(
   return { version: 1, repos };
 }
 
-/**
- * Point ONE entry's `primary` at `primary` (the board's "Make primary"). Every
- * other entry, and every other field of the touched one, is carried through
- * unchanged; a primary equal to the root drops the key (absent = root); an
- * unknown root is a no-op, never a new entry - registration is a separate act.
- */
+/** Point one entry's `primary` at `primary`. Every other entry/field carries through
+ *  unchanged; a primary equal to root drops the key; an unknown root is a no-op, never a new
+ *  entry. */
 export function setPrimary(file: RepoFile, root: string, primary: string): RepoFile {
   const key = repoFileKey(root);
   return {
@@ -114,24 +93,33 @@ export function setPrimary(file: RepoFile, root: string, primary: string): RepoF
   };
 }
 
-/**
- * Drop ONE entry (the board unregistering a repo). Needed because the merge rule
- * above preserves anything the extension does not compose: without an explicit
- * delete, an unregistered repo would survive in the file and adopt-on-read would
- * put it straight back on the board next refresh.
- */
+/** Drop one entry (unregistering a repo): needed because the merge rule preserves anything
+ *  the extension doesn't compose, so without an explicit delete an unregistered repo would
+ *  survive and adopt-on-read would put it right back. */
 export function dropEntry(file: RepoFile, root: string): RepoFile {
   const key = repoFileKey(root);
   return { version: 1, repos: file.repos.filter((r) => repoFileKey(r.root) !== key) };
 }
 
-/**
- * ADOPT-ON-READ: the roots present in repos.json that the extension's own known
- * list (and this window's workspace repo) have never heard of. A repo the engine
- * registered with board_register is invisible to the board until its root joins
- * that list, so the board boot merges these in and it draws a card next refresh.
- * Order follows the file, so the oldest foreign registration adopts first.
- */
+/** Edit path: point one entry at the folder the repo moved to. `root` changes in place (key
+ *  order kept); `dropPrimary` removes a primary that did not move with it. Every other entry and
+ *  field carries through; an unknown root is a no-op. */
+export function repointEntry(file: RepoFile, root: string, next: string, dropPrimary: boolean): RepoFile {
+  const key = repoFileKey(root);
+  return {
+    version: 1,
+    repos: file.repos.map((r) => {
+      if (repoFileKey(r.root) !== key) return r;
+      const moved = { ...r, root: next };
+      if (dropPrimary) delete moved.primary;
+      return moved;
+    }),
+  };
+}
+
+/** ADOPT-ON-READ: roots present in repos.json the extension's own known list has never
+ *  heard of (e.g. registered via board_register); the board boot merges these in so a card
+ *  draws next refresh. */
 export function adoptRoots(
   file: RepoFile | undefined,
   known: string[],

@@ -1,26 +1,33 @@
 // `cache_stats` — this session's prompt-cache token accounting plus a
-// lifetime sum over session.list, for the Insights cache-hit-ratio card
-// (t-kgtw47). The bugs worth catching: reading roots:true (which would drop a
-// subagent's own cache spend from the lifetime), and a failed listing failing
-// the whole call instead of degrading the way the usage_update rollup does.
+// lifetime sum over every session of its project, for the Insights
+// cache-hit-ratio card (t-kgtw47). The bugs worth catching: dropping a
+// subagent's own cache spend from the lifetime, and a failed read failing the
+// whole call instead of degrading the way the usage_update rollup does.
+//
+// t-ucndru: the rows come from the store (`ACPHistoryStore.projectTokens`, no
+// limit), not `session.list`, which stopped at the 100 newest rows. The limit
+// itself is tested against a real store in usage-descendants.test.ts.
 
 import { describe, expect, it } from "bun:test"
 import { Effect } from "effect"
 import type { OrigamiClient } from "@origami/sdk/v2"
 import * as ACPService from "@/acp/service"
 import { Agent } from "@/acp/agent"
+import type { ACPHistoryStore } from "@/acp/history-store"
 
-function listSdk(rows: unknown[], seen: unknown[], broken = false) {
+function storeReader(rows: unknown[], seen: unknown[], broken = false) {
   return {
-    session: {
-      list: (params: unknown) => {
-        seen.push(params)
-        if (broken) return Promise.reject(new Error("listing exploded"))
-        return Promise.resolve({ data: rows })
-      },
+    countMessages: () => Promise.resolve(0),
+    descendants: () => Promise.resolve({ rows: [], truncated: false }),
+    projectTokens: (sessionID: string, directory?: string) => {
+      seen.push({ sessionID, ...(directory ? { directory } : {}) })
+      if (broken) return Promise.reject(new Error("store busy"))
+      return Promise.resolve(rows as never)
     },
-  } as unknown as OrigamiClient
+  } satisfies ACPHistoryStore.Reader
 }
+
+const sdk = {} as unknown as OrigamiClient
 
 const row = (id: string, input: number, output: number, read: number, write: number) => ({
   id,
@@ -28,10 +35,11 @@ const row = (id: string, input: number, output: number, read: number, write: num
 })
 
 describe("cache_stats service method", () => {
-  it("answers this session's own totals AND a lifetime sum, from ONE session.list call", async () => {
+  it("answers this session's own totals AND a lifetime sum, from ONE store read", async () => {
     const seen: unknown[] = []
     const service = ACPService.make({
-      sdk: listSdk([row("ses_1", 100, 50, 10, 5), row("ses_2", 200, 80, 20, 0)], seen),
+      sdk,
+      history: storeReader([row("ses_1", 100, 50, 10, 5), row("ses_2", 200, 80, 20, 0)], seen),
     })
 
     const result = await Effect.runPromise(service.cacheStats({ sessionId: "ses_1", cwd: "/workspace" }))
@@ -43,29 +51,19 @@ describe("cache_stats service method", () => {
     expect(result.sessionCount).toBe(2)
   })
 
-  it("reads with roots:false, so a subagent's own cache spend is not dropped from the lifetime", async () => {
+  it("scopes the read to the session, and to the given directory only when one was supplied", async () => {
     const seen: unknown[] = []
-    await Effect.runPromise(ACPService.make({ sdk: listSdk([], seen) }).cacheStats({ sessionId: "ses_1" }))
+    const history = storeReader([], seen)
+    await Effect.runPromise(ACPService.make({ sdk, history }).cacheStats({ sessionId: "ses_1", cwd: "/workspace" }))
+    await Effect.runPromise(ACPService.make({ sdk, history }).cacheStats({ sessionId: "ses_1" }))
 
-    expect(seen).toEqual([{ roots: false }])
+    expect(seen).toEqual([{ sessionID: "ses_1", directory: "/workspace" }, { sessionID: "ses_1" }])
   })
 
-  it("scopes the read to the given directory, and omits it when none was supplied", async () => {
-    const seen: unknown[] = []
-    const sdk = listSdk([], seen)
-    await Effect.runPromise(ACPService.make({ sdk }).cacheStats({ sessionId: "ses_1", cwd: "/workspace" }))
-    await Effect.runPromise(ACPService.make({ sdk }).cacheStats({ sessionId: "ses_1" }))
-
-    expect(seen).toEqual([
-      { directory: "/workspace", roots: false },
-      { roots: false },
-    ])
-  })
-
-  it("a failed listing degrades to an empty answer instead of failing the call", async () => {
+  it("a failed read degrades to an empty answer instead of failing the call", async () => {
     const seen: unknown[] = []
     const result = await Effect.runPromise(
-      ACPService.make({ sdk: listSdk([], seen, true) }).cacheStats({ sessionId: "ses_1" }),
+      ACPService.make({ sdk, history: storeReader([], seen, true) }).cacheStats({ sessionId: "ses_1" }),
     )
 
     expect(result).toEqual({

@@ -6,6 +6,8 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { SessionID, MessageID } from "./schema"
 import { Config } from "@/config/config"
+import { Database } from "@origami/core/database/database"
+import { MessageV2 } from "./message-v2"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input
@@ -78,6 +80,7 @@ const layer = Layer.effect(
     const snapshot = yield* Snapshot.Service
     const events = yield* EventV2Bridge.Service
     const config = yield* Config.Service
+    const database = yield* Database.Service
 
     const computeDiff = Effect.fn("SessionSummary.computeDiff")(function* (input: { messages: SessionV1.WithParts[] }) {
       let from: string | undefined
@@ -113,7 +116,11 @@ const layer = Layer.effect(
       })
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
       if ((yield* config.get()).snapshot === false) return
-      const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
+      // t-tc1mhl: read this turn only (the user message and what came after
+      // it), not the whole session.
+      const all = yield* MessageV2.turn(input.sessionID, input.messageID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
       if (!all.length) return
 
       const messages = all.filter(
@@ -122,6 +129,9 @@ const layer = Layer.effect(
       const target = messages.find((m) => m.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
       const msgDiffs = yield* computeDiff({ messages })
+      // An unchanged diff is not written again: each write is a durable
+      // message.updated event that carries the whole message.
+      if (target.info.summary && JSON.stringify(target.info.summary.diffs) === JSON.stringify(msgDiffs)) return
       target.info.summary = { ...target.info.summary, diffs: msgDiffs }
       yield* sessions.updateMessage(target.info)
     })
@@ -154,7 +164,7 @@ export type DiffInput = Schema.Schema.Type<typeof DiffInput>
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Session.node, Snapshot.node, EventV2Bridge.node, Config.node],
+  deps: [Session.node, Snapshot.node, EventV2Bridge.node, Config.node, Database.node],
 })
 
 export * as SessionSummary from "./summary"

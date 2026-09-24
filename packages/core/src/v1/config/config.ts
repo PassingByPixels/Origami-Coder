@@ -208,7 +208,7 @@ export const Info = Schema.Struct({
       }),
       subagent_permission_timeout_seconds: Schema.optional(NonNegativeInt).annotate({
         description:
-          "Seconds a SUB-AGENT session's permission request waits for an answer before it is refused. A sub-agent has no window of its own, so an unanswered ask there hangs the parent's task call for as long as the session lives. Main sessions are never timed out. 0 disables. Default 300.",
+          "Seconds a SUB-AGENT session's permission request waits for an answer before it is refused. A sub-agent has no window of its own, so an unanswered ask there hangs the parent's task call for as long as the session lives. Main sessions are never timed out. 0 disables. Default 14400 (4 hours), which matches the sub-agent job ceiling.",
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>flock-ui reflow harness</title>
+    <link rel="stylesheet" href="./harness.css" />
+    <style>
+      /* The real webview host's reset: no body margin, and a real height so
+         `flex: 1` inside the panes has something to fill — a VS Code panel
+         is always a real box, never an intrinsically-sized one. */
+      html, body { margin: 0; padding: 0; background: var(--og-bg, #0e1411); }
+      #app { display: flex; flex-direction: column; box-sizing: border-box; }
+      #app.stage-flock, #app.stage-remote, #app.stage-flock-messenger { height: 820px; }
+      /* `?long=1` (the pin-to-bottom proof) fits the REAL viewport height
+         instead of the fixed stage height, so shooting the same page at two
+         window sizes (1400x900, 900x700) actually gives the pane two
+         different heights to bound itself within, rather than one fixed
+         820px box the window merely crops or pads around. */
+      #app.stage-flock-messenger.fit-viewport { height: 100vh; }
+      /* The sidebar is a fixed narrow column regardless of the browser
+         window — it is never affected by the Agent Manager's own width. */
+      #app.stage-sidebar { width: 280px; height: auto; border: 1px solid var(--og-border, #2a3a31); }
+      /* Below the app, in normal flow — never overlapping the tiles the
+         check is reporting on, so the PNG shows both the reflow and the
+         verdict in one image. */
+      #check-output {
+        margin: 0; padding: 6px 10px; font: 11px/1.4 monospace; white-space: pre-wrap;
+        color: #fff; background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <pre id="check-output">running…</pre>
+    <script src="./harness.js"></script>
+  </body>
+</html>

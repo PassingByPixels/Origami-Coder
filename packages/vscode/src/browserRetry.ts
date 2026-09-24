@@ -1,35 +1,13 @@
 // browserRetry.ts — the ONE bounded retry a failed page verb is allowed.
 //
-// Extracted rather than folded into browserBridge.ts (356/360, no room) because
-// it is a separate job: that file decides WHICH tool a verb means, this one
-// decides whether the way a tool FAILED is worth one more attempt, and with
-// what. Pure and vscode-free, so both branches are testable off the real error
-// strings instead of a live browser.
-//
-// Two live failures, from a UAT run against VS Code 1.132.0, are what this
-// answers. Both come back through `check` as `seen.failed`:
-//
-//   1. "strict mode violation: locator('text=Entrypoint') resolved to 3
-//      elements:" — the model named a selector that is not unique. Playwright
-//      refuses ambiguity outright rather than guessing, so nothing happened.
-//   2. "locator resolved to <button …>" then "waiting for element to be
-//      visible, enabled and stable" then "Timeout 10000ms" — the element EXISTS
-//      but never became actionable. The usual cause is a selector that matched a
-//      HIDDEN twin (a collapsed menu, an off-screen mobile nav) while a visible
-//      one is on the page.
-//
-// Both are answered the same way: narrow the selector with a Playwright selector
-// -engine suffix and try ONCE more. `>> nth=0` and `>> visible=true` are part of
-// the selector STRING, which is why they work here at all — see below.
-//
-// What this file deliberately does NOT do is force the click. `click_element`'s
-// inputSchema on 1.132.0 is { pageId, ref, selector, element, dblClick, button }
-// and its impl is `locator(sel).click({ button })` — there is no `force` and no
-// `timeout` to pass. The only tool that could force one is `run_playwright_code`,
-// whose prepareToolInvocation carries its own `confirmationMessages`, so reaching
-// for it would raise the very modal the browser feature is trying to avoid. A
-// click that fails both attempts therefore says so plainly rather than claiming
-// a force that never happened.
+// browserBridge.ts decides WHICH tool a verb means; this one decides whether the
+// way a tool FAILED is worth one more attempt, and with what. Pure and vscode-free,
+// so both branches are testable off the real error strings. Two live failures are
+// answered, both arriving as `seen.failed`: a strict mode violation (several
+// elements matched, and Playwright refuses ambiguity rather than guessing) and an
+// actionability timeout (usually a HIDDEN twin of a visible element). Both are
+// answered by narrowing the selector with a Playwright selector-engine suffix and
+// trying ONCE more. This file does NOT force the click — that is browserForce.ts.
 
 import { check, type Checkup } from './browserResult';
 import type { DrivenAction } from './browserTools';
@@ -81,13 +59,9 @@ export interface RetryPlan {
   note: string;
 }
 
-/**
- * Whether this failure earns one more attempt, and with what selector.
- *
- * `undefined` for everything else, which is most things: a page that navigated
- * away, a detached frame, a refused url. Retrying those changes nothing and
- * costs the model another round trip against the same wall.
- */
+/** Whether this failure earns one more attempt, and with what selector. `undefined`
+ *  for everything else, which is most things: a page that navigated away, a
+ *  detached frame, a refused url — retrying those changes nothing. */
 export function planRetry(action: DrivenAction, selector: string, failure: string): RetryPlan | undefined {
   if (!RETRYABLE.has(action)) return undefined;
 
@@ -96,9 +70,8 @@ export function planRetry(action: DrivenAction, selector: string, failure: strin
     if (ALREADY_NTH.test(selector)) return undefined;
     const narrowed = `${selector.trimEnd()} >> nth=0`;
     const first = FIRST_CANDIDATE.exec(failure)?.[1]?.trim();
-    // WHICH element was acted on is the whole point of reporting this: the model
-    // asked for something ambiguous, so it cannot know what it just clicked
-    // unless the answer says. Quoted verbatim from Playwright's own list.
+    // WHICH element was acted on is the point of reporting this: the model asked for
+    // something ambiguous. Quoted verbatim from Playwright's own list.
     const which = first ? ` It acted on the first match: ${first}.` : '';
     return {
       selector: narrowed,
@@ -125,12 +98,9 @@ export function planRetry(action: DrivenAction, selector: string, failure: strin
   return undefined;
 }
 
-/**
- * How a failed retry is reported: the FIRST failure, which is the real one,
- * with the second appended as the attempt it was. Reporting only the second
- * would answer a question nobody asked — "no visible match for
- * `button.run >> visible=true`" describes a selector this file invented.
- */
+/** How a failed retry is reported: the FIRST failure, which is the real one, with
+ *  the second appended as the attempt it was. Reporting only the second would
+ *  describe a selector this file invented. */
 function bothFailed(first: string, plan: RetryPlan, second: string): Checkup {
   return {
     failed:
@@ -140,15 +110,10 @@ function bothFailed(first: string, plan: RetryPlan, second: string): Checkup {
   };
 }
 
-/**
- * Run one page verb, and give it a SECOND attempt when the way it failed says a
- * narrower selector would do better. At most one retry, ever: a loop here would
- * spend the model's time re-proving the same wall, and every extra attempt is
- * another 10 seconds of the user's.
- *
- * `note` is set only on the far side of a retry that WORKED, so a result never
- * describes a repair that did not happen.
- */
+/** Run one page verb, and give it a SECOND attempt when the way it failed says a
+ *  narrower selector would do better. At most one retry, ever. `note` is set only on
+ *  the far side of a retry that WORKED, so a result never describes a repair that
+ *  did not happen. */
 export async function driveWithRetry(
   run: (input: Record<string, unknown>) => Promise<unknown>,
   buildInput: (pageId: string, selector: string) => Record<string, unknown>,

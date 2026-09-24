@@ -2,7 +2,7 @@ import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { fileURLToPath, pathToFileURL } from "url"
-import { Effect, Layer, Result, Schema } from "effect"
+import { ConfigProvider, Effect, Layer, Result, Schema } from "effect"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { Tool } from "@/tool/tool"
@@ -15,6 +15,7 @@ import { Agent } from "@/agent/agent"
 import { InstanceState } from "@/effect/instance-state"
 
 import { ToolJsonSchema } from "@/tool/json-schema"
+import { ToolSearch } from "@/tool/tool-search"
 import { MessageID, SessionID } from "@/session/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@origami/core/provider"
@@ -98,6 +99,20 @@ const withEmptyCodeMode = testEffect(
   ]),
 )
 const withBrokenPlugin = testEffect(LayerNode.compile(root, [...replacements, [Plugin.node, brokenPluginLayer]]))
+// t-ffjau8. The OFF switch as the user really sets it: the environment
+// variable, read by the real Config layer, not a test override of the flag.
+const withSideQuestsOff = testEffect(
+  LayerNode.compile(root, [
+    [Config.node, configLayer],
+    [
+      RuntimeFlags.node,
+      RuntimeFlags.Service.layer.pipe(
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ ORIGAMI_EXPERIMENTAL_SIDE_QUESTS: "false" }))),
+        Layer.orDie,
+      ),
+    ],
+  ]),
+)
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -152,6 +167,74 @@ describe("tool.registry", () => {
       // A tool the model can see but not understand is a tool it will not use.
       expect(tools.find((tool) => tool.id === "board_register")?.description).toContain("git repo root")
       expect(tools.find((tool) => tool.id === "board_worktrees")?.description).toContain("Read-only")
+    }),
+  )
+
+  // t-f89g49, turned around by t-ffjau8. The UAT failure this replaces: the
+  // model searched the whole catalog for a side-quest tool, found nothing, and
+  // spawned a sub-agent named "Sidequest: ..." instead. So this runs on a REAL
+  // instance with NOTHING set - the owner's machine - and asks the three
+  // questions that failure asked: is it there, is it in the prompt, and can it
+  // be found by the word the model searches with.
+  it.instance("side quests are ON with no env var: loaded for the main agent, never deferred, findable as \"sidequest\"", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.get("build"),
+      })
+      const sideQuest = tools.find((tool) => tool.id === "side_quest")
+
+      expect(yield* registry.ids()).toContain("side_quest")
+      expect(sideQuest, "side_quest is not in the build agent's tools").toBeDefined()
+      expect(sideQuest!.description).toContain("one call per turn")
+      // The two spellings a model searches with, and the sentence that stops
+      // the improvised sub-agent.
+      expect(sideQuest!.description.toLowerCase()).toContain("sidequest")
+      expect(sideQuest!.description.toLowerCase()).toContain("side quest")
+      expect(sideQuest!.description).toContain("never spawn a sub-agent to launch a sidequest")
+
+      // Not deferrable and not in BUILTIN_DEFER, so the default settings leave
+      // it in the prompt in FULL - the guarantee, proved through the real
+      // deferral function over the real registry rather than asserted in prose.
+      const entries = tools.map((tool) => ({
+        id: tool.id,
+        kind: "builtin" as const,
+        ...(tool.deferrable ? { deferrable: true } : {}),
+      }))
+      expect(ToolSearch.deferred(entries, ToolSearch.settings())).not.toContain("side_quest")
+
+      // ...and when a config DOES defer it, one search finds it ahead of every
+      // other tool in the catalog, for either spelling.
+      const candidates = tools.map((tool) => ({
+        id: tool.id,
+        kind: "builtin" as const,
+        description: tool.description,
+        text: ToolSearch.searchText(
+          tool.id,
+          tool.description,
+          ToolJsonSchema.fromTool(tool).properties as Record<string, unknown> | undefined,
+        ),
+      }))
+      expect(ToolSearch.rank(candidates, "sidequest")[0]?.id).toBe("side_quest")
+      expect(ToolSearch.rank(candidates, "side quest")[0]?.id).toBe("side_quest")
+    }),
+  )
+
+  withSideQuestsOff.instance("ORIGAMI_EXPERIMENTAL_SIDE_QUESTS=false takes side_quest out of the catalog entirely", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.get("build"),
+      })
+
+      expect(yield* registry.ids()).not.toContain("side_quest")
+      expect(tools.map((tool) => tool.id)).not.toContain("side_quest")
     }),
   )
 

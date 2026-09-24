@@ -1,10 +1,4 @@
-// Loops pane data leaf — the live /loop schedules across open chats (see
-// agentManager/loopPersistence.ts for the persistence layer itself — this
-// module only PROJECTS plain data into wire shapes for the LoopsPane
-// broadcast; it owns no state and starts nothing).
-//
-// The needs-attention shape lives in loopAttention.ts and is re-exported here
-// so callers keep one import site.
+// Loops pane data leaf: live /loop schedules as LoopsPane wire shapes; see loopAttention.ts.
 
 import { formatInterval } from './chatCommands';
 
@@ -27,14 +21,9 @@ export interface LoopScheduleInfo {
    *  different state from a loop you can see, and the pane must say which. */
   headless: boolean;
   /**
-   * When the ARMED timer will fire, epoch ms — read off the timer that is
-   * actually installed, never computed from createdAt + interval * runs (which
-   * drifts by however long every run took).
-   *
-   * NULL is a real answer, not a gap: between a tick starting and its next
-   * timer being armed there IS no scheduled instant, because the next one is
-   * measured from when the in-flight run FINISHES. The pane must say that
-   * rather than print a time nothing is holding.
+   * When the ARMED timer will fire, epoch ms — read off the installed timer, never computed from
+   *  createdAt + interval*runs (which drifts by however long every run took). NULL is a real
+   *  answer: between a tick starting and its next timer being armed there is no scheduled instant.
    */
   nextRunAt: number | null;
   /** When the last run finished, epoch ms; null when it has not completed one
@@ -61,11 +50,9 @@ interface LoopScheduleSource {
   };
 }
 
-/** Every session currently running an active /loop schedule, newest concerns
- *  first are NOT applied here — callers get insertion order (session map
- *  iteration order). A session's loopSchedule is always cleared (set
- *  undefined) synchronously when stopped, so no `stopped` field ever survives
- *  into this map — the check is defensive, not load-bearing. */
+/** Every session running an active /loop schedule, in session-map insertion order. A session's
+ *  loopSchedule is always cleared synchronously when stopped, so no `stopped` field ever survives
+ *  into this map. */
 export function collectLoopSchedules(sessions: Map<string, LoopScheduleSource>): LoopScheduleInfo[] {
   const out: LoopScheduleInfo[] = [];
   for (const [sessionId, session] of sessions) {

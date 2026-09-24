@@ -5,6 +5,7 @@ import { Auth } from "@/auth"
 import { InstanceState } from "@/effect/instance-state"
 import { optional } from "@origami/core/schema"
 import { Plugin } from "../plugin"
+import { ProviderReauth } from "./reauth"
 import { ProviderV2 } from "@origami/core/provider"
 import { Array as Arr, Effect, Layer, Record, Result, Context, Schema } from "effect"
 
@@ -218,6 +219,10 @@ const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> = Layer.
           ...extra,
         })
       }
+
+      // A completed sign-in is the only event that makes a refused credential good
+      // again; clearing here keeps the flag's lifecycle out of every plugin.
+      ProviderReauth.clear(input.providerID)
     })
 
     return Service.of({ methods, authorize, callback })

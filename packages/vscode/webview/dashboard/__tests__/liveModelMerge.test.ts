@@ -262,3 +262,42 @@ describe('mergeLiveModels — reconciling config options onto live ids', () => {
     expect(input.map((r) => r.value)).toEqual(['forge/stale']);
   });
 });
+
+// A row carries more than a value and a name now: the picker draws a per-row
+// VISION chip from `visionState`, so the merge has to hand back what it was
+// given rather than a fresh object with the three fields it happens to know
+// about. The panel fills the field in AFTER this runs (broadcastModelOptions,
+// where the pin store is), so nothing depends on the order today — the guard is
+// on the SHAPE, and it is the same guard modelList.ts needed and did not have:
+// `visibleModels` rebuilt its rows as `{ value, name }` and dropped the chip on
+// the floor, which is the bug that made this worth pinning in both places.
+describe('mergeLiveModels — a row keeps the payload it came in with', () => {
+  it('a kept row survives the display-prune intact', async () => {
+    const blocks = providers({ forge: { baseURL: 'http://127.0.0.1:1234/v1', models: ['seen', 'gone'] } });
+    const rows = await mergeLiveModels(
+      [{ ...cfgRow('forge/seen'), visionState: 'on' }, { ...cfgRow('forge/gone'), visionState: 'auto-off' }],
+      blocks,
+      async () => ['seen'],
+    );
+    // 'gone' is pruned (the server no longer serves it); 'seen' keeps its pin.
+    expect(rows).toEqual([{ value: 'forge/seen', name: 'forge/seen', configured: true, visionState: 'on' }]);
+  });
+
+  it('a row on a provider that did not answer keeps it too', async () => {
+    const blocks = providers({ forge: { baseURL: 'http://127.0.0.1:1234/v1', models: ['q'] } });
+    const rows = await mergeLiveModels(
+      [{ ...cfgRow('forge/q'), visionState: 'auto-on' }],
+      blocks,
+      async () => { throw new Error('server restarting'); },
+    );
+    expect(rows[0].visionState).toBe('auto-on');
+  });
+
+  it('a row the merge ADDS has none — the merge has no pin store to read one from', async () => {
+    // Honest absence rather than a guessed 'auto-off': the panel fills these in
+    // on the way out, and a wrong value here would out-rank the real one.
+    const blocks = providers({ forge: { baseURL: 'http://127.0.0.1:1234/v1' } });
+    const rows = await mergeLiveModels([], blocks, async () => ['brand-new']);
+    expect(rows[0].visionState).toBeUndefined();
+  });
+});

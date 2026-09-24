@@ -1,36 +1,19 @@
 <script lang="ts">
-  // Collabs M2 — ONE collab's stream, given a whole editor tab. Mounted by
-  // ChatView's __ORIGAMI_COLLAB__ branch, seeded with the collab IDENTITY only:
-  // everything on screen comes from the poll below, so a tab left open all
-  // afternoon is never showing what it was seeded with.
+  // One collab's stream, given a whole editor tab. Seeded with the collab
+  // identity only; everything on screen comes from the poll below.
   //
-  // THE PANE OWNS THE FAST POLL. `collabPoll` goes out on this component's own
-  // interval while it is mounted and is cleared on teardown — faster while an
-  // agent is running (a stream you are watching move), slower when everything is
-  // idle. The cadence rule itself lives in collabPollLoop.ts.
+  // The pane owns the fast poll (`collabPoll`, cadence in collabPollLoop.ts).
+  // It's not the only one — the extension host runs a slower watch so a shut
+  // tab's sidebar ring stays alive, producing the same `collabStateData`
+  // payload, which is why every append in `applyState` is guarded on seq.
+  // `post()` fans every reply to every attached webview, so every handler
+  // below filters on `collabId` first.
   //
-  // It is no longer the only poll. The extension host runs a slower watch of its
-  // own (src/dashboard/collabWatch.ts) so a room whose tab is SHUT keeps
-  // reporting and its sidebar ring stays alive. Both produce the same
-  // `collabStateData` payload, and `applyState` below is written to fold either
-  // one in — which is why every append is guarded on seq.
-  //
-  // `post()` fans EVERY reply out to EVERY attached webview, so two collab tabs
-  // open at once both see both streams' replies. Every handler below therefore
-  // filters on `collabId` first; a payload for another collab is dropped, never
-  // rendered.
-  //
-  // M2 split the two big presentational blocks out (CollabRoster / CollabStream)
-  // when this file hit its architecture cap. What stays here is what only the
-  // owner of the poll can own: the wire, the fold-in rules, what a composed
-  // line MEANS, and the loop-breaker control. The composer itself is the chat's
-  // InputBar in bare mode — one box, one set of habits, in both surfaces.
-  //
-  // Flock M4 (X2): the pane also owns the collab's BOARD state — lead,
-  // objective, tasks, per-agent spend and the hop budget. All of it arrives on
-  // the same poll, and every field is OPTIONAL by contract: an older engine
-  // sends none of them, so each is folded in only when it is actually present
-  // and nothing here ever synthesises one.
+  // What stays here: the wire, the fold-in rules, what a composed line means,
+  // and the loop-breaker control. The composer itself is the chat's InputBar
+  // in bare mode. The pane also owns the collab's board state — lead,
+  // objective, tasks, per-agent spend and the hop budget — every field
+  // optional by contract, folded in only when present.
   import { getVsCodeApi } from '../shared/vscodeApi';
   import { onMount } from 'svelte';
   import CollabBanners from './CollabBanners.svelte';
@@ -58,8 +41,7 @@
 
   interface CollabIdentity { id: string; title: string }
   interface Participant { agentSlug: string; displayName: string; model: string | null; removedAt?: string; sessionId?: string }
-  /** The wire's own shape. `liveActivity` rides along untouched — CollabStream
-   *  is where it is validated, next to the pill that draws it. */
+  /** The wire's own shape; validated in CollabStream, next to the pill that draws it. */
   type AgentStatus = CollabAgentStatus;
 
   let identity = $state<CollabIdentity>({ id: '', title: '' });
@@ -69,31 +51,25 @@
   let agents = $state<AgentStatus[]>([]);
   let suspended = $state(false);
   let error = $state('');
-  /** The engine's routing notice CODE — CollabBanners words it. NOT an error:
-   *  the message landed, it just woke nobody. */
+  /** The engine's routing notice code — CollabBanners words it, not an error. */
   let notice = $state('');
-  /** Highest seq rendered. The poll asks for `> this`, so a settled stream
-   *  costs one near-empty round trip instead of the whole transcript. */
+  /** Highest seq rendered; the poll asks for `> this`. */
   let lastSeq = $state(0);
   let loaded = $state(false);
-  /** slug -> glyph key, merged in host-side from the agent def files. The
-   *  `collab_agents` wire has no glyph field, so this is the only way a
-   *  user-authored `glyph:` line reaches the roster. */
+  /** slug -> glyph key, merged host-side from the agent def files (the wire has no glyph field). */
   let glyphs = $state<Record<string, string>>({});
   /** Every collab-capable slug the engine can see, with displayName — the
-   *  roster's Invite popover (M3) and the `/invite` vocabulary. */
+   *  roster's Invite popover and the `/invite` vocabulary. */
   let engineAgents = $state<EngineAgent[]>([]);
   /** Fs-only defs the engine hasn't loaded yet — collabInvite.ts's other merge half. */
   let fsAgents = $state<FsAgentDef[]>([]);
-  /** Provider liveness, so the invite list can say whether a candidate will
-   *  actually run (report 1.4). EMPTY until the host's probe answers, and
-   *  collabHealth reads empty as "unknown", never as "everything is down". */
+  /** Provider liveness, so the invite list can say whether a candidate will run.
+   *  Empty until the probe answers; collabHealth reads that as "unknown". */
   let providerStatus = $state<ProviderLiveness[]>([]);
 
-  // --- Flock M4 board state. Every one of these is ABSENT on an older engine
-  // and stays at its initial value then; `tasks`/`costTotals` are UNDEFINED
-  // until a payload carries them, which is what lets the board say "this
-  // engine has no board" instead of "no tasks".
+  // Board state: absent on an older engine, stays at its initial value then;
+  // `tasks`/`costTotals` are undefined until a payload carries them, which
+  // lets the board say "this engine has no board" instead of "no tasks".
   let lead = $state<string | null>(null);
   let objective = $state<string | null>(null);
   let tasks = $state<TaskEntry[] | undefined>(undefined);
@@ -101,13 +77,13 @@
   let hopState = $state<CollabHopState | null>(null);
   let ledger = $state<LedgerEntry[]>([]);
   let ledgerLoaded = $state(false);
-  /** W3 (report 2.4): what the engine said the last PER-AGENT stop did. It
-   *  names its own agent, so the roster can land the sentence on that chip. */
+  /** What the engine said the last per-agent stop did; names its own agent so
+   *  the roster can land the sentence on that chip. */
   let stopOutcome = $state<(StopOutcome & { agentSlug: string }) | null>(null);
 
-  // The context drawer: ONE agent's last real prompt at a time. Held here, not
-  // in the roster, because the reply arrives on the same fanned-out wire as
-  // everything else and has to be filtered on collabId before anything renders.
+  // The context drawer: one agent's last real prompt at a time. Held here, not
+  // in the roster, since the reply arrives on the same fanned-out wire as
+  // everything else and must be filtered on collabId before rendering.
   let captureSlug = $state<string | null>(null);
   let capture = $state<PromptCapture | null>(null);
   let captureError = $state<string | null>(null);
@@ -118,9 +94,9 @@
   const names = $derived(Object.fromEntries(participants.map((p) => [p.agentSlug, p.displayName || p.agentSlug])));
   const invitable = $derived(mergeInviteCandidates(engineAgents, fsAgents, participants, providerStatus));
 
-  /** The ACTIVE roster — who an `@` can name, and the exact set a mention is
+  /** The active roster — who an `@` can name, and the set a mention is
    *  validated against. A removed participant is deliberately absent: the
-   *  engine refuses the post outright for one, taking the whole message with it. */
+   *  engine refuses the post outright for one. */
   const roster = $derived(
     participants.filter((p) => !p.removedAt).map((p) => ({ slug: p.agentSlug, name: collabShortName(p.agentSlug, p.displayName) })),
   );
@@ -141,8 +117,8 @@
   });
 
   /** Ask the host for one participant's last real prompt. An agent with no
-   *  engine session yet is still OPENED — the drawer states that plainly
-   *  instead of the click doing nothing, which reads as a broken control. */
+   *  engine session yet is still opened — the drawer states that plainly
+   *  instead of the click doing nothing. */
   function openContext(slug: string, sessionId?: string) {
     if (captureSlug === slug) { closeContext(); return; }
     captureSlug = slug;
@@ -153,26 +129,24 @@
     else captureLoaded = true;
   }
   function closeContext() { captureSlug = null; capture = null; captureError = null; captureLoaded = false; }
-  /** F14: the OPEN drawer re-asks on its own cadence. Same wire the open used;
-   *  a slug with no engine session has nothing to re-fetch, so it is skipped. */
+  /** The open drawer re-asks on its own cadence; a slug with no engine session
+   *  has nothing to re-fetch, so it's skipped. */
   function refreshContext() {
     const p = participants.find((x) => x.agentSlug === captureSlug);
     if (p?.sessionId) vscode.postMessage({ type: 'collabPromptCapture', collabId: identity.id, sessionId: p.sessionId, slug: p.agentSlug });
   }
 
-  /** The roster's + button and the setup card, which both commit a MULTI-select
-   *  now (report 1.3). Same wire the `/invite` command already uses — dispatch
-   *  handles each post, and one re-poll at the end shows every new chip without
-   *  waiting for the next timer tick. */
+  /** The roster's + button and the setup card, which both commit a multi-select.
+   *  Same wire `/invite` uses; one re-poll at the end shows every new chip
+   *  without waiting for the next timer tick. */
   function inviteAgents(slugs: string[]) {
     for (const slug of slugs) dispatch({ kind: 'invite', slug });
     poll();
   }
 
   /** Enact a parsed composer line. Every branch is a host message and a
-   *  re-poll: the engine owns the result, and nothing is spliced in locally, so
-   *  a refused rename cannot leave the new title on screen. WHICH message a
-   *  line becomes is collabDispatch.ts's, pure and testable with no render;
+   *  re-poll: the engine owns the result, so a refused rename can't leave the
+   *  new title on screen. Which message a line becomes is collabDispatch.ts's;
    *  `/context` comes back as a request because the drawer is this file's. */
   function dispatch(action: CollabSlashAction, images: string[] = []) {
     const out = collabSlashMessage(action, { roster: roster.map((r) => r.slug), images });
@@ -186,18 +160,15 @@
     vscode.postMessage({ ...out.post, collabId: identity.id });
   }
 
-  /** One composed line and whatever was attached to it. Returning FALSE is the
-   *  composer's keep-the-draft signal — the draft being the text AND its
-   *  images, kept or cleared together. `mode` is the chat's slot on `onSend`
+  /** One composed line and whatever was attached to it. Returning false is the
+   *  composer's keep-the-draft signal. `mode` is the chat's slot on `onSend`
    *  and means nothing here. */
   function submit(text: string, _mode?: string, images?: { dataUrl: string; name: string }[]): boolean {
     if (!identity.id) return false;
     const action = parseCollabSlash(text);
     if (action.kind === 'error') { error = action.message; return false; }
-    // Both refusals are SYNCHRONOUS on purpose. The engine refuses a 5th image
-    // too (CollabStore.IMAGE_LIMIT), but its answer arrives a round trip later,
-    // by which time the composer has cleared — so the message and the pictures
-    // would both be gone. Mirrored here, the draft survives the mistake.
+    // Both refusals are synchronous on purpose: the engine's own answer arrives
+    // a round trip later, by which time the composer would have cleared.
     const pics = (images ?? []).map((i) => i.dataUrl);
     const refusal = pics.length > 4 ? `A message may carry at most 4 images — this one has ${pics.length}.`
       : pics.length && action.kind !== 'post' ? 'Images can only ride an ordinary message. Remove them, or send the command on its own line.' : '';
@@ -207,14 +178,9 @@
     return true;
   }
 
-  /** The stream as a markdown file. Rendered HERE — only the webview holds the
-   *  polled snapshot and the roster names an attributed transcript needs — and
-   *  written by the host, the same split exportLabyrinth takes.
-   *
-   *  The BOARD goes with it: a collab's tasks are half of what happened in the
-   *  room, and a transcript that drops them exports the talking and none of the
-   *  work. Both fields stay UNDEFINED on an engine with no board, and the
-   *  renderer emits no section at all then. */
+  /** The stream as a markdown file. Rendered here — only the webview holds the
+   *  polled snapshot and roster names — and written by the host. The board
+   *  goes with it: a collab's tasks are half of what happened in the room. */
   function exportCollab() {
     const title = summary?.title || identity.title;
     vscode.postMessage({
@@ -225,24 +191,19 @@
     });
   }
 
-  // --- The board's mutations, and the two board settings the roster and the
-  // controls strip now write (lead, objective). Every one is a host message and
-  // a re-poll: the engine owns the transitions, so nothing is spliced in
-  // locally and a refused accept cannot leave a closed task on screen. The
-  // rules live in collabActions.ts.
+  // The board's mutations plus the two board settings the roster and controls
+  // strip write (lead, objective). Every one is a host message and a re-poll,
+  // so a refused accept can't leave a closed task on screen (collabActions.ts).
   const { send, setCap, setConcurrency, setFlavor, addTask, updateTask, loadLedger, stopAgent, redirect, review } =
     makeCollabActions({ post: (m) => vscode.postMessage(m), collabId: () => identity.id, poll });
   const setLead = (slug: string) => send({ type: 'collabSetLead', agentSlug: slug });
   const setObjective = (text: string) => send({ type: 'collabSetObjective', objective: text });
 
-  /** Fold an incoming state payload in. A `sinceSeq` of 0 is a FULL snapshot
-   *  and replaces the stream; anything else appends. Appending is guarded on
-   *  seq so a duplicated poll reply cannot double-print a message, and on
-   *  `loaded` because the HOST polls this collab too and keeps its own seq
-   *  count — one of its increments can reach a pane whose own snapshot has not
-   *  answered yet, and appending that would start the transcript in the middle.
-   *  Everything BELOW the stream is folded in either way: the roster and the
-   *  rings are as true from a host increment as from the pane's own poll. */
+  /** Fold an incoming state payload in. `sinceSeq` of 0 is a full snapshot and
+   *  replaces the stream; anything else appends, guarded on seq so a
+   *  duplicated reply can't double-print, and on `loaded` since the host
+   *  polls this collab too and an early increment could start the transcript
+   *  mid-way. Everything below the stream folds in either way. */
   function applyState(msg: Record<string, unknown>) {
     const incoming = (Array.isArray(msg.messages) ? msg.messages : []) as Message[];
     if (Number(msg.sinceSeq ?? 0) === 0) {
@@ -257,9 +218,8 @@
     if (Array.isArray(msg.participants)) participants = msg.participants as Participant[];
     if (Array.isArray(msg.agents)) agents = msg.agents as AgentStatus[];
     suspended = msg.suspended === true;
-    // The M4 board. Each field is taken only when the payload carries it, and
-    // the collab summary is the fallback for lead/objective — the engine sets
-    // both places, and a build that fills only one must still render.
+    // The board: each field is taken only when the payload carries it, and the
+    // collab summary is the fallback for lead/objective.
     const sum = summary as (Summary & { lead?: string | null; objective?: string | null }) | null;
     lead = typeof msg.lead === 'string' ? msg.lead : (msg.lead === null ? null : sum?.lead ?? lead);
     objective = typeof msg.objective === 'string' ? msg.objective : (msg.objective === null ? null : sum?.objective ?? objective);
@@ -279,13 +239,12 @@
     const onMsg = (ev: MessageEvent) => {
       const msg = (ev.data || {}) as Record<string, unknown>;
       // `collabAgents` and `collabAgentDefs` are workspace-wide, not per collab
-      // — neither carries a collabId, so both must be handled BEFORE the
-      // ownership filter below (or every reply would be dropped as "not ours").
+      // — neither carries a collabId, so both must be handled before the
+      // ownership filter below.
       if (msg.type === 'collabAgents') {
         engineAgents = parseEngineAgents(msg.agents);
         glyphs = (msg.glyphs && typeof msg.glyphs === 'object' ? msg.glyphs : {}) as Record<string, string>;
-        // A failed fetch must not silently strand the invite list at whatever
-        // it last held — this is the exact class of swallow Goal 3 exists for.
+        // A failed fetch must not silently strand the invite list.
         if (typeof msg.error === 'string' && msg.error) error = msg.error;
         return;
       }
@@ -307,8 +266,7 @@
           applyState(msg);
           break;
         case 'collabPosted':
-          // Set AND cleared on every post reply — a second message into a room
-          // that has since gained a lead takes the line away again.
+          // Set and cleared on every post reply.
           notice = typeof msg.notice === 'string' ? msg.notice : '';
           if (typeof msg.error === 'string' && msg.error) error = msg.error;
           poll();
@@ -322,17 +280,14 @@
           poll();
           break;
         case 'collabLedgerData':
-          // The per-turn rows. `loaded` is set either way, so "asked and there
-          // is nothing" reads differently from "never asked".
+          // `loaded` is set either way, so "asked, nothing" differs from "never asked".
           ledger = Array.isArray(msg.entries) ? (msg.entries as LedgerEntry[]) : [];
           if (Array.isArray(msg.totals)) costTotals = msg.totals as CollabCostTotal[];
           if (typeof msg.error === 'string' && msg.error) error = msg.error;
           ledgerLoaded = true;
           break;
         case 'collabStopAgentResult':
-          // Kept until the NEXT per-agent stop: it is the answer to something
-          // the user did, and a line that vanished on the next 1.2s poll would
-          // be gone before it was read.
+          // Kept until the next per-agent stop, so it isn't gone before it's read.
           stopOutcome = {
             agentSlug: typeof msg.agentSlug === 'string' ? msg.agentSlug : '',
             interrupted: msg.interrupted === true,
@@ -349,9 +304,8 @@
           poll();
           break;
         case 'collabPromptCaptureData':
-          // Late reply for a drawer that has since been closed, or reopened on
-          // a different agent: drop it rather than paint one agent's prompt
-          // under another agent's name.
+          // Late reply for a closed or reopened drawer: drop rather than
+          // paint one agent's prompt under another's name.
           if (msg.slug !== captureSlug) break;
           capture = (msg.capture ?? null) as PromptCapture | null;
           captureError = typeof msg.error === 'string' && msg.error ? msg.error : null;
@@ -395,11 +349,9 @@
     onAdd={addTask} onUpdate={updateTask} onExpand={loadLedger}
   />
 
-  <!-- THE CHAT COMPOSER, bare: one box with one set of habits in both surfaces.
-       Posting while the agents are working is legal — it is how the loop breaker
-       gets un-paused — so the box is never locked by a running turn, only by an
-       archived collab. The box itself and the C14 preview line under it are
-       CollabComposer's; this file was 3 lines from its cap. -->
+  <!-- The chat composer, bare. Posting while agents are working is legal — how
+       the loop breaker un-pauses — so the box is locked only by an archived
+       collab, never by a running turn. -->
   <CollabComposer
     collabId={identity.id}
     {archived}

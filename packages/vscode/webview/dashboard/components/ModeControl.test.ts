@@ -173,7 +173,7 @@ describe('ModeControl — the control itself', () => {
 
   it('says which mode it is in, and what that mode does, in the tooltip', () => {
     const { container } = mount('deep-plan');
-    const title = trigger(container).getAttribute('title') ?? '';
+    const title = trigger(container).getAttribute('data-tip') ?? '';
     expect(title).toContain('Deep Plan');
     expect(title).toContain('never starts building');
   });

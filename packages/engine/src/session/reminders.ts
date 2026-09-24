@@ -2,12 +2,14 @@ import path from "path"
 import { SessionV1 } from "@origami/core/v1/session"
 import { Effect } from "effect"
 import { Agent } from "@/agent/agent"
+import { Permission } from "@/permission"
 import { FSUtil } from "@origami/core/fs-util"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
+import { SessionPromptCapture } from "./prompt-capture"
 import { renderTodoList } from "./command-todos"
 import type { Todo } from "./todo"
 import PROMPT_PLAN from "./prompt/plan.txt"
@@ -19,21 +21,14 @@ import { ShellID } from "@/tool/shell/id"
 import { TaskListID } from "@/tool/task_list"
 
 /**
- * The PLANNING AGENTS, and what each is told on the way OUT to build.
+ * The planning agents, and what each is told on the way out to build. Being in
+ * this table is what makes an agent a planning agent: `planningAgent` below is
+ * the type guard over its keys.
  *
- * Being in this table is what makes an agent a planning agent: `planningAgent`
- * below is the type guard over its keys, so the mode chain in `apply` cannot
- * recognise one of the two and miss the other.
- *
- * The switch prompts are opposites, and that is the point. Plan mode's says
- * "you may edit now, execute the plan"; deep plan's says do NOT begin, because
- * approving a deep plan DELIVERS the folder rather than commissioning the work.
- * Sharing one text here would silently turn the second product into the first.
- *
- * The ENTRY briefs are not in the table: they are not interchangeable strings.
- * Each needs its own substitution pass (one slot vs two) and its own answer to
- * "should the directory be created up front", so they live in the two `*Brief`
- * functions at the bottom of this file.
+ * The switch prompts are deliberately opposites - plan mode's says "you may
+ * edit now, execute the plan", deep plan's says do not begin, because approving
+ * a deep plan delivers the folder rather than commissioning the work. Sharing
+ * one text here would silently turn the second product into the first.
  */
 const PLANNING_REGIME = {
   plan: { switchPrompt: BUILD_SWITCH },
@@ -112,14 +107,9 @@ function waitStreak(calls: readonly ToolCall[]) {
 }
 
 /**
- * Length of the trailing run of completed `task_list` calls.
- *
- * Kept apart from `waitStreak` rather than folded into it. A shell wait needs
- * evidence that the call was a wait (a sleep, a repeat, a kill on timeout);
- * `task_list` is a poll by shape, there is no working variant of it. The two
- * also have different ways out - resize the timeout vs. let the result arrive -
- * so one counter over a mixed run could only produce a reminder that is wrong
- * about half of what it counted.
+ * Length of the trailing run of completed `task_list` calls. Kept apart from
+ * `waitStreak`: a shell wait needs evidence that it was a wait, `task_list` is
+ * a poll by shape, and the two have different ways out.
  */
 function taskPollStreak(calls: readonly ToolCall[]) {
   let streak = 0
@@ -131,38 +121,53 @@ function taskPollStreak(calls: readonly ToolCall[]) {
   return streak
 }
 
-/** Opening line of the todo reminder. Shared with the tests so "the engine
- *  re-injected the list" has one handle, and so the in-step dedupe below
- *  cannot drift from what it is deduping. */
+/** The tool every reminder in this file is about. */
+const TODO_TOOL = "todowrite"
+
+/**
+ * May this session call `todowrite` at all?
+ *
+ * t-di2u7z. Every todo text below tells the model to use the tool, and a
+ * SUB-AGENT usually cannot: `agent/subagent-permissions.ts` denies `todowrite`
+ * to any child whose own definition does not name it, and the native `general`
+ * agent denies it outright. A `general` child several tool calls into its work
+ * was therefore told "Write one now with todowrite" about a tool that is not in
+ * its tool list - it spent a turn searching the deferred catalog for it and
+ * reported the engine as broken (UAT export 2026-09-14).
+ *
+ * The cage is read exactly as `session/tools.ts` builds it - the agent's rules
+ * first, the session row last, `Permission.disabled` for the verdict - so "the
+ * reminder fires" and "the tool is offered" cannot disagree. Tolerant of a
+ * missing ruleset: an agent or session with none denies nothing.
+ */
+function canTodo(agent: Agent.Info, session: Session.Info) {
+  const cage = Permission.merge(agent.permission ?? [], session.permission ?? [])
+  return !Permission.disabled([TODO_TOOL], cage).has(TODO_TOOL)
+}
+
 export const TODO_REMINDER_HEAD = "Your todo list for this session (kept with the session, not in this transcript):"
 
 /**
- * ONE sentence, because this text rides EVERY todo reminder.
- *
- * The list above is rendered with indentation and nothing else - a model that
- * rebuilds it from this block copies the words and drops the `depth` field that
- * produced the indent, so the tree it described a moment ago is flattened by its
- * own next write. Owner-reproduced: a 4-major outline came back as 16 flat rows
- * after a compaction. The store now carries a dropped depth forward, but the
- * cheap fix is the model not dropping it.
+ * One sentence, because this text rides every todo reminder. The list above is
+ * rendered with indentation and nothing else, so a model that rebuilds it from
+ * this block copies the words and drops the `depth` field that produced the
+ * indent - flattening the tree with its own next write.
  */
 const TODO_REMINDER_NESTING =
   "Indented items are nested sub-tasks: when you rewrite this list, send each item's `depth` again (0 = top level)."
 
 /**
- * The todo list the model can STILL SEE, read off the newest `todowrite` call
- * left in the window, or `undefined` when the window has none.
- *
- * The tool INPUT is the right source, not the output: pruning replaces an old
- * tool output with "[Old tool result content cleared]" while leaving the input
- * intact, so a pruned-but-present call still shows the model its list.
+ * The todo list the model can still see, or `undefined` when the window has
+ * none. The tool input is the right source, not the output: pruning clears an
+ * old output while leaving the input intact, so a pruned-but-present call still
+ * shows the model its list.
  */
 function visibleTodos(messages: readonly SessionV1.WithParts[]) {
   for (let index = messages.length - 1; index >= 0; index--) {
     const parts = messages[index]!.parts
     for (let part = parts.length - 1; part >= 0; part--) {
       const item = parts[part]!
-      if (item.type !== "tool" || item.tool !== "todowrite") continue
+      if (item.type !== "tool" || item.tool !== TODO_TOOL) continue
       const todos = (item.state as { input?: { todos?: unknown } }).input?.todos
       return Array.isArray(todos) ? (todos as Todo.Info[]) : []
     }
@@ -171,15 +176,10 @@ function visibleTodos(messages: readonly SessionV1.WithParts[]) {
 }
 
 /**
- * The stored list, handed back to a model that can no longer see it.
- *
- * Compaction rebuilds the window as [compaction-user, summary, tail...], so
- * every `todowrite` call in the dropped head goes with it - and the summary
- * template has no todo section, so whether the list survives is left to a
- * paraphrase. The list itself is durable (its own table, keyed by session), so
- * re-state it rather than hope. Injected ONLY when the model's view is missing
- * or stale, so an ordinary turn - where its own todowrite call is still in the
- * window - pays nothing.
+ * The stored list, handed back to a model that can no longer see it. Compaction
+ * drops every `todowrite` call in the head and the summary has no todo section,
+ * so survival would otherwise be left to a paraphrase. Injected only when the
+ * model's view is missing or stale, so an ordinary turn pays nothing.
  */
 function todoReminder(input: { messages: readonly SessionV1.WithParts[]; todos: readonly Todo.Info[] }) {
   if (input.todos.length === 0) return undefined
@@ -189,60 +189,146 @@ function todoReminder(input: { messages: readonly SessionV1.WithParts[]; todos: 
   return `<system-reminder>\n${TODO_REMINDER_HEAD}\n${stored}\nKeep it current with todowrite.\n${TODO_REMINDER_NESTING}\n</system-reminder>`
 }
 
+/**
+ * What counts as the user speaking, deliberately the coarse `info.role ===
+ * "user"`. A finished background sub-agent persists a real user message whose
+ * one part is synthetic, and that counts: it is a new instruction arriving
+ * mid-session. Returns -1 for a window with no user message.
+ */
+function newestUserIndex(messages: readonly SessionV1.WithParts[]) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]!.info.role === "user") return index
+  }
+  return -1
+}
+
+/**
+ * The current user turn: every message after the newest user message. Empty on
+ * the first step of a turn, and that is the signal both nudges below read -
+ * `apply` runs before that step's assistant message is created.
+ */
+function currentTurn(messages: readonly SessionV1.WithParts[]) {
+  const index = newestUserIndex(messages)
+  return index === -1 ? [] : messages.slice(index + 1)
+}
+
+/**
+ * The previous assistant turn. `undefined` when the newest user message is the
+ * first of the session - there is no write the model can have skipped, so the
+ * reconcile nudge below has nothing true to say.
+ */
+function previousTurn(messages: readonly SessionV1.WithParts[]) {
+  const newest = newestUserIndex(messages)
+  if (newest <= 0) return undefined
+  const previous = newestUserIndex(messages.slice(0, newest))
+  if (previous === -1) return undefined
+  return messages.slice(previous + 1, newest)
+}
+
+/**
+ * Said once, at the top of a turn, to a model that left its list where it was.
+ * The opposite failure to the todo reminder above: the list is in the window,
+ * with work still open in it, and the whole last turn went by without a write.
+ */
+export const TODO_RECONCILE_NUDGE =
+  "Before you continue: your todo list still has open items and you did not update it in your previous turn. " +
+  "Check whether any are done, stale, or need new sub-steps, update the list with todowrite, then resume with the user's request."
+
+/**
+ * Said to a model several tool calls into a task with no list at all - every
+ * other todo reminder is gated on the stored list existing, so a session that
+ * never wrote one would get nothing, forever. Depth of work is the only
+ * evidence that this was not a single-step request, hence the escape hatch.
+ */
+export const TODO_CREATION_NUDGE =
+  "No todo list exists for this session and you are several tool calls into this task. " +
+  "Write one now with todowrite (waves at the top level, steps beneath), or continue only if this work is genuinely single-step."
+
+/** Completed non-`todowrite` calls in one turn before the creation nudge fires. */
+const TODO_CREATION_CALLS = 4
+
+/** Statuses that mean the item will not be worked again, so it is not open work
+ *  and cannot earn the nudge below. Deliberately the same three `TERMINAL`
+ *  names as packages/core/src/session/todo-reconcile.ts: a `failed` item that
+ *  held its parent closed there must not count as open here. */
+const TODO_CLOSED = new Set(["completed", "cancelled", "failed"])
+
+/**
+ * Fires when all three hold: the stored list has open work; this is the first
+ * step of the current turn; and the previous turn wrote no list. The previous
+ * turn is the span to read, not the current one - on step 1 the current turn is
+ * empty by definition, so the claim and the check would not name the same span.
+ * A completed call, because a `todowrite` that never returned wrote nothing.
+ */
+function reconcileNudge(input: { messages: readonly SessionV1.WithParts[]; todos: readonly Todo.Info[] }) {
+  if (!input.todos.some((todo) => !TODO_CLOSED.has(todo.status))) return undefined
+  const turn = currentTurn(input.messages)
+  if (turn.some((message) => message.info.role === "assistant" && message.parts.length > 0)) return undefined
+  const previous = previousTurn(input.messages)
+  if (!previous) return undefined
+  if (toolCalls(previous).some((call) => call.tool === TODO_TOOL && call.completed)) return undefined
+  return TODO_RECONCILE_NUDGE
+}
+
+/**
+ * Fires when the session has NO stored list and the turn is already several
+ * completed tool calls deep. Stops the moment a `todowrite` call appears in the
+ * turn, finished or not: the model is answering, and repeating the ask while it
+ * writes would only be noise.
+ */
+function creationNudge(input: { messages: readonly SessionV1.WithParts[]; todos: readonly Todo.Info[] }) {
+  if (input.todos.length > 0) return undefined
+  const calls = toolCalls(currentTurn(input.messages))
+  if (calls.some((call) => call.tool === TODO_TOOL)) return undefined
+  const worked = calls.filter((call) => call.completed).length
+  if (worked < TODO_CREATION_CALLS) return undefined
+  return TODO_CREATION_NUDGE
+}
+
 function waitLoopReminder(count: number) {
   return [
     `You have made ${count} blocking shell calls in a row that only wait: a sleep, a poll, a repeat of the call before it, or a command the shell tool had to kill on timeout.`,
     `This burns context and finishes nothing.`,
     `Do one of these now instead of waiting again: run the command ONCE with a timeout sized to how long it really takes;`,
     `or start it as a background task with the task tool and carry on with other work;`,
-    `or stop and tell the user what you are waiting for.`,
+    `or tell the user what you are waiting for and hand back to them.`,
   ].join(" ")
 }
 
 /**
- * Said to a model watching a background task by re-listing it.
- *
- * Deliberately NOT the tool description again - the description already says
- * "do not call this repeatedly" in three places and the behaviour this fires on
- * is a model that read all three and polled anyway. What it can add is the
- * mechanism: results are PUSHED, so the next snapshot can only repeat this one.
+ * Said to a model watching a background task by re-listing it. Deliberately not
+ * the tool description again: what this can add is the mechanism - results are
+ * pushed, so the next snapshot can only repeat this one.
  */
 function taskPollReminder(count: number) {
   return [
     `You have called task_list ${count} times in a row with no other work between the calls.`,
     `Looking does not move a running task along, and the next snapshot will say what this one said.`,
-    `You do not have to watch for the result: when a task settles the engine writes its full output into this conversation as a <task_result> message by itself -`,
+    // origami_change (t-41dz9f): true of background SHELL jobs too now, and
+    // said out loud - this sentence was written for sub-agents and a model
+    // reading it about a background command was being misinformed.
+    `You do not have to watch for the result: when a background task or command settles the engine writes its output into this conversation by itself -`,
     `mid-turn it reaches you at your next tool call, and if your turn has ended it starts a new one.`,
     `Do one of these now instead of listing again: carry on with work that does not touch the running task's files or topic;`,
-    `or end your turn and answer the result when it arrives;`,
+    `or hand back to the user now and answer the result when it arrives;`,
     `or, if you no longer want the task, cancel it with task_stop.`,
   ].join(" ")
 }
 
 /**
- * What one model step's reminders come to.
+ * What one model step's reminders come to. The split into two channels is
+ * load-bearing.
  *
- * TWO CHANNELS, AND THE SPLIT IS LOAD-BEARING.
+ * `messages` is the window: the plan-mode briefs below reach it through
+ * `sessions.updatePart`, which persists them, so they hold still.
  *
- * `messages` is the window. The plan-mode briefs below reach it through
- * `sessions.updatePart`, which PERSISTS them: they are injected once on entry
- * and the transcript carries them from there, so they are part of the
- * conversation and hold still.
- *
- * `reminders` is the other kind - text computed FRESH on every step from live
- * state (the stored todo list, a wait streak) and never written to any stored
- * message. That text used to be pushed onto the last user message in memory,
- * and it is the reason this type exists. A prefix cache is an exact match from
- * byte 0, and the last user message is the HEAD of a sub-agent's conversation
- * (one user message for its whole life), so a reminder whose text changed
- * between two steps - or that fired on one step and not the next - rewrote the
- * head and threw the whole cached body away. Measured on the fake provider: a
- * `task_list` poll loop rewrote the head on 4 of 8 requests, because
- * `WAIT_LOOP_STREAK` fires at 3 and 6 and is silent at 4 and 5.
- *
- * So the caller delivers these at the TAIL of the request instead, beside the
- * memory index and for the same reason - see `withTrailingInjections` in
- * session/prompt.ts. They stay in-memory-only, exactly as before.
+ * `reminders` is text computed fresh on every step from live state and never
+ * written to any stored message. It must NOT be pushed onto the last user
+ * message: a prefix cache is an exact match from byte 0, and the last user
+ * message is the head of a sub-agent's conversation, so a reminder whose text
+ * changed between two steps - or that fired on one step and not the next -
+ * rewrites the head and throws the whole cached body away. The caller delivers
+ * these at the tail instead; see `withTrailingInjections` in session/prompt.ts.
  */
 export type Applied = {
   readonly messages: SessionV1.WithParts[]
@@ -254,7 +340,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   messages: SessionV1.WithParts[]
   agent: Agent.Info
   session: Session.Info
-  /** The session's STORED todo list - the durable copy, not whatever survived
+  /** The session's stored todo list - the durable copy, not whatever survived
    *  in the transcript. Required rather than optional so a caller that forgets
    *  it fails to compile instead of silently dropping the re-injection. */
   todos: readonly Todo.Info[]
@@ -269,9 +355,21 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   if (!userMessage) return { messages: input.messages, reminders }
 
   // Ahead of the plan-mode chain below, which returns early for every agent:
-  // a lost todo list is lost whichever agent is running.
-  const todos = todoReminder({ messages: input.messages, todos: input.todos })
-  if (todos) reminders.push(todos)
+  // a lost todo list is lost whichever agent is running. All three todo texts
+  // are gated on this session being ABLE to write one - see `canTodo`.
+  if (canTodo(input.agent, input.session)) {
+    const todos = todoReminder({ messages: input.messages, todos: input.todos })
+    if (todos) reminders.push(todos)
+
+    // Both read only the inputs `apply` already has, so two steps on the same
+    // state answer the same bytes - what the trailing lane needs. Mutually
+    // exclusive by construction: one wants a list with open work in it, the other
+    // wants no list at all.
+    for (const nudge of [reconcileNudge, creationNudge]) {
+      const text = nudge({ messages: input.messages, todos: input.todos })
+      if (text) reminders.push(text)
+    }
+  }
 
   const calls = toolCalls(input.messages)
   const fired = (streak: number) => streak > 0 && streak % WAIT_LOOP_STREAK === 0
@@ -294,7 +392,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   const previous = assistantMessage?.info.agent
   const current = input.agent.name
 
-  // LEAVING a planning agent. Each regime says its own thing on the way out,
+  // Leaving a planning agent. Each regime says its own thing on the way out,
   // and deep plan's is the opposite of plan's - see PLANNING_REGIME.
   if (!planningAgent(current) && planningAgent(previous)) {
     const ctx = yield* InstanceState.context
@@ -311,14 +409,17 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
       text,
       synthetic: true,
     })
+    // origami_change (t-rylleg): a synthetic part pushed into a message
+    // already sent rewrites the cached prefix. Named here so the next
+    // step-finish reports `divergence.source` rather than "unknown".
+    SessionPromptCapture.markRewrite(userMessage.info.sessionID, "reminder")
     userMessage.parts.push(part)
     return { messages: input.messages, reminders }
   }
 
-  // Not planning at all, or already mid-plan in the SAME agent - the mode prompt
-  // is persisted through `updatePart`, so it is injected once on entry and the
-  // transcript carries it from there. Compared against `current` rather than
-  // "is planning" so that plan -> deep-plan is an ENTRY, not a continuation.
+  // Not planning at all, or already mid-plan in the same agent. Compared
+  // against `current` rather than "is planning" so that plan -> deep-plan is an
+  // entry, not a continuation.
   if (!planningAgent(current) || previous === current) return { messages: input.messages, reminders }
 
   const ctx = yield* InstanceState.context
@@ -334,11 +435,13 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
     text,
     synthetic: true,
   })
+  // origami_change (t-rylleg): see the sibling push above.
+  SessionPromptCapture.markRewrite(userMessage.info.sessionID, "reminder")
   userMessage.parts.push(part)
   return { messages: input.messages, reminders }
 })
 
-/** Plan mode's entry brief: the ONE file, and whether it is already there. */
+/** Plan mode's entry brief: the one file, and whether it is already there. */
 const planBrief = Effect.fn("SessionReminders.planBrief")(function* (fsys: FSUtil.Interface, plan: string) {
   const exists = yield* fsys.existsSafe(plan)
   if (!exists) yield* fsys.ensureDir(path.dirname(plan)).pipe(Effect.catch(Effect.die))
@@ -350,16 +453,12 @@ const planBrief = Effect.fn("SessionReminders.planBrief")(function* (fsys: FSUti
 })
 
 /**
- * Deep plan's entry brief. TWO substitutions, not one: `${planFolder}` is the
- * path and it is named all through the prompt (the folder shape, the write
- * boundary), while `${planInfo}` is the one sentence about its state. Both are
- * `replaceAll` - `${planFolder}` appears more than once, and `String.replace`
- * with a string pattern would have filled in only the first.
- *
- * The folder itself is NOT created here, unlike plan mode's parent directory:
- * the agent writes the first file into it and `writeWithDirs` makes the tree.
- * An empty folder left behind by a mode the user immediately switched out of is
- * a plan that never existed, sitting in the plans list looking like one that did.
+ * Deep plan's entry brief. Both substitutions use `replaceAll` because
+ * `${planFolder}` appears more than once and `String.replace` with a string
+ * pattern would fill in only the first. The folder itself is not created here,
+ * unlike plan mode's parent directory: an empty folder left behind by a mode
+ * the user switched straight out of is a plan that never existed, sitting in
+ * the plans list looking like one that did.
  */
 const deepPlanBrief = Effect.fn("SessionReminders.deepPlanBrief")(function* (fsys: FSUtil.Interface, folder: string) {
   const exists = yield* fsys.existsSafe(folder)
@@ -382,10 +481,9 @@ const planHandover = Effect.fn("SessionReminders.planHandover")(function* (
 })
 
 /**
- * Deep plan -> build: the folder is DELIVERED. The sentence appended here is the
- * mirror image of plan mode's "you should execute on the plan defined within
- * it", and deliberately so - approving a deep plan hands it over, it does not
- * commission the work.
+ * Deep plan -> build: the folder is delivered. The sentence appended here is
+ * deliberately the mirror image of plan mode's "execute on the plan defined
+ * within it" - approving a deep plan hands it over, it does not commission it.
  */
 const deepPlanHandover = Effect.fn("SessionReminders.deepPlanHandover")(function* (
   fsys: FSUtil.Interface,
@@ -394,7 +492,7 @@ const deepPlanHandover = Effect.fn("SessionReminders.deepPlanHandover")(function
 ) {
   const exists = yield* fsys.existsSafe(folder)
   return exists
-    ? `${switchPrompt}\n\nThe delivered deep plan is at ${folder}. Present what is in it and stop. Do NOT begin executing it.`
+    ? `${switchPrompt}\n\nThe delivered deep plan is at ${folder}. Present what is in it and hand back to the user for their decision. Executing it comes after they say so.`
     : switchPrompt
 })
 

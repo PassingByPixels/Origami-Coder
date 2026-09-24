@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PROVIDER_PROBING, bannerState, probingText } from './modelBanner';
+import { NO_CONNECTIONS, NO_CONNECTIONS_TEXT, PROVIDER_PROBING, bannerState, probingText } from './modelBanner';
 
 describe('modelBanner — which banner an ok:false status has earned', () => {
   it('an online model has no banner at all', () => {
@@ -45,6 +45,27 @@ describe('modelBanner — which banner an ok:false status has earned', () => {
 
   it('tolerates the whitespace a wire round trip can add', () => {
     expect(bannerState(false, ` ${PROVIDER_PROBING} `, false)).toBe('probing');
+    expect(bannerState(false, ` ${NO_CONNECTIONS} `, true)).toBe('no-connections');
+  });
+
+  // A fresh install has no provider at all. The wire defaults providerIsLocal
+  // to TRUE, so without its own state this case falls into `offline-local` and
+  // tells a user who has never heard of LM Studio to go and start it.
+  it('nothing configured is its OWN state, for either provider flavour', () => {
+    expect(bannerState(false, NO_CONNECTIONS, true)).toBe('no-connections');
+    expect(bannerState(false, NO_CONNECTIONS, false)).toBe('no-connections');
+  });
+
+  it('does not swallow a REAL failure that merely mentions connections', () => {
+    // The match is the whole trimmed sentinel, never a substring: an endpoint
+    // that answers "no connections available" is a live provider refusing a
+    // request, and must keep its unreachable alarm.
+    expect(bannerState(false, 'no connections available upstream', false)).toBe('offline-remote');
+  });
+
+  it('the one sentence is shared, so two surfaces cannot phrase it differently', () => {
+    // The picker's empty row and the composer strip both render this constant.
+    expect(NO_CONNECTIONS_TEXT).toBe('No connections yet — add a provider');
   });
 });
 
@@ -73,5 +94,12 @@ describe('modelBanner — the mirrored sentinel cannot drift', () => {
       path.join(here, '..', '..', '..', 'src', 'dashboard', 'DashboardPanel.ts'), 'utf8',
     );
     expect(panel).toContain(`'${PROVIDER_PROBING}'`);
+    // NO_CONNECTIONS is the same kind of copy and carries the same risk: reword
+    // it host-side and the empty state silently becomes "start LM Studio" again.
+    // The literal moved to modelStatusReason.ts (extracted at the panel's cap).
+    const reason = readFileSync(
+      path.join(here, '..', '..', '..', 'src', 'dashboard', 'modelStatusReason.ts'), 'utf8',
+    );
+    expect(reason).toContain(`'${NO_CONNECTIONS}'`);
   });
 });

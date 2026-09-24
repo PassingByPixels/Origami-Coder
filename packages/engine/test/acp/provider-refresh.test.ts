@@ -32,6 +32,8 @@ import { InstanceRef } from "@/effect/instance-ref"
 import type { InstanceContext } from "@/project/instance-context"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { Provider } from "@/provider/provider"
+import { ProviderCatalogCache } from "@/provider/catalog-cache"
+import { memoizeDiscovery } from "@/provider/discovery"
 import { tmpdir } from "../fixture/fixture"
 
 const created: InstanceContext[] = []
@@ -110,6 +112,34 @@ describe("provider_refresh through the real ACP service", () => {
     }
   }, 120_000)
 
+  // t-ttmo5w: the Connections Refresh button sends `hard`. A plain refresh (fired on
+  // every picker open) must keep the ten-minute discovery memo and the on-disk catalog,
+  // or each open would put every credential back on the wire; a hard one drops both.
+  it("hard drops the discovery memo and the cached catalogs; plain keeps both", async () => {
+    const dir = await tmpdir({ git: true })
+    await using _dir = dir
+    const service = makeService()
+    let calls = 0
+    const load = memoizeDiscovery("hard-refresh-test:anonymous", async () => {
+      calls++
+      return {}
+    })
+    const cacheKey = ProviderCatalogCache.key({ directory: dir.path, config: { hard: "refresh" } })
+    ProviderCatalogCache.write(cacheKey, { providers: [], default: {} })
+    await load()
+    expect(calls).toBe(1)
+
+    await Effect.runPromise(service.providerRefresh({ cwd: dir.path }))
+    await load()
+    expect(calls).toBe(1)
+    expect(ProviderCatalogCache.read(cacheKey)).toBeDefined()
+
+    await Effect.runPromise(service.providerRefresh({ cwd: dir.path, hard: true }))
+    await load()
+    expect(calls).toBe(2)
+    expect(ProviderCatalogCache.read(cacheKey)).toBeUndefined()
+  }, 120_000)
+
   // The mid-turn safety property — that this refresh cannot orphan a running
   // turn — is the subject of provider-refresh-live-turn.test.ts. It lives in its
   // own file because loading the session graph here made these two tests
@@ -119,18 +149,17 @@ describe("provider_refresh through the real ACP service", () => {
 /**
  * Resolve a model and make one real request with it, in the given instance.
  *
- * KNOWN HARNESS INTERACTION, not a property of this feature. Run with
- * `interject-instance.test.ts` and ONLY that file, this rejects with "All fibers
- * interrupted without error" in roughly two runs out of three: that test forks
- * turns on `Effect.never` and force-interrupts them at teardown, which kills the
- * process-wide `AppRuntime` every later file resolves services through. Bisected
- * to exactly those two files; adding a test/provider module is not required, and
- * neither an immediate retry nor a 5x50ms backoff recovers it (measured), which
- * is why there is no retry here — the runtime is gone, not busy.
- *
- * Green alone, green across `./test/acp`, and green in the full 351-file suite
- * twice. The root cause is in the other file's teardown and is reported rather
- * than patched around here.
+ * FIXED (t-qbpgu3), kept as the record because the earlier reading here was
+ * wrong and cost two bisects. This used to reject with "All fibers interrupted
+ * without error", and the note blamed `interject-instance.test.ts` for killing
+ * the process-wide `AppRuntime` at teardown. The runtime was never gone. That
+ * file cancels a forked turn, and if the turn was the FIRST caller of
+ * `ModelsDev.populate`, `Effect.cachedInvalidateWithTTL` stored its INTERRUPT as
+ * the memoised answer at `Duration.infinity` — so every later
+ * `Provider.getModel` in the process was interrupted too, with no failure and no
+ * assertion to read. `cachedInvalidateForever` (core/src/effect/cached.ts) drops
+ * an interrupted entry instead of serving it; core/test/effect/cached.test.ts
+ * pins it.
  */
 function ask(ctx: InstanceContext, providerID: string, modelID: string) {
   const effect: Effect.Effect<void, never, AppServices> = Effect.gen(function* () {

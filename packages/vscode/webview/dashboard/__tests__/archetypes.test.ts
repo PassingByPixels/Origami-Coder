@@ -8,7 +8,10 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ensureArchetypes, globalAgentDir, ARCHETYPES, ARCHETYPES_V1, ARCHETYPES_V2 } from '../../../src/dashboard/agentManager/archetypes';
+import {
+  ensureArchetypes, globalAgentDir, isPristineArchetype,
+  ARCHETYPES, ARCHETYPES_V1, ARCHETYPES_V2, ARCHETYPES_V4,
+} from '../../../src/dashboard/agentManager/archetypes';
 
 const tmp: string[] = [];
 function tmpDir(): string {
@@ -189,13 +192,24 @@ describe('archetype content sanity', () => {
     // edit/apply_patch all request "edit"; shell requests "bash"). Denying both
     // closes the escape vector: a prompt that claims "I don't edit" is now
     // permission-enforced, not just prose. bash: allow would reopen it.
+    // t-f3a74m put `"*": deny` in front of both, so each deny is now an explicit
+    // restatement of a base the matrix already closes - kept because a reader
+    // should not have to derive "this one cannot write" from an absence.
     const c = byFile('orchestrator.md').content;
-    expect(c).toMatch(/permission:\s*\n\s*edit:\s*deny/);
+    expect(c).toMatch(/permission:\s*\n\s*"\*":\s*deny/);
+    expect(c).toMatch(/\n\s*edit:\s*deny/);
     expect(c).toMatch(/\n\s*bash:\s*deny/);
   });
 
-  it('debug keeps NO permission block (its discipline stays prompt-level)', () => {
-    expect(byFile('debug.md').content).not.toMatch(/permission:/);
+  it('debug is the one archetype the matrix grants BOTH the shell and file writes (t-f3a74m)', () => {
+    // It shipped with no permission block at all until the default tool matrix
+    // landed; it now carries one like every other archetype, deny-by-default with
+    // the widest re-grant of the six.
+    const c = byFile('debug.md').content;
+    expect(c).toMatch(/permission:\s*\n\s*"\*":\s*deny/);
+    expect(c).toMatch(/\n\s*edit:\s*allow/);
+    expect(c).toMatch(/\n\s*bash:\s*allow/);
+    expect(c).toMatch(/\n\s*process:\s*allow/);
   });
 
   it('architect/debug/orchestrator each carry one primed worked example', () => {
@@ -304,12 +318,18 @@ describe('ensureArchetypes upgrade to v3 (prior-versions model)', () => {
       const v1 = ARCHETYPES_V1.find((a) => a.file === v3.file)!;
       expect(v1.content).not.toBe(v3.content);           // v1 (S9) always predates v3
     }
-    for (const f of ['architect.md', 'ask.md']) {
-      expect(ARCHETYPES_V2.find((a) => a.file === f)!.content).not.toBe(cur(f)); // reworded at v3
+    for (const a of ARCHETYPES_V2) {
+      expect(a.content).not.toBe(cur(a.file)); // every v2 payload predates the t-f3a74m matrix
     }
+    // debug/orchestrator rode v2 -> v4 unchanged, so v4 is where that identity is
+    // recorded now; v4 itself always differs from current, which is the whole
+    // point of freezing it.
     for (const f of ['debug.md', 'orchestrator.md']) {
-      expect(ARCHETYPES_V2.find((a) => a.file === f)!.content).toBe(cur(f));     // unchanged re-ship
+      expect(ARCHETYPES_V2.find((a) => a.file === f)!.content).toBe(
+        ARCHETYPES_V4.find((a) => a.file === f)!.content,
+      );
     }
+    for (const a of ARCHETYPES_V4) expect(a.content).not.toBe(cur(a.file));
     expect(ARCHETYPES_V1.some((a) => a.file === 'scout.md')).toBe(false); // scout is new at v3
     expect(ARCHETYPES_V2.some((a) => a.file === 'scout.md')).toBe(false);
     expect(ARCHETYPES_V1.some((a) => a.file === 'cartographer.md')).toBe(false); // cartographer new at v4
@@ -343,5 +363,144 @@ describe('ensureArchetypes v3 -> v4 bump (cartographer added, others byte-identi
       expect(fs.readFileSync(path.join(dir, a.file), 'utf8')).toBe(a.content); // untouched, still current
     }
     expect(state.installed).toBe(true); // the v4 pass completed and recorded itself
+  });
+});
+
+// ---------------------------------------------------------------------------
+// t-f3a74m — the owner-approved DEFAULT TOOL MATRIX, as the archetypes encode it.
+// ---------------------------------------------------------------------------
+
+/** THE APPROVED TABLE (2026-09-15), transcribed from the ticket and deliberately
+ *  NOT imported from archetypeToolMatrix.ts: a fixture that reads its expectation
+ *  out of the code under test proves only that the code equals itself. Columns:
+ *  debug · orchestrator · architect · cartographer · ask · scout. */
+const APPROVED: Array<[string, string]> = [
+  // t-fisqjz: `list` dropped — the engine defines no such tool (TOOL_IDS has none).
+  ['read grep glob wiki_search wiki_related', 'L L L L L L'],
+  ['edit', 'L O L L O O'], // architect md-only, cartographer map-dir-only (shape asserted above)
+  // The file tool follows the edit column EXCEPT for the two path-scoped grants:
+  // file_delete / file_move answer to their own ids, not to `edit`, so architect
+  // and cartographer would escape their allowlists if they had them.
+  ['file file_mkdir file_delete file_copy file_move', 'L O O O O O'],
+  ['bash process', 'L O O O O O'],
+  ['todowrite', 'L L L L O O'],
+  ['task task_list task_stop', 'O L L L L O'],
+  ['question', 'L L L L L O'],
+  ['skill', 'L L L D D D'],
+  ['git_diff lsp', 'L D L L L D'],
+  ['webfetch websearch session_search', 'D D D D D D'],
+  ['browser board_*', 'D D O O O O'],
+  ['webmcp_*', 'O O O O O O'],
+  ['screenshot', 'D D D D D D'],
+  ['remember chart goal plan dream flock_* send_message list_agents', 'O O O O O O'],
+  // t-f89g49: raising a side quest is the MAIN agent's act. Off in all six.
+  ['side_quest', 'O O O O O O'],
+  ['tool_search', 'L L L L L L'],
+];
+const COLUMNS = ['debug', 'orchestrator', 'architect', 'cartographer', 'ask', 'scout'];
+const byFile = (f: string) => ARCHETYPES.find((a) => a.file === f)!;
+
+/** The frontmatter's `permission` keys (top level only) and its `tool_search.defer`
+ *  list, read out of the shipped text the way the engine's YAML parser would see
+ *  them. A key whose value is empty carries a nested object below it. */
+function readFrontmatter(content: string): { permission: Map<string, string>; defer: Set<string> } {
+  const front = content.split('---')[1] ?? '';
+  const permission = new Map<string, string>();
+  const defer = new Set<string>();
+  let section: 'none' | 'permission' | 'search' = 'none';
+  for (const line of front.split('\n')) {
+    if (/^permission:/.test(line)) { section = 'permission'; continue; }
+    if (/^tool_search:/.test(line)) { section = 'search'; continue; }
+    if (/^\S/.test(line)) { section = 'none'; continue; }
+    if (section === 'permission') {
+      const m = /^ {2}(?! )("?)([^":]+)\1:\s*(.*)$/.exec(line);
+      if (m) permission.set(m[2]!, m[3] === '' ? 'object' : m[3]!);
+    } else if (section === 'search') {
+      const d = /^ {4}- "?([^"]+)"?$/.exec(line);
+      if (d) defer.add(d[1]!);
+    }
+  }
+  return { permission, defer };
+}
+
+describe('archetypes carry the approved default tool matrix (t-f3a74m)', () => {
+  const read = (name: string) => readFrontmatter(ARCHETYPES.find((a) => a.file === `${name}.md`)!.content);
+
+  for (const [i, agent] of COLUMNS.entries()) {
+    it(`${agent}: every cell of the approved table`, () => {
+      const { permission, defer } = read(agent);
+      for (const [tools, states] of APPROVED) {
+        const want = states.split(' ')[i];
+        for (const tool of tools.split(' ')) {
+          const grant = permission.get(tool);
+          const where = `${agent}.${tool}`;
+          if (want === 'O') {
+            // Off is the absence of a re-grant (the leading `"*": deny` covers it)
+            // or an explicit deny; anything else would hand the agent the tool.
+            expect(grant === undefined || grant === 'deny', `${where} must be Off`).toBe(true);
+            expect(defer.has(tool), `${where} is Off, so it cannot be deferred`).toBe(false);
+          } else {
+            // Loaded and Deferred are the SAME grant; only the defer list differs.
+            expect(['allow', 'ask', 'object'], where).toContain(grant);
+            expect(defer.has(tool), `${where} must be ${want}`).toBe(want === 'D');
+          }
+        }
+      }
+    });
+  }
+
+  it('`"*": deny` is the FIRST permission key of every archetype', () => {
+    // Permission.evaluate / Permission.disabled resolve with findLast, so a
+    // re-grant written before the blanket deny would be silently overruled.
+    for (const a of ARCHETYPES) {
+      const keys = [...readFrontmatter(a.content).permission.keys()];
+      expect(keys[0], a.file).toBe('*');
+    }
+  });
+
+  it('no archetype defers a tool the matrix never granted, and none ships an `always` list', () => {
+    for (const a of ARCHETYPES) {
+      const { permission, defer } = readFrontmatter(a.content);
+      for (const tool of defer) expect(permission.get(tool), `${a.file}:${tool}`).not.toBe('deny');
+      expect(a.content).not.toMatch(/^\s*always:/m);
+    }
+  });
+
+  it('task is never Deferred, and every task TARGET list is the one that already shipped', () => {
+    // The matrix moves presentation and existence. Which agents a delegate may
+    // reach is its own decision and must survive verbatim.
+    for (const a of ARCHETYPES) expect(readFrontmatter(a.content).defer.has('task')).toBe(false);
+    for (const f of ['architect.md', 'ask.md', 'cartographer.md']) {
+      expect(byFile(f).content).toMatch(/task:\s*\n\s*"\*":\s*deny\s*\n\s*scout:\s*allow/);
+    }
+    expect(byFile('orchestrator.md').content).toMatch(
+      /task:\s*\n\s*"\*":\s*deny\s*\n\s*explore:\s*allow\s*\n\s*general:\s*allow/,
+    );
+    expect(byFile('scout.md').content).not.toMatch(/\n\s*task:/);
+  });
+
+  it('screenshot is granted `ask`, not `allow` — reachable, and it still asks every time', () => {
+    for (const a of ARCHETYPES) {
+      expect(readFrontmatter(a.content).permission.get('screenshot'), a.file).toBe('ask');
+    }
+  });
+});
+
+describe('isPristineArchetype — the one definition of "the user has not edited this"', () => {
+  it('accepts the current payload and every generation we shipped before it', () => {
+    for (const a of ARCHETYPES) expect(isPristineArchetype(a.file, a.content)).toBe(true);
+    for (const a of ARCHETYPES_V4) expect(isPristineArchetype(a.file, a.content)).toBe(true);
+    for (const a of ARCHETYPES_V1) expect(isPristineArchetype(a.file, a.content)).toBe(true);
+    for (const a of ARCHETYPES_V2) expect(isPristineArchetype(a.file, a.content)).toBe(true);
+  });
+
+  it('refuses anything else, including a shipped payload under the WRONG file name', () => {
+    expect(isPristineArchetype('ask.md', 'MY OWN ASK PROMPT')).toBe(false);
+    expect(isPristineArchetype('ask.md', '')).toBe(false);
+    // A one-character edit is an edit: the check is byte-identity, not a family
+    // resemblance, because the alternative is guessing at someone's file.
+    expect(isPristineArchetype('ask.md', byFile('ask.md').content + '\n')).toBe(false);
+    expect(isPristineArchetype('ask.md', byFile('scout.md').content)).toBe(false);
+    expect(isPristineArchetype('nonesuch.md', byFile('ask.md').content)).toBe(false);
   });
 });

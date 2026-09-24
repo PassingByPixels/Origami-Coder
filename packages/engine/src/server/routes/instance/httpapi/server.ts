@@ -1,4 +1,4 @@
-import { Config as EffectConfig, Context, Effect, Layer } from "effect"
+import { Config as EffectConfig, Context, Effect, Layer, Option } from "effect"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
@@ -6,7 +6,10 @@ import { FSUtil } from "@origami/core/fs-util"
 import * as Observability from "@origami/core/observability"
 import { Account } from "@/account/account"
 import { Agent } from "@/agent/agent"
+import * as ArtifactServe from "@/artifact/serve"
+import { FlockOwnerHttp } from "@/flock/owner-http"
 import { FlockRouting } from "@/flock/routing"
+import { FlockService } from "@/flock/service"
 import { Auth } from "@/auth"
 import { BackgroundJob } from "@/background/job"
 import { Command } from "@/command"
@@ -192,6 +195,99 @@ const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effe
   Layer.provide(authOnlyRouterLayer),
 )
 
+/**
+ * The three routes a SECOND engine on this machine calls (see `flock/owner-http.ts`).
+ *
+ * Raw `HttpRouter.use` rather than a typed group, deliberately: this is engine
+ * to engine on loopback, not an SDK surface, and putting it on the declared API
+ * would publish it in the generated OpenAPI and the client the extension ships.
+ * `docRoute` is the same shape for the same reason.
+ *
+ * Registered on EVERY engine and gated on holding the flock, not registered
+ * conditionally: which engine owns the lease changes while the process runs, so
+ * a route tree built at listen time could never be right. An engine that does
+ * not hold it answers 503 and the caller says so.
+ */
+const flockRoute = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    const reply = (result: FlockOwnerHttp.Reply) =>
+      HttpServerResponse.jsonUnsafe(result.body, { status: result.status })
+    yield* router.add("POST", FlockOwnerHttp.ASK_PATH, (request) =>
+      Effect.gen(function* () {
+        const body = yield* request.json.pipe(Effect.catch(() => Effect.succeed(undefined)))
+        const url = new URL(request.url, "http://localhost")
+        return reply(
+          yield* Effect.promise(() =>
+            FlockOwnerHttp.route(
+              { method: "POST", pathname: FlockOwnerHttp.ASK_PATH, query: url.searchParams, body },
+              FlockService.peer(),
+            ),
+          ),
+        )
+      }),
+    )
+    yield* router.add("POST", FlockOwnerHttp.REPLY_PATH, (request) =>
+      Effect.gen(function* () {
+        const body = yield* request.json.pipe(Effect.catch(() => Effect.succeed(undefined)))
+        const url = new URL(request.url, "http://localhost")
+        return reply(
+          yield* Effect.promise(() =>
+            FlockOwnerHttp.route(
+              { method: "POST", pathname: FlockOwnerHttp.REPLY_PATH, query: url.searchParams, body },
+              FlockService.peer(),
+            ),
+          ),
+        )
+      }),
+    )
+    yield* router.add("GET", FlockOwnerHttp.WHO_PATH, (request) =>
+      Effect.gen(function* () {
+        const url = new URL(request.url, "http://localhost")
+        return reply(
+          yield* Effect.promise(() =>
+            FlockOwnerHttp.route(
+              { method: "GET", pathname: FlockOwnerHttp.WHO_PATH, query: url.searchParams, body: undefined },
+              FlockService.peer(),
+            ),
+          ),
+        )
+      }),
+    )
+  }),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
+/**
+ * The artifact viewer's route — `GET /artifact/<contentToken>/<path>`.
+ *
+ * Raw `HttpRouter.use` for `flockRoute`'s reason (not an SDK surface, and it
+ * must stay out of the generated OpenAPI), and registered BEFORE `uiRoute`
+ * because a route added after the `*` `/*` fallback never runs.
+ *
+ * NOT `.pipe(Layer.provide(authOnlyRouterLayer))`, and that is the one
+ * deliberate difference from every other route in this file. The consumer is
+ * the VS Code integrated browser, which sends no Basic credentials — so behind
+ * the auth layer every artifact would 401 the moment the owner set a server
+ * password. The per-version random content token is the address AND the
+ * secret, and `ArtifactServe.serve` refuses any request whose Host is not
+ * loopback, so binding this server to a LAN address does not publish it.
+ */
+const artifactRoute = HttpRouter.use((router) =>
+  router.add("GET", `${ArtifactServe.PREFIX}*`, (request) =>
+    Effect.gen(function* () {
+      const url = new URL(request.url, "http://localhost")
+      const remoteAddress = request.remoteAddress ? Option.getOrUndefined(request.remoteAddress) : undefined
+      const served = yield* Effect.promise(() =>
+        ArtifactServe.serve({
+          pathname: url.pathname,
+          ...(request.headers["host"] ? { host: request.headers["host"] } : {}),
+          ...(remoteAddress ? { remoteAddress } : {}),
+        }),
+      )
+      return HttpServerResponse.raw(served.body, { status: served.status, headers: new Headers(served.headers) })
+    }),
+  ),
+)
+
 const uiRoute = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
@@ -282,6 +378,8 @@ export function createRoutes(
     instanceRoutes,
     serverRoutes,
     docRoute,
+    flockRoute,
+    artifactRoute,
     uiRoute,
   ).pipe(
     Layer.provide([

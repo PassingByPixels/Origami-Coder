@@ -6,7 +6,7 @@ import { RequestExecutor } from "./executor"
 import type { Framing } from "./framing"
 import { HttpTransport } from "./transport"
 import type { Transport, TransportRuntime } from "./transport"
-import { WebSocketExecutor } from "./transport"
+import { ProcessExecutor, WebSocketExecutor } from "./transport"
 import type { Protocol } from "./protocol"
 import { applyCachePolicy } from "../cache-policy"
 import * as ProviderShared from "../protocols/shared"
@@ -274,6 +274,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
           endpoint: routeInput.endpoint,
           auth: routeInput.auth ?? Auth.none,
           encodeBody,
+          bodyStructure: protocol.body.structure,
           headers: routeInput.headers,
         }),
       streamPrepared: (prepared: Prepared, request: LLMRequest, runtime: TransportRuntime) => {
@@ -420,6 +421,7 @@ export const layer: Layer.Layer<Service, never, RequestExecutor.Service> = Layer
     const stream = streamRequestWith({
       http: yield* RequestExecutor.Service,
       webSocket: Option.getOrUndefined(yield* Effect.serviceOption(WebSocketExecutor.Service)),
+      process: Option.getOrUndefined(yield* Effect.serviceOption(ProcessExecutor.Service)),
     })
     return Service.of({ prepare: prepareWith as Interface["prepare"], stream, generate: generateWith(stream) })
   }),

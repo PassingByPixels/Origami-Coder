@@ -12,7 +12,7 @@
 // process boundary, so a rename there leaves the toggle doing nothing at all
 // with every test still green. The last case reads the engine's own file.
 
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, afterAll, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -30,16 +30,38 @@ vi.mock('vscode', () => ({
 
 import { ENGINE_FLAGS, CODE_MODE_SETTING, engineSpawnEnv, codeModeEnabled } from '../../../src/engineEnv';
 import {
+  SUBAGENT_LIMIT_DEFAULT_HOURS,
+  SUBAGENT_LIMIT_MIN_HOURS,
+  SUBAGENT_LIMIT_SETTING,
+  subagentLimitHours,
+  subagentMaxMs,
+} from '../../../src/subagentLimit';
+import {
   AGENT_KIND_VAR,
   AGENT_NAME_VAR,
   AGENT_NAME_SETTING,
   BACKGROUND_KIND,
   agentNameSetting,
 } from '../../../src/peerName';
+import { SIDE_QUESTS_FLAG, SIDE_QUESTS_SETTING, sideQuestsEnabled, sideQuestsSpawnEnv } from '../../../src/sideQuestsFlag';
+
+/** `sideQuestsSpawnEnv` now reads the env override as well as the setting
+ *  (t-fisfs5 R3), and `engineSpawnEnv` calls it with no argument, so it reads
+ *  the REAL process env. A developer running the suite with
+ *  ORIGAMI_EXPERIMENTAL_SIDE_QUESTS set would otherwise flip every
+ *  setting-driven case below; the var is cleared for the file and restored
+ *  after it. */
+const realSideQuestsVar = process.env[SIDE_QUESTS_FLAG];
 
 beforeEach(() => {
   fake.settings = {};
   fake.throws = false;
+  delete process.env[SIDE_QUESTS_FLAG];
+});
+
+afterAll(() => {
+  if (realSideQuestsVar === undefined) delete process.env[SIDE_QUESTS_FLAG];
+  else process.env[SIDE_QUESTS_FLAG] = realSideQuestsVar;
 });
 
 describe('engineSpawnEnv — the flags this shell turns on', () => {
@@ -49,6 +71,10 @@ describe('engineSpawnEnv — the flags this shell turns on', () => {
   });
 
   it('writes NO code-mode variable when the setting is off, rather than writing false', () => {
+    // Flock explicitly ON here so its own (now off-by-default) overlay does
+    // not add a key this test is not about — see flockKillSwitch.test.ts.
+    // This mock's `get` reads the bare key, same as CODE_MODE_SETTING above.
+    fake.settings['enabled'] = true;
     const env = engineSpawnEnv({ codeMode: false });
 
     expect(Object.keys(env)).toEqual([ENGINE_FLAGS.backgroundSubagents]);
@@ -74,6 +100,87 @@ describe('codeModeEnabled — reading the setting', () => {
     fake.throws = true;
 
     expect(codeModeEnabled()).toBe(false);
+  });
+});
+
+// t-fdv45j gave the flag a setting; t-ffjau8 turned the default over. The
+// direction the variable is written in is now the OPPOSITE of code mode above:
+// the engine defaults to ON, so silence means on and only OFF is spoken.
+describe('side quests (t-fdv45j, default ON since t-ffjau8) — the setting reaches the engine spawn', () => {
+  it('writes NO side-quests variable when the setting is on, because the engine already defaults to on', () => {
+    expect(ENGINE_FLAGS.sideQuests in engineSpawnEnv({ codeMode: false })).toBe(false);
+    expect(sideQuestsSpawnEnv()).toEqual({});
+    fake.settings[SIDE_QUESTS_SETTING] = true;
+    expect(ENGINE_FLAGS.sideQuests in engineSpawnEnv({ codeMode: false })).toBe(false);
+    expect(sideQuestsSpawnEnv()).toEqual({});
+  });
+
+  it('writes the flag as an explicit false, and only when the setting is off', () => {
+    fake.settings[SIDE_QUESTS_SETTING] = false;
+    expect(engineSpawnEnv({ codeMode: false })[ENGINE_FLAGS.sideQuests]).toBe('false');
+    expect(sideQuestsSpawnEnv()).toEqual({ [SIDE_QUESTS_FLAG]: 'false' });
+  });
+
+  it('sideQuestsEnabled is on by default and follows the setting once the env var is unset', () => {
+    expect(sideQuestsEnabled({})).toBe(true);
+    fake.settings[SIDE_QUESTS_SETTING] = false;
+    expect(sideQuestsEnabled({})).toBe(false);
+    fake.settings[SIDE_QUESTS_SETTING] = true;
+    expect(sideQuestsEnabled({})).toBe(true);
+  });
+
+  it('is on when there is no settings store at all, the same way the engine defaults', () => {
+    fake.throws = true;
+    expect(sideQuestsEnabled({})).toBe(true);
+    expect(sideQuestsSpawnEnv()).toEqual({});
+  });
+
+  // t-fisfs5 R3: the overlay used to read the SETTING alone, so a dev env var
+  // moved the drawer without moving the engine (and the reverse). Both halves
+  // now answer off one function.
+  it('the spawn overlay agrees with the drawer when the env var says ON and the setting says off', () => {
+    fake.settings[SIDE_QUESTS_SETTING] = false;
+    const env = { [SIDE_QUESTS_FLAG]: 'true' };
+    expect(sideQuestsEnabled(env)).toBe(true);
+    // Nothing written: the engine's own default is ON and the inherited `true`
+    // must not be overwritten with an explicit `false`.
+    expect(sideQuestsSpawnEnv(env)).toEqual({});
+  });
+
+  it('the spawn overlay agrees with the drawer when the env var says OFF and the setting says on', () => {
+    fake.settings[SIDE_QUESTS_SETTING] = true;
+    const env = { [SIDE_QUESTS_FLAG]: 'false' };
+    expect(sideQuestsEnabled(env)).toBe(false);
+    expect(sideQuestsSpawnEnv(env)).toEqual({ [SIDE_QUESTS_FLAG]: 'false' });
+  });
+
+  it('with no env var set, the overlay still follows the setting alone', () => {
+    expect(sideQuestsSpawnEnv({})).toEqual({});
+    fake.settings[SIDE_QUESTS_SETTING] = false;
+    expect(sideQuestsSpawnEnv({})).toEqual({ [SIDE_QUESTS_FLAG]: 'false' });
+  });
+
+  it('the env var wins over the setting whenever it is SET, in either direction', () => {
+    fake.settings[SIDE_QUESTS_SETTING] = true;
+    expect(sideQuestsEnabled({ [SIDE_QUESTS_FLAG]: 'false' })).toBe(false);
+    fake.settings[SIDE_QUESTS_SETTING] = false;
+    expect(sideQuestsEnabled({ [SIDE_QUESTS_FLAG]: 'true' })).toBe(true);
+    expect(sideQuestsEnabled({ [SIDE_QUESTS_FLAG]: '1' })).toBe(true);
+  });
+
+  it('is contributed as a boolean, default TRUE, and says new chats pick it up', () => {
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json'), 'utf8'),
+    );
+    const prop = pkg.contributes.configuration.properties[`origami.${SIDE_QUESTS_SETTING}`];
+    expect(prop, 'the setting is not contributed at all').toBeDefined();
+    expect(prop.type).toBe('boolean');
+    // t-ffjau8. The headline feature ships on; a `false` here is the whole bug
+    // this ticket fixed — the owner had no such setting and had no tool.
+    expect(prop.default).toBe(true);
+    expect(prop.description.toLowerCase()).toContain('on by default');
+    expect(prop.description.toLowerCase()).toContain('turn this off');
+    expect(prop.description.toLowerCase()).toContain('new chat');
   });
 });
 
@@ -107,6 +214,66 @@ describe('headless — the sessions no human is watching', () => {
     expect(engineSpawnEnv({ codeMode: false, headless: true })[AGENT_KIND_VAR]).toBe(BACKGROUND_KIND);
     expect(AGENT_KIND_VAR in engineSpawnEnv({ codeMode: false })).toBe(false);
     expect(AGENT_KIND_VAR in engineSpawnEnv({ codeMode: false, headless: false })).toBe(false);
+  });
+});
+
+describe('the sub-agent time limit — hours in, milliseconds out', () => {
+  it('converts the setting’s hours to the milliseconds the engine reads', () => {
+    expect(engineSpawnEnv({ codeMode: false, subagentLimitHours: 4 })[ENGINE_FLAGS.subagentMaxMs]).toBe('14400000');
+    expect(engineSpawnEnv({ codeMode: false, subagentLimitHours: 0.5 })[ENGINE_FLAGS.subagentMaxMs]).toBe('1800000');
+  });
+
+  it('rounds to a WHOLE millisecond, because the engine discards a fraction', () => {
+    // runtime-flags.ts reads this with `positiveInteger`, which maps a
+    // non-integer to undefined — it does not clamp. An unrounded value would
+    // look exactly like the setting doing nothing, with no error anywhere.
+    expect(subagentMaxMs(1 / 3)).toBeUndefined(); // under the minimum first
+    expect(subagentMaxMs(2.0000001)).toBe('7200000');
+    expect(Number.isInteger(Number(subagentMaxMs(1.7)))).toBe(true);
+  });
+
+  it('writes NO variable when nothing usable is set, so the engine’s own default stands', () => {
+    // Writing this shell's idea of four hours would freeze the engine's default
+    // at whatever this file believed on the day it shipped.
+    expect(ENGINE_FLAGS.subagentMaxMs in engineSpawnEnv({ codeMode: false })).toBe(false);
+    expect(subagentMaxMs(undefined)).toBeUndefined();
+    expect(subagentMaxMs(Number.NaN)).toBeUndefined();
+    expect(subagentMaxMs(0)).toBeUndefined();
+    expect(subagentMaxMs(-1)).toBeUndefined();
+  });
+
+  it('refuses a value below the minimum rather than clamping it up', () => {
+    // Clamping would run a cap the user never chose while settings.json showed
+    // another number — a silent disagreement is worse than the default.
+    expect(subagentMaxMs(SUBAGENT_LIMIT_MIN_HOURS - 0.01)).toBeUndefined();
+    expect(subagentMaxMs(SUBAGENT_LIMIT_MIN_HOURS)).toBe('1800000');
+  });
+
+  it('reads the setting, and reads nothing when there is no store', () => {
+    expect(subagentLimitHours()).toBeUndefined();
+    fake.settings[SUBAGENT_LIMIT_SETTING] = 2;
+    expect(subagentLimitHours()).toBe(2);
+    fake.settings[SUBAGENT_LIMIT_SETTING] = '2';
+    expect(subagentLimitHours()).toBeUndefined();
+    fake.settings[SUBAGENT_LIMIT_SETTING] = 6;
+    fake.throws = true;
+    expect(subagentLimitHours()).toBeUndefined();
+  });
+
+  it('declares the SAME default and minimum as package.json contributes', () => {
+    // The pane shows these numbers and VS Code enforces them; two sources that
+    // disagree means a settings.json value the pane cannot represent.
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'package.json'), 'utf8'),
+    );
+    const prop = pkg.contributes.configuration.properties[`origami.${SUBAGENT_LIMIT_SETTING}`];
+    expect(prop, 'the setting is not contributed at all').toBeDefined();
+    expect(prop.type).toBe('number');
+    expect(prop.default).toBe(SUBAGENT_LIMIT_DEFAULT_HOURS);
+    expect(prop.minimum).toBe(SUBAGENT_LIMIT_MIN_HOURS);
+    // The env is read at SPAWN. A description that does not say so sends the
+    // user looking for a bug when the change appears to do nothing.
+    expect(prop.description.toLowerCase()).toContain('reload the window');
   });
 });
 

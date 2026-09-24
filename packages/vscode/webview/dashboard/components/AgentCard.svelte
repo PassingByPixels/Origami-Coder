@@ -16,7 +16,8 @@
   import AgentDiffPanel from './AgentDiffPanel.svelte';
   import ArchetypeGlyph from './ArchetypeGlyph.svelte';
   import CardOverflow from './CardOverflow.svelte';
-  import { age, bucketRow, type Row } from './boardBuckets';
+  import { age, bucketRow, type ColumnId, type Row } from './boardBuckets';
+  import { cardEdgeVar } from './boardCardEdge';
 
   interface ModelOpt { value: string; name: string; configured?: boolean; }
   interface ProviderStat { id: string; name: string; live: boolean; flavor?: 'lmstudio' | 'ollama' | 'other'; }
@@ -25,6 +26,7 @@
     repoRoot: string;
     defaultModel: string;
     row: Row;
+    status: ColumnId; // the board column this card draws in (status edge)
     modelOptions: ModelOpt[];
     providerStatus: ProviderStat[];
     agentTypes: Array<{ id: string; name: string }>; // roster for the queued-task editor + line2 name
@@ -40,7 +42,7 @@
     onCloseDiff: () => void;
   }
   let {
-    repoRoot, defaultModel, row, modelOptions, providerStatus, agentTypes, editing, expanded,
+    repoRoot, defaultModel, row, status, modelOptions, providerStatus, agentTypes, editing, expanded,
     post, onStartEdit, onCancelEdit, onSaveEdit, onToggleExpand, onApplied, onCloseDiff,
   }: Props = $props();
   // line2 shows the agent-type DISPLAY name (capitalized, matching the dropdown)
@@ -135,7 +137,8 @@
   });
 </script>
 
-<div class="am-card" class:working={row.state === 'working' || row.state === 'provisioning'} class:blocked>
+<div class="am-card" class:working={row.state === 'working' || row.state === 'provisioning'} class:blocked
+  style="border-top-color: {cardEdgeVar(status)}">
   {#if editing}
     <div class="am-editor">
       <label class="am-task">

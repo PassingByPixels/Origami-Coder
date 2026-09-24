@@ -1,0 +1,5 @@
+# This template is embedded verbatim into the engine bundle (src/agent/bot.ts
+# imports it as text) and scaffolds a bot definition whose frontmatter is split
+# on a bare line feed. A CRLF checkout under core.autocrlf=true leaves a
+# carriage return on every line, so pin the working-tree form to LF everywhere.
+src/agent/bot-def-template.txt text eol=lf

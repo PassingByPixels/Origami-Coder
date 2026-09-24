@@ -1,45 +1,32 @@
 <script lang="ts">
-  // The composer's session-mode control: ONE trigger, ONE popover, three
-  // choices (Build / Plan / Deep Plan). It replaces the two-state Plan toggle
-  // that used to live inline in InputBar.svelte, and it was extracted rather
-  // than widened in place because InputBar sat at 1183 of its 1200-line cap
-  // with no room for a third state's markup, popover and styles.
+  import { tip } from '../../shared/warmTip';
+  // The composer's session-mode control: one trigger, one popover, three
+  // choices (Build / Plan / Deep Plan). Same idiom as the Effort button: a
+  // small trigger opens a panel over the composer, with a full-screen
+  // transparent backdrop that closes it on the next click.
   //
-  // The idiom is the Effort button a few controls to the left: a small trigger
-  // that opens a panel over the composer, and a full-screen transparent backdrop
-  // so the next click anywhere closes it.
+  // ApproveRail.svelte is mounted here unchanged, so the two controls
+  // cannot drift apart by being restyled separately.
   //
-  // WHAT THE PANEL DRAWS is the ACCESS popover's dot slider, not a list of
-  // buttons (owner UAT): the composer had two ways of picking one-of-N sitting
-  // a few pixels apart, and this was the odd one out. ApproveRail.svelte is
-  // mounted here UNCHANGED, so the two controls cannot drift apart by being
-  // restyled separately; only the popover shell is duplicated, for the reason
-  // the `.mode-btn` note below gives.
+  // State lives in the caller: InputBar owns `permissionMode` and posts the
+  // change; this component only reports a click and draws what it is told.
   //
-  // STATE LIVES IN THE CALLER. InputBar owns `permissionMode` (the engine is
-  // the authority; the panel echoes `modeUpdate` / `modeOptions`) and does the
-  // posting. This component reports a click and draws what it is told, so there
-  // is never a second copy of "what mode is this chat in".
-  //
-  // COLOUR CARRIES MEANING HERE, so every value below is an `--og-*` token: the
-  // three states are told apart by the trigger's fill as much as by its text,
-  // and a literal would be an invisible or unreadable ON state in whichever of
-  // the five themes it clashed with. The one exception is the panel's drop
-  // shadow, kept verbatim from InputBar's `.effort-pop` and ApprovePopover's
-  // `.approve-pop` — a shadow is opacity over whatever is behind it rather than
-  // a themed surface, there is no `--og-*` shadow var in this codebase, and a
-  // fifth composer popover that alone had no shadow would read as a bug. That
-  // single literal is why this file is not in THEMED_FILES; ModeControl.test.ts
-  // carries the regex proof for the values that ARE colours instead.
+  // Colour carries meaning here, so every value below is an `--og-*` token
+  // — a literal would be unreadable in some theme. The one exception is the
+  // panel's drop shadow, kept verbatim since no `--og-*` shadow var exists;
+  // that literal is why this file is not in THEMED_FILES.
   import ApproveRail from './ApproveRail.svelte';
   import { MODE_RAIL_OPTIONS, modeButtonLabel, modeButtonTitle, modeState } from './modeControl';
 
-  let { current, onSelect }: { current: string; onSelect: (modeId: string) => void } = $props();
+  // `passthrough` = a Claude Code cell, where this drives CLAUDE's own plan
+  // mode rather than an Origami mode agent; modeButtonLabel says so in the label.
+  let { current, onSelect, passthrough = false }:
+    { current: string; onSelect: (modeId: string) => void; passthrough?: boolean } = $props();
 
   let open = $state(false);
 
   const state = $derived(modeState(current));
-  const label = $derived(modeButtonLabel(current));
+  const label = $derived(modeButtonLabel(current, passthrough));
   const title = $derived(modeButtonTitle(current));
 
   function pick(modeId: string) {
@@ -55,14 +42,12 @@
     class:plan-mode={state === 'plan'}
     class:deep-plan-mode={state === 'deep-plan'}
     onclick={() => (open = !open)}
-    {title}>{label}</button>
+    use:tip={title}>{label}</button>
   {#if open}
     <button class="mode-backdrop" aria-label="Close mode selector" onclick={() => (open = false)}></button>
-    <!-- No stopPropagation on the panel, unlike the Effort and Approve popovers
-         it copies: the backdrop is a SIBLING behind it (z-index 19 vs 20), not
-         an ancestor, so a click in here never reaches it, and picking a mode
-         closes the panel itself. A handler that guards nothing is a handler
-         that only costs an a11y suppression. -->
+    <!-- No stopPropagation here, unlike the Effort and Approve popovers: the
+         backdrop is a sibling behind this panel, not an ancestor, so a click
+         inside never reaches it. -->
     <div class="mode-pop">
       <div class="mode-pop-row">
         <div class="mode-pop-title">Mode:</div>

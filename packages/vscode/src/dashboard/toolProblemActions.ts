@@ -1,18 +1,10 @@
-// Tools pane — the two actions offered on a FAILED TOOL FILE (the error card
-// the pane draws above the grid): open it in an editor tab, or delete it.
-//
-// Its own module rather than another case in toolsPane.ts, on that file's own
-// established rule: this is one self-contained unit (validate a path, act on
-// it, patch the answer) and toolsPane.ts had 30 lines of slack against a 150
-// cap, which the delete's safety check alone would have eaten.
-//
-// THE SAFETY PROPERTY THIS FILE EXISTS FOR: every other write on this pane
-// takes a tool ID and resolves the path itself, because a path from a webview
-// is not a fact. These two cannot — a failed file produced no tool and so has
-// no id, and the path IS the identity. So the path is re-checked against a
-// FRESH engine read and refused unless the ENGINE is still naming it. Nothing
-// the webview invents can become an unlink; the worst a compromised or stale
-// message can do is name a file the engine already reported as broken.
+// Tools pane — the two actions offered on a failed tool file: open it in an editor tab, or delete
+// it. Own module rather than another toolsPane.ts case, per that file's rule of one self-contained
+// unit per file.
+// Safety property: every other write on this pane takes a tool ID and resolves the path itself.
+// These two can't — a failed file produced no tool and so has no id, and the path IS the identity —
+// so the path is re-checked against a fresh engine read and refused unless the engine still names
+// it.
 
 import * as vscode from 'vscode';
 import type { ToolProblem } from '../acpExtTypes';
@@ -29,14 +21,10 @@ export function payloadProblems(payload: Record<string, unknown>): ToolProblem[]
 }
 
 /**
- * Drop one file from a re-read payload's problem list.
- *
- * The engine scans the tool files ONCE per instance and answers from that
- * cache (`InstanceState` in engine/src/tool/registry.ts — no file watcher), so
- * a file deleted a moment ago is still in the list the immediate re-read comes
- * back with, and the card would spring straight back onto the screen. Same
- * stale-cache patch `patchToolStatePayload` applies after a state write, and
- * `pluginsPane.ts` after an enable/disable.
+ * Drop one file from a re-read payload's problem list. The engine scans tool
+ * files once per instance and caches the answer, so a just-deleted file is
+ * still in the list an immediate re-read returns — this patches it out so the
+ * card doesn't spring back, same pattern as `patchToolStatePayload`.
  */
 export function patchProblemRemoved(payload: Record<string, unknown>, file: string): Record<string, unknown> {
   return { ...payload, problems: payloadProblems(payload).filter((p) => p.file !== file) };
@@ -63,8 +51,8 @@ export async function handleToolProblemMessage(
     return;
   }
   try {
-    // To the recycle bin, not straight off the disk: this is the user's own
-    // source file and the pane offers no undo of its own.
+    // To the recycle bin, not straight off disk: this is the user's own source file and the pane
+    // offers no undo.
     await vscode.workspace.fs.delete(uri, { useTrash: true });
   } catch (e) {
     vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));

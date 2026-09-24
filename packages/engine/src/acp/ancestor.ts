@@ -4,17 +4,12 @@ import type { ACPSession } from "./session"
 
 // Subagent sessions are created by the task tool through the DOMAIN session store
 // only (Session.Service.create) and are NEVER registered in the ACP-layer session
-// store, which is populated exclusively for client-created sessions
-// (newSession/loadSession). So an ACP-layer `tryGet` misses for anything a
-// subagent produces - its permission asks, its message parts, its tool calls -
-// and an early return silently drops them at the boundary.
+// store, which holds client-created sessions only. So an ACP-layer `tryGet` misses
+// anything a subagent produces, and an early return would drop it at the boundary.
 //
-// Walk the DOMAIN session's parent chain (Session.get -> parentID) looking for the
-// nearest ancestor already registered in the ACP session store, so the caller can
-// surface the subagent's activity under THAT ancestor's ACP session id (the only
-// id the client knows). Bounded (subagents nest shallowly; the cap stops a
-// runaway) and cycle-safe (a self/loop parent link can't spin). Returns the
-// registered ancestor's ACP session, or undefined when none exists.
+// Walk the DOMAIN session's parent chain (Session.get -> parentID) for the nearest
+// ancestor already registered in the ACP session store - the only id the client
+// knows. Bounded and cycle-safe. Returns that ancestor's ACP session, or undefined.
 const MAX_HOPS = 5
 
 export async function resolveRegisteredAncestor(input: {

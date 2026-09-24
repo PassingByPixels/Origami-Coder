@@ -3,28 +3,18 @@ import { LayerNode } from "@origami/core/effect/layer-node"
 import { Config } from "@/config/config"
 
 /**
- * Deferred tool catalog for the PRIMARY tool list.
+ * Deferred tool catalog for the primary tool list.
  *
- * The problem: every connected MCP server pushes its whole tool list — names,
- * descriptions and full JSON Schemas — into the system prompt of every turn,
- * whether or not the model ever calls one. With two or three servers that is
- * thousands of tokens the user pays for on every request.
+ * A connected MCP server pushes every tool's full JSON Schema into the system
+ * prompt of every turn, called or not. A deferred tool is advertised as ONE
+ * catalog line instead; `tool_search` turns a query into the matching tools'
+ * schemas, and the matched ids stay callable for the rest of the session.
  *
- * The trade this module makes is the one `$codemode.search` already makes
- * inside the confined interpreter (packages/codemode/src/tool-runtime.ts): a
- * deferred tool is advertised as ONE catalog line — id, kind and a truncated
- * first line of its description — instead of a schema. `tool_search` turns a
- * query into the matching tools' full schemas, and the ids it matched are
- * remembered per session, so the tool stays callable for the rest of that
- * session rather than only for the step that searched.
- *
- * The scoring is ported from `makeSearchTool` in tool-runtime.ts deliberately:
- * two search surfaces that rank the same tools differently would be a bug the
- * user experiences as "it found it in code mode but not here".
- *
- * Everything above the service at the bottom of this file is PURE — no Effect,
- * no config, no MCP — so the ranking, the deferral rules and the rendered
- * catalog can all be tested without booting an engine.
+ * The scoring is ported from `makeSearchTool` in
+ * packages/codemode/src/tool-runtime.ts deliberately: two search surfaces that
+ * rank the same tools differently is a bug the user sees as "it found it in
+ * code mode but not here". Everything above the service at the bottom is pure,
+ * so ranking and deferral are testable without booting an engine.
  */
 
 export const TOOL_SEARCH_TOOL = "tool_search"
@@ -37,10 +27,9 @@ export const MAX_SEARCH_LIMIT = 20
 export type Kind = "builtin" | "mcp"
 
 /**
- * What the deferral decision needs. Deliberately smaller than `Candidate`:
- * the decision runs over EVERY tool on every step of the loop, while the
- * search text is only ever read for the handful that end up deferred, so
- * building it for all of them would be work thrown away on each step.
+ * What the deferral decision needs. Smaller than `Candidate` on purpose: the
+ * decision runs over every tool on every step, while the search text is only
+ * read for the handful that end up deferred.
  */
 export type Entry = {
   readonly id: string
@@ -63,6 +52,56 @@ export type Settings = {
   readonly always: readonly string[]
 }
 
+/**
+ * The tools that are NEVER a catalog line, whatever a Def or a config says.
+ * Hiding one buys a `tool_search` round trip on nearly every session, and
+ * `invalid` is the repair path the registry routes an unknown tool name to. A
+ * hard guard, because `defer: ["*"]` in a user's config would otherwise take
+ * `read` and `edit` away from every agent.
+ */
+export const CORE: ReadonlySet<string> = new Set([
+  "read",
+  "edit",
+  "write",
+  "apply_patch",
+  "bash",
+  "grep",
+  "glob",
+  "todowrite",
+  "task",
+  "question",
+  "invalid",
+  // A remembered fact must never cost a `tool_search` first.
+  "remember",
+])
+
+/**
+ * Builtins deferred by default, listed here because `tool/browser.ts`,
+ * `tool/webmcp.ts` and `tool/flock.ts` do not yet carry a `deferrable` flag on
+ * their Def. `flock_reply` is deliberately absent: the envelope
+ * `flock/deliver.ts` puts in a chat names the tool the model must call to
+ * answer, and a deferred tool is not in that turn's schema.
+ */
+const BUILTIN_DEFER = ["browser", "webmcp_*", "flock_who", "flock_ask"]
+
+/**
+ * `task`'s own companions (t-fdveov). `task/task.ts`'s BACKGROUND_STARTED
+ * text tells the model to call `task_list` and `task_stop` by name once a
+ * background task is running - the same contract `CORE` protects `read` and
+ * `edit` under, one level down. Both Defs carry `deferrable: true` (a
+ * deferred-by-default builtin, same as `browser`), and either one could also
+ * land on a `defer` list from config or the Tools pane's per-agent matrix.
+ * Whichever way it happens, a hidden companion while `task` itself is loaded
+ * is the bug this guards: the model calls a tool named in the prompt it was
+ * just given and gets "Unknown tool" back. So this is one-directional and
+ * unconditional - it does NOT go through `always`/`defer` at all - unlike
+ * `send_message` <-> `list_agents`, which have no anchor tool that is itself
+ * guaranteed loaded the way `task` is (via `CORE`); making that pair follow
+ * each other would need a fixed-point over the whole entry list rather than
+ * one anchor check, so it is left alone here.
+ */
+export const TASK_COMPANIONS: ReadonlySet<string> = new Set(["task_list", "task_stop"])
+
 export const DEFAULTS: Settings = { enabled: true, mcp: true, defer: [], always: [] }
 
 export function settings(input?: {
@@ -79,11 +118,59 @@ export function settings(input?: {
   }
 }
 
+/** One agent's own `tool_search` block, as ConfigAgentV1 accepts it. */
+export type AgentSettings = {
+  readonly defer?: readonly string[]
+  readonly always?: readonly string[]
+}
+
+/**
+ * The global settings as ONE agent sees them: its own `defer` / `always`
+ * entries overlaid on the workspace lists.
+ *
+ * t-di2u7z. The Tools tab's per-agent matrix needs "deferred for `general`,
+ * loaded for `orchestrator`", and the settings are read once per resolve from a
+ * single global key. Overlaying HERE - pure, at the one call site that knows
+ * which agent is resolving - keeps the deferred catalog global state out of it:
+ * nothing in the service becomes per-session.
+ *
+ * An agent naming a tool wins over the global list on BOTH sides, so
+ * `always: ["browser"]` for one agent really un-defers it even while the
+ * workspace defers it, and the reverse. Naming a tool in both of an agent's own
+ * lists resolves as `always`, the same precedence `deferred` applies below.
+ */
+export function forAgent(settings: Settings, agent?: AgentSettings): Settings {
+  const defer = agent?.defer ?? []
+  const always = agent?.always ?? []
+  if (defer.length === 0 && always.length === 0) return settings
+  return {
+    ...settings,
+    defer: [...settings.defer.filter((id) => !always.includes(id)), ...defer.filter((id) => !always.includes(id))],
+    always: [...settings.always.filter((id) => !defer.includes(id)), ...always],
+  }
+}
+
+/**
+ * The settings ONE SPAWNED AGENT sees: the workspace lists, then the
+ * ARCHETYPE'S OWN defaults (`Agent.Info.tool_search`), then the user's
+ * `agent.<name>.tool_search` block - each layer winning over the one before on
+ * the tools it names, and leaving the rest alone.
+ *
+ * That order is the contract. A native ships a default deferred list so the
+ * Sub-agents ledger is right with no config file present; a user who writes
+ * `always: ["webfetch"]` for `general` un-defers exactly that tool and keeps
+ * the rest of the archetype default. Both call sites - session/tools.ts at
+ * spawn and acp/subagent-tools.ts for the matrix - go through this one
+ * function, so the ledger cannot disagree with what the child really gets.
+ */
+export function forSpawn(settings: Settings, native?: AgentSettings, config?: AgentSettings): Settings {
+  return forAgent(forAgent(settings, native), config)
+}
+
 /**
  * Pattern match for the `defer` / `always` opt-in lists. `*` is the only
- * wildcard and it matches any run of characters, so a whole MCP server is
- * named `board_*` and one tool by its exact id. Anchored at both ends: a bare
- * `board` must not silently opt in `board_create` too.
+ * wildcard. Anchored at both ends: a bare `board` must not silently opt in
+ * `board_create` too.
  */
 export function matches(pattern: string, id: string): boolean {
   if (pattern === id) return true
@@ -95,38 +182,58 @@ export function matches(pattern: string, id: string): boolean {
 const listed = (patterns: readonly string[], id: string) => patterns.some((pattern) => matches(pattern, id))
 
 /**
- * Which candidates are hidden behind the catalog for THIS session.
+ * Which candidates are hidden behind the catalog for THIS session. The order is
+ * the invariant: `always` outranks everything, then anything already loaded by
+ * a search this session, then the explicit `defer` list, then the by-kind
+ * defaults. Any other order loses `always: ["board_*"]` the moment the MCP
+ * default flips those tools on.
  *
- * Order matters and is the reason this is one function rather than three
- * predicates: `always` is the user's escape hatch and outranks everything,
- * then anything already loaded by a search this session, then the explicit
- * `defer` list, and only then the by-kind defaults. Without that order a user
- * who wrote `always: ["board_*"]` would still lose the tools the moment the
- * MCP default flipped them on.
+ * t-fdveov: `task_list` / `task_stop` are checked AHEAD of that order, but
+ * only while `task` itself is among `entries` - the same guard `CORE` uses,
+ * one level down, so an agent that never gets `task` (off, or caged) leaves
+ * its companions to the normal rules. Ahead of `always` too: the point is
+ * that no config entry, `defer` or otherwise, can hide them while `task` is
+ * loaded, not that they need a config entry to escape.
+ *
+ * `onOverride`, when given, is called at most once, with every companion id
+ * that would otherwise have been deferred (by a `defer` entry or by its own
+ * `deferrable: true`) - the caller logs the single INFO line from that.
  */
 export function deferred(
   entries: readonly Entry[],
   config: Settings,
   loaded: ReadonlySet<string> = new Set(),
+  onOverride?: (ids: readonly string[]) => void,
 ): string[] {
   if (!config.enabled) return []
-  return entries
+  const taskLoaded = entries.some((entry) => entry.kind === "builtin" && entry.id === "task")
+  const overridden: string[] = []
+  const ids = entries
     .filter((entry) => {
       if (entry.id === TOOL_SEARCH_TOOL) return false
+      // Ahead of `defer`, unlike `always`: less than core is a broken loop.
+      if (entry.kind === "builtin" && CORE.has(entry.id)) return false
+      if (taskLoaded && entry.kind === "builtin" && TASK_COMPANIONS.has(entry.id)) {
+        const wouldDefer = !loaded.has(entry.id) && !listed(config.always, entry.id) &&
+          (listed(config.defer, entry.id) || entry.deferrable === true || listed(BUILTIN_DEFER, entry.id))
+        if (wouldDefer) overridden.push(entry.id)
+        return false
+      }
       if (listed(config.always, entry.id)) return false
       if (loaded.has(entry.id)) return false
       if (listed(config.defer, entry.id)) return true
       if (entry.kind === "mcp") return config.mcp
-      return entry.deferrable === true
+      return entry.deferrable === true || listed(BUILTIN_DEFER, entry.id)
     })
     .map((entry) => entry.id)
+  if (overridden.length > 0) onOverride?.(overridden)
+  return ids
 }
 
 /**
- * Split a query into lowercased terms. camelCase boundaries split
- * (`readFile` -> `read file`) and every non-alphanumeric character separates,
- * so `read-file`, `readFile` and `read file` tokenize alike. `*` is dropped.
- * Ported verbatim from tool-runtime.ts's `tokenize`.
+ * Split a query into lowercased terms, so `read-file`, `readFile` and
+ * `read file` tokenize alike. Ported verbatim from tool-runtime.ts's
+ * `tokenize`.
  */
 export function tokenize(query: string): string[] {
   return query
@@ -136,12 +243,9 @@ export function tokenize(query: string): string[] {
     .filter((term) => term.length > 0 && term !== "*")
 }
 
-/**
- * A term plus its naive singular variants, so a plural query term ("tickets")
- * still matches text carrying only the singular ("ticket"). Matching is
- * one-directional substring containment, so the variants are needed only on
- * the query side. Ported from tool-runtime.ts's `termForms`.
- */
+/** A term plus its naive singular variants, so "tickets" matches text carrying
+ *  only "ticket". Matching is one-directional substring containment, so the
+ *  variants are needed only on the query side. Ported from tool-runtime.ts. */
 export function termForms(term: string): string[] {
   const forms = [term]
   if (term.endsWith("es") && term.length > 3) forms.push(term.slice(0, -2))
@@ -168,28 +272,32 @@ export function searchText(
 /**
  * Additive field-weighted scoring, summed across terms: exact id or id segment
  * (20) > id substring (8) > description substring (4) > anything else in the
- * search text, including parameter names (2). The weights are tool-runtime's,
- * with `path` read as the tool id — an MCP id is already `server_tool`, so the
- * "segment" rule matches the same way a dotted path did.
+ * search text (2). The weights are tool-runtime's, with `path` read as the
+ * tool id.
  */
 export function score(candidate: Candidate, terms: readonly (readonly string[])[]): number {
   const id = candidate.id.toLowerCase()
   const description = candidate.description.toLowerCase()
-  return terms.reduce(
-    (total, forms) =>
+  return terms.reduce((total, forms) => {
+    // A term under three characters ("in", "to") is a substring of half the
+    // catalog, and one such query would un-defer unrelated tools for the whole
+    // session. It still counts as an exact id match, so a tool really called
+    // `db` stays findable by name.
+    const substantive = (forms[0]?.length ?? 0) >= 3
+    return (
       total +
       (forms.some((form) => id === form || id.endsWith(`_${form}`)) ? 20 : 0) +
-      (forms.some((form) => id.includes(form)) ? 8 : 0) +
-      (forms.some((form) => description.includes(form)) ? 4 : 0) +
-      (forms.some((form) => candidate.text.includes(form)) ? 2 : 0),
-    0,
-  )
+      (substantive && forms.some((form) => id.includes(form)) ? 8 : 0) +
+      (substantive && forms.some((form) => description.includes(form)) ? 4 : 0) +
+      (substantive && forms.some((form) => candidate.text.includes(form)) ? 2 : 0)
+    )
+  }, 0)
 }
 
 /**
  * Rank and cut. An empty query returns the catalog in id order (browse), which
  * is why the `score > 0` filter is skipped when there are no terms. Ties break
- * on id so two runs of the same query never disagree.
+ * on id so two runs of one query never disagree.
  */
 export function rank(candidates: readonly Candidate[], query: string, limit = DEFAULT_SEARCH_LIMIT): Candidate[] {
   const terms = tokenize(query).map(termForms)
@@ -202,7 +310,6 @@ export function rank(candidates: readonly Candidate[], query: string, limit = DE
     .map((entry) => entry.candidate)
 }
 
-/** One catalog line: the id, its origin, and the first line of its description. */
 export function catalogLine(candidate: Candidate): string {
   const first = candidate.description.split("\n", 1)[0]!.trim()
   const summary = first.length > 120 ? first.slice(0, 119) + "…" : first
@@ -211,8 +318,8 @@ export function catalogLine(candidate: Candidate): string {
 
 /**
  * The `tool_search` description: the whole catalog, one line per deferred
- * tool, plus how to reach one. This string IS the saving — it replaces every
- * listed tool's full JSON Schema in the request.
+ * tool. This string is the saving — it replaces every listed tool's full JSON
+ * Schema in the request.
  */
 export function describe(candidates: readonly Candidate[]): string {
   const sorted = [...candidates].sort((a, b) => a.id.localeCompare(b.id))
@@ -228,7 +335,6 @@ export function describe(candidates: readonly Candidate[]): string {
   ].join("\n")
 }
 
-/** The model-facing result of a search: what was loaded, and how to call it. */
 export function report(
   matched: readonly { candidate: Candidate; schema: unknown }[],
   query: string,
@@ -253,14 +359,9 @@ export function report(
   ].join("\n\n")
 }
 
-/**
- * Session-scoped loaded-tool state.
- *
- * Deliberately in memory rather than on the session row: this is a context
- * budget decision for a live conversation, not user data, and the model
- * re-searches for free after an engine restart. The cost of getting that wrong
- * is one extra `tool_search` call; the cost of a schema migration is not.
- */
+/** Session-scoped loaded-tool state. In memory rather than on the session row:
+ *  a context-budget decision for a live conversation, not user data, and an
+ *  engine restart costs one extra `tool_search` call. */
 export interface Interface {
   /** `experimental.tool_search` from config, defaults applied. Read per turn, so an edit takes effect without a restart. */
   readonly settings: () => Effect.Effect<Settings>

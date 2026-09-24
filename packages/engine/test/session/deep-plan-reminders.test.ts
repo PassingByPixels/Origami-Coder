@@ -158,7 +158,10 @@ describe("SessionReminders - what a planning agent is told on the way out", () =
       present = new Set([folder])
       const text = yield* inject("build", "deep-plan")
       expect(text).toContain(DEEP_SWITCH)
-      expect(text).toContain("Do NOT begin executing it")
+      // origami_change (t-46a74d): the same rule, positively framed - the
+      // handover now says when execution happens rather than forbidding it.
+      expect(text).toContain("hand back to the user for their decision")
+      expect(text).toContain("Executing it comes after they say so")
       // THE LINE THAT MATTERS. Plan mode's handover says exactly this, and
       // inheriting it would turn an approved plan into a start order.
       expect(text).not.toContain("execute on the plan defined within it")

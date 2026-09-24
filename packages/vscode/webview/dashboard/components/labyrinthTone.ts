@@ -19,6 +19,10 @@ export const TONE_VARS: Record<LaneStep['kind'], string> = {
   thinking: '--og-text-muted',
   tool: '--og-success',
   subagent: '--og-accent-2',
+  // A compaction is not work and not a failure — it is the run's context being
+  // rewritten — so it takes the one remaining accent rather than borrowing a
+  // kind's colour it would then be confused with.
+  compaction: '--og-accent',
   error: '--og-error',
 };
 

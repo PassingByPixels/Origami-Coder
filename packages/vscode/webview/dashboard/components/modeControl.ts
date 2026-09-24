@@ -1,19 +1,14 @@
-// The composer's SESSION MODE control, as pure data and pure functions.
+// The composer's session mode control, as pure data and pure functions.
 //
-// Three modes now, not a boolean. Build is ordinary work; Plan is the read-only
-// planning agent; Deep Plan researches, argues with itself and DELIVERS a plan
-// folder without ever starting on it. The old control was a two-state toggle
-// (`isPlan`), and widening a toggle in place is how a third state ends up
-// half-wired — so the decisions live here, in one file, with no DOM and no
-// `vscode` around them:
+// Three modes, not a boolean: Build is ordinary work; Plan is the read-only
+// planning agent; Deep Plan researches, argues with itself and delivers a
+// plan folder without ever starting on it. The decisions live here, with no
+// DOM and no `vscode`: what the button says for a given engine mode, which
+// modes are planning modes (the approve rail has nothing to auto-approve in
+// one, and a session-scoped `bypass` would override the planning agent's
+// edit boundary), and what the popover offers.
 //
-//   * what the button says for a given engine mode,
-//   * which modes are PLANNING modes (the approve rail has nothing to
-//     auto-approve in one, and a session-scoped `bypass` preset would override
-//     the planning agent's edit boundary outright),
-//   * what the popover offers.
-//
-// The STATE stays in InputBar, which owns the session and does the posting.
+// The state stays in InputBar, which owns the session and does the posting.
 // This module decides nothing and posts nothing.
 
 /** One choice in the mode popover. */
@@ -48,63 +43,44 @@ export const MODE_OPTIONS: ModeOption[] = [
 /** Just the ids, for a caller that only needs to know what is offered. */
 export const MODE_IDS: string[] = MODE_OPTIONS.map((option) => option.id);
 
-/**
- * The same three modes in the shape ApproveRail's `Opt` wants, so the popover
- * can draw them as the composer's ONE dot-slider idiom rather than a second,
- * different-looking list of choices.
- *
- * Derived, never re-typed: a fourth mode added above must appear on the rail
- * without anyone remembering a second list. `hint` rides along so the notch
- * tooltip still says what the mode does — the rail's own default would show
- * just the name, and "Deep Plan" alone does not warn you it never builds.
- */
+/** The same three modes in the shape ApproveRail's `Opt` wants, so the
+ *  popover draws them as the composer's one dot-slider idiom. Derived, never
+ *  re-typed, so a fourth mode added above appears on the rail automatically;
+ *  `hint` rides along so the notch tooltip still says what the mode does. */
 export const MODE_RAIL_OPTIONS: Array<{ value: string; name: string; hint: string }> =
   MODE_OPTIONS.map((option) => ({ value: option.id, name: option.name, hint: option.hint }));
 
 /** The PLANNING modes — the ones where the agent must not edit the project. */
 const PLANNING_MODES = new Set(['plan', 'deep-plan']);
 
-/**
- * Is this chat in a planning mode?
- *
- * Used for the approve rail: a read-only agent has nothing to auto-approve, and
- * a session-scoped `bypass` would override the planning agent's own edit denies
- * and break the guarantee the mode is for. Deep plan needs this every bit as
- * much as plan — more so, since its edit boundary is what stops it scaffolding
- * a project it was only asked to think about.
- */
+/** Is this chat in a planning mode? Used for the approve rail: a read-only
+ *  agent has nothing to auto-approve, and a session-scoped `bypass` would
+ *  override the planning agent's own edit denies. */
 export function isPlanningMode(mode: string): boolean {
   return PLANNING_MODES.has(mode);
 }
 
-/**
- * Which of the three the control is showing.
- *
- * Everything unrecognised reads as `build`: the panel starts on the literal
- * string `'default'` before the engine's first `modeOptions` lands, and a chat
- * can be sitting on a user-defined bot agent this control knows nothing about.
- * Neither is a planning mode, and both are safe to draw as the neutral state.
- */
+/** Which of the three the control is showing. Everything unrecognised reads
+ *  as `build`: the panel starts on the literal string `'default'` before the
+ *  engine's first `modeOptions` lands, and both cases are safe to draw as
+ *  the neutral state. */
 export function modeState(mode: string): string {
   return MODE_IDS.includes(mode) ? mode : 'build';
 }
 
-/**
- * The trigger button's label.
- *
- * It stays "Plan" in the neutral state rather than becoming "Mode": the button
- * is where you go to plan, and a control that renames itself to a category
- * tells a first-time reader less than the thing it does. The two ON states name
- * themselves, because the composer's mode is otherwise invisible.
- */
-export function modeButtonLabel(mode: string): string {
+/** The trigger button's label. Stays "Plan" in the neutral state rather than
+ *  "Mode": the button is where you go to plan. The two on states name
+ *  themselves, since the composer's mode is otherwise invisible. */
+export function modeButtonLabel(mode: string, passthrough = false): string {
   switch (modeState(mode)) {
     case 'plan':
-      return 'Plan: on';
+      return passthrough ? 'Plan: on — Claude Code' : 'Plan: on';
     case 'deep-plan':
-      return 'Deep Plan: on';
+      return passthrough ? 'Plan: on — Claude Code' : 'Deep Plan: on';
     default:
-      return 'Plan';
+      // Named on a passthrough even when off: on a bound cell this drives
+      // Claude's own plan mode, a different guarantee.
+      return passthrough ? 'Plan — Claude Code' : 'Plan';
   }
 }
 

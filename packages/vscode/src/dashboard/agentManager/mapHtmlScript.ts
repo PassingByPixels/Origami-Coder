@@ -1,28 +1,11 @@
-// The static artifact's INLINE behaviour, part one: the camera, the selection
-// and the hover card. Two more parts are spliced in below AS TEXT, so all three
-// share ONE closure — mapHtmlDetail.ts writes the right-hand panel, and
-// mapHtmlRails.ts owns the rails (search, the kind and pillar filters, the flow
-// list, the fold/resize handles and the view toggles).
-//
-// That splice is the only unusual thing here, and it is deliberate: the other two
-// need `byId`, the element caches, `selectFlow`, `applyFilters` and `home`, and
-// the alternative to sharing a closure is a global handshake on `window` inside a
-// file whose whole point is that it is a sealed, offline document. The split is a
-// real one — surface, panel, controls — taken because the file was at its cap.
-//
-// EVERY string that came from the cartographer reaches the DOM through
-// `textContent`, never innerHTML. That rule is not decorative: the artifact's
-// first version concatenated a node name into innerHTML, so a node called
-// `<img onerror=...>` armed a live handler the moment a flow was clicked. The
-// runtime JSDOM tests in mapHtml.test.ts click a flow AND a box precisely to keep
-// that shut. It is also why this file does not simply carry the mockup's
-// innerHTML rendering across — the picture is the mockup's, the DOM writes are
-// this repository's.
-//
-// The script also builds NO SVG. Flow traces and edge labels are server-rendered
-// hidden and toggled by class, so this file never needs createElementNS and its
-// namespace URI — which would otherwise be the only `http://` string in a
-// document whose whole contract is that it fetches nothing.
+// The static artifact's core behaviour: camera, selection, hover card. Two more parts
+// (mapHtmlDetail.ts, mapHtmlRails.ts) are spliced in as text below, sharing one closure
+// since the webview cannot import runtime code and the alternative is a global handshake in
+// a sealed offline document. Every cartographer string reaches the DOM through textContent,
+// never innerHTML — an earlier version concatenated a node name into innerHTML, letting a
+// node called `<img onerror=...>` arm a live handler; runtime JSDOM tests click a flow and a
+// box to keep that shut. No SVG is built at runtime either, since createElementNS needs a
+// namespace URI that would be the document's only http:// string.
 
 import { MAP_DETAIL_JS } from './mapHtmlDetail';
 import { MAP_RAILS_JS } from './mapHtmlRails';

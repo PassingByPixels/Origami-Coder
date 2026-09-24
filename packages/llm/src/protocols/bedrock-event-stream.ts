@@ -4,16 +4,14 @@ import { Effect, Stream } from "effect"
 import type { Framing } from "../route/framing"
 import { ProviderShared } from "./shared"
 
-// Bedrock streams responses using the AWS event stream binary protocol — each
-// frame is `[length:4][headers-length:4][prelude-crc:4][headers][payload][crc:4]`.
-// We use `@smithy/eventstream-codec` to validate framing and CRCs, then
-// reconstruct the JSON wrapping by `:event-type` so the chunk schema can match.
+// Bedrock streams using the AWS event stream binary protocol — each frame is
+// `[length:4][headers-length:4][prelude-crc:4][headers][payload][crc:4]`. The
+// smithy codec validates framing and CRCs; JSON is rewrapped by `:event-type`.
 const eventCodec = new EventStreamCodec(toUtf8, fromUtf8)
 const utf8 = new TextDecoder()
 
-// Cursor-tracking buffer state. Bytes accumulate in `buffer`; `offset` is the
-// read position. Reading by `subarray` is zero-copy. We only allocate a fresh
-// buffer when a new network chunk arrives and we need to append.
+// Cursor-tracking buffer state. Bytes accumulate in `buffer`, `offset` is the
+// read position, and `subarray` reads are zero-copy.
 interface FrameBufferState {
   readonly buffer: Uint8Array
   readonly offset: number
@@ -23,9 +21,8 @@ const initialFrameBuffer: FrameBufferState = { buffer: new Uint8Array(0), offset
 
 const appendChunk = (state: FrameBufferState, chunk: Uint8Array): FrameBufferState => {
   const remaining = state.buffer.length - state.offset
-  // Compact: drop the consumed prefix and append the new chunk in one alloc.
-  // This bounds buffer growth to at most one network chunk past the live
-  // window, regardless of stream length.
+  // Compact: drop the consumed prefix and append the new chunk in one alloc, which
+  // bounds buffer growth to one network chunk past the live window.
   const next = new Uint8Array(remaining + chunk.length)
   next.set(state.buffer.subarray(state.offset), 0)
   next.set(chunk, remaining)
@@ -58,10 +55,8 @@ const consumeFrames = (route: string) => (state: FrameBufferState, chunk: Uint8A
       if (typeof eventType !== "string") continue
       const payload = utf8.decode(decoded.body)
       if (!payload) continue
-      // The AWS event stream pads short payloads with a `p` field. Drop it
-      // before handing the object to the chunk schema. JSON decode goes
-      // through the shared Schema-driven codec to satisfy the package rule
-      // against ad-hoc `JSON.parse` calls.
+      // The AWS event stream pads short payloads with a `p` field; drop it before
+      // handing the object to the chunk schema.
       const parsed = (yield* ProviderShared.parseJson(
         route,
         payload,
@@ -73,12 +68,9 @@ const consumeFrames = (route: string) => (state: FrameBufferState, chunk: Uint8A
     return [cursor, out] as const
   })
 
-/**
- * AWS event-stream framing for Bedrock Converse. Each frame is decoded by
- * `@smithy/eventstream-codec` (length + header + payload + CRC) and rewrapped
- * under its `:event-type` header so the chunk schema can match the JSON
- * payload directly.
- */
+/** AWS event-stream framing for Bedrock Converse: each frame is decoded by
+ *  `@smithy/eventstream-codec` and rewrapped under its `:event-type` header so
+ *  the chunk schema can match the JSON payload directly. */
 export const framing = (route: string): Framing<object> => ({
   id: "aws-event-stream",
   frame: (bytes) => bytes.pipe(Stream.mapAccumEffect(() => initialFrameBuffer, consumeFrames(route))),

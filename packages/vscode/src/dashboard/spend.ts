@@ -1,9 +1,7 @@
-// Monthly spend ledger for cloud providers (OpenRouter). The engine reports each
-// session's CUMULATIVE cost (usage_update.cost.amount); this accrues the positive
-// deltas into a per-month total across all chats, persisted at ~/.origami/spend.json
-// so it survives session close + window reload. Per-session cumulative marks are
-// stored too so a reload (which re-reports a session's whole cost) doesn't
-// double-count. The month rolls over automatically (resets on the 1st).
+// Monthly spend ledger for cloud providers (OpenRouter). The engine reports each session's
+// CUMULATIVE cost; this accrues positive deltas into a per-month total, persisted at
+// ~/.origami/spend.json, with per-session marks so a reload's re-reported total doesn't
+// double-count. Rolls over on the 1st.
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -25,8 +23,7 @@ function currentMonth(): string {
   return new Date().toISOString().slice(0, 7); // YYYY-MM
 }
 
-/** Read this month's ledger. A stored ledger from a previous month resets to a
- *  fresh zero total (a new month = a new budget window). */
+/** Read this month's ledger; a stored ledger from a previous month resets to a fresh zero total. */
 export function readSpend(): SpendState {
   const month = currentMonth();
   try {
@@ -53,9 +50,8 @@ function writeSpend(state: SpendState): void {
   }
 }
 
-/** Accrue a session's latest CUMULATIVE cost. Adds only the positive delta since
- *  this session was last seen (idempotent across reloads), returns the updated
- *  month ledger. A `<= seen` value is a no-op. */
+/** Accrue a session's latest cumulative cost — adds only the positive delta since it was last seen
+ *  (idempotent across reloads). */
 export function accrueSessionSpend(sessionId: string, sessionCumulativeCost: number): SpendState {
   if (!Number.isFinite(sessionCumulativeCost) || sessionCumulativeCost <= 0) return readSpend();
   const cur = readSpend();
@@ -70,9 +66,8 @@ export function accrueSessionSpend(sessionId: string, sessionCumulativeCost: num
   return next;
 }
 
-// ─── Monthly budget cap ──────────────────────────────────────────────────────
-// A single monthly USD ceiling across all chats (cloud/OpenRouter spend). null =
-// no cap. Warn at 80%, hard-block at 100% (enforced in the send path).
+// A single monthly USD ceiling across all chats (cloud/OpenRouter spend). null = no cap; warn at
+// 80%, hard-block at 100%.
 
 export interface BudgetState {
   /** Monthly USD ceiling, or null for no cap. */
@@ -111,37 +106,27 @@ export function isOverBudget(): boolean {
   return readSpend().total >= monthly;
 }
 
-// ─── OAuth cap exclusion (oauth-cost) ────────────────────────────────────────
-// An OAuth/subscription-connected provider (openai Codex ChatGPT, xai Grok
-// SuperGrok, ...) carries no real per-token spend — the engine either already
-// zeroes its cost.amount (codex.ts) or is being fixed to (xai.ts). Either way
-// the CAP must not depend on that: a provider the ext already knows is
-// OAuth-connected (provider_auth_list's `connected` map, via
-// providerAuthPane.ts's oauthConnectedIds) must never inflate the blended
-// "OpenRouter" ledger and must never trip "Cloud turns are blocked" on its
-// own. OpenRouter's own accounting is untouched — it is never a member of
-// `oauthProviderIds`.
+// OAuth cap exclusion: an OAuth/subscription provider (Codex, Grok SuperGrok, ...) carries no real
+// per-token spend, so the cap must not depend on it — a provider already known OAuth-connected must
+// never inflate the blended OpenRouter ledger or trip the block on its own. OpenRouter's own
+// accounting is untouched.
 
-/** True when `providerId` (e.g. "xai", off `provider/model`) currently holds
- *  an OAuth credential. Pure — takes the caller's already-resolved set rather
- *  than reading the engine itself, so it needs no live connection to test. */
+/** True when `providerId` currently holds an OAuth credential — pure, takes the caller's resolved
+ *  set rather than reading the engine. */
 export function isOAuthExcluded(providerId: string, oauthProviderIds: ReadonlySet<string>): boolean {
   return !!providerId && oauthProviderIds.has(providerId);
 }
 
-/** Whether the monthly cap should block a turn on this provider. Mirrors the
- *  old bare `/^(openrouter|openai|xai|anthropic)\//` gate, minus an OAuth-
- *  excluded provider, which never reaches the cap regardless of blended
- *  spend elsewhere. `overBudget` is passed in (not read here) so this stays
- *  pure and testable without touching the real budget/spend files. */
+/** Whether the monthly cap should block a turn on this provider — mirrors the old bare provider
+ *  regex, minus an OAuth-excluded provider. Pure and testable: `overBudget` is passed in, not read
+ *  here. */
 export function budgetBlocks(providerId: string, oauthProviderIds: ReadonlySet<string>, overBudget: boolean): boolean {
   if (isOAuthExcluded(providerId, oauthProviderIds)) return false;
   return /^(openrouter|openai|xai|anthropic)$/.test(providerId) && overBudget;
 }
 
-/** accrueSessionSpend, but a turn on an OAuth-excluded provider is a no-op —
- *  it must never inflate the ledger the cap reads. Returns the ledger
- *  unchanged in that case, same shape as accrueSessionSpend's own <=0 no-op. */
+/** accrueSessionSpend, but a no-op for an OAuth-excluded provider's turn, so it never inflates the
+ *  ledger the cap reads. */
 export function accrueSessionSpendUnlessOAuth(
   sessionId: string,
   sessionCumulativeCost: number,

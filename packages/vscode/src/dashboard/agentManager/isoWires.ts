@@ -1,17 +1,7 @@
-// What JOINS the boxes: the bowed connector an edge is drawn as, and the traced
-// path a flow lights up. Pure screen-space geometry — points in, points out.
-//
-// Split from isoLayout.ts because it answers a different question. The floor plan
-// decides where a component STANDS (and changes whenever the grouping rules do);
-// this decides what a line between two standing points LOOKS like (and changes
-// when the drawing language does). Keeping them apart also lets the curve be
-// asserted on hand-computed numbers, which is the only way the arrowhead's sign
-// gets caught — a head pointing at the wrong end still draws a plausible arrow.
-//
-// NO PATH STRINGS ARE BUILT HERE. Each renderer formats `M s Q c e` itself, the
-// same way polyPoints() is the one formatter for a polygon. A `d=` attribute
-// built in this module would be markup in a geometry file, and the webview would
-// have to trust a string instead of numbers the compiler can check.
+// The connectors: bowed edges and traced flow paths, in pure screen-space geometry. Split
+// from isoLayout.ts because it answers "what does a line between two points look like"
+// rather than "where does a component stand". No path strings are built here — each renderer
+// formats its own `d=` attribute from the numbers, keeping markup out of the geometry file.
 
 import type { Pt } from './isoProject';
 import type { RepoMap } from './mapSchema';
@@ -68,9 +58,8 @@ function unit(a: Pt, b: Pt): { ux: number; uy: number; len: number } | null {
   return len > 0.5 ? { ux: dx / len, uy: dy / len, len } : null;
 }
 
-/** The control point that bows the straight line a->b sideways.
- *  Perpendicular is (uy, -ux), so the bow always goes to the SAME side and the
- *  two directions of a mutual dependency draw as two distinct curves. */
+/** The control point that bows a straight line sideways; perpendicular is (uy,-ux) so the
+ *  bow always goes the same side, and a mutual dependency's two edges draw as distinct curves. */
 function bowed(a: Pt, b: Pt, max: number, share: number): Pt | null {
   const u = unit(a, b);
   if (!u) return null;
@@ -78,9 +67,8 @@ function bowed(a: Pt, b: Pt, max: number, share: number): Pt | null {
   return { x: (a.x + b.x) / 2 + u.uy * bow, y: (a.y + b.y) / 2 - u.ux * bow };
 }
 
-/** One edge as a curve with an arrowhead, or null when the two boxes sit on top
- *  of each other (a self-edge, or two nodes the packer put in one cell) — a
- *  zero-length curve has no direction, so an arrowhead built from it is NaN. */
+/** One edge as a curve+arrowhead, or null when the two boxes coincide (a self-edge, or two
+ *  nodes the packer placed in one cell) — a zero-length curve has no direction. */
 export function arcOf(a: Pt, b: Pt): Omit<IsoLink, 'from' | 'to' | 'label'> | null {
   const line = unit(a, b);
   if (!line) return null;
@@ -88,9 +76,8 @@ export function arcOf(a: Pt, b: Pt): Omit<IsoLink, 'from' | 'to' | 'label'> | nu
   const e = { x: b.x - line.ux * END_PAD, y: b.y - line.uy * END_PAD };
   const c = bowed(s, e, 34, 0.16);
   if (!c) return null;
-  // Tangent at the END of a quadratic is 2 * (e - c) — the direction the head
-  // must point. Taken from the curve, not from a->b, or the head sits skew to
-  // the line it terminates.
+  // Tangent at the curve's end is 2*(e-c) — taken from the curve itself, not from a->b, or
+  // the arrowhead sits skew to the line.
   const tx = 2 * (e.x - c.x);
   const ty = 2 * (e.y - c.y);
   const tl = Math.sqrt(tx * tx + ty * ty);
@@ -106,9 +93,8 @@ export function arcOf(a: Pt, b: Pt): Omit<IsoLink, 'from' | 'to' | 'label'> | nu
   };
 }
 
-/** Every edge as a connector, and every flow as a traced path with numbered
- *  steps. Edges naming a node the layout dropped are skipped rather than drawn
- *  to the origin. */
+/** Every edge as a connector and every flow as a traced path with numbered steps; edges
+ *  naming a dropped node are skipped rather than drawn to the origin. */
 export function wireUp(map: RepoMap, boxes: readonly IsoBox[]): { links: IsoLink[]; flowPaths: IsoFlowPath[] } {
   const centre = new Map(boxes.map((b) => [b.id, b.centre]));
   const links: IsoLink[] = [];

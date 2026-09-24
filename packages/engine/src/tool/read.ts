@@ -20,11 +20,8 @@ const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
 
-// `offset` and `limit` were originally `z.coerce.number()` — the runtime
-// coercion was useful when the tool was called from a shell but serves no
-// purpose in the LLM tool-call path (the model emits typed JSON). The JSON
-// Schema output is identical (`type: "number"`), so the LLM view is
-// unchanged; purely CLI-facing uses must now send numbers rather than strings.
+// `offset` and `limit` do not coerce: the model emits typed JSON, so CLI-facing
+// callers must send numbers rather than strings.
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file or directory to read" }),
   offset: Schema.optional(NonNegativeInt).annotate({
@@ -43,6 +40,16 @@ type Display =
       offset: number
       totalEntries: number
       truncated: boolean
+    }
+  | {
+      // The card cannot show a picture off the attachment: the data URL is the
+      // MODEL's copy and the dashboard must not carry those bytes. This names
+      // the file instead, ABSOLUTE and normalised — `locations[0].path` is the
+      // raw model input, which is often relative and unresolvable in a webview.
+      type: "image"
+      path: string
+      mime: string
+      bytes: number
     }
   | {
       type: "file"
@@ -313,6 +320,16 @@ export const ReadTool = Tool.define<
             preview: msg,
             truncated: false,
             loaded: loaded.map((item) => item.filepath),
+            ...(isImage
+              ? {
+                  display: {
+                    type: "image" as const,
+                    path: filepath,
+                    mime,
+                    bytes: Number(stat.size),
+                  },
+                }
+              : {}),
           },
           attachments: [
             {

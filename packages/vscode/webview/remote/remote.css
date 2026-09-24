@@ -1,0 +1,217 @@
+/* Origami Remote — phone overrides for the UNCHANGED chat bundle.
+ *
+ * Rule for this file: it may only override layout and hide affordances. The
+ * same out/webview/chat.js must keep working inside VS Code, so nothing here
+ * has a counterpart edit in the chat webview's own source. Colours come from
+ * chat.css's --og-* tokens (linked before this file); no literal palette
+ * values, per the theme discipline in the agent guide.
+ */
+
+/* ---- Viewport ------------------------------------------------------------
+ * theme.css sizes #app at a flat 100vh inside an overflow:hidden body. On a
+ * phone, 100vh is the LARGEST viewport (URL bar retracted), so the composer
+ * sits below the fold until the user scrolls the browser chrome away. dvh
+ * tracks the live viewport, which is what "pinned to the bottom" has to mean
+ * here. The status strip is a flex SIBLING above #app, so its height comes
+ * out of the app's box rather than pushing the composer off-screen — the same
+ * trap the permission banner hit in the VS Code panel (0.3.24 UAT).
+ */
+body {
+  display: flex;
+  flex-direction: column;
+  /* No rubber-band: a bounce under a fixed composer looks broken. */
+  overscroll-behavior: none;
+}
+
+#app {
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Nothing on a phone may scroll sideways. Panes that genuinely overflow
+     (diffs, wide tables) get their own scroller in the rules below. */
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+@supports (height: 100dvh) {
+  html, body { height: 100dvh; }
+}
+
+/* ---- Single column -------------------------------------------------------
+ * A remote view always speaks for exactly ONE session (shim.ts pins the solo
+ * session before the bundle mounts), so this is the bundle's own
+ * `.layout-single` rule applied unconditionally, not a new layout.
+ *
+ * It must stay a GRID. An earlier draft forced `display: flex` here and the
+ * cell fell back to `flex: 0 1 auto`, so the column sized to its content and
+ * the composer floated in the middle of the screen with dead space beneath —
+ * caught by the Playwright bottom-edge assertion, invisible to every jsdom
+ * test in this repo (vitest.config.mts sets no `css: true`, so no stylesheet
+ * ever reaches the test DOM). Keep the assertion.
+ */
+@media (max-width: 640px) {
+  .chat-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 1fr !important;
+    gap: 0 !important;
+    padding: 0 !important;
+  }
+
+  .chat-cell {
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  /* The transcript is the only scroller; the composer sits under it.
+     !important throughout this block: esbuild-svelte compiles component
+     styles with a .svelte-<hash> class appended to every selector, so a
+     bare class here loses on specificity to the bundle's own rule. */
+  .cell-messages {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Composer pinned to the bottom of the visible viewport, clear of the
+     iPhone home indicator. Not `position: fixed` — fixed elements jump around
+     when the soft keyboard opens; a flex child of a dvh-tall column does not. */
+  .input-area {
+    flex: 0 0 auto !important;
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 2;
+    background: var(--og-bg);
+    border-top: 1px solid var(--og-border);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* 16px is the threshold below which iOS Safari zooms the page on focus,
+     which then leaves the layout zoomed with no way back. */
+  .input-area textarea.input {
+    font-size: 16px !important;
+    min-height: 44px !important;
+  }
+
+  /* Thumb-sized targets for the two controls that matter on a phone. */
+  .btn.send,
+  .btn.cancel {
+    min-height: 44px;
+    min-width: 64px;
+  }
+
+  /* Long tokens (paths, hashes, base64) are the usual cause of a sideways
+     scroll; wrap them instead. Real code blocks keep their own scroller. */
+  .row .text {
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  .row pre,
+  .tool-result pre,
+  .tool-result table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+
+/* ---- Feature gates -------------------------------------------------------
+ * Hidden because the action lands on the DESKTOP with nothing to show for it
+ * on the phone. Each one is listed in the lane report with this reason.
+ *
+ *  1. a.file-link / .tool-path — a tap posts an open-file to the extension
+ *     host, which opens an editor on the desktop. From a phone that is an
+ *     invisible remote action on someone else's screen. The text stays
+ *     readable; only the affordance and the click go.
+ *  2. .tab-popout — opens a VS Code editor tab. There is no editor here.
+ *  3. Export — posts `exportSession`, which raises a SAVE DIALOG on the
+ *     desktop. A phone tap must never open a modal on a machine the user is
+ *     not looking at.
+ *
+ * pointer-events:none on 1 rather than display:none, because the path text is
+ * often the only identifier a tool card shows.
+ */
+.row .text a.file-link,
+.tool-path {
+  pointer-events: none !important;
+  text-decoration: none !important;
+  cursor: default !important;
+  color: var(--og-text-secondary) !important;
+}
+
+.tab-popout {
+  display: none !important;
+}
+
+/* Gated by CLASS, not by title: every chat-pane title became a warm tooltip
+   (use:tip), so a title selector would silently stop hiding this and a phone
+   tap would open a desktop save dialog again. */
+.mode-row button.export-md-btn {
+  display: none !important;
+}
+
+/* ---- Shell chrome (this file's own DOM) ---------------------------------- */
+#remoteStatus {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  color: var(--og-text-muted);
+  background: var(--og-surface);
+  border-bottom: 1px solid var(--og-border);
+}
+
+#remoteStatus[data-state="open"] { color: var(--og-success-text); background: var(--og-success-soft); }
+#remoteStatus[data-state="connecting"] { color: var(--og-warning-text); background: var(--og-warning-soft); }
+#remoteStatus[data-state="closed"],
+#remoteStatus[data-state="not paired"] { color: var(--og-error-text); background: var(--og-error-soft); }
+
+/* THE NOTICE STRIP. Not a fatal: the chat under it still works, and the owner
+ * has to be able to read the sentence AND the transcript to act on it. */
+#remoteNotice {
+  display: none;
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--og-warning, var(--og-border));
+  border-radius: 6px;
+  background: var(--og-surface-alt, var(--og-surface));
+  color: var(--og-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#remoteNotice[data-open="true"] { display: block; }
+
+#remoteFatal {
+  display: none;
+  padding: 16px;
+  margin: 16px;
+  border: 1px solid var(--og-border);
+  border-radius: 8px;
+  background: var(--og-surface);
+  color: var(--og-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#remoteFatal[data-open="true"] { display: block; }
+
+/* THE WATCH-ONLY LINE. A page with no device key can read the chat and nothing
+ * else, and this is where the desktop's refusal is put into words. Not a scrim
+ * and not a fatal: the transcript under it keeps working, which is the whole
+ * point of the state it describes. */
+#remoteWatch {
+  display: none;
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--og-border);
+  border-radius: 6px;
+  background: var(--og-surface);
+  color: var(--og-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#remoteWatch[data-open="true"] { display: block; }

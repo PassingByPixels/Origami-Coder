@@ -132,4 +132,25 @@ describe("ACP late MCP command fold", () => {
     expect(commandNames(updates)).toHaveLength(1)
     expect(refreshes).toEqual([])
   })
+
+  // t-tijhw6 (scout B #14). The fold job is shared per directory, and a job
+  // whose discovery read FAILED was kept: no later chat in that folder ever
+  // got the MCP commands until the engine restarted.
+  it("a failed discovery read is not kept: the next chat in the folder folds again", async () => {
+    let reads = 0
+    const { service, updates, refreshes } = makeService(async () => {
+      if (++reads === 1) throw new Error("engine unavailable")
+      return [command("init"), command("plugin:review")]
+    })
+
+    await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+    await settle(() => commandNames(updates).length === 1, "first available_commands_update never arrived")
+    await Bun.sleep(50)
+
+    await Effect.runPromise(service.newSession({ cwd: "/workspace", mcpServers: [] }))
+    await settle(() => commandNames(updates).length === 3, "second chat never got the folded list")
+    expect(commandNames(updates)[2]).toEqual(["init", "plugin:review"])
+    expect(reads).toBe(2)
+    expect(refreshes).toEqual(["/workspace"])
+  })
 })

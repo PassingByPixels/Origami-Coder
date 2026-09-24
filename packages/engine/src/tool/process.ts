@@ -18,10 +18,10 @@ type Params = { kind: "processes" | "ports"; filter?: string }
 
 export type Entry = { pid: string; name: string; address?: string }
 
-// A busy desktop already runs ~500 processes, and rows are sorted by ascending pid,
-// so a small cap would silently drop the most recently started ones - which is exactly
-// what someone debugging a hung server is looking for. The Truncate service is the
-// backstop for anything genuinely pathological.
+// A busy desktop already runs ~500 processes, and rows are sorted by ascending
+// pid, so a small cap would drop the most recently started ones - exactly what
+// someone debugging a hung server is looking for. The Truncate service is the
+// backstop for anything pathological.
 const MAX_ROWS = 1000
 
 /** Split one `tasklist /FO CSV` record, honouring the quoting it uses for names with commas. */
@@ -156,6 +156,7 @@ export const ProcessTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Params, ctx: Tool.Context) =>
         Effect.gen(function* () {
           yield* ctx.ask({

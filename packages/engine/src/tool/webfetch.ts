@@ -30,6 +30,7 @@ export const WebFetchTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {

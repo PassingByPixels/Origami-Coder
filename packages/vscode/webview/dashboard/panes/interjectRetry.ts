@@ -36,7 +36,14 @@ export const NEVER_REACHED_ENGINE = 'Interject failed: no running turn to interj
  * True only for the host's pre-flight refusal above. `false` for everything
  * else, including the empty string: an error with no message says nothing about
  * where the line got to, and silence is not permission to send it twice.
+ *
+ * And `false` for a line carrying a PICTURE, whatever the failure says. The
+ * retry goes out through the pane's ordinary send, which takes a string and
+ * nothing else — so re-sending would deliver the words and drop the attachment
+ * without a word about it. Such a line takes the annotated shape instead: the
+ * row, picture and all, with the failure under it.
  */
-export function retryAsPrompt(errorMessage: string): boolean {
+export function retryAsPrompt(errorMessage: string, line?: { images?: string[] }): boolean {
+  if (line?.images?.length) return false;
   return errorMessage.trim() === NEVER_REACHED_ENGINE;
 }

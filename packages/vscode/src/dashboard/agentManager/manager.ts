@@ -1,16 +1,9 @@
-// Agent Manager - manager.ts (S3.6): the fleet owner behind the kanban board.
-// Kilo's shape: each agent = an ordinary engine session whose cwd is an
-// isolated git worktree; the manager owns the worktree lifecycle + registry
-// (S2 modules), drives the initial prompt, and broadcasts row state. Completion
-// for a PLAIN agent = the session going idle - Kilo's "done = idle". S3.6: the
-// board is a KANBAN of EVERY registered repo at once (one column each, rows
-// split not-started/in-progress/done), so there is no "active repo" - every
-// broadcast carries every repo's rows and the old activeRoot/selector/stale-root
-// gating is gone. Each task can pin a model (raw per-session ACP setModel, never
-// the chat picker's lms load / carry / global-default machinery, which would
-// evict the user's live chat); a repo can carry a default model. The manager
-// reaches DashboardPanel only through the narrow ManagerHost interface so it
-// stays unit-testable and the panel monolith only grows a thin dispatch.
+// The fleet owner behind the kanban board. Each agent is an ordinary engine session whose
+// cwd is an isolated git worktree; the manager owns the worktree lifecycle + registry,
+// drives the initial prompt, and broadcasts row state. The board shows every registered
+// repo's rows at once, split not-started/in-progress/done; a task can pin a model
+// per-session (never the chat picker's global-default machinery, which would evict the
+// user's live chat).
 
 import * as fs from 'node:fs';
 import { listWorktrees, removeWorktree } from './worktrees';
@@ -25,16 +18,16 @@ import { handleRaceFileDiffs, handleCrossDiff, type RaceCompareContext } from '.
 import { ensureArchetypes } from './archetypes';
 import { runMap, cancelMap, refreshAllMapStatus, boardMapState, type MapRun, type MapCtx, type RepoMapState } from './mapRun';
 import { handleTicketMessage, stampActivity, ticketsChanged, unlinkTicket } from './tickets';
+import { reconcileMergedTickets } from './ticketMerges';
 import { runSpec } from './specRun';
 import { broadcastBoard, type BoardCtx } from './board';
 import { adoptForeign, handleRepoCardMessage, refreshIdents, type RepoCardCtx, type RepoIdent } from './repoCards';
-import { primaryFor } from './repoFile';
+import { primaryFor, registeredName } from './repoFile';
+import { onRepointRepo } from './repoRepoint';
 import type { ManagerHost } from './host';
 
-// The agent-run lifecycle lives in run.ts (S3.7 extraction); re-exported here so
-// its long-standing import site (the manager tests) keeps working unchanged. The
-// ManagerHost interface was extracted to host.ts (S6b) to make room under cap;
-// re-exported so its many importers (run/apply/repoOps/panel/tests) don't move.
+// The run lifecycle lives in run.ts; re-exported here so long-standing importers keep
+// working unchanged.
 export { findSetupScript } from './setupScript';
 export type { ManagerHost } from './host';
 export type { AgentRow } from './rows';
@@ -55,9 +48,8 @@ export interface Runtime {
   startedAt?: number;
   stats?: WorktreeGitStats;
   statsKey?: string;
-  /** S7: an engine QUESTION is pending and no view was mounted to answer it. Rides the
-   *  broadcast so the card shows a "needs you" chip (rows.ts projects it only while the
-   *  run is in progress; setAgentQuestion(…, null) drops it on answer). */
+  /** An engine QUESTION is pending with no mounted view; rides the broadcast as a "needs you"
+   *  chip. */
   needsYou?: { kind: 'question'; preview: string };
   activity?: string; // Folds board: this fold's live one-line "doing now" (ACP events; rows.ts shows it on working rows only)
 }
@@ -84,9 +76,8 @@ export class AgentManager {
   /** S15 cartographer: in-flight map runs + cached on-disk map status, per repoKey. */
   private readonly mapRuns = new Map<string, MapRun>();
   private readonly mapStatus = new Map<string, RepoMapState>();
-  /** Repo cards: primary-checkout path -> which repository it is + what it is on.
-   *  git is a subprocess, so this is refreshed on the map status's beats and read
-   *  synchronously by the broadcast. */
+  /** Repo cards: primary-checkout path -> which repository/branch, refreshed on the
+   *  map-status beat and read synchronously by the broadcast. */
   private readonly idents = new Map<string, RepoIdent>();
   /** Diff-view + apply-to-main flow (S4). Validates root/id via actionRoot and
    *  refuses while the record is busy/reopening; no state writes of its own. */
@@ -105,9 +96,8 @@ export class AgentManager {
     });
   }
 
-  /** Stop the poll loop permanently (panel teardown / tests). An in-flight
-   *  pollOnce checks `disposed` before re-arming, so the loop cannot
-   *  resurrect itself after this. */
+  /** Stop the poll loop permanently; an in-flight pollOnce checks `disposed` before re-arming,
+   *  so the loop can't resurrect itself. */
   dispose(): void {
     this.disposed = true;
     if (this.pollTimer) clearTimeout(this.pollTimer);
@@ -121,6 +111,7 @@ export class AgentManager {
       case 'amRequestState': await this.onRequestState(); return;
       case 'amAddRepo': await onAddRepo(this.repoRegistryCtx()); return;
       case 'amRemoveRepo': onRemoveRepo(this.repoRegistryCtx(), rootOf(m.root)); return;
+      case 'amRepointRepo': await onRepointRepo(this.repoRegistryCtx(), rootOf(m.root)); return;
       case 'amSetRepoDefault': setRepoDefault(this.repoOpsCtx(), rootOf(m.root), String(m.model ?? '')); return;
       case 'amRenameRepo': setRepoDisplayName(this.repoOpsCtx(), rootOf(m.root), String(m.displayName ?? '')); return;
       case 'amSetAutoApprove': this.host.setAutoApprove(m.on === true); this.broadcast(); return;
@@ -162,10 +153,8 @@ export class AgentManager {
         if (!root) return;
         const id = String(m.id);
         const rt = this.runtime.get(id);
-        // Provisioning (incl. the model-pin RPC window, where a sessionId already
-        // exists but the task hasn't started): flag the in-flight create to tear
-        // down at its next checkpoint. A one-shot cancelSession() here would be
-        // dropped (no prompt in flight yet), so the task would wrongly run on.
+        // Provisioning (including the model-pin RPC window): flag the in-flight create to tear down
+        // at its next checkpoint, since a one-shot cancelSession() here would be dropped.
         if (rt?.state === 'provisioning') { this.cancelRequested.add(id); this.broadcast(); }
         else if (rt?.sessionId) {
           await this.host.cancelSession(rt.sessionId);
@@ -188,7 +177,7 @@ export class AgentManager {
         if (root) await this.remove(root, String(m.id), m.deleteBranch === true);
         return;
       }
-      case 'amTicketQuickAdd': case 'amTicketOpen': case 'amTicketLaunch': case 'amTicketClose': case 'amTicketSpec': await handleTicketMessage({ run: this.runCtx(), validateRoot: (r) => this.actionRoot(r), broadcast: () => this.broadcast(), create: runCreate, fanout: runFanout, spec: runSpec, repoName: (r) => findEntry(this.composed(), String(r ?? ''))?.name ?? '' }, m); return;
+      case 'amTicketQuickAdd': case 'amTicketOpen': case 'amTicketLaunch': case 'amTicketClose': case 'amTicketSpec': await handleTicketMessage({ run: this.runCtx(), validateRoot: (r) => this.actionRoot(r), broadcast: () => this.broadcast(), create: runCreate, fanout: runFanout, spec: runSpec, repoName: (r) => { const e = findEntry(this.composed(), String(r ?? '')); return e ? registeredName(e.root) ?? e.name : ''; } }, m); return;
       case 'amMapRepo': { const root = this.actionRoot(m.root); if (root) await runMap(this.mapCtx(), root); return; }
       case 'amCancelMap': { const root = this.actionRoot(m.root); if (root) cancelMap(this.mapCtx(), root); return; }
       case 'amRepoWorktrees': case 'amMakePrimary': case 'amWorktreeTerminal': case 'amWorktreeChat':
@@ -209,12 +198,9 @@ export class AgentManager {
     this.host.post({ type: 'amError', message: `Repository not available: ${root ?? '(none)'}` });
   }
 
-  /** Resolve a scoped action's target repo: the message root must name a
-   *  composed, non-missing repo, else amError + undefined. No default, no
-   *  activeRoot - every action names its column. The answer is that repository's
-   *  PRIMARY checkout, so every scoped action below (create / apply / tickets /
-   *  map / delete) lands where the work lives; absent a primary that IS the root,
-   *  which is why the default behaviour is unchanged. */
+  /** Resolve a scoped action's target repo: the message root must name a composed,
+   *  non-missing repo (else amError). Resolves to that repository's PRIMARY checkout so every
+   *  scoped action lands where the work lives. */
   private actionRoot(raw: unknown): string | undefined {
     const asked = raw === undefined || raw === null || String(raw) === '' ? undefined : String(raw);
     const entry = asked !== undefined ? findEntry(this.composed(), asked) : undefined;
@@ -237,9 +223,8 @@ export class AgentManager {
     this.schedulePoll(0);
   }
 
-  /** The wider context the hub add/remove-repo handlers (moved to repoOps to
-   *  keep this file under cap) need: reconciliation + poll hooks and the
-   *  reconciled/missingSeen one-shot sets, shared by reference. */
+  /** The wider context the repo add/remove handlers (moved to repoOps to keep this file under
+   *  cap) drive the owner through. */
   private repoRegistryCtx(): RepoRegistryContext {
     return {
       host: this.host,
@@ -277,29 +262,22 @@ export class AgentManager {
   /** Boot reconciliation (once per window per repo): registry vs live worktrees.
    *  Records that survive a reload have no session - they show as detached. */
   private async ensureReconciled(raw: string): Promise<void> {
-    // Reconcile the PRIMARY: that is where the fold worktrees and the state file
-    // live, so reconciling a non-primary sibling would find no worktrees under
-    // its .origami/worktrees/ and mark every record stale. Keyed by the primary
-    // too, so two registered checkouts of one repository reconcile once.
+    // Reconcile the PRIMARY, not the entry root: that's where fold worktrees and the state file
+    // live. Keyed by the primary too, so two registered checkouts of one repository reconcile
+    // once.
     const root = primaryFor(raw);
     if (this.reconciled.has(repoKey(root))) return;
     this.reconciled.add(repoKey(root));
-    // Read state AFTER listWorktrees resolves: its git subprocess is a real
-    // await during which another window can persist a done marker or clear a
-    // queuedTask (run.ts's atomic load-mutate-save writes). Snapshotting state
-    // BEFORE the await and saving it after would blind-overwrite those writes
-    // (resurrecting a started task / erasing the done guarantee). loadState ->
-    // reconcile -> saveState is now synchronous, so no write can slip between.
+    // Read state AFTER listWorktrees resolves: a real await during which another window can
+    // write. loadState -> reconcile -> saveState is synchronous, so no write can slip between
+    // and blind-overwrite a concurrent one.
     const live = await listWorktrees(root);
     const result = reconcile(loadState(root), live, root);
     saveState(root, result.state);
     for (const rec of result.state.worktrees) {
-      // A reloaded record seeds by priority: a queued task -> 'queued' (its
-      // stored agent/model seed the card); else a completed run -> 'idle' with
-      // its stopReason (a done run stays visibly done across the reload); else a
-      // record that RAN (non-empty sessions[]) but has no done marker = a run
-      // that started and never completed (engine gone mid-run) -> 'error', NOT a
-      // benign 'detached'; else (empty sessions[]: a bare/orphan worktree) 'detached'.
+      // A reloaded record seeds by priority: a queued task -> 'queued'; else a completed run ->
+      // 'idle' with its stopReason; else a record that ran but has no done marker -> 'error'
+      // (engine died mid-run), never a benign 'detached'; else (never ran) 'detached'.
       if (!this.runtime.has(rec.id)) {
         this.runtime.set(rec.id, rec.queuedTask
           ? { state: 'queued', agentName: rec.queuedTask.agentName, model: rec.queuedTask.model }
@@ -316,9 +294,8 @@ export class AgentManager {
     return loadState(root).worktrees.find((r) => r.id === id);
   }
 
-  /** The narrow window the run.ts lifecycle drives the owner through: the host
-   *  plus the shared runtime/busy/cancel maps and the patch/broadcast/record
-   *  helpers. Built per call - it holds no state of its own. */
+  /** The narrow window the run.ts lifecycle drives the owner through; built per call, holds
+   *  no state of its own. */
   private runCtx(): RunContext {
     return {
       host: this.host,
@@ -381,10 +358,8 @@ export class AgentManager {
     this.runtime.set(id, { ...(this.runtime.get(id) ?? { state: 'detached' }), ...patch });
   }
 
-  /** S7: set (preview) or clear (null) a background agent row's pending-QUESTION flag,
-   *  keyed by the live session it runs on (reverse of runtime.sessionId). Broadcast so
-   *  the "needs you" chip tracks it. Completion/error/cancel clear it implicitly via the
-   *  rows.ts in-progress gate; delete drops the whole runtime. A no-op off a live run. */
+  /** Set/clear a background agent row's pending-QUESTION flag, keyed by its live session.
+   *  Broadcast so the "needs you" chip tracks it; a no-op off a live run. */
   setAgentQuestion(sessionId: string, preview: string | null): void {
     let id: string | undefined;
     for (const [rid, rt] of this.runtime) if (rt.sessionId === sessionId) { id = rid; break; }
@@ -398,9 +373,7 @@ export class AgentManager {
 
   // ---- board state ----
 
-  /** The amState projection lives in board.ts (extracted at this file's cap when
-   *  every field had to resolve the repo's primary checkout); this is the window
-   *  it reads the owner through. */
+  /** The amState projection lives in board.ts; this is the window it reads the owner through. */
   private broadcast(): void {
     broadcastBoard({
       host: this.host, runtime: this.runtime, composed: () => this.composed(),
@@ -436,6 +409,7 @@ export class AgentManager {
         this.missingSeen.delete(key); // came back -> re-arm the one-shot
         const work = primaryFor(e.root); // tickets + records live at the primary
         if (ticketsChanged(work)) changed = true; // a ticket written by an agent, a hand edit, or another window
+        if (await reconcileMergedTickets(work)) changed = true; // git says a branch landed: stamp the ticket merged
         for (const rec of loadState(work).worktrees) {
           if (this.disposed) return;
           if (!fs.existsSync(rec.path)) continue;
@@ -448,9 +422,8 @@ export class AgentManager {
           }
         }
       }
-      // S15: recompute map staleness (behind N) for repos with a map, same cadence.
-      // Repo cards ride the same beat: a branch checked out in another window has
-      // to reach the card, and asking git is a subprocess the broadcast cannot do.
+      // Recompute map staleness (behind N) on the same beat as repo cards — a branch checked out
+      // in another window has to reach the card, and git is a subprocess the broadcast can't skip.
       if (!this.disposed && await refreshAllMapStatus(this.mapCtx(), this.workRoots())) changed = true;
       if (!this.disposed && await refreshIdents(this.workRoots(), this.idents)) changed = true;
       if (changed && !this.disposed) this.broadcast();

@@ -4,7 +4,18 @@ import { ConfigService } from "@/effect/config-service"
 const bool = (name: string) => Config.boolean(name).pipe(Config.withDefault(false))
 // FORK STRIP: default-true variant so opt-out flags (e.g. LSP-server GitHub
 // download) are OFF by default without a phone-home unless explicitly re-enabled.
-const boolTrue = (name: string) => Config.boolean(name).pipe(Config.withDefault(true))
+// t-fijeld. `Config.boolean` accepts only the exact lower-case words, and
+// `withDefault` rescues a MISSING value, not an unparsable one - so `FALSE`,
+// `False`, ` false ` or an empty string failed the whole flags read. This is
+// the variable a user types by hand (ORIGAMI_EXPERIMENTAL_SIDE_QUESTS=false),
+// so it is read as text: trimmed, case-folded, and anything that is not a
+// known word keeps the default.
+const FALSE_WORDS: ReadonlySet<string> = new Set(["false", "no", "off", "0", "n"])
+const boolTrue = (name: string) =>
+  Config.string(name).pipe(
+    Config.map((value) => !FALSE_WORDS.has(value.trim().toLowerCase())),
+    Config.orElse(() => Config.succeed(true)),
+  )
 const positiveInteger = (name: string) =>
   Config.number(name).pipe(
     Config.map((value) => (Number.isInteger(value) && value > 0 ? value : undefined)),
@@ -22,6 +33,11 @@ export class Service extends ConfigService.Service<Service>()("@origami/RuntimeF
   disableDefaultPlugins: bool("ORIGAMI_DISABLE_DEFAULT_PLUGINS"),
   disableEmbeddedWebUi: bool("ORIGAMI_DISABLE_EMBEDDED_WEB_UI"),
   disableExternalSkills: bool("ORIGAMI_DISABLE_EXTERNAL_SKILLS"),
+  // Kill switch for tool-result aging (session/tool-aging.ts), which is ON by
+  // default. Set it and the outgoing array carries every stored tool result in
+  // full again — the feature only ever rewrote the wire, so nothing has to be
+  // restored.
+  disableToolAging: bool("ORIGAMI_DISABLE_TOOL_AGING"),
   disableLspDownload: boolTrue("ORIGAMI_DISABLE_LSP_DOWNLOAD"),
   disableClaudeCodePrompt: Config.all({
     broad: bool("ORIGAMI_DISABLE_CLAUDE_CODE"),
@@ -49,6 +65,14 @@ export class Service extends ConfigService.Service<Service>()("@origami/RuntimeF
   enableQuestionTool: bool("ORIGAMI_ENABLE_QUESTION_TOOL"),
   experimentalReferences: enabledByExperimental("ORIGAMI_EXPERIMENTAL_REFERENCES"),
   experimentalBackgroundSubagents: enabledByExperimental("ORIGAMI_EXPERIMENTAL_BACKGROUND_SUBAGENTS"),
+  // t-f89g49, default-ON since t-ffjau8. The `side_quest` tool and its drawer.
+  // ON with nothing set: a model that cannot find the tool improvises a
+  // sub-agent named "Sidequest: ..." instead, which is the opposite of the
+  // feature. The controls that matter - one call per turn, five open per chat,
+  // the duplicate check - are code in tool/side-quest.ts, not this switch.
+  // `ORIGAMI_EXPERIMENTAL_SIDE_QUESTS=false` is the explicit OFF and takes the
+  // tool out of the catalog entirely.
+  experimentalSideQuests: boolTrue("ORIGAMI_EXPERIMENTAL_SIDE_QUESTS"),
   experimentalLspTy: bool("ORIGAMI_EXPERIMENTAL_LSP_TY"),
   experimentalLspTool: enabledByExperimental("ORIGAMI_EXPERIMENTAL_LSP_TOOL"),
   experimentalOxfmt: enabledByExperimental("ORIGAMI_EXPERIMENTAL_OXFMT"),
@@ -64,10 +88,53 @@ export class Service extends ConfigService.Service<Service>()("@origami/RuntimeF
   // its banner and then waited forever; this can.
   bashIdleTimeoutMs: positiveInteger("ORIGAMI_EXPERIMENTAL_BASH_IDLE_TIMEOUT_MS"),
   // Wall-clock ceiling on ONE background job before the registry cancels it.
+  // SHELL jobs only - tool/shell.ts is its single reader.
   backgroundJobMaxDurationMs: positiveInteger("ORIGAMI_EXPERIMENTAL_BACKGROUND_JOB_MAX_MS"),
+  // t-d935qk. Wall-clock ceiling on ONE sub-agent (`task`) job, read by
+  // tool/task.ts and defaulted there to 4 h. Separate from the shell flag
+  // above on purpose: a review agent reading a repository is not a build, and
+  // the owner's 8 h shell setting did nothing for sub-agents because nothing
+  // on the task path ever read it.
+  //
+  // MIRROR: the VS Code extension writes this exact name into the engine's
+  // environment at spawn (packages/vscode/src/engineEnv.ts). Rename here and
+  // the setting stops arriving - change both or neither.
+  subagentMaxDurationMs: positiveInteger("ORIGAMI_SUBAGENT_MAX_MS"),
   experimentalNativeLlm: bool("ORIGAMI_EXPERIMENTAL_NATIVE_LLM"),
+  // Which provider families run on the native LLM runtime, overriding the
+  // per-family defaults in session/llm/native-route.ts: a comma list of
+  // families, "all", or "none". Empty = the defaults. The experimental flag
+  // above is the legacy spelling of "all" and still wins.
+  nativeLlmFamilies: Config.string("ORIGAMI_NATIVE_LLM_FAMILIES").pipe(Config.withDefault("")),
+  // t-tija5f. Claude through the owner's Claude subscription, with the installed
+  // `claude` CLI as the model client (provider/claude-subscription.ts). OFF by
+  // default and deliberately NOT under the ORIGAMI_EXPERIMENTAL umbrella: it
+  // carries an account-risk disclosure the extension shows before it sets this.
+  //
+  // MIRROR: the VS Code extension writes this exact name from the setting
+  // `origami.experimentalClaudeSubscription` (packages/vscode/src/claudeSubscriptionFlag.ts).
+  experimentalClaudeSubscription: bool("ORIGAMI_EXPERIMENTAL_CLAUDE_SUBSCRIPTION"),
   experimentalWebSockets: bool("ORIGAMI_EXPERIMENTAL_WEBSOCKETS"),
+  // Hard OFF for the OpenAI WebSocket transport, which pre-release channels
+  // turn on by default. The LLM parity harness sets it: its record/replay
+  // proxy speaks HTTP only, and a WebSocket upgrade against it fails the turn.
+  disableWebSockets: bool("ORIGAMI_DISABLE_WEBSOCKETS"),
   client: Config.string("ORIGAMI_CLIENT").pipe(Config.withDefault("cli")),
+  // origami_change-start (t-53vyxf): the two switches the validation panel flips
+  // per run, so three request shapes can be compared without a rebuild.
+  //
+  // WHICH SHAPE THE TRAILING LANE SENDS (session/prompt.ts). A STRING and not a
+  // boolean because there are three shapes, not two, and the panel names them:
+  // "on-change" (shipped, t-46a74d), "every-step" (the pre-0.4.127 shape) and
+  // "every-step-continue". An unrecognised value falls back to the default and
+  // says so once at WARN - `SessionPrompt.trailingContextMode` decides that, so
+  // the parse is a pure function a test can read.
+  trailingContext: Config.string("ORIGAMI_TRAILING_CONTEXT").pipe(Config.withDefault("")),
+  // "off" silences the OpenAI continuation nudge (session/continue-nudge.ts) for
+  // the run, so a panel run measures the PROMPT SHAPE alone and not the shape
+  // plus the guard that also answers a stop. Any other value leaves it on.
+  continueNudge: Config.string("ORIGAMI_CONTINUE_NUDGE").pipe(Config.withDefault("")),
+  // origami_change-end
 }) {}
 
 export type Info = Context.Service.Shape<typeof Service>

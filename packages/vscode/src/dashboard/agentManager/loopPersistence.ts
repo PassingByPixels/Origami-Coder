@@ -1,23 +1,9 @@
-// loopPersistence.ts — persist active /loop schedules (chatCommands.ts's
-// interval scheduler, armed by DashboardPanel.startLoopSchedule) across a
-// VS Code window reload. Keyed by the engine's session id, not the local
-// session-N id — local ids reset every window (sessionCounter is module
-// state) while the engine's session store persists on disk; see
-// sessionRestore.ts, whose engine-id reasoning this mirrors for the open
-// chat set.
-//
-// DashboardPanel calls savePersistedLoop() when a loop starts or ticks
-// (keeping `runs` current) and removePersistedLoop() when it stops — via
-// /loop stop, the Loops-pane cancel control, Stop, session close, or a
-// permanent-done run. stopLoopSchedule is the ONE choke point all of those
-// share, so persistence can never diverge from the live timer.
-//
-// At boot, once sessionRestore.ts has reopened the surviving chats,
-// splitPersistedLoops tells the caller which persisted loops now have a
-// live session to re-arm and which do not. A session that could not be
-// restored is NEVER silently dropped or re-pointed at a different chat —
-// it stays persisted exactly as it was, so the Loops pane can show it
-// (prompt intact) and the user can cancel it explicitly.
+// Persist active /loop schedules across a VS Code window reload, keyed by the engine's
+// session id (not the local per-window id, which resets every window). DashboardPanel saves
+// on start/tick and removes on stop through one choke point, so persistence can never
+// diverge from the live timer. At boot, splitPersistedLoops tells the caller which persisted
+// loops now have a live session to re-arm; one that couldn't be restored stays persisted,
+// never silently dropped or re-pointed, so the Loops pane can show it and the user can cancel.
 
 import type { Memento } from 'vscode';
 
@@ -28,17 +14,10 @@ export interface PersistedLoop {
   prompt: string;
   runs: number;
   createdAt: number;
-  /**
-   * Opt-in: keep this loop running after its CHAT is closed, by recalling the
-   * engine session headlessly (no webview) and arming the timer there.
-   *
-   * ABSENT MEANS FALSE, and must keep meaning false forever — every loop
-   * persisted before this field existed is a plain loop whose owner expects it
-   * to die with the chat. A missing flag is never an invitation to guess.
-   *
-   * This is NOT a cron. Nothing fires with VS Code closed; a persistent loop
-   * survives a closed chat and a window restart, not a shut editor.
-   */
+  /** Opt-in: keep this loop running after its chat closes, by recalling the engine session
+   *  headlessly and arming the timer there. Absent means false, permanently — every loop
+   *  persisted before this field existed must keep dying with its chat. Not a cron: nothing
+   *  fires with VS Code closed. */
   persistent?: boolean;
 }
 
@@ -90,14 +69,12 @@ export function removePersistedLoop(memento: Memento, engineSessionId: string): 
   if (next.length !== loops.length) writePersistedLoops(memento, next);
 }
 
-// The restore DECISIONS (split / re-arm / recall) live in loopRearm.ts, which
-// was split out when persistent loops pushed this file past its cap. Re-exported
-// so callers keep one import site.
+// Restore decisions (split/re-arm/recall) live in loopRearm.ts, re-exported here so callers
+// keep one import site.
 export { splitPersistedLoops, armRestoredLoops, type RearmHost } from './loopRearm';
 
-/** Flip a persisted loop's `persistent` flag in place. No-op when nothing is
- *  persisted for that engine id — the caller's live state is the other half of
- *  the pair and is updated by DashboardPanel. */
+/** Flip a persisted loop's `persistent` flag; a no-op if nothing is persisted for that
+ *  engine id. */
 export function setPersistedLoopPersistence(memento: Memento, engineSessionId: string, persistent: boolean): void {
   const loops = loadPersistedLoops(memento);
   const found = loops.find((l) => l.sessionId === engineSessionId);

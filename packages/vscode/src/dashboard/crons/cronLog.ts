@@ -1,47 +1,16 @@
-// cronLog.ts — how many times a cron has RUN and how the last run ENDED, read
-// from the cron's own log file.
-//
-// The log is the audit trail, so it is also the truth. There is deliberately no
-// counter in crons.json to compare it against: a second source would drift the
-// moment a run is killed, a log is rotated by hand, or the record is edited in
-// another clone, and then two numbers would disagree with nobody able to say
-// which lied. One source, derived on read.
-//
-// THE ON-DISK SHAPE (cronLauncher.ts writes it; verified against the real log
-// of \Origami\cms791dnuckui on this machine):
-//
-//     [start] demo heartbeat 30/07/2026  9:39:43.21
-//     [cmd] "C:\...\origami.exe" run "..." --auto --dir "..."
-//     ...arbitrary agent stdout+stderr, ANSI escapes and all...
-//     [end] 30/07/2026  9:39:47.65 exit=0
-//
-// Three properties of that shape drive every decision below.
-//
-// 1. `[start]` IS ALWAYS AT A LINE START. It is the first write of a run, and
-//    whatever preceded it in the file was an `echo`, which always terminates
-//    with CRLF. So it can be anchored, and anchoring keeps a stray "[start]" in
-//    the middle of some agent's output from inflating the count.
-//
-// 2. `[end]` IS NOT. It is echoed straight after the run's own redirected
-//    output, and a program whose last write lacked a trailing newline leaves
-//    the `[end]` record GLUED to the end of that line. Anchoring it would lose
-//    the outcome of exactly the runs most worth knowing about. So `[end]` is
-//    matched unanchored, leaning on `exit=<digits>` for specificity instead.
-//
-// 3. `%DATE%`/`%TIME%` ARE LOCALE-FORMATTED — this machine writes `30/07/2026`
-//    and ` 9:39:43.21`, a US box writes `07/30/2026`, others prefix a weekday.
-//    Parsing that back into a Date cannot be done portably, so this module does
-//    not try: the timestamp comes from the file's mtime (which is written by the
-//    `[end]` echo, so it IS the end of the last run), and the log text is used
-//    only for the count and the exit code.
+// cronLog.ts — how many times a cron has run and how the last run ended, read from the cron's own
+// log file. The log is the audit trail and the only source of truth; a second counter would drift
+// the moment a run is killed or a log is edited by hand.
+// Three properties of the on-disk shape drive the parsing: `[start]` is always at a line start and
+// can be anchored; `[end]` is not (it can glue to the run's own last, newline-less output) and is
+// matched unanchored on `exit=<digits>` instead; `%DATE%`/`%TIME%` are locale-formatted and are not
+// parsed back into a Date — the timestamp comes from the file's mtime instead.
 
 import * as fs from 'node:fs';
 
 /**
- * How much of a log to read. A cron that has run every minute for a year has a
- * log far too big to slurp on every pane refresh, and `list()` refreshes often.
- * Beyond this we read only the TAIL, which makes the count a lower bound —
- * reported honestly via `runsExact` rather than passed off as a total.
+ * How much of a log to read. Beyond this cap only the tail is read, making the count a lower bound,
+ *  reported honestly via `runsExact` rather than passed off as a total.
  */
 export const CRON_LOG_READ_CAP = 256 * 1024;
 
@@ -53,12 +22,9 @@ export interface CronRunStats {
   /** False when the log was too big to read whole, so `runs` counts a tail. */
   runsExact: boolean;
   /**
-   * How the most recent run ended, or null when the cron has never run.
-   * `incomplete` = a `[start]` with no `[end]` after it: the run was killed, the
-   * machine went down, or it is still going. That asymmetry is the launcher's
-   * whole point (the start record is written before the work), so it is surfaced
-   * rather than rounded to a failure — "we do not know" and "it failed" are
-   * different facts.
+   * How the most recent run ended, or null when the cron has never run. `incomplete` means a
+   *  `[start]` with no `[end]` after it — killed, crashed, or still running — surfaced rather than
+   *  rounded to a failure, since "we do not know" and "it failed" are different facts.
    */
   lastOutcome: CronOutcome | null;
   /** Exit code of the last COMPLETED run; null if it never ran or never ended. */
@@ -72,21 +38,14 @@ const START_LINE = /^\[start\] /gm;
 /** `[end] … exit=N`, unanchored — see (2). */
 const END_RECORD = /\[end\] .*?exit=(-?\d+)/g;
 /**
- * The `[cmd]` echo, which quotes the cron's PROMPT verbatim. A prompt that
- * happens to contain the text of an end record would otherwise forge one —
- * and because `[cmd]` is emitted immediately after `[start]`, the forgery sits
- * after the start and would turn a genuinely killed run into a reported
- * outcome. `[cmd]` is always at a line start (the `[start]` echo before it ends
- * CRLF), so dropping those lines wholesale is exact, not heuristic.
+ * The `[cmd]` echo, which quotes the cron's prompt verbatim. Dropped wholesale before matching,
+ *  since a prompt containing end-record-like text would otherwise forge an outcome.
  */
 const CMD_LINE = /^\[cmd\] .*$/gm;
 
 /**
- * Parse an already-read chunk of log text.
- *
- * `truncated` says the chunk is a tail rather than the whole file, which only
- * affects `runsExact` — the outcome is read from the END of the text either way,
- * and the end of a tail is the end of the file.
+ * Parse an already-read chunk of log text. `truncated` only affects `runsExact` — the outcome is
+ *  read from the end of the text either way.
  */
 export function parseCronLog(raw: string, truncated = false): CronRunStats {
   // Both scans below run over the SAME blanked text, so the start-vs-end
@@ -131,11 +90,9 @@ export interface CronLogRead extends CronRunStats {
 }
 
 /**
- * Read a cron's log and derive its stats, bounded to the last
- * `CRON_LOG_READ_CAP` bytes. A missing log is the normal "never run yet" state,
- * not an error; an UNREADABLE log (permissions, a directory in its place) is
- * reported the same way rather than thrown, because one bad log must not take
- * the whole Crons pane down with it.
+ * Read a cron's log and derive its stats, bounded to `CRON_LOG_READ_CAP` bytes. A missing log means
+ *  "never run"; an unreadable one is reported the same way rather than thrown, so one bad log
+ *  cannot take the whole pane down.
  */
 export function readCronRunStats(logPath: string): CronLogRead {
   let fd: number | undefined;

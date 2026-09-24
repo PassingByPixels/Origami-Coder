@@ -154,6 +154,18 @@ export const ToolCall = Schema.Struct({
   id: ToolCallID,
   name: Schema.String,
   input: Schema.Unknown,
+  /**
+   * The provider announced this call but its arguments are not usable: `input`
+   * holds the RAW text the model sent and `error` says why it could not be
+   * read. A protocol never fails the stream over it — one glitched call must
+   * cost one tool error, not the turn — so the consumer decides what to do:
+   * the engine rewrites it into its `invalid` tool so the model gets a result
+   * and continues, which is what the AI SDK path does through
+   * `experimental_repairToolCall`. The marker itself stays generic; no
+   * consumer-specific tool name appears here.
+   */
+  invalid: Schema.optional(Schema.Boolean),
+  error: Schema.optional(Schema.String),
   providerExecuted: Schema.optional(Schema.Boolean),
   providerMetadata: Schema.optional(ProviderMetadata),
 }).annotate({ identifier: "LLM.Event.ToolCall" })

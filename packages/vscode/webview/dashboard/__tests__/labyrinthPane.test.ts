@@ -54,6 +54,34 @@ describe('LabyrinthPane — the run index reuses the existing history wire', () 
     expect(posts().filter((p) => String(p.type).toLowerCase().includes('session'))).toEqual([]);
   });
 
+  // t-463pb6 put Claude Code's own transcripts on THIS wire, and t-47bk8j LISTS
+  // them — but they are not engine runs: the engine has never heard of their
+  // ids, so run_steps, run stats and prices would all come back empty and the
+  // row would sit on a spinner that never resolves. The id therefore carries
+  // the `claude:` route in, and nothing past the index may send one to the
+  // engine. The mark, the switch and the projection are labyrinthClaudeRuns.
+  // test.ts / claudeLabyrinth.test.ts; this pins only the ROUTE.
+  it('lists a Claude Code transcript under an id the engine is never asked about', async () => {
+    const { container } = render(LabyrinthPane);
+    send({
+      type: 'historyList',
+      sessions: [
+        ...RUNS,
+        { sessionId: 'cc_1', title: 'Terrain shader', folder: 'aetheron', cwd: 'C:/ws/aetheron', updatedAt: '2026-07-27T15:00:00.000Z', kind: 'claude' },
+      ],
+    });
+    await tick();
+
+    expect(container.querySelectorAll('.lab-run')).toHaveLength(3);
+    expect(flat(container.textContent)).toContain('Terrain shader');
+    // The stats batch is the engine's own runs and nothing else.
+    expect(posts()).toContainEqual({ type: 'requestRunStats', sessionIds: ['ses_a', 'ses_b'] });
+
+    await fireEvent.click(container.querySelectorAll('.lab-run')[2]!);
+    await tick();
+    expect(posts()).toContainEqual({ type: 'requestRunSteps', sessionId: 'claude:cc_1', cwd: 'C:/ws/aetheron' });
+  });
+
   it('renders each past run and asks for the clicked one’s steps', async () => {
     const { container } = render(LabyrinthPane);
     send({ type: 'historyList', sessions: RUNS });
@@ -196,8 +224,11 @@ describe('LabyrinthPane — the three modes are switchable and flight is honest 
     await fireEvent.click(flight);
     await tick();
 
-    expect(new Set(ys()).size).toBe(1);          // flight: one horizontal spine
-    const px = xs();
+    // Flight is the ANALYTICS page now, not a column of markers: its spine is
+    // the All-activity band, one tick per step, still placed by WALL CLOCK.
+    const spine = () => Array.from(container.querySelectorAll('[data-band="all"]'));
+    expect(new Set(spine().map((t) => t.getAttribute('y'))).size).toBe(1); // one horizontal band
+    const px = spine().map((t) => Number(t.getAttribute('x')));
     expect((px[1]! - px[0]!) / (px[2]! - px[0]!)).toBeCloseTo(0.2, 3); // by TIME, not by index
     expect(container.querySelector('.lab-note')).toBeNull();
   });
@@ -211,7 +242,10 @@ describe('LabyrinthPane — the three modes are switchable and flight is honest 
     const note = container.querySelector('.lab-note');
     expect(note).not.toBeNull();
     expect(flat(note!.textContent)).toContain('no usable timestamps');
-    expect(container.querySelectorAll('.marker')).toHaveLength(3);
+    // Every step is still drawn — evenly spaced — and the axis itself refuses
+    // to print a clock it would have to invent.
+    expect(container.querySelectorAll('[data-band="all"]')).toHaveLength(3);
+    expect(flat(container.textContent)).toContain('Order axis');
   });
 
   it('corridor mode snakes: the second row runs backwards across the canvas', async () => {
@@ -441,14 +475,21 @@ describe('LabyrinthPane — threads are lanes, and a jutting step branches off t
     expect(nodes[1]!.classList.contains('tone-tool')).toBe(true);
   });
 
-  it('all three modes render centred in the panel rather than pinned to its left edge', async () => {
+  it('the two PICTURE modes render centred in the panel rather than pinned to its left edge', async () => {
     const { container } = await withRun({ steps: LANED, truncated: false, total: 4 });
-    for (const label of ['Thread', 'Corridor', 'Flight']) {
+    for (const label of ['Thread', 'Corridor']) {
       const btn = Array.from(container.querySelectorAll('.lab-mode')).find((b) => b.textContent?.trim() === label)!;
       await fireEvent.click(btn);
       await tick();
       expect(container.querySelector('.lab-svg')!.getAttribute('preserveAspectRatio')).toMatch(/^xMid/);
     }
+    // Flight is deliberately NOT in that loop. It is a page, not a picture: it
+    // is built AT the panel's width rather than centred inside it, so it has no
+    // spare room to be centred in and asserting xMid would assert nothing.
+    await fireEvent.click(Array.from(container.querySelectorAll('.lab-mode')).find((b) => b.textContent?.trim() === 'Flight')!);
+    await tick();
+    const chart = container.querySelector('svg.fl-chart')! as SVGElement;
+    expect(chart.style.width).toBe(`${chart.getAttribute('viewBox')!.split(' ')[2]}px`);
   });
 });
 
@@ -660,56 +701,88 @@ describe('LabyrinthPane — a detached sub-agent is drawn as a real span', () =>
   });
 });
 
-describe('LabyrinthPane — flight is the DETAIL view', () => {
+// FLIGHT IS THE ANALYTICS PAGE (0.4.79). It used to be a wide strip that grew
+// 150px per step and printed a detail block under every marker; reading a
+// 200-step run meant scrolling sideways past all of it. It is now fit to the
+// panel at load, with a bar per tool category and one row per delegate, and the
+// per-step detail lives where it always also lived — the inspector.
+//
+// These assert the pane-level contract: switching to Flight really renders that
+// page over the SAME steps, the honesty gate still trips, and the sub-agent band
+// still shows concurrency the other two modes cannot. The view's own geometry is
+// covered leaf by leaf in labyrinthFlightView.test.ts.
+describe('LabyrinthPane — flight is the ANALYTICS view', () => {
   const toFlight = async (c: HTMLElement) => {
     const btn = Array.from(c.querySelectorAll('.lab-mode')).find((b) => b.textContent?.trim() === 'Flight')!;
     await fireEvent.click(btn);
     await tick();
   };
 
-  it('renders each step’s detail inline instead of one-at-a-time in the inspector', async () => {
+  it('answers WHERE THE RUN WENT with a count per category, not a detail block per marker', async () => {
     const { container } = await withRun({
       steps: [
-        step(0, { kind: 'tool', tool: 'read', status: 'completed', durationMs: 1500, startedAt: 1_000_000, tokens: { input: 120, output: 40 }, agent: 'build' }),
-        step(1, { kind: 'reply', title: 'done', startedAt: 1_005_000 }),
+        step(0, { kind: 'prompt', title: 'fix it', startedAt: 1_000_000 }),
+        step(1, { kind: 'tool', tool: 'read', status: 'completed', durationMs: 1500, startedAt: 1_000_100, tokens: { input: 120, output: 40 }, agent: 'build' }),
+        step(2, { kind: 'tool', tool: 'grep', startedAt: 1_000_200, agent: 'build' }),
+        step(3, { kind: 'tool', tool: 'edit', startedAt: 1_000_300, agent: 'build' }),
+        step(4, { kind: 'reply', title: 'done', startedAt: 1_005_000 }),
+      ],
+      truncated: false, total: 5,
+    });
+    await toFlight(container);
+
+    const row = (c: string) => flat(container.querySelector(`.fl-bar-fill[data-category="${c}"]`)!.closest('.fl-bar-row')!.textContent);
+    expect(row('Read & search')).toContain('2');
+    expect(row('Edit files')).toContain('1');
+    // The bars are proportional to the busiest row, so the dominant category
+    // reads full rather than as a sliver of a total.
+    expect((container.querySelector('.fl-bar-fill[data-category="Read & search"]') as HTMLElement).style.width).toBe('100%');
+    // ...and the prompt that drove it is listed, clickable, in its own card.
+    expect(flat(container.querySelector('.fl-prompt')!.textContent)).toContain('fix it');
+  });
+
+  it('the step detail still exists — in the inspector, where a click puts it', async () => {
+    const { container } = await withRun({
+      steps: [
+        step(0, { kind: 'prompt', title: 'fix it', startedAt: 1_000_000 }),
+        step(1, { kind: 'tool', tool: 'read', status: 'completed', durationMs: 1500, startedAt: 1_000_100, tokens: { input: 120, output: 40 }, agent: 'build' }),
       ],
       truncated: false, total: 2,
     });
     await toFlight(container);
+    await fireEvent.click(container.querySelector('[data-ordinal="1"]')!);
+    await tick();
 
-    const rows = Array.from(container.querySelectorAll('.detail')).map((d) => flat(d.textContent));
-    expect(rows).toContain('tool · read');
-    expect(rows).toContain('completed');
-    expect(rows).toContain('1.5s');
-    expect(rows).toContain('120/40 tok');
-    expect(rows).toContain('build');
-    // The bare step contributes its kind and NOTHING it does not have.
-    expect(rows).toContain('reply');
-    expect(rows.join(' ')).not.toContain('undefined');
-    expect(rows.join(' ')).not.toMatch(/\b0(ms)?\b/);
+    const text = flat(container.querySelector('.lab-inspector')!.textContent);
+    expect(text).toContain('read');
+    expect(text).toContain('completed');
+    expect(text).toContain('1.5s');
+    expect(text).toContain('120 in');
+    expect(text).toContain('build');
+    expect(text.toLowerCase()).not.toContain('undefined');
+    // The footer names it too, so the picked step is visible without the column.
+    expect(flat(container.querySelector('.fl-foot')!.textContent)).toContain('#1');
   });
 
-  it('goes TIME-BASED once the sub-agent steps carry clocks, and shows their overlap as bars', async () => {
+  it('goes TIME-BASED once the sub-agent steps carry clocks, and shows their extent as bars', async () => {
     const { container } = await withRun({
       steps: [
         step(0, { kind: 'prompt', title: 'three stories please', startedAt: 1_000 }),
         step(1, { kind: 'subagent', tool: 'task', title: '#1', background: true, status: 'completed', startedAt: 1_100, endedAt: 5_000 }),
         step(2, { kind: 'reply', title: 'on it', startedAt: 1_200 }),
         step(3, { kind: 'prompt', title: 'capitals of europe', startedAt: 2_000 }),
-        step(4, { kind: 'reply', title: 'Tirana …', startedAt: 9_000 }),
+        step(4, { kind: 'reply', title: 'Tirana ...', startedAt: 9_000 }),
       ],
       truncated: false, total: 5,
     });
     await toFlight(container);
 
     // The gate no longer trips: sub-agent steps used to be timeless and one of
-    // them collapsed the whole strip to even spacing.
+    // them collapsed the whole view to even spacing.
     expect(container.querySelector('.lab-note')).toBeNull();
-    const bars = Array.from(container.querySelectorAll('.flight-span'));
-    expect(bars).toHaveLength(1);
-    const x1 = Number(bars[0]!.getAttribute('x1'));
-    const x2 = Number(bars[0]!.getAttribute('x2'));
-    expect(x2).toBeGreaterThan(x1);
+    const drawn = Array.from(container.querySelectorAll('.fl-span'));
+    expect(drawn).toHaveLength(1);
+    expect(Number(drawn[0]!.getAttribute('x2'))).toBeGreaterThan(Number(drawn[0]!.getAttribute('x1')));
   });
 
   it('still degrades HONESTLY: no clocks, no bars, and it says positions show order', async () => {
@@ -723,35 +796,41 @@ describe('LabyrinthPane — flight is the DETAIL view', () => {
     });
     await toFlight(container);
 
-    expect(container.querySelectorAll('.flight-span')).toHaveLength(0);
+    expect(container.querySelectorAll('.fl-span')).toHaveLength(0);
+    expect(container.querySelectorAll('.fl-idle')).toHaveLength(0);
     const note = flat(container.querySelector('.lab-note')!.textContent).toLowerCase();
     expect(note).toContain('order, not time');
   });
 
-  it('is larger than the other modes and stays centred in the panel', async () => {
-    const { container } = await withRun({ steps: LANED, truncated: false, total: 4 });
-    const boxOf = () => container.querySelector('.lab-svg')!.getAttribute('viewBox')!.split(' ').map(Number);
-    const threadH = boxOf()[3]!;
-    await toFlight(container);
-    const svg = container.querySelector('.lab-svg')!;
-    expect(boxOf()[3]!).toBeGreaterThan(threadH);
-    expect(svg.getAttribute('preserveAspectRatio')).toMatch(/^xMid/);
+  it('FITS the panel instead of growing with the run — the regression the strip had', async () => {
+    const short = await withRun({ steps: LANED, truncated: false, total: 4 });
+    await toFlight(short.container);
+    const widthOf = (c: HTMLElement) => Number(c.querySelector('svg.fl-chart')!.getAttribute('viewBox')!.split(' ')[2]);
+    const narrow = widthOf(short.container);
+    cleanup();
+
+    // Fifty times the steps, the SAME width. The old strip was 150px per step,
+    // so this run was 30,000 units wide and could only be read by scrolling.
+    const many = await withRun({
+      steps: Array.from({ length: 200 }, (_, i) => step(i, { startedAt: 1_000_000 + i * 1_000 })),
+      truncated: false, total: 200,
+    });
+    await toFlight(many.container);
+    expect(widthOf(many.container)).toBe(narrow);
   });
 });
 
-// THE OWNER'S SCREENSHOT: the clock row reading "11:57:17:43   11:57:46", two
-// timestamps drawn over each other. Asserted on the RENDERED map, because the
-// clock is the one label the pure layout does not decide: LabyrinthNode draws
-// it at swimClockY whatever lane the marker took, so it is the row where two
-// steps a millisecond apart collide however far apart their lanes are.
+// THE OWNER'S OLD SCREENSHOT was two per-step clocks drawn through each other on
+// the strip's shared clock row. The analytics view has no per-step clock at all:
+// the axis carries a FIXED handful of labels, so density cannot collide them
+// however tight the run is. That is the property worth pinning now.
 describe('LabyrinthPane — the flight TIME AXIS is readable at any density', () => {
   const toFlight = async (c: HTMLElement) => {
     await fireEvent.click(Array.from(c.querySelectorAll('.lab-mode')).find((b) => b.textContent?.trim() === 'Flight')!);
     await tick();
   };
-  // In flight, `.meta` is the clock row and nothing else.
-  const clocks = (c: HTMLElement) => Array.from(c.querySelectorAll('text.meta'));
-  // Six tools inside a fifth of a second, then a step ten minutes later.
+  const axis = (c: HTMLElement) => Array.from(c.querySelectorAll('text.fl-axis-label'));
+  // Six tools inside a fifth of a second, then a step fifteen minutes later.
   const BURST = [
     step(0, { kind: 'prompt', title: 'fix the failing suite', startedAt: 1_000_000 }),
     ...Array.from({ length: 6 }, (_, i) =>
@@ -759,15 +838,13 @@ describe('LabyrinthPane — the flight TIME AXIS is readable at any density', ()
     step(7, { kind: 'reply', title: 'all written', startedAt: 1_900_000 }),
   ];
 
-  it('prints no two clock labels through each other, and drops rather than smears', async () => {
+  it('prints one bounded set of clock labels however tight the run is, and never two through each other', async () => {
     const { container } = await withRun({ steps: BURST, truncated: false, total: 8 });
     await toFlight(container);
 
-    const drawn = clocks(container);
-    // It really was a colliding density — otherwise this proves nothing.
-    expect(drawn.length, 'a burst this tight cannot print 8 clocks legibly').toBeLessThan(BURST.length);
-    expect(drawn.length, 'dropping ALL of them is not a fix either').toBeGreaterThan(0);
-    const half = (8 * 7.2) / 2; // half a "HH:MM:SS" label at the 11px clock size
+    const drawn = axis(container);
+    expect(drawn.length).toBeGreaterThan(0);
+    const half = (5 * 6) / 2; // half an HH:MM label at the 10px axis size
     const xs = drawn.map((t) => Number(t.getAttribute('x')));
     for (const a of xs) {
       for (const b of xs) {
@@ -775,30 +852,32 @@ describe('LabyrinthPane — the flight TIME AXIS is readable at any density', ()
         expect(Math.abs(a - b), `two clocks drawn ${Math.abs(a - b)} apart overlap`).toBeGreaterThanOrEqual(half * 2);
       }
     }
-    // ...and every one that DID print is a real clock, not a smear of two.
-    for (const t of drawn) expect(flat(t.textContent)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
-    // Nothing is lost by the drop: every step is still a marker on the strip.
-    expect(container.querySelectorAll('.marker')).toHaveLength(8);
-  });
+    // HH:MM and nothing else — never two labels smeared into one cell.
+    for (const t of drawn) expect(flat(t.textContent)).toMatch(new RegExp('^[0-9]{2}:[0-9]{2}$'));
+    // Nothing is lost to the density: every step is still a tick on the spine.
+    expect(container.querySelectorAll('[data-band="all"]')).toHaveLength(8);
+    const dense = drawn.length;
+    cleanup();
 
-  it('a strip with room keeps every clock — the drop is density, not policy', async () => {
-    const roomy = [
-      step(0, { kind: 'prompt', title: 'first', startedAt: 1_000_000 }),
-      step(1, { kind: 'reply', title: 'second', startedAt: 1_500_000 }),
-      step(2, { kind: 'reply', title: 'third', startedAt: 2_000_000 }),
-    ];
-    const { container } = await withRun({ steps: roomy, truncated: false, total: 3 });
-    await toFlight(container);
-    expect(clocks(container)).toHaveLength(3);
+    const roomy = await withRun({
+      steps: [
+        step(0, { kind: 'prompt', title: 'first', startedAt: 1_000_000 }),
+        step(1, { kind: 'reply', title: 'second', startedAt: 1_500_000 }),
+        step(2, { kind: 'reply', title: 'third', startedAt: 2_000_000 }),
+      ],
+      truncated: false, total: 3,
+    });
+    await toFlight(roomy.container);
+    // Same count on a roomy run: the axis is the AXIS's, never the steps'.
+    expect(axis(roomy.container)).toHaveLength(dense);
   });
 });
 
-// Flight is the DETAIL view and the ONLY one positioned by wall clock, so it
-// is the only place two sub-agents running in the same minute can be shown
-// overlapping. It used to draw every one of them on a single delegation row,
-// stacking those bars exactly on top of each other. These assert what is
-// actually in the DOM after the swimlane rewrite.
-describe('LabyrinthPane — flight is a SWIMLANE board', () => {
+// Flight is the only view positioned by wall clock, so it is the only place two
+// sub-agents running in the same minute can be shown overlapping. In the
+// analytics layout that band is its own labelled section under a gap, which is
+// the part the owner asked to read as unmistakable.
+describe('LabyrinthPane — flight puts every delegate in a band of its own', () => {
   const toFlight = async (c: HTMLElement) => {
     const btn = Array.from(c.querySelectorAll('.lab-mode')).find((b) => b.textContent?.trim() === 'Flight')!;
     await fireEvent.click(btn);
@@ -813,78 +892,78 @@ describe('LabyrinthPane — flight is a SWIMLANE board', () => {
     step(4, { kind: 'reply', title: 'two agents writing', startedAt: 800 }),
     step(5, { kind: 'prompt', title: 'capitals of europe', startedAt: 300_000 }),
   ];
-  const laneEls = (c: HTMLElement) => Array.from(c.querySelectorAll('.swim-lane'));
-  const bar = (g: Element) => ({
-    y: Number(g.querySelector('.flight-span')!.getAttribute('y1')),
-    x1: Number(g.querySelector('.flight-span')!.getAttribute('x1')),
-    x2: Number(g.querySelector('.flight-span')!.getAttribute('x2')),
-  });
+  const bars = (c: HTMLElement) => Array.from(c.querySelectorAll('.fl-span')).map((b) => ({
+    el: b,
+    y: Number(b.getAttribute('y1')),
+    x1: Number(b.getAttribute('x1')),
+    x2: Number(b.getAttribute('x2')),
+  }));
 
   it('two concurrent sub-agents render on DIFFERENT rows with overlapping x', async () => {
     const { container } = await withRun({ steps: TWO_AGENTS, truncated: false, total: 6 });
     await toFlight(container);
 
-    const bars = laneEls(container).map(bar);
-    expect(bars).toHaveLength(2);
-    expect(bars[0]!.y).not.toBe(bars[1]!.y);
+    const drawn = bars(container);
+    expect(drawn).toHaveLength(2);
+    expect(drawn[0]!.y).not.toBe(drawn[1]!.y);
     // The overlap is on screen: each begins before the other ends.
-    expect(bars[0]!.x1).toBeLessThan(bars[1]!.x2);
-    expect(bars[1]!.x1).toBeLessThan(bars[0]!.x2);
-    // ...and both lanes sit below the main line the run itself is drawn on.
-    const mainY = Number(markers(container)[0]!.getAttribute('cy'));
-    for (const b of bars) expect(b.y).toBeGreaterThan(mainY);
+    expect(drawn[0]!.x1).toBeLessThan(drawn[1]!.x2);
+    expect(drawn[1]!.x1).toBeLessThan(drawn[0]!.x2);
+    // ...and both sit below the gap, which is what separates delegated work
+    // from the top-level agent's own.
+    const gapY = Number(container.querySelector('.fl-gap')!.getAttribute('y1'));
+    for (const b of drawn) expect(b.y).toBeGreaterThan(gapY);
+    expect(flat(container.querySelector('.fl-gap-label')!.textContent)).toBe('SUB-AGENTS — 2 delegated, 1 never rejoined');
   });
 
-  it('a lane DEPARTS and REJOINS the main line — unless the sub-agent never came back', async () => {
+  it('a lane DEPARTS and REJOINS the main chart — unless the sub-agent never came back', async () => {
     const { container } = await withRun({ steps: TWO_AGENTS, truncated: false, total: 6 });
     await toFlight(container);
-    const lanes = laneEls(container);
 
-    // Every lane leaves the main line where it was spawned.
-    for (const g of lanes) expect(g.querySelector('.swim-depart')).not.toBeNull();
-    const open = lanes.filter((g) => g.classList.contains('is-open'));
+    // Every lane leaves the row it was spawned from.
+    expect(container.querySelectorAll('.fl-depart')).toHaveLength(2);
+    const open = Array.from(container.querySelectorAll('.fl-span.open'));
     expect(open).toHaveLength(1);
-    expect(open[0]!.querySelector('.swim-rejoin'), 'a sub-agent still running must not be drawn rejoining').toBeNull();
-    expect(open[0]!.querySelector('.swim-open-end')).not.toBeNull();
-    // ...and the one that DID return on the same run is visibly different.
-    const closed = lanes.filter((g) => !g.classList.contains('is-open'));
-    expect(closed).toHaveLength(1);
-    expect(closed[0]!.querySelector('.swim-rejoin')).not.toBeNull();
-    expect(closed[0]!.querySelector('.swim-open-end')).toBeNull();
+    expect(container.querySelector(`.fl-open-end[data-agent="${open[0]!.getAttribute('data-agent')}"]`)).not.toBeNull();
+    // Exactly one rejoin is drawn — for the one that actually returned.
+    expect(container.querySelectorAll('.fl-rejoin')).toHaveLength(1);
     // The open one runs to the right-hand edge; the closed one stops short.
-    expect(bar(open[0]!).x2).toBeGreaterThan(bar(closed[0]!).x2);
+    const [a, b] = bars(container);
+    const openBar = a!.el.classList.contains('open') ? a! : b!;
+    const closedBar = openBar === a! ? b! : a!;
+    expect(openBar.x2).toBeGreaterThan(closedBar.x2);
   });
 
-  it('the rows are NAMED per lane, and the canvas grows to hold them', async () => {
+  it('the rows are NAMED per delegate, and a run that delegated nothing says so', async () => {
     const { container } = await withRun({ steps: TWO_AGENTS, truncated: false, total: 6 });
     await toFlight(container);
-    const tags = Array.from(container.querySelectorAll('.lane-tag')).map((t) => flat(t.textContent));
-    expect(tags).toContain('MAIN');
-    expect(tags).toContain('SUB-AGENT 1');
-    expect(tags).toContain('SUB-AGENT 2');
-    const twoLaneH = Number(container.querySelector('.lab-svg')!.getAttribute('viewBox')!.split(' ')[3]);
+    const names = Array.from(container.querySelectorAll('.fl-agent-label')).map((t) => flat(t.textContent));
+    expect(names).toEqual(['story #1', 'story #2 ● live']);
     cleanup();
 
-    // The same run with ONE sub-agent needs no extra row — and says DELEGATION.
-    const solo = await withRun({ steps: TWO_AGENTS.filter((_, i) => i !== 3), truncated: false, total: 5 });
-    await toFlight(solo.container);
-    expect(Number(solo.container.querySelector('.lab-svg')!.getAttribute('viewBox')!.split(' ')[3]))
-      .toBeLessThan(twoLaneH);
-    expect(Array.from(solo.container.querySelectorAll('.lane-tag')).map((t) => flat(t.textContent)))
-      .toContain('DELEGATION');
+    const none = await withRun({
+      steps: [step(0, { kind: 'prompt', title: 'hello', startedAt: 1_000 }), step(1, { kind: 'reply', title: 'hi', startedAt: 2_000 })],
+      truncated: false, total: 2,
+    });
+    await toFlight(none.container);
+    expect(none.container.querySelectorAll('.fl-agent-label')).toHaveLength(0);
+    expect(flat(none.container.textContent)).toContain('no delegated runs');
   });
 
-  it('the clock row still clears the LOWEST lane instead of being drawn through it', async () => {
+  it('the time axis clears every lane instead of being drawn through the lowest', async () => {
     const { container } = await withRun({ steps: TWO_AGENTS, truncated: false, total: 6 });
     await toFlight(container);
-    const clocks = Array.from(container.querySelectorAll('.meta')).map((m) => Number(m.getAttribute('y')));
-    expect(clocks.length).toBeGreaterThan(0);
-    const lowestLane = Math.max(...laneEls(container).map((g) => bar(g).y));
-    for (const y of clocks) expect(y).toBeGreaterThan(lowestLane);
-    const height = Number(container.querySelector('.lab-svg')!.getAttribute('viewBox')!.split(' ')[3]);
-    for (const y of clocks) expect(y).toBeLessThan(height);
+    const lowest = Math.max(...bars(container).map((b) => b.y));
+    const rule = Number(container.querySelector('.fl-axis-rule')!.getAttribute('y1'));
+    expect(rule).toBeGreaterThan(lowest);
+    const height = Number(container.querySelector('svg.fl-chart')!.getAttribute('viewBox')!.split(' ')[3]);
+    for (const label of container.querySelectorAll('text.fl-axis-label')) {
+      expect(Number(label.getAttribute('y'))).toBeGreaterThan(rule);
+      expect(Number(label.getAttribute('y'))).toBeLessThan(height);
+    }
   });
 });
+
 
 describe('LabyrinthPane — clicking a step is visible on the MAP, not only in the inspector', () => {
   it('the selected marker fills and grows; every other marker stays unfilled', async () => {
@@ -1263,6 +1342,65 @@ describe('LabyrinthPane — a late reply for an abandoned run is dropped', () =>
 // posted to the host — not the actual pixel math a real drag would produce;
 // that needs a human eyeball. The clamp math itself is unit-tested with plain
 // numbers in labyrinthColumns.test.ts.
+// t-qrq4el — the owner asked for the bottom band (A3, t-q8zufa) reverted: the
+// inspector goes back to a right-hand sidebar because the band's reply text
+// needed scrolling and the sidebar's didn't. jsdom has no layout engine, so
+// the honest check for a flex row / column width is reading the stylesheet,
+// not measuring a rendered box — the same technique the grid test it replaces
+// used.
+describe('LabyrinthPane — the flex layout: index left, map fills, inspector a right sidebar', () => {
+  const src = readFileSync('webview/dashboard/panes/LabyrinthPane.svelte', 'utf8');
+  // `selector` is the bare selector text, no trailing `{` — this appends it.
+  const rule = (selector: string): string => {
+    const re = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([\\s\\S]*?)\\}');
+    return re.exec(src)?.[1] ?? '';
+  };
+
+  it('.lab-pane is a flex row again, not a grid', () => {
+    const paneRule = rule('.lab-pane');
+    expect(paneRule, '.lab-pane rule not found').not.toBe('');
+    expect(paneRule).toMatch(/display:\s*flex/);
+    expect(paneRule).not.toMatch(/display:\s*grid/);
+  });
+
+  it('the map fills the remaining width; no fixed-band or hidden-divider rule survives from the A3 bottom band', () => {
+    const mapRule = rule('.lab-map');
+    expect(mapRule).toMatch(/flex:\s*1/);
+    expect(src).not.toMatch(/:global\(\.lab-inspect\)/);
+    expect(src).not.toMatch(/:global\(\.lab-divider\)/);
+    expect(src).not.toMatch(/height:\s*168px/);
+  });
+
+  it('the inspector column sits after the map in DOM order — a right-hand sidebar, not a band above or below', () => {
+    const { container } = render(LabyrinthPane);
+    const paneEl = container.querySelector('.lab-pane')!;
+    const children = Array.from(paneEl.children).map((el) => el.className);
+    const mapIndex = children.findIndex((c) => c.includes('lab-map'));
+    const inspectIndex = children.findIndex((c) => c.includes('lab-inspect'));
+    expect(mapIndex).toBeGreaterThanOrEqual(0);
+    expect(inspectIndex).toBeGreaterThan(mapIndex);
+  });
+});
+
+// The inspector panel itself (LabyrinthInspector.svelte) reverts out of the
+// A3 band's sideways CSS columns — a sidebar has height to spare, so fields
+// flow vertically again with their own scroll, per t-qrq4el.
+describe('LabyrinthInspector — vertical flow again, not the A3 band\'s CSS columns', () => {
+  const src = readFileSync('webview/dashboard/components/LabyrinthInspector.svelte', 'utf8');
+  const rule = (selector: string): string => {
+    const re = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([\\s\\S]*?)\\}');
+    return re.exec(src)?.[1] ?? '';
+  };
+
+  it('.lab-inspector scrolls its own full height; no CSS multi-column flow left over from the band', () => {
+    const inspectorRule = rule('.lab-inspector');
+    expect(inspectorRule).toMatch(/height:\s*100%/);
+    expect(inspectorRule).toMatch(/overflow-y:\s*auto/);
+    expect(inspectorRule).not.toMatch(/columns:/);
+    expect(src).not.toMatch(/column-span/);
+  });
+});
+
 describe('LabyrinthPane — draggable run-index and inspector columns', () => {
   it('asks the host for persisted column widths on mount', () => {
     render(LabyrinthPane);

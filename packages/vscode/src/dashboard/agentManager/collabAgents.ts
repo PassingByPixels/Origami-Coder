@@ -1,52 +1,14 @@
-// Collabs M1 - collabAgents.ts: the two SEED collab agents, shipped as ordinary
-// engine agent-definition files. Same delivery mechanism as archetypes.ts and
-// for the same reason: the engine loads {agent,agents}/**/*.md from every config
-// dir (config/agent.ts load()), so writing a .md into globalAgentDir() makes a
-// real agent with zero extra plumbing.
-//
-// WHY `collab: true` AT THE TOP LEVEL. The wire contract discovers a collab
-// agent as "Agent.Info where options.collab is truthy". A def does NOT need an
-// `options:` block to get there: core/v1/config/agent.ts's AgentSchema is a
-// StructWithRest, and its `normalize` sweeps every key not in KNOWN_KEYS into
-// `options`. So a bare `collab: true` line lands at `options.collab === true`,
-// which is exactly what the engine lane filters on.
-//
-// WHY `hidden: true`. acp/directory.ts builds the chat's agent picker with
-// `agents.filter((item) => item.mode !== "subagent" && item.hidden !== true)`.
-// `mode: all` + `hidden: true` therefore keeps these two OFF the ordinary chat
-// picker while leaving them full agents the collab runner can drive. `hidden`
-// is a real schema field (core/v1/config/agent.ts), not a convention.
-//
-// WHY THE PAIR IS A WORKER AND AN OBSERVER. Crane BUILDS - edit and bash are
-// his, and the `steps:` line is his runaway backstop. Heron only reads, because
-// a verifier that can rewrite the thing it is checking is not a verifier. The
-// blocks themselves live in collabPresets.ts, which the CRUD writer shares.
-//
-// NO ROOM LANGUAGE IN EITHER PERSONA (generation v5, W9 owner ruling). Both
-// bodies used to open "You are Crane, the builder in this collab" and both
-// carried a shared `COLLAB_DISCIPLINE` block - one voice in a stream, @name
-// wakes nobody, silence is a valid answer. Every word of that is now taught by
-// the engine's own room manual (collab/collab-agent-base.txt, injected as the
-// base prompt of a collab turn - see the engine's prompt-composition matrix),
-// and the SAME def also runs as a solo bot chat and as another agent's
-// sub-agent, where there is no room for the text to be about. So a persona that
-// named the room was both a duplicate and, two times in three, a lie. What is
-// left is identity plus a few generic habits: read first, evidence over claims,
-// ask rather than guess. The v4 payload is frozen in collabAgentsLegacyV4.ts so
-// an install still carrying it is recognised and offered the reseed note.
-//
-// UNPINNED BY DESIGN (generation v4). Earlier generations pinned a local LM
-// Studio model and a remote OpenRouter one — dead on arrival on any machine
-// that never set those exact providers up, which is every fresh install. An
-// agent def with no `model:` line is already a first-class state end to end
-// (engine wire: collab/acp.ts's `modelOf` answers `null`, never throws), so
-// the fix is to ship that state rather than a guessed default. The pane
-// surfaces it as an actionable "needs a model" note wherever the def is read
-// (CollabAgentCard.svelte, CollabAgentForm.svelte's hint) instead of leaving
-// it to be discovered as a turn failure. The frozen PRIOR (pinned) generation
-// lives on as `COLLAB_AGENTS_V3` in collabAgentsLegacy.ts, so an existing
-// install's untouched pinned seed is still recognised and offered a reseed.
-// Editing either file stops this installer touching it, forever.
+// Ships two seed COLLAB agents as ordinary engine agent-definition .md files (same
+// mechanism as archetypes.ts): the engine sweeps unknown top-level keys into `options`, so a
+// bare `collab: true` line lands at `options.collab`, which the engine's collab lane filters
+// on. `hidden: true` is a real schema field: it keeps these off the ordinary chat picker
+// (mode: all + hidden: true) while leaving them full agents the collab runner can drive.
+// One WORKER (edit+bash) and one OBSERVER (read-only) persona: a verifier that can rewrite
+// what it checks is not a verifier. Both share permission blocks in collabPresets.ts.
+// Personas carry no "room" language and no model pin — the engine's own room manual is
+// injected per collab turn, and a hardcoded model/provider pin is dead on arrival on machines
+// that never set it up; a pane surfaces "needs a model" instead of a guessed default. Prior
+// generations are frozen in collabAgentsLegacy*.ts for the reseed-note check.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -58,17 +20,13 @@ import {
   WORKER_STEPS,
 } from './collabPresets';
 
-/** The install-once marker, backed by globalState in the panel and faked in
- *  tests. Mirrors ArchetypeMarker exactly: get() = "already installed",
- *  set() records a successful pass. */
+/** Install-once marker (globalState-backed, faked in tests), mirroring ArchetypeMarker. */
 export interface CollabAgentMarker {
   get(): boolean;
   set(): void;
 }
 
-/** The seed pair as shipped (generation v5). Short memorable bird names beat
- *  provider names in an @mention world: you type `@collab-crane`, not
- *  `@collab-lmstudio`. */
+/** The seed pair as shipped: short bird names beat provider names in an @mention world. */
 export const COLLAB_AGENTS: Array<{ file: string; content: string }> = [
   {
     file: 'collab-crane.md',
@@ -120,23 +78,11 @@ When you are genuinely unsure - a decision that is not yours, a permission you l
   },
 ];
 
-/**
- * Install the seed collab agents, once per marker generation.
- *
- * WRITE-IF-ABSENT, always. A file that exists is left exactly as it is - the
- * user's edits to a persona or, more to the point, to the `model:` line, win
- * over anything shipped here. This is generation v5 (collabAgentsLegacy.ts
- * freezes v1, v3 and - next door - v4), and unlike ensureArchetypes
- * there is still no pristine-upgrade branch: a marker bump alone never
- * rewrites an existing file, so an install already carrying an untouched
- * prior generation keeps it until the user deletes it (at which point the
- * pane's legacy-seed note has already told them why) - absent means write,
- * present means leave.
- *
- * Non-fatal by design: a failure is logged, swallowed, and leaves the marker
- * UNSET so the next boot retries. The sidebar must open whether or not the
- * config dir is writable.
- */
+/** Install the seed collab agents once per marker generation, write-if-absent always: an
+ *  existing file (including its `model:` line) is left untouched — user edits win. No
+ *  pristine-upgrade branch, unlike ensureArchetypes; a marker bump never rewrites an existing
+ *  file. Non-fatal: failure is logged and swallowed, marker stays unset so the next boot
+ *  retries. */
 export function ensureCollabAgents(opts: {
   marker: CollabAgentMarker;
   dir?: string;

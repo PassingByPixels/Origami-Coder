@@ -1,17 +1,8 @@
-// sessionRestore.ts — restore the WHOLE open-set of chat tabs across a VS Code
-// restart, not just the one active session. Today DashboardPanel persists a
-// single ACTIVE_SESSION_KEY (a local session-N id) and re-focuses it if the
-// same-numbered session happens to recur. This persists the real thing: the
-// engine session ids of every open chat (in tab order), which one is active,
-// and the sidebar grid layout — then reopens each via the existing recall path
-// (loadSession) so the transcript renders exactly as it was.
-//
-// Engine ids (not local session-N ids) because local ids reset every window
-// (sessionCounter is module state) while the engine's session store persists on
-// disk and is the id the recall path (createSession(...loadSessionId)) needs.
-//
-// Pure planners + memento glue live here; DashboardPanel supplies the imperative
-// reopen/activate callbacks and the live engine client (for the existence probe).
+// Restore the WHOLE open-set of chat tabs across a VS Code restart, not just the single
+// active session: persists the engine session ids of every open chat (in tab order), which
+// is active, and the grid layout, then reopens each via loadSession so the transcript
+// renders exactly as it was. Engine ids, not local session-N ids, since local ids reset
+// every window while the engine's session store persists on disk.
 
 import type { Memento } from 'vscode';
 
@@ -31,10 +22,8 @@ interface SessionLike {
 
 const OPEN_SET_KEY = 'origami.openSessions';
 
-/** Project the live sessions map to the persistable open-set. CHAT sessions only
- *  (background agents are not user tabs), in map (tab) order, each contributing
- *  its engine id; a session with no engine id yet is skipped. `active` resolves
- *  the local active id THROUGH the map to its engine id. */
+/** Project the live sessions map to the persistable open-set: chat sessions only, in tab
+ *  order, each contributing its engine id; a session with no engine id yet is skipped. */
 export function computeOpenSet(
   sessions: Iterable<[string, SessionLike]>,
   activeLocalId: string | null,
@@ -62,10 +51,9 @@ export function loadOpenSet(memento: Memento): OpenSetState | null {
   return { open, active, grid: v.grid };
 }
 
-/** True when persisting would REPLACE meaningful state with a premature empty
- *  set: the projection is empty (no session has an engine id yet) yet chat
- *  sessions DO exist — they are mid-connect, not genuinely closed. Persist an
- *  empty set only when there are truly no chat tabs left (the user closed them). */
+/** True when persisting would replace meaningful state with a premature empty set: the
+ *  projection is empty yet chat sessions DO exist (mid-connect, not genuinely closed) —
+ *  persist empty only when there are truly no chat tabs left. */
 export function isPrematureEmpty(open: readonly string[], sessions: Iterable<[string, SessionLike]>): boolean {
   if (open.length > 0) return false;
   for (const [, s] of sessions) if (s.kind !== 'agent') return true;
@@ -84,11 +72,9 @@ export function saveOpenSet(
   void memento.update(OPEN_SET_KEY, state);
 }
 
-/** The reopen PLAN: which engine ids to reopen (persisted order, filtered to those
- *  that still exist on disk AND aren't already open, deduped), the active engine
- *  id (only if it survived), and the grid layout. Returns null when there is
- *  nothing restorable — an absent set, or every persisted id now missing — so the
- *  caller cleanly falls back to the single-active replay. */
+/** The reopen PLAN: which engine ids to reopen (filtered to existing + not already open,
+ *  deduped), the active id if it survived, and the grid layout. Null when nothing is
+ *  restorable, so the caller falls back to single-active replay. */
 export function planReopen(
   persisted: OpenSetState | null,
   existingEngineIds: ReadonlySet<string>,
@@ -115,12 +101,9 @@ export interface RestoreHost {
   activate: (localId: string) => void;
 }
 
-/** Enact a restore: probe which persisted engine ids still exist via the live
- *  client, plan, reopen each in order, restore grid, then activate the surviving
- *  active tab. Returns true iff at least one session was reopened (so the caller
- *  knows the single-active fallback is NOT needed and the throwaway boot tab can
- *  be closed). Any failure (no client, listSessions throws, nothing restorable)
- *  returns false WITHOUT disturbing the persisted set. */
+/** Enact a restore: probe which persisted ids still exist, plan, reopen each in order,
+ *  restore grid, activate the surviving tab. Returns true iff something was reopened; any
+ *  failure returns false without disturbing the persisted set. */
 export async function restoreOpenSet(
   persisted: OpenSetState | null,
   client: { listSessions: () => Promise<Array<{ sessionId: string }>> } | null | undefined,

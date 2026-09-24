@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { HOLD_MS } from '../components/holdToStop';
 import ChatPane from '../panes/ChatPane.svelte';
 
 const SESSION = 'sess-1';
@@ -138,6 +139,10 @@ describe('ChatPane permission queue — concurrent sub-agent asks', () => {
 
   it('5 — cancel releases EVERY parked ask, not just the visible one', async () => {
     const c = await mountWithSession();
+    // A parked ask means a tool is waiting inside a RUNNING turn, which is the
+    // only state the composer offers a stop in (there is no Cancel at rest any
+    // more). The host's own `busy` frame is what puts the chat there.
+    post({ type: 'busy', sessionId: SESSION });
     for (const n of [1, 2, 3]) ask(`tc${n}`, `ask ${n}`);
     await tick();
 
@@ -148,14 +153,119 @@ describe('ChatPane permission queue — concurrent sub-agent asks', () => {
     // composer, so the loose search clicked that instead and the test failed
     // for a reason that had nothing to do with the queue. Same assertion, same
     // intent, no longer hostage to another control's prose.
-    const stop = c.querySelector('button.btn.cancel') as HTMLButtonElement | null;
+    // Send and Stop are ONE control now, and stopping is a 600ms HOLD so a
+    // stray click cannot kill a turn (CHANGES.md round 2, change 25). The
+    // assertion is unchanged: the composer's own stop releases the queue.
+    const stop = c.querySelector('button.action-btn[data-busy]') as HTMLButtonElement | null;
     expect(stop, 'ChatPane must expose a stop/cancel control').toBeTruthy();
-    await fireEvent.click(stop!);
+    await fireEvent.pointerDown(stop!, { button: 0, pointerId: 1 });
+    await new Promise((r) => setTimeout(r, HOLD_MS + 20));
     await tick();
 
     // A queued ask left unanswered is a tool call hanging on a prompt nobody can reach.
     expect(permissionPosts().map((p) => p.toolCallId)).toEqual(['tc1', 'tc2', 'tc3']);
     expect(permissionPosts().every((p) => p.optionId === null)).toBe(true);
     expect(bar(c)).toBeNull();
+  });
+});
+
+// A phone's signed approve, or a signed YOLO that flips the session into
+// bypass and releases every ask parked on it (attention.ts's
+// releaseBypassedPermissions), resolves an ask this pane never clicked. The
+// host tells every webview the same way it tells the sidebar row
+// (sessionRowState.ts): a `permissionAudit` with NO sessionId. Before this,
+// ChatPane had no handler at all — the bar sat on an ask someone else had
+// already answered until the owner clicked it too.
+describe('ChatPane permission queue — settled from elsewhere (permissionAudit)', () => {
+  beforeEach(() => globalThis.__vscodeApiMock.postMessage.mockClear());
+  afterEach(() => cleanup());
+
+  /** The host's resolution post — DashboardPanel.ts's onPermissionRequest
+   *  (a local OR phone-delivered click) and releaseBypassedPermissions both
+   *  post this shape, and neither carries a sessionId. */
+  function audit(toolCallId: string, action: 'approved' | 'denied' = 'approved'): void {
+    post({ type: 'permissionAudit', toolCallId, action, optionId: 'once', timestamp: '10:00' });
+  }
+
+  it('1 — an audit for the BAR\'s ask promotes the queued one, with no reply on the wire', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    await tick();
+    expect(barTitle(c)).toBe('first');
+
+    audit('tc1');
+    await tick();
+    expect(barTitle(c)).toBe('second'); // promoted, exactly as a click would
+    expect(permissionPosts()).toHaveLength(0); // settling is NOT answering — no reply posted
+  });
+
+  it('2 — an audit for a QUEUED ask leaves the bar alone and shortens the queue', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    ask('tc3', 'third');
+    await tick();
+    expect(queueChip(c)).toBe('1 of 3');
+
+    audit('tc2'); // the middle one, still queued
+    await tick();
+    expect(barTitle(c)).toBe('first'); // bar unchanged
+    expect(queueChip(c)).toBe('1 of 2'); // one shorter
+  });
+
+  it('3 — a local click then the audit for the SAME id does not double-promote', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    ask('tc3', 'third');
+    await tick();
+
+    await allowOnce(c); // clicks 'first' — promotes to 'second'; 'third' still queued
+    expect(barTitle(c)).toBe('second');
+    expect(queueChip(c)).toBe('1 of 2'); // as after the click alone: two asks remain
+    expect(permissionPosts()).toHaveLength(1);
+
+    audit('tc1'); // the audit for the ask the click already resolved, arriving late
+    await tick();
+    expect(barTitle(c)).toBe('second'); // unchanged — no second promotion
+    expect(queueChip(c)).toBe('1 of 2'); // unchanged — queue length as after the click alone
+    expect(permissionPosts()).toHaveLength(1); // still just the one real reply, from the click
+  });
+
+  it('4 — an audit for an id nobody is holding changes nothing', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    await tick();
+    expect(queueChip(c)).toBe('1 of 2');
+
+    audit('ghost-toolcall');
+    await tick();
+    expect(barTitle(c)).toBe('first');
+    expect(queueChip(c)).toBe('1 of 2'); // unchanged
+  });
+
+  it('5 — a DENIED audit settles the same as an approved one', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    await tick();
+
+    audit('tc1', 'denied');
+    await tick();
+    expect(barTitle(c)).toBe('second'); // promoted regardless of which way it was resolved
+  });
+
+  it('6 — the OTHER permissionAudit (action:"requested", the activity-feed entry for a fresh ask) is not a resolution and settles nothing', async () => {
+    const c = await mountWithSession();
+    ask('tc1', 'first');
+    ask('tc2', 'second');
+    await tick();
+
+    post({ type: 'permissionAudit', toolCallId: 'tc1', title: 'first', kind: 'execute', action: 'requested', timestamp: '10:00' });
+    await tick();
+    expect(barTitle(c)).toBe('first'); // unchanged — 'requested' is not approved/denied
+    expect(queueChip(c)).toBe('1 of 2');
   });
 });

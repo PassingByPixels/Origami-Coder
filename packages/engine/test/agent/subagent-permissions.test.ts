@@ -3,6 +3,9 @@ import { describe, test, expect } from "bun:test"
 import type { Agent } from "../../src/agent/agent"
 import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
 import { Permission } from "../../src/permission"
+import { Global } from "@origami/core/global"
+import { FSUtil } from "@origami/core/fs-util"
+import path from "path"
 
 // What crosses the parent -> subagent boundary, rule by rule. The helper has to
 // hold two opposing intents at once:
@@ -131,5 +134,157 @@ describe("deriveSubagentSessionPermission", () => {
     const derived = derive([BYPASS], orchestrator)
     expect(Permission.evaluate("task", "general", derived).action).toBe("allow")
     expect(Permission.evaluate("todowrite", "*", derived).action).toBe("allow")
+  })
+})
+// t-57nwlo - the parent's BLANKET deny must not cross to the child.
+//
+// session/tools.ts evaluates every tool ask against
+// `Permission.merge(agent.permission, session.permission)` and
+// Permission.evaluate takes the LAST match, so anything this helper puts on the
+// child's session row outranks the child agent's own ruleset. A parent row
+// carrying `{ "*", "*", deny }` therefore closed `explore` completely - the
+// owner saw an explore subagent refused `external_directory` for
+// `~/.origami/memory` "without asking anyone", a directory explore itself
+// re-allows. These tests assert the EVALUATION result on the merged ruleset,
+// the array the child's tools really see, not the derived array's contents.
+
+const BLANKET_DENY: PermissionV1.Rule = { permission: "*", pattern: "*", action: "deny" }
+
+/** The `~/.origami/*` whitelist entry, built exactly as agent.ts builds it. */
+const origamiHome = () =>
+  process.platform === "win32" ? FSUtil.normalizePath(Global.Path.origami) : Global.Path.origami
+
+/** The pattern tool/external-directory.ts asks with for a file: `<dirname>/*`. */
+const askPattern = (file: string) =>
+  process.platform === "win32"
+    ? FSUtil.normalizePathPattern(path.join(path.dirname(file), "*"))
+    : path.join(path.dirname(file), "*").replaceAll("\\", "/")
+
+/** `explore`'s permission shape from agent.ts: deny-by-default, a handful of
+ *  read-only tools, and an external_directory allowlist that re-opens ~/.origami. */
+const explore = (): Agent.Info =>
+  worker(
+    Permission.fromConfig({
+      "*": "deny",
+      grep: "allow",
+      glob: "allow",
+      list: "allow",
+      bash: "allow",
+      read: "allow",
+      external_directory: {
+        "*": "ask",
+        [path.join(origamiHome(), "*")]: "allow",
+      },
+    }),
+  )
+
+/** The ruleset the child's tools evaluate against - session/tools.ts:115. */
+const effectiveFor = (parentSessionPermission: PermissionV1.Ruleset, child: Agent.Info) =>
+  Permission.merge(child.permission, derive(parentSessionPermission, child))
+
+describe("deriveSubagentSessionPermission - a blanket parent deny (t-57nwlo)", () => {
+  test("does not close the child's own external_directory allowlist", () => {
+    const child = explore()
+    const effective = effectiveFor([BLANKET_DENY], child)
+    const memoryFile = path.join(Global.Path.origami, "memory", "x.md")
+
+    expect(Permission.evaluate("external_directory", askPattern(memoryFile), effective).action).toBe("allow")
+  })
+
+  test("leaves a directory nobody allowed at ASK - never allow, never deny", () => {
+    const child = explore()
+    const effective = effectiveFor([BLANKET_DENY], child)
+    const downloads = path.join("C:\\", "Users", "someone", "Downloads", "x.md")
+
+    // The blanket deny is gone, so the fallback has to be the child's OWN
+    // `external_directory: { "*": "ask" }` - dropping the rule must not turn an
+    // unlisted directory into a silent allow either.
+    expect(Permission.evaluate("external_directory", askPattern(downloads), effective).action).toBe("ask")
+  })
+
+  test("still closes the tools the child agent never opened", () => {
+    // Dropping the blanket deny hands the child nothing new: `edit` is denied by
+    // explore's OWN `"*": deny`, not by anything inherited.
+    const child = explore()
+    const effective = effectiveFor([BLANKET_DENY], child)
+
+    expect(Permission.evaluate("edit", "src/main.ts", effective).action).toBe("deny")
+    expect(Permission.evaluate("read", "src/main.ts", effective).action).toBe("allow")
+  })
+
+  test("a parent deny that NAMES a tool still binds the child", () => {
+    // "this chat may not use bash" is a deliberate restriction, and explore's
+    // own definition allows bash - so only the inherited rule can produce deny.
+    const child = explore()
+    const effective = effectiveFor([{ permission: "bash", pattern: "*", action: "deny" }], child)
+
+    expect(Permission.evaluate("bash", "git status", effective).action).toBe("deny")
+  })
+
+  test("a parent external_directory deny still binds the child", () => {
+    const child = explore()
+    const secret = path.join("C:\\", "secret", "a.txt")
+    const effective = effectiveFor(
+      [{ permission: "external_directory", pattern: askPattern(secret), action: "deny" }],
+      child,
+    )
+
+    expect(Permission.evaluate("external_directory", askPattern(secret), effective).action).toBe("deny")
+  })
+
+  test("a pattern-scoped wildcard deny is a path guard, not a blanket close, and still crosses", () => {
+    // `{ "*", <path>, deny }` names a target. Only the rule that names NOTHING
+    // is dropped, so this one keeps protecting the child too.
+    const child = explore()
+    const secret = path.join("C:\\", "secret", "a.txt")
+    const effective = effectiveFor([{ permission: "*", pattern: askPattern(secret), action: "deny" }], child)
+
+    expect(Permission.evaluate("external_directory", askPattern(secret), effective).action).toBe("deny")
+  })
+
+  test("with no parent rules the derived ruleset is unchanged", () => {
+    // The snapshot half: nothing about the no-parent-rules case moved.
+    expect(derive([], explore())).toEqual([
+      { permission: "todowrite", pattern: "*", action: "deny" },
+      { permission: "task", pattern: "*", action: "deny" },
+      { permission: "send_message", pattern: "*", action: "deny" },
+      { permission: "list_agents", pattern: "*", action: "deny" },
+      { permission: "side_quest", pattern: "*", action: "deny" },
+    ])
+  })
+
+  test("a representative parent ruleset derives the same rules, minus the blanket deny", () => {
+    const externalAsk: PermissionV1.Rule = { permission: "external_directory", pattern: "*", action: "ask" }
+    const externalAllow: PermissionV1.Rule = {
+      permission: "external_directory",
+      pattern: "/tmp/allowed/*",
+      action: "allow",
+    }
+    const denyBash: PermissionV1.Rule = { permission: "bash", pattern: "*", action: "deny" }
+
+    expect(derive([BLANKET_DENY, externalAsk, externalAllow, denyBash, AUTO], explore())).toEqual([
+      externalAsk,
+      externalAllow,
+      denyBash,
+      AUTO,
+      { permission: "todowrite", pattern: "*", action: "deny" },
+      { permission: "task", pattern: "*", action: "deny" },
+      { permission: "send_message", pattern: "*", action: "deny" },
+      { permission: "list_agents", pattern: "*", action: "deny" },
+      { permission: "side_quest", pattern: "*", action: "deny" },
+    ])
+  })
+})
+
+// t-fijeld. `side_quest` is the main agent's: a file-defined sub-agent with no
+// permission block must evaluate it as deny, the way the natives do by name.
+describe("side_quest never reaches a sub-agent by default", () => {
+  test("a worker with no rules is denied side_quest", () => {
+    const derived = derive([])
+    expect(Permission.evaluate("side_quest", "*", derived).action).toBe("deny")
+  })
+  test("a definition that NAMES side_quest keeps its own answer", () => {
+    const derived = derive([], worker([{ permission: "side_quest", pattern: "*", action: "allow" }]))
+    expect(derived.some((rule) => rule.permission === "side_quest" && rule.action === "deny")).toBe(false)
   })
 })

@@ -70,6 +70,33 @@ describe('SubagentTranscriptView — asks for one child and draws its chat', () 
     expect(c.querySelector('.row.agent')?.textContent).toContain('done');
   });
 
+  // t-gvz8t0. The child's thought reaches this panel as a `thought` row, and it
+  // must be drawn by the main chat's own ThoughtPill — a collapsed block — and
+  // never as the child's reply. Before this the engine dropped reasoning
+  // entirely, so a child that thought for two minutes then answered had a
+  // transcript with the two minutes missing.
+  it('draws a child’s THOUGHT as the chat’s collapsed thought block, never as its reply', async () => {
+    const c = mount();
+    reply({
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false,
+      entries: [
+        { kind: 'thought', text: 'weighing two approaches', timestamp: 0 },
+        { kind: 'agent', text: 'done — see src/foo.ts:12', timestamp: 0 },
+      ],
+    });
+    await tick();
+
+    const pill = c.querySelector('details.thought-block');
+    expect(pill, 'the thought must render as ThoughtPill').not.toBeNull();
+    expect(pill!.querySelector('.thought-text')?.textContent).toBe('weighing two approaches');
+    // Collapsed, like every thought block in the chat.
+    expect((pill as HTMLDetailsElement).open).toBe(false);
+    // ...and the agent row beside it holds ONLY the child's real answer.
+    const agent = c.querySelector('.row.agent')?.textContent ?? '';
+    expect(agent).toContain('done');
+    expect(agent).not.toContain('weighing two approaches');
+  });
+
   it('IGNORES a reply for a different child', async () => {
     const c = mount();
     reply({ type: 'subagentTranscriptData', sessionId: 'ses_someone_else', found: true, entries: ENTRIES });
@@ -170,6 +197,43 @@ describe('SubagentTranscriptView — asks for one child and draws its chat', () 
     }
   });
 
+  // t-tydjkm. A reply that never arrives (dropped on the way, or an engine that
+  // never answers) must not leave the panel on "Loading transcript…" for ever.
+  it('leaves the loading state with a visible error when no reply ever arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const c = mount();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(c.textContent, 'a slow read is still allowed to be loading').toContain('Loading transcript');
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(c.textContent).not.toContain('Loading transcript');
+      expect(c.querySelector('.sat-empty')?.textContent).toMatch(/no answer/i);
+      // A late reply still draws: the timeout is a state, not a closed door.
+      reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES });
+      await tick();
+      expect(c.querySelector('.tool-card')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a lost earlier-block reply frees the control again instead of spinning for ever', async () => {
+    vi.useFakeTimers();
+    try {
+      const c = mount();
+      reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES, hasMore: true, cursor: 'cur_1' });
+      await tick();
+      const button = () => c.querySelector('.sat-earlier button') as HTMLButtonElement;
+      await fireEvent.click(button());
+      expect(button().disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(35000);
+      expect(button().disabled).toBe(false);
+      expect(c.querySelector('.tool-card'), 'rows on screen stay on screen').not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('closes on the header control and posts nothing while doing it', async () => {
     const onClose = vi.fn();
     const { container } = render(SubagentTranscriptView, { sessionId: CHILD, title: 't', onClose });
@@ -177,5 +241,202 @@ describe('SubagentTranscriptView — asks for one child and draws its chat', () 
     await fireEvent.click(container.querySelector('.sat-close') as HTMLElement);
     expect(onClose).toHaveBeenCalled();
     expect(post()).not.toHaveBeenCalled();
+  });
+});
+
+// t-krxap7 — selective loading. The leaf's own rules are subagentPaging.test.ts;
+// this is the wiring: does the panel SEND what the rules allow, and does an
+// earlier block end up ABOVE the rows already on screen rather than below them.
+describe('SubagentTranscriptView — load earlier steps', () => {
+  beforeEach(() => post().mockReset());
+
+  const older = [{ kind: 'user', text: 'the brief', timestamp: 0 }];
+
+  /** The newest page, with one older block behind it. */
+  async function opened(container: HTMLElement) {
+    reply({
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false,
+      truncated: false, entries: ENTRIES, hasMore: true, cursor: 'cur_1',
+    });
+    await tick();
+    return container;
+  }
+
+  it('offers no control when the whole transcript arrived in one page', async () => {
+    const container = mount();
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES, hasMore: false });
+    await tick();
+    expect(container.querySelector('.sat-earlier')).toBeNull();
+  });
+
+  it('asks for the previous block with the cursor the engine gave', async () => {
+    const container = await opened(mount());
+    post().mockReset();
+
+    await fireEvent.click(container.querySelector('.sat-earlier button') as HTMLElement);
+
+    expect(post()).toHaveBeenCalledWith({ type: 'requestSubagentTranscript', sessionId: CHILD, before: 'cur_1' });
+  });
+
+  // The guard that matters: one click, one request, even when a second trigger
+  // (the scroll-top observer) fires before the reply lands.
+  it('sends ONE request when the control is activated twice before the reply', async () => {
+    const container = await opened(mount());
+    post().mockReset();
+    const button = container.querySelector('.sat-earlier button') as HTMLElement;
+
+    await fireEvent.click(button);
+    await fireEvent.click(button);
+
+    expect(post()).toHaveBeenCalledTimes(1);
+  });
+
+  it('PREPENDS the earlier block and leaves the loaded rows in place', async () => {
+    const container = await opened(mount());
+    // Read the SCROLLER, not the panel: the header repeats the title, and an
+    // assertion over the whole panel would match that instead of a row.
+    const body = () => (container.querySelector('.sat-body') as HTMLElement).textContent ?? '';
+    expect(body()).toContain('audit the bundle');
+
+    await fireEvent.click(container.querySelector('.sat-earlier button') as HTMLElement);
+    reply({
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false,
+      truncated: false, entries: older, before: 'cur_1', hasMore: false,
+    });
+    await tick();
+
+    const after = body();
+    expect(after).toContain('the brief');
+    expect(after).toContain('audit the bundle');
+    // Above, not below: the earlier block is older than everything on screen.
+    expect(after.indexOf('the brief')).toBeLessThan(after.indexOf('audit the bundle'));
+    // Head reached — the control is withdrawn rather than left offering nothing.
+    expect(container.querySelector('.sat-earlier')).toBeNull();
+  });
+
+  it('draws a repeated reply for a block already on screen only once', async () => {
+    const container = await opened(mount());
+    await fireEvent.click(container.querySelector('.sat-earlier button') as HTMLElement);
+    const page = {
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false,
+      truncated: false, entries: older, before: 'cur_1', hasMore: true, cursor: 'cur_2',
+    };
+
+    reply(page);
+    await tick();
+    reply(page);
+    await tick();
+
+    const text = (container.querySelector('.sat-body') as HTMLElement).textContent ?? '';
+    expect(text.split('the brief').length - 1).toBe(1);
+  });
+
+  it('stops the running-child poll once the reader has paged back', async () => {
+    vi.useFakeTimers();
+    try {
+      const container = mount();
+      reply({
+        type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: true,
+        truncated: false, entries: ENTRIES, hasMore: true, cursor: 'cur_1',
+      });
+      await tick();
+      await fireEvent.click(container.querySelector('.sat-earlier button') as HTMLElement);
+      reply({
+        type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false,
+        truncated: false, entries: older, before: 'cur_1', hasMore: false,
+      });
+      await tick();
+      post().mockReset();
+
+      await vi.advanceTimersByTimeAsync(30000);
+
+      expect(post(), 'a poll here would rebuild from the newest page and drop the history').not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// t-q90v2v — chat-pane parity: scroll-anchor pill, streaming colour, and the
+// A2 empty-state gate, reused from the same leaves the main chat pane wires.
+describe('SubagentTranscriptView — A2 parity', () => {
+  beforeEach(() => post().mockReset());
+
+  function scrollAway(el: HTMLElement) {
+    Object.defineProperty(el, 'scrollTop', { value: 0, writable: true, configurable: true });
+    Object.defineProperty(el, 'scrollHeight', { value: 2000, writable: true, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 400, writable: true, configurable: true });
+    fireEvent.scroll(el);
+  }
+
+  // Rebuilt (not appended) on each read, like a real poll: the growth after
+  // scrolling away is a SECOND reply carrying one more row than the first.
+  const GROWN = [...ENTRIES, { kind: 'agent', text: 'follow-up note', timestamp: 0 }];
+
+  it('shows the scroll-anchor pill with per-family counts once the reader scrolls away', async () => {
+    const c = mount();
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES });
+    await tick();
+    expect(c.querySelector('.anchor-pill')).toBeNull();
+
+    scrollAway(c.querySelector('.sat-body') as HTMLElement);
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: GROWN });
+    await tick();
+    const pill = c.querySelector('.anchor-pill');
+    expect(pill, 'pill shows once new rows arrived after the reader scrolled away').not.toBeNull();
+    expect(pill?.textContent).toContain('message');
+  });
+
+  it('jumping the pill re-sticks and clears it, the same click behaviour as the main chat', async () => {
+    const c = mount();
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES });
+    await tick();
+    scrollAway(c.querySelector('.sat-body') as HTMLElement);
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: GROWN });
+    await tick();
+    const jump = c.querySelector('.anchor-pill') as HTMLElement;
+    expect(jump).not.toBeNull();
+    await fireEvent.click(jump);
+    expect(c.querySelector('.anchor-pill')).toBeNull();
+  });
+
+  it('colours the newest reply while the child is still running, same as the live main chat', async () => {
+    const c = mount();
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: true, truncated: false, entries: ENTRIES });
+    await tick();
+    expect(c.querySelector('.row.agent.is-live')).not.toBeNull();
+  });
+
+  it('a settled transcript never shows a live-coloured row', async () => {
+    const c = mount();
+    reply({ type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false, entries: ENTRIES });
+    await tick();
+    expect(c.querySelector('.row.agent.is-live')).toBeNull();
+  });
+
+  // The acceptance case: only tool cards, no user/agent prose — must read as
+  // content, never as the empty state (chatEmptyGate.ts's hasConversation).
+  it('a transcript holding only tool cards shows no empty state', async () => {
+    const c = mount();
+    reply({
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false,
+      entries: [ENTRIES[1]], // the tool step alone
+    });
+    await tick();
+    expect(c.querySelector('.tool-card')).not.toBeNull();
+    expect(c.textContent).not.toContain('has not written anything yet');
+  });
+
+  // The other half of the same gate: scaffold rows alone (no real content)
+  // must still show the empty state, which a bare `messages.length === 0`
+  // check would miss.
+  it('scaffold-only rows (no real content) still show the empty state', async () => {
+    const c = mount();
+    reply({
+      type: 'subagentTranscriptData', sessionId: CHILD, found: true, running: false, truncated: false,
+      entries: [{ kind: 'system', text: 'session bookkeeping', timestamp: 0 }],
+    });
+    await tick();
+    expect(c.textContent).toContain('has not written anything yet');
   });
 });

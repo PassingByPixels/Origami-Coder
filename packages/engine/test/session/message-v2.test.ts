@@ -413,7 +413,7 @@ describe("session.message-v2.toModelMessage", () => {
             output: {
               type: "content",
               value: [
-                { type: "text", text: "ok" },
+                { type: "text", text: "[took 0.0 s]\nok" },
                 { type: "media", mediaType: "image/png", data: "Zm9v" },
               ],
             },
@@ -500,7 +500,7 @@ describe("session.message-v2.toModelMessage", () => {
       output: {
         type: "content",
         value: [
-          { type: "text", text: "Image read successfully" },
+          { type: "text", text: "[took 0.0 s]\nImage read successfully" },
           { type: "media", mediaType: "image/jpeg", data: jpeg },
         ],
       },
@@ -595,7 +595,7 @@ describe("session.message-v2.toModelMessage", () => {
             type: "tool-result",
             toolCallId: "call-bedrock-pdf-1",
             toolName: "read",
-            output: { type: "text", value: "PDF read successfully" },
+            output: { type: "text", value: "[took 0.0 s]\nPDF read successfully" },
           },
         ],
       },
@@ -690,7 +690,7 @@ describe("session.message-v2.toModelMessage", () => {
             type: "tool-result",
             toolCallId: "call-1",
             toolName: "bash",
-            output: { type: "text", value: "ok" },
+            output: { type: "text", value: "[took 0.0 s]\nok" },
           },
         ],
       },
@@ -826,12 +826,75 @@ describe("session.message-v2.toModelMessage", () => {
             toolName: "bash",
             output: {
               type: "text",
-              value: "abcd\n[Tool output truncated for compaction: omitted 6 chars]",
+              value: "[took 0.0 s]\nabcd\n[Tool output truncated for compaction: omitted 6 chars]",
             },
           },
         ],
       },
     ])
+  })
+
+  test("prefixes a shell and a read tool result with a wall-clock elapsed marker", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "run tools",
+          },
+        ] as SessionV1.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-shell",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { cmd: "ls" },
+              output: "file.txt",
+              title: "Shell",
+              metadata: {},
+              time: { start: 1_000, end: 5_237 },
+            },
+          },
+          {
+            ...basePart(assistantID, "a2"),
+            type: "tool",
+            callID: "call-read",
+            tool: "read",
+            state: {
+              status: "completed",
+              input: { filePath: "/tmp/a.txt" },
+              output: "contents",
+              title: "Read",
+              metadata: {},
+              time: { start: 0, end: 75_500 },
+            },
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+    const toolMessage = result.find((m) => m.role === "tool")
+    const contents = toolMessage?.content as Array<{ toolCallId: string; output: { value: string } }>
+    const shellResult = contents.find((c) => c.toolCallId === "call-shell")
+    const readResult = contents.find((c) => c.toolCallId === "call-read")
+
+    // 5237ms - 1000ms = 4237ms -> "4.2 s"; the model must see the marker as
+    // the very first thing it reads, ahead of the tool's own output.
+    expect(shellResult?.output.value).toBe("[took 4.2 s]\nfile.txt")
+    // 75500ms -> 1m 15s, the minute-scale format.
+    expect(readResult?.output.value).toBe("[took 1m 15s]\ncontents")
   })
 
   test("converts assistant tool error into error-text tool result", async () => {

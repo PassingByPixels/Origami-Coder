@@ -1,17 +1,9 @@
-// How a delegated run's EXTENT is drawn IN THREAD — the branch rail. Extracted
-// from labyrinthBranches.ts (at its architecture cap) when a branch stopped
-// being a thing that closed at its own last step and became a SPAN that can
-// outlive it. Flight answers the same question on a horizontal axis and its
-// swimlanes moved to labyrinthSwim.ts when this file's bar grew a departure
-// and a rejoin of its own.
+// How a delegated run's EXTENT is drawn IN THREAD — the branch rail.
 //
-// The honest shape of a branch has four parts: a DEPART off the trunk, the
-// SPINE through the child's own steps, a TRAIL down past the main-thread steps
-// that ran while it was still working, and a MERGE back. The trail is what
-// makes concurrency visible in thread at all — without it a background
-// sub-agent reads as having finished the instant it was spawned. A branch that
-// never returned has no merge, and drawing one would be the same lie in
-// reverse.
+// A branch has four parts: a DEPART off the trunk, the SPINE through the
+// child's own steps, a TRAIL past main-thread steps that ran while it
+// worked, and a MERGE back. Without the trail, a sub-agent reads as
+// finished the instant it was spawned.
 
 import { LANE_GAP } from './labyrinthLanes';
 import type { BranchModel } from './labyrinthBranches';
@@ -33,10 +25,8 @@ export interface BranchPath {
   /** The branch's own vertical run; null when it carries a single step. */
   spine: string | null;
   /**
-   * The IN-FLIGHT stretch: rail past the child's last drawn step, alongside the
-   * trunk steps that genuinely ran before it returned. Null when there is none
-   * — a blocking sub-agent has no such stretch, and neither does a run whose
-   * clock we could not read.
+   * The IN-FLIGHT stretch: rail past the child's last step, alongside trunk
+   * steps that ran before it returned. Null when there is none.
    */
   trail: string | null;
   /** Rejoins the trunk. NULL for a branch that never came back. */
@@ -54,9 +44,9 @@ export interface BranchPath {
 const r = (n: number): number => Math.round(n * 100) / 100;
 
 /**
- * The rails for each branch, over the SAME points the markers were laid at.
- * A single-step branch still draws a departure and a merge — it opened and
- * closed at one step, which is a fact about the run, not an omission.
+ * The rails for each branch, over the same points the markers were laid at.
+ * A single-step branch still draws a departure and a merge, as a fact about
+ * the run, not an omission.
  */
 export function branchPaths(
   points: readonly { x: number; y: number }[],
@@ -73,8 +63,7 @@ export function branchPaths(
     if (!head || !tail || !stop) continue;
     const cx = branchX(spineX, span.column);
     const ax = span.parentColumn < 0 ? spineX : branchX(spineX, span.parentColumn);
-    // An open branch runs half a row PAST the last step it outlived, so its
-    // unterminated end is visible instead of stopping level with a marker.
+    // An open branch runs half a row past its last step, so its open end is visible.
     const endY = span.open ? stop.y + half : stop.y;
     out.push({
       first: span.first,
@@ -91,24 +80,17 @@ export function branchPaths(
   return out;
 }
 
-// --- HANDOFF EDGES (collab maps only) ------------------------------------
+// --- Handoff edges (collab maps only) -------------------------------------
 //
-// A `handoff` marks work passing from one member to another, and the map can
-// draw that pass as a rail between their lanes. It does so ONLY where the
-// target is genuinely derivable from what the step itself recorded. A handoff
-// whose text names no member, or names more than one, gets NO edge: the
-// coordination mark on the step still shows, and an edge to a guessed lane
-// would be a claim about the run that nothing in the payload supports.
-// Read from the PREVIEW as `@slug`; the `@` IS the safety, because a REFUSED
-// handoff projects identically and quotes the whole roster BARE.
+// A `handoff` marks work passing between members; the map draws it as a
+// rail between their lanes only where the target is derivable from what
+// the step recorded. Ambiguous or unnamed targets get no edge. Read from
+// the preview as `@slug`.
 
-/** The part of a step the handoff rules read. `LayoutStep` satisfies it. */
 export interface HandoffStep { tool?: string; title?: string; preview?: string; agent?: string; startedAt?: number; endedAt?: number; collabTool?: boolean }
 
 export interface HandoffEdge {
-  /** Render key - the handing step's index. */
   from: number;
-  /** Index of the step it was handed to. */
   to: number;
   /** The member the work went to; drawn as the edge's label. */
   target: string;
@@ -124,10 +106,8 @@ function namedTarget(step: HandoffStep, names: readonly string[]): string | null
 }
 
 /**
- * An edge per derivable handoff: from the handing step to the FIRST step on the
- * named member's lane that started at or after the handoff ended. No such step
- * (the target never ran again, or the clock cannot say) means no edge - the
- * pass is real but its landing point is not something the run recorded.
+ * An edge per derivable handoff: to the first step on the named member's
+ * lane that started at or after it ended. No such step means no edge.
  */
 export function handoffEdges(
   points: readonly { x: number; y: number }[],

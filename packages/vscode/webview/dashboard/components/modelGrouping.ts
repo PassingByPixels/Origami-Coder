@@ -1,27 +1,15 @@
 // The provider-tab GROUPING for ModelPicker's tier-1: which section each
 // provider belongs to, and how sections collapse into tabs.
 //
-// Round 5 (t-o92558) replaced the old two-way split — local providers as
-// their own tabs, every non-local provider folded behind ONE "Lab" catch-all
-// decided by the host's local/compat/cloud `kind` — with the SAME section
-// the sidebar's connection picker uses (connectionSection.ts): Local/Self
-// Hosted, Providers, Labs (+ the visible Other fallback). A provider now
-// buckets the SAME way in both places, off the SAME baseURL/id signal —
-// the bug this fixes: a tailnet vLLM read as a "local" tab here while the
-// sidebar already called it Hosted, and OpenCode Zen/Go read Labs here after
-// the sidebar had already moved them to Providers.
-//
-// Local and Hosted have since MERGED into one 'selfhosted' bucket (see
-// connectionSection.ts). No logic changed here — this file iterates
-// SECTION_ORDER and never named the two, which is what that rewrite bought.
+// Sections mirror the sidebar's connection picker (connectionSection.ts):
+// Self Hosted, Providers, Labs (+ Other fallback), decided off the same
+// baseURL/id signal, so a provider buckets the same way in both places.
 //
 // Each section collapses behind ONE pill when it holds 2+ providers (a
-// second-level sub-select reveals the individual ones — the mechanic every
-// group shares, mirroring the old Lab tab exactly). A LONE provider in a
-// section renders as its own top-level tab instead of hiding behind a
-// one-item pill. WHICH tab/provider is actually selected is a separate
-// concern — see modelSelection.ts — this file only decides where a pill
-// sits.
+// second-level sub-select reveals the individual ones). A LONE provider
+// renders as its own top-level tab instead of hiding behind a one-item
+// pill. WHICH tab/provider is selected is a separate concern — see
+// modelSelection.ts — this file only decides where a pill sits.
 
 import { classifySection, SECTION_ORDER, SECTION_LABEL, type ConnectionSection } from '../../sidebar/connectionSection';
 
@@ -58,11 +46,9 @@ export interface Grouping {
 }
 
 /** classifySection with one addition: the modelOptions bootstrap fallback
- *  (used before providerStatus has landed) carries an id but no baseURL, and
- *  classifySection reads that shape as an unrecognised cloud preset — losing
- *  it to Other. Every REAL host probe carries a baseURL for a self-hosted
- *  provider, so "no baseURL and unrecognised" is uniquely that transient case;
- *  it defaults to selfhosted, same as the old "no kind" default did. */
+ *  carries an id but no baseURL, which classifySection reads as an
+ *  unrecognised cloud preset. That shape is uniquely the transient case,
+ *  so it defaults to selfhosted instead of Other. */
 function sectionOf(p: PickerProvider): ConnectionSection {
   const section = classifySection({ id: p.id, baseURL: p.baseURL });
   return section === 'other' && !p.baseURL ? 'selfhosted' : section;
@@ -89,13 +75,9 @@ export function groupProviders(providers: PickerProvider[]): Grouping {
 
 /** Float the already-loaded model to the head of the list.
  *
- *  Reselecting what is already loaded is the one pick that costs nothing — no
- *  unload, no reload, no eviction of the model every other open chat is using.
- *  Leaving it buried alphabetically among sixty-odd rows (and past the render
- *  cap on a big catalogue) pushes the user toward the expensive choice instead.
- *  Order only: nothing is added, removed or filtered, and with nothing loaded —
- *  or the loaded model absent from this provider's list — the list is returned
- *  untouched. */
+ *  Reselecting what is already loaded costs nothing — no unload, no
+ *  reload, no eviction of the model another open chat is using. Order
+ *  only: nothing is added, removed or filtered. */
 export function promoteLoaded<T extends { value: string }>(list: T[], loadedValue: string): T[] {
   if (!loadedValue) return list;
   const i = list.findIndex((m) => m.value === loadedValue);

@@ -1,19 +1,18 @@
-// What a flat todo list MEANS as a tree, and what the strip shows about it.
+// What a flat todo list means as a tree, and what the strip shows about it.
 //
-// Nesting arrives as an optional `depth` on each row rather than a parent id,
-// because the list has no ids: it is stored full-list-replace with the array
-// index as identity, so there is nothing stable for a child to point at. Depth
-// composes with that — children sit directly after their parent, which is the
-// order a model writes an outline in anyway.
+// Nesting arrives as an optional `depth` on each row rather than a parent
+// id, since the list has no ids (stored full-list-replace with the array
+// index as identity). Depth composes with that: children sit directly after
+// their parent, the order a model writes an outline in anyway.
 //
-// A LEAF: no DOM, no imports, no `vscode`. That is the point. The two rules
-// worth getting right (what a malformed depth becomes, and how many children a
-// row owns) are then assertions rather than a rendered component, and jsdom's
-// missing layout engine cannot make an indent test pass by accident.
+// A leaf: no DOM, no imports, no `vscode`, so the two rules worth getting
+// right (what a malformed depth becomes, how many children a row owns) are
+// assertions rather than a rendered component, and jsdom's missing layout
+// engine can't make an indent test pass by accident.
 //
-// FAIL-OPEN throughout: every input list comes out the same length, in the same
-// order. A depth the model got wrong costs that row its indent, never its place
-// in the plan.
+// Fail-open throughout: every input list comes out the same length, in the
+// same order. A depth the model got wrong costs that row its indent, never
+// its place in the plan.
 
 /** The deepest a row may sit. Mirrored in the tool description the model reads
  *  (packages/engine/src/tool/todowrite.txt) and in the engine's own bullet
@@ -41,20 +40,13 @@ export interface TodoAnnotation {
   childTotal: number;
 }
 
-/**
- * Every row's depth, normalised, in input order.
- *
- * The rules, and why each one exists:
- * - not a finite number (absent, NaN, Infinity, a string that slipped through)
- *   -> 0. The row is flat, not gone.
- * - fractional -> floored; negative -> 0. A depth is a level, not a measurement.
- * - never more than one level below the row before it. A list that jumps 0 -> 2
- *   describes a child of a parent that is not there; rendering it two levels in
- *   would draw an indent under nothing.
- * - never deeper than MAX_DEPTH. Past three levels the indent costs more content
- *   width than the structure is worth in a strip this narrow.
- * - the first row is always 0: there is nothing above it to be a child of.
- */
+/** Every row's depth, normalised, in input order:
+ *  - not a finite number -> 0 (the row is flat, not gone).
+ *  - fractional -> floored; negative -> 0.
+ *  - never more than one level below the row before it, or a jump 0 -> 2
+ *    would draw an indent under a parent that isn't there.
+ *  - never deeper than MAX_DEPTH.
+ *  - the first row is always 0. */
 export function normalizeDepths(todos: readonly TodoLike[]): number[] {
   const out: number[] = [];
   let previous = -1;
@@ -68,19 +60,11 @@ export function normalizeDepths(todos: readonly TodoLike[]): number[] {
   return out;
 }
 
-/**
- * The rows with their normalised depth and their subtree tallies attached.
- *
- * A row's descendants are the unbroken run that follows it at a GREATER depth —
- * which is exactly what depth-plus-order means, and why no id is needed. The
- * tallies are transitive: a parent of a parent counts its grandchildren too, so
- * the top of a plan reports the whole plan rather than its first level only.
- *
- * `status` is read but never written. A parent's status is whatever the model
- * set it to; deriving "done" from the children would silently disagree with the
- * model's own view of its plan, and the count is there to show that disagreement
- * rather than paper over it.
- */
+/** The rows with their normalised depth and subtree tallies attached. A
+ *  row's descendants are the unbroken run that follows it at a greater
+ *  depth, transitively, so a grandparent reports the whole plan. `status` is
+ *  read but never written: deriving "done" from children would silently
+ *  disagree with the model's own view of its plan. */
 export function annotate<T extends TodoLike>(todos: readonly T[]): (T & TodoAnnotation)[] {
   const depths = normalizeDepths(todos);
   return todos.map((todo, i) => {
@@ -94,19 +78,11 @@ export function annotate<T extends TodoLike>(todos: readonly T[]): (T & TodoAnno
   });
 }
 
-/**
- * Status tally for the strip's header, over LEAVES ONLY.
- *
- * A row with children is a CONTAINER, not work. Counting it as well counts the
- * same plan twice — once as the major and once as everything under it — so one
- * major over two sub-tasks read as three tasks, and a header could sit at
- * "3/5 done" with nothing left to do. `total` is the leaf count the three
- * tallies add up to, so a caller does not have to re-derive which rows it lost.
- *
- * A row has children exactly when the row AFTER it is deeper: the same subtree
- * rule `annotate` walks, seen one step at a time. Read off the normalised
- * depths, so a jump the model got wrong groups the way it is drawn.
- */
+/** Status tally for the strip's header, over leaves only. A row with
+ *  children is a container, not work — counting it too would count the same
+ *  plan twice. A row has children exactly when the row after it is deeper,
+ *  read off the normalised depths so a jump the model got wrong groups the
+ *  way it's drawn. */
 export function counts(items: readonly TodoLike[]) {
   const depths = normalizeDepths(items);
   let pending = 0;

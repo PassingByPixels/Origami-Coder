@@ -1,22 +1,13 @@
 <script lang="ts">
-  // The SELECTED repository, as a pane of its own. 0.4.53 hung this list UNDER
-  // the card it belonged to, which is the design UAT round 2 threw out: a reveal
-  // that pushed the board down, on a row of cards that already wrapped. Here the
-  // cards scroll sideways in the middle of the top strip and the repository you
-  // picked is drawn once, on the right, at a fixed width.
+  // The selected repository, as a pane of its own. Cards scroll sideways in
+  // the top strip; the picked repository is drawn once, on the right, at a
+  // fixed width.
   //
-  // ONE list at a time, behind a TOGGLE (UAT round 4). Round 3 stacked the two
-  // under a mini-header each; the question that came back was "what separates
-  // checkouts from branches", which a label the eye scrolls past cannot answer.
-  // Two buttons in the top right do, and each list then gets the pane's whole
-  // height instead of half of it. CHECKOUTS leads, primary at the top, one
-  // RepoCheckoutRow each — that file owns a row and its three actions. BRANCHES is
-  // READ-ONLY: a branch is not a place to act, it is the answer to "is that work
-  // already checked out somewhere", so each one says which checkout has it out.
-  //
-  // That mapping is DERIVED from the rows, never sent twice. Two sources for one
-  // fact can only ever disagree, and the rows already carry every branch a
-  // checkout is on.
+  // One list at a time, behind a toggle: Checkouts leads, one
+  // RepoCheckoutRow each owning its own actions. Branches is read-only — a
+  // branch is not a place to act, it answers "is that work already checked
+  // out somewhere". The checkout mapping is derived from the rows, never
+  // sent twice, so the two views cannot disagree.
   import RepoCheckoutRow from './RepoCheckoutRow.svelte';
   import type { RepoDetailInfo } from './repoGroups';
 
@@ -34,25 +25,22 @@
   }
   let { root, label, missing, detail, post }: Props = $props();
 
-  // The host already leads with the primary. Ordering again here is what makes
-  // the pane's own promise — the checkout that owns the work is the one you read
-  // first — hold whatever order a reply happens to arrive in.
+  // The host already leads with the primary; ordering again here keeps that
+  // promise regardless of what order the reply happens to arrive in.
   let rows = $derived.by(() => {
     const all = detail?.worktrees ?? [];
     return [...all.filter((w) => w.primary), ...all.filter((w) => !w.primary)];
   });
-  // Branches that ARE checked out lead the list: they are the ones the section's
-  // only question — "is that work already open somewhere" — is asked about. The
-  // rest keep the order git gave them.
+  // Branches that are checked out lead the list, since that is the one
+  // question this section answers. The rest keep git's own order.
   let branches = $derived.by(() => {
     const at = new Map<string, string>();
     for (const w of detail?.worktrees ?? []) if (w.branch) at.set(w.branch, w.name);
     const all = (detail?.branches ?? []).map((name) => ({ name, at: at.get(name) ?? '' }));
     return [...all.filter((b) => b.at !== ''), ...all.filter((b) => b.at === '')];
   });
-  // Which list you left a repository on, keyed by its root: view state, so it is
-  // neither persisted nor asked of the host. A repository you never toggled opens
-  // on Checkouts — the list you act from.
+  // Which list you left a repository on, keyed by its root: view state only,
+  // never persisted or asked of the host. Unset repositories open on Checkouts.
   let view = $state<Record<string, 'checkouts' | 'branches'>>({});
   let mode = $derived(view[root] ?? 'checkouts');
   const show = (m: 'checkouts' | 'branches') => { view = { ...view, [root]: m }; };
@@ -78,39 +66,52 @@
     {#if missing}
       <div class="am-detail-empty">folder missing from disk</div>
     {:else if mode === 'checkouts'}
-      {#if rows.length === 0}<div class="am-detail-empty">Reading worktrees…</div>{/if}
-      {#each rows as wt (wt.path)}
-        <RepoCheckoutRow root={root} wt={wt} post={post} />
-      {/each}
+      <div class="am-detail-list">
+        {#if rows.length === 0}<div class="am-detail-empty">Reading worktrees…</div>{/if}
+        {#each rows as wt (wt.path)}
+          <RepoCheckoutRow root={root} wt={wt} post={post} />
+        {/each}
+      </div>
     {:else}
-      {#if branches.length === 0}<div class="am-detail-empty">No local branches read yet.</div>{/if}
-      {#each branches as b (b.name)}
-        <div class="am-brrow" class:out={b.at !== ''}>
-          <span class="am-brrow-name" title={b.name}>{b.name}</span>
-          {#if b.at}<span class="am-brrow-at" title="checked out in {b.at}">in {b.at}</span>{/if}
-        </div>
-      {/each}
+      <div class="am-detail-list">
+        {#if branches.length === 0}<div class="am-detail-empty">No local branches read yet.</div>{/if}
+        {#each branches as b (b.name)}
+          <div class="am-brrow" class:out={b.at !== ''}>
+            <span class="am-brrow-name" title={b.name}>{b.name}</span>
+            {#if b.at}<span class="am-brrow-at" title="checked out in {b.at}">in {b.at}</span>{/if}
+          </div>
+        {/each}
+      </div>
     {/if}
   {/if}
 </aside>
 
 <style>
   /* A fixed column on the right of the top strip: it must NOT grow with the
-     cards beside it (the strip is the only pane that flexes), and it scrolls
-     itself rather than making the strip taller. 262 -> 290px, which is what buys
-     a row's second line room for its action cluster; the strip absorbs it. */
+     cards beside it. 262 -> 290px, which buys a row's second line room for its
+     action cluster. NO overflow here any more (t-ro2ss4): the whole pane used
+     to scroll as one block, growing with an unbounded row count and stretching
+     the carousel's grid rows apart beside it (RepoCarousel.svelte). The list
+     wrapper below is the ONLY scroller now, capped to 3 rows. */
   .am-detail {
     flex: none;
     width: 290px;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    overflow-y: auto;
     padding: 7px 9px;
     border: 1px solid var(--og-border, rgba(255, 255, 255, 0.1));
     border-radius: 8px;
     background: var(--og-surface, rgba(255, 255, 255, 0.03));
+    --am-wtrow-h: 34px;
   }
+  /* Caps the list at 3 rows and scrolls beyond — the house thin scrollbar
+     (theme.css `* { scrollbar-width: thin }`) draws itself, nothing extra
+     needed here. `calc(3 * var(--am-wtrow-h))` keeps the cap in lockstep with
+     RepoCheckoutRow's own row height instead of repeating it as a second
+     number that can drift. Branches shares the wrapper: same reason to stay
+     bounded. */
+  .am-detail-list { flex: none; display: flex; flex-direction: column; gap: 2px; max-height: calc(3 * var(--am-wtrow-h)); overflow-y: auto; }
   /* The name and the toggle share ONE row: the strip is capped at 190px, so a
      toggle on a line of its own would cost the lists the height it exists to give
      them. The name is the half that gives way — it already ellipsizes. */

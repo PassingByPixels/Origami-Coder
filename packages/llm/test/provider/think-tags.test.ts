@@ -112,8 +112,21 @@ describe("openai-chat — <think> leaked onto delta.content", () => {
         { choices: [{ delta: {}, finish_reason: "stop" }] },
       )
       const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
-      expect(response.reasoning).toBe("nativeleaked")
+      // The dedicated channel is untouched, and no tag reaches the answer.
+      expect(response.reasoning).toContain("native")
       expect(response.text).toBe("Answer.")
+      expect(response.text).not.toContain("think")
+      // DELIBERATE, and it is NOT a merge: once a turn has used the dedicated
+      // field, `ParserState.reasoningSeen` SUPPRESSES a leaked `<think>` span
+      // rather than appending it, because vLLM sends the same thinking on both
+      // channels and appending would show it twice. The cost is that a leaked
+      // span carrying NEW text is dropped, where the AI SDK path keeps it as a
+      // second reasoning block — measured in
+      // `packages/engine/test/session/llm-adversarial.test.ts`. This assertion
+      // pins the shipped choice; it was written as `"nativeleaked"` before the
+      // suppression landed (2026-08-10) and left red for weeks, which is how a
+      // real red would have hidden.
+      expect(response.reasoning).toBe("native")
     }),
   )
 })

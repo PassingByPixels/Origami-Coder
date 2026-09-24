@@ -76,8 +76,11 @@ const providerLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 
 const list = Provider.use.list()
 
+const zen = (providers: Record<string, { models: Record<string, { cost: { input: number } }> }>) =>
+  providers[ProviderV2.ID.make("opencode")]
+
 const paid = (providers: Record<string, { models: Record<string, { cost: { input: number } }> }>) => {
-  const item = providers[ProviderV2.ID.make("opencode")]
+  const item = zen(providers)
   expect(item).toBeDefined()
   return Object.values(item.models).filter((model) => model.cost.input > 0).length
 }
@@ -1534,7 +1537,7 @@ test("models.dev reasoning options replace generated variants and unsupported to
     },
   })
   expect(models.empty.variants).toEqual({})
-  expect(Object.keys(models.fallback.variants ?? {})).toEqual(["none", "low", "medium", "high", "xhigh"])
+  expect(Object.keys(models.fallback.variants ?? {})).toEqual(["low", "medium", "high", "xhigh"])
   expect(models.override.variants).toEqual({
     high: { thinkingConfig: { includeThoughts: true, thinkingLevel: "high" } },
   })
@@ -2207,9 +2210,48 @@ it.instance(
   }),
 )
 
-it.effect("opencode loader keeps paid models when config apiKey is present", () =>
+// FORK: OpenCode Zen is a HOSTED provider -- prompts leave the machine -- so it
+// is never enabled without the user asking. Upstream autoloaded its free tier
+// under a public key with no credential at all, which is what put `opencode` /
+// `big-pickle` at the top of a fresh install's picker with nothing configured.
+// These three cases pin the whole rule: absent when nobody asked, present the
+// moment anything opts in.
+it.effect("opencode is ABSENT with no config, no auth and no env credential", () =>
   Effect.gen(function* () {
     const noneDir = yield* tmpdirScoped()
+
+    const providers = yield* Provider.use
+      .list()
+      .pipe(provideInstanceEffect(noneDir))
+      .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
+
+    // Not "present with only free models" -- not present at all. A picker built
+    // from this list has nothing to select, which is the honest empty state.
+    expect(zen(providers)).toBeUndefined()
+    // The catalog entry still EXISTS (that is how the opt-in below finds it);
+    // it is the enablement that is gone.
+    expect(Object.keys(providers)).not.toContain("opencode")
+  }).pipe(provideMultiInstance),
+)
+
+it.effect("a config block with no apiKey opts in and keeps the FREE tier only", () =>
+  Effect.gen(function* () {
+    // The user asked for Zen but gave no key: the old public-key free tier is
+    // exactly what they signed up for, so that behaviour is preserved.
+    const freeDir = yield* tmpdirScoped({ config: { provider: { opencode: {} } } })
+
+    const providers = yield* Provider.use
+      .list()
+      .pipe(provideInstanceEffect(freeDir))
+      .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
+
+    expect(zen(providers)).toBeDefined()
+    expect(paid(providers)).toBe(0)
+  }).pipe(provideMultiInstance),
+)
+
+it.effect("opencode loader keeps paid models when config apiKey is present", () =>
+  Effect.gen(function* () {
     const keyedDir = yield* tmpdirScoped({
       config: { provider: { opencode: { options: { apiKey: "test-key" } } } },
     })
@@ -2220,10 +2262,8 @@ it.effect("opencode loader keeps paid models when config apiKey is present", () 
         .pipe(provideInstanceEffect(directory))
         .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
 
-    const none = paid(yield* listIn(noneDir))
     const keyedCount = paid(yield* listIn(keyedDir))
 
-    expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
   }).pipe(provideMultiInstance),
 )
@@ -2239,7 +2279,8 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
         .pipe(provideInstanceEffect(directory))
         .pipe(Effect.provide(instanceStoreLayer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node)))
 
-    const none = paid(yield* listIn(noneDir))
+    // Before the credential lands, Zen is not enabled at all.
+    expect(zen(yield* listIn(noneDir))).toBeUndefined()
 
     const authPath = path.join(Global.Path.data, "auth.json")
     const original = yield* Effect.promise(() => Filesystem.readText(authPath).catch(() => undefined))
@@ -2255,7 +2296,6 @@ it.effect("opencode loader keeps paid models when auth exists", () =>
 
     const keyedCount = paid(yield* listIn(keyedDir))
 
-    expect(none).toBe(0)
     expect(keyedCount).toBeGreaterThan(0)
   }).pipe(provideMultiInstance),
 )

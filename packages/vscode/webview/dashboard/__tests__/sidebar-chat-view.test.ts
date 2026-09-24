@@ -18,6 +18,7 @@
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // vi.mock is hoisted above imports, so the shared captures live in a
@@ -36,7 +37,12 @@ vi.mock('vscode', () => ({
       joinPathCalls.push(parts);
       return { __uri: parts.join('/') };
     },
+    // The chat view's roots now include the workspace folders and the OS temp
+    // directory, so a read-image card can draw the file the model read
+    // (src/dashboard/toolImageUri.ts).
+    file: (p: string) => ({ __uri: p, scheme: 'file', fsPath: p }),
   },
+  workspace: { workspaceFolders: [{ uri: { __uri: 'C:/ws', scheme: 'file', fsPath: 'C:/ws' } }] },
   window: {
     showErrorMessage: vi.fn(),
   },
@@ -224,7 +230,7 @@ describe('ChatViewProvider — chat view wiring (shared host)', () => {
     resolveSharedView.mockClear();
   });
 
-  it('enables scripts + roots the webview at out/webview', async () => {
+  it('enables scripts + roots the webview at out/webview, the workspace and temp', async () => {
     const provider = new ChatViewProvider(fakeContext);
     const view = makeFakeView();
     await provider.resolveWebviewView(view as never, {} as never, {} as never);
@@ -232,6 +238,12 @@ describe('ChatViewProvider — chat view wiring (shared host)', () => {
     expect(opts.enableScripts).toBe(true);
     expect(Array.isArray(opts.localResourceRoots)).toBe(true);
     expect(joinPathCalls.some((c) => c.includes('out') && c.includes('webview'))).toBe(true);
+    // The picture a read card shows lives outside the bundle: without these two
+    // further roots the webview refuses to load it and the card is a placeholder.
+    const roots = (opts.localResourceRoots ?? []) as Array<{ __uri: string }>;
+    expect(roots).toHaveLength(3);
+    expect(roots[1].__uri).toBe('C:/ws');
+    expect(roots[2].__uri).toBe(tmpdir());
   });
 
   it('hands the REAL webview to resolveSharedView with the CHAT bundle', async () => {
@@ -328,5 +340,17 @@ describe('DashboardPanel — bundle selection, theme sidecar, shared-host fan-ou
 
   it('the reorderSessions echo also carries pending ask ids, not just the settled order', () => {
     expect(src).toMatch(/case 'reorderSessions':[\s\S]*?type:\s*'sessionList'[\s\S]*?pendingAskIds:\s*Array\.from\(s\.pendingPermissions\.keys\(\)\)/);
+  });
+
+  // lane/ring-subagents — the same mount-time gap, for a BACKGROUND sub-agent
+  // spawned before the sidebar's listener was ready: without `runningChildIds`
+  // on both emission sites, a launcher that (re)mounts mid-run has no way to
+  // know a child is still out, and the ring's 4th state never shows at all.
+  it('requestSessions carries each session\'s running child ids, not just its identity', () => {
+    expect(src).toMatch(/case 'requestSessions':[\s\S]*?runningChildIds:\s*Array\.from\(s\.runningChildren\)[\s\S]*?type:\s*'sessionList'/);
+  });
+
+  it('the reorderSessions echo also carries running child ids', () => {
+    expect(src).toMatch(/case 'reorderSessions':[\s\S]*?type:\s*'sessionList'[\s\S]*?runningChildIds:\s*Array\.from\(s\.runningChildren\)/);
   });
 });

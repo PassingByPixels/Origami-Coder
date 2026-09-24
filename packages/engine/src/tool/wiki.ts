@@ -7,18 +7,14 @@ import { WikiIndex } from "./wiki-index"
 import * as Tool from "./tool"
 
 /**
- * TWO-STAGE KNOWLEDGE RETRIEVAL over `wiki/` and `.origami/memory/`.
+ * Two-stage knowledge retrieval over `wiki/` and `.origami/memory/`. Stage one
+ * is these two tools: page ids, tags, one-line descriptions and match reasons,
+ * a few hundred tokens. Stage two is the model's own `read` tool on the one or
+ * two pages that earned it. Nothing here reads a page body into the answer.
  *
- * Stage one is these two tools: they answer with page ids, tags, one-line
- * descriptions and match reasons — a few hundred tokens. Stage two is the
- * model's EXISTING `read` tool on the one or two pages that earned it. Nothing
- * here ever reads a page body into the answer, which is the whole reason a
- * retrieval round is affordable enough to repeat.
- *
- * Every reply ends with a NEXT MOVE, because a search that dead-ends sends the
- * model back to grep: hits carry the tags that co-occur with them, and a miss
- * carries the nearest tags in the vocabulary with their page counts. The
- * recovery path is not a courtesy — it is the feature.
+ * Every reply ends with a next move, or a search that dead-ends sends the model
+ * back to grep: hits carry the tags that co-occur with them, and a miss carries
+ * the nearest vocabulary tags with their page counts.
  */
 
 /** Hard ceiling on either tool's output. The token-economy promise in the
@@ -56,6 +52,7 @@ export const WikiSearchTool = Tool.define(
     return {
       description: SEARCH_DESCRIPTION,
       parameters: SearchParameters,
+      deferrable: true,
       execute: (params: { query?: string; tags?: readonly string[]; limit?: number }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const ins = yield* InstanceState.context
@@ -134,11 +131,10 @@ export const WikiSearchTool = Tool.define(
               (hit) =>
                 `${hit.page.id}  [${hit.page.tags.join(", ") || "no tags"}]  ${hit.page.description || "(no description)"}  (matched: ${hit.reasons.join(", ")})`,
             )
-          // The NEXT MOVE, and the reason a search is worth repeating. Hits
-          // normally carry the tags that co-occur with them; when the whole hit
-          // set shares nothing else, the closest OTHER tags in the vocabulary
-          // are the only useful lever left, and "(none)" beats echoing the
-          // query back as its own suggestion.
+          // The next move. Hits normally carry the tags that co-occur with them;
+          // when the hit set shares nothing else, the closest other vocabulary
+          // tags are the only lever left, and "(none)" beats echoing the query
+          // back as its own suggestion.
           const askedTags = new Set(asked.map(WikiIndex.normalize))
           const related = WikiIndex.relatedTags(hits, asked)
           const near =
@@ -181,6 +177,7 @@ export const WikiRelatedTool = Tool.define(
     return {
       description: RELATED_DESCRIPTION,
       parameters: RelatedParameters,
+      deferrable: true,
       execute: (params: { page: string; depth?: number }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const ins = yield* InstanceState.context
@@ -234,10 +231,9 @@ export const WikiRelatedTool = Tool.define(
           const neighbours = WikiIndex.sharedTags(index.pages, page)
           const rows: string[] = []
 
-          // Depth 2 expands only the first few neighbours on each side. The
-          // char cap would throw the rest away anyway, and a second hop off
-          // thirty inbound pages is a full re-scan of the index per page for
-          // lines nobody will see.
+          // Depth 2 expands only the first few neighbours on each side: the char
+          // cap would throw the rest away, and a second hop off thirty inbound
+          // pages re-scans the index per page for lines nobody will see.
           const HOPS = 5
 
           rows.push(`outbound links (${page.links.length}):`)
@@ -301,10 +297,9 @@ function describeQuery(query: string, tags: readonly string[]): string {
 }
 
 /**
- * Join header + rows + footer under {@link OUTPUT_CAP}, dropping ROWS from the
- * end — never the footer, because the footer is the next move and a reply that
- * loses it is a dead end. The drop is always announced: a silently shortened
- * list reads as "that is all there is".
+ * Join header + rows + footer under {@link OUTPUT_CAP}, dropping rows from the
+ * end — never the footer, which carries the next move. The drop is always
+ * announced: a silently shortened list reads as "that is all there is".
  */
 function assemble(
   header: readonly string[],

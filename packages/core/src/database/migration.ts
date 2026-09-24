@@ -23,19 +23,29 @@ export function apply(db: Database) {
       )
       if (tables.some((table) => table.name === "session")) return yield* applyOnly(db, migrations)
       if (tables.length > 0) return yield* Effect.die("Database is not empty and has no session table")
-      yield* db.transaction((tx) =>
-        Effect.gen(function* () {
-          yield* schema.up(tx)
-          yield* tx.run(
-            sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
-          )
-          yield* Effect.forEach(migrations, (migration) =>
-            tx.run(
-              sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
-            ),
-          )
-        }),
+      // IMMEDIATE takes the write lock before anything is read, so the check
+      // below and the schema are one step for every process on this file. The
+      // lock above is in-process only: another engine starting in the same
+      // second may have created the schema since the read above.
+      const created = yield* db.transaction(
+        (tx) =>
+          Effect.gen(function* () {
+            if (yield* tx.get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${"session"}`))
+              return false
+            yield* schema.up(tx)
+            yield* tx.run(
+              sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
+            )
+            yield* Effect.forEach(migrations, (migration) =>
+              tx.run(
+                sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
+              ),
+            )
+            return true
+          }),
+        { behavior: "immediate" },
       )
+      if (!created) return yield* applyOnly(db, migrations)
     }),
   )
 }
@@ -66,15 +76,22 @@ export function applyOnly(db: Database, input: Migration[]) {
       }
     }
 
+    // `completed` is only a fast path: it was read without a lock. A migration
+    // it lists as pending runs in an IMMEDIATE transaction that reads its row
+    // again first, so of several engines starting together exactly one applies
+    // it and the others skip it (an ADD COLUMN run twice fails the start-up).
     for (const migration of input) {
       if (completed.has(migration.id)) continue
-      yield* db.transaction((tx) =>
-        Effect.gen(function* () {
-          yield* migration.up(tx)
-          yield* tx.run(
-            sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
-          )
-        }),
+      yield* db.transaction(
+        (tx) =>
+          Effect.gen(function* () {
+            if (yield* tx.get(sql`SELECT 1 FROM ${sql.identifier("migration")} WHERE id = ${migration.id}`)) return
+            yield* migration.up(tx)
+            yield* tx.run(
+              sql`INSERT INTO ${sql.identifier("migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
+            )
+          }),
+        { behavior: "immediate" },
       )
     }
   })

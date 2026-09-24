@@ -14,7 +14,7 @@ import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { GlobalBus } from "@/bus/global"
+import { GlobalBus, GlobalSSE } from "@/bus/global"
 import { AppNodeBuilder } from "@origami/core/effect/app-node-builder"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { InstanceStore } from "@/project/instance-store"
@@ -110,7 +110,12 @@ describe("session.created event", () => {
     }),
   )
 
-  it.instance("emits legacy global sync payload", () =>
+  // t-tc2rlo #8: the sync twin (event-v2-bridge.ts) exists only for a REMOTE
+  // peer replaying this engine's durable stream over the real `/global/event`
+  // SSE endpoint (control-plane/workspace.ts). `GlobalSSE.attach()` is what
+  // that connection registers; a test standing in for it must do the same, or
+  // there is no subscriber and (per the next test) none should be built.
+  it.instance("emits legacy global sync payload when a peer is actually attached", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
       const received = yield* Deferred.make<{ syncEvent: EventV2.SerializedEvent }>()
@@ -118,8 +123,14 @@ describe("session.created event", () => {
         if (event.payload.type === "sync" && event.payload.syncEvent)
           Deferred.doneUnsafe(received, Effect.succeed({ syncEvent: event.payload.syncEvent }))
       }
+      const detach = GlobalSSE.attach()
       GlobalBus.on("event", listener)
-      yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", listener)))
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          GlobalBus.off("event", listener)
+          detach()
+        }),
+      )
 
       const info = yield* session.create({})
       const event = yield* awaitDeferred(received, "timed out waiting for legacy global sync event")
@@ -130,6 +141,31 @@ describe("session.created event", () => {
         aggregateID: info.id,
         data: { sessionID: info.id },
       })
+
+      yield* session.remove(info.id)
+    }),
+  )
+
+  it.instance("skips the legacy global sync payload with no peer attached", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      let sawSync = false
+      let sawPlain = false
+      const listener = (event: { payload: { type?: string; syncEvent?: EventV2.SerializedEvent } }) => {
+        if (event.payload.type === "sync" && event.payload.syncEvent) sawSync = true
+        else sawPlain = true
+      }
+      GlobalBus.on("event", listener)
+      yield* Effect.addFinalizer(() => Effect.sync(() => GlobalBus.off("event", listener)))
+
+      const info = yield* session.create({})
+      // Give the (would-be) sync twin every chance to show up before asserting
+      // its absence: the plain payload for the SAME event proves the listener
+      // was live and the publish happened at all.
+      yield* Effect.sleep("200 millis")
+
+      expect(sawPlain).toBe(true)
+      expect(sawSync).toBe(false)
 
       yield* session.remove(info.id)
     }),

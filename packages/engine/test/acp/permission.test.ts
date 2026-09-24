@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import type {
   AgentSideConnection,
   RequestPermissionRequest,
@@ -9,7 +9,7 @@ import type { Event, OrigamiClient } from "@origami/sdk/v2"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { createTwoFilesPatch } from "diff"
 import { Effect, ManagedRuntime } from "effect"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { ACPEvent } from "@/acp/event"
@@ -510,5 +510,98 @@ describe("permissionOptions - the Always button only appears when an answer can 
     )
     await pollUntil(() => harness.replies.length === 1, "screenshot permission was never replied")
     expect(harness.requests[0]!.options.map((o) => o.optionId)).toEqual(["once", "reject"])
+  })
+})
+
+// t-tc2es2. A throw inside the handler used to be eaten by the queue's
+// `.catch(() => {})`: the ask was never answered, a main-session ask has no
+// timeout, and the turn sat "running" with no bar until Stop.
+describe("a handler failure never leaves the ask unanswered", () => {
+  const logged: string[] = []
+  let restore: (() => void) | undefined
+  beforeEach(() => {
+    logged.length = 0
+    const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "))
+    })
+    restore = () => spy.mockRestore()
+  })
+  afterEach(() => restore?.())
+  const loggedAbout = (askID: string, cause: string) =>
+    logged.some((line) => line.includes(askID) && line.includes(cause))
+
+  it("an edit whose diff preview cannot be read still reaches the client, with no diff, and the answer stands", async () => {
+    // A directory: `exists` is true and `readText` throws (EISDIR), the same
+    // shape as a file another Windows process holds without share-read.
+    const dir = await mkdtemp(path.join(tmpdir(), "origami-acp-permission-"))
+    cleanupDirs.push(dir)
+    const cause = await readFile(dir, "utf-8").then(
+      () => "",
+      (error: Error) => error.message,
+    )
+    expect(cause).not.toBe("")
+    const harness = createHarness()
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_unreadable", {
+        permission: "edit",
+        metadata: { filepath: dir, diff: createTwoFilesPatch(dir, dir, "before\n", "after\n") },
+        tool: { messageID: "msg_1", callID: "call_1" },
+      }),
+    )
+
+    await pollUntil(() => harness.replies.length === 1, "the ask with an unreadable preview was never answered")
+    expect(harness.requests).toHaveLength(1)
+    expect(harness.requests[0]?.toolCall.content).toBeUndefined()
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_unreadable", reply: "once" })
+    expect(loggedAbout("perm_unreadable", cause)).toBe(true)
+  })
+
+  it("a client that THROWS instead of rejecting gets the ask refused with the cause named", async () => {
+    const harness = createHarness(() => {
+      throw new Error("prompt renderer crashed")
+    })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(permissionAsked("ses_a", "perm_throw"))
+
+    await pollUntil(() => harness.replies.length === 1, "a throwing client left the ask unanswered")
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_throw", reply: "reject", directory: "/workspace" })
+    // The refusal carries the reason into the tool row (CorrectedError feedback),
+    // so the row does not read as a plain "the user rejected".
+    expect(harness.replies[0]?.message).toContain("prompt renderer crashed")
+    expect(loggedAbout("perm_throw", "prompt renderer crashed")).toBe(true)
+  })
+
+  it("a client whose permission call REJECTS is refused with the cause named too", async () => {
+    const harness = createHarness(() => Promise.reject(new Error("client permission UI failed")))
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(permissionAsked("ses_a", "perm_rejects"))
+
+    await pollUntil(() => harness.replies.length === 1, "failed permission was never rejected")
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_rejects", reply: "reject" })
+    expect(harness.replies[0]?.message).toContain("client permission UI failed")
+    expect(loggedAbout("perm_rejects", "client permission UI failed")).toBe(true)
+  })
+
+  it("an answer the engine refuses to take is followed by a refusal, not silence", async () => {
+    // The generated SDK does not throw on a non-2xx: it RETURNS `{ error }`. An
+    // "once" that came back as an error left the ask pending with no one to answer it.
+    const harness = createHarness()
+    await createSession(harness.session, "ses_a")
+    const replies: PermissionReplyParams[] = []
+    ;(harness.sdk.permission as { reply: unknown }).reply = (params: PermissionReplyParams) => {
+      replies.push(params)
+      return Promise.resolve(replies.length === 1 ? { error: { name: "UnknownError", data: { message: "store busy" } } } : { data: true })
+    }
+
+    harness.subscription.handle(permissionAsked("ses_a", "perm_reply_error"))
+
+    await pollUntil(() => replies.length === 2, "a refused reply was not followed by a refusal")
+    expect(replies[0]).toMatchObject({ requestID: "perm_reply_error", reply: "once" })
+    expect(replies[1]).toMatchObject({ requestID: "perm_reply_error", reply: "reject", directory: "/workspace" })
+    expect(loggedAbout("perm_reply_error", "store busy")).toBe(true)
   })
 })

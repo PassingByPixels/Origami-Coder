@@ -16,7 +16,7 @@ import { runGit, WORKTREES_DIRNAME } from '../../../src/dashboard/agentManager/w
 import { loadState } from '../../../src/dashboard/agentManager/state';
 import { listTickets, ticketsDir } from '../../../src/dashboard/agentManager/tickets';
 import { readIdent, refreshIdents, worktreeRows, type RepoIdent } from '../../../src/dashboard/agentManager/repoCards';
-import { primaryFor, readRepoFile, repoFilePath } from '../../../src/dashboard/agentManager/repoFile';
+import { primaryFor, readRepoFile, repoFilePath, syncRepoFile } from '../../../src/dashboard/agentManager/repoFile';
 
 const made: string[] = [];
 function tempDir(prefix: string): string {
@@ -48,7 +48,8 @@ function makeHost(known: string[]): FakeHost {
     posts: [], terminals: [], sessions: [], openedChats: [], repos: [...known],
     repoRoot: () => undefined,
     knownRepos: () => host.repos,
-    saveKnownRepos: (paths) => { host.repos = [...paths]; },
+    // Like DashboardPanel's host: saving the known list syncs repos.json.
+    saveKnownRepos: (paths) => { host.repos = [...paths]; syncRepoFile(host.repoRoot(), paths, undefined, host.repoDisplayNames()); },
     pickRepoFolder: async () => undefined,
     repoDisplayNames: () => ({}),
     saveRepoDisplayNames: () => undefined,
@@ -279,6 +280,29 @@ describe('the PRIMARY checkout owns the work', () => {
       expect(primaryFor(main)).toBe(main);
       await mgr.handle({ type: 'amTicketQuickAdd', root: main, title: 'back home' });
       expect(listTickets(main)).toHaveLength(1);
+    } finally { mgr.dispose(); }
+  }, 30_000);
+});
+
+describe('the board name comes from repos.json', () => {
+  // The extension's sync no longer overwrites a name another writer set
+  // (board_register / board_repoint), so the launch prompt must name the repo by
+  // that name: it is the key the board_* tools resolve, not the folder name.
+  it('a ticket launch prompt names the registered name, not the folder name', async () => {
+    const { main } = await makeRepoWithWorktree();
+    fs.mkdirSync(path.dirname(repoFilePath()), { recursive: true });
+    fs.writeFileSync(repoFilePath(), `${JSON.stringify({
+      version: 1, repos: [{ root: main, name: 'board-custom', workspace: false, addedAt: 1 }],
+    }, null, 2)}
+`);
+    const host = makeHost([main]);
+    const mgr = new AgentManager(host);
+    try {
+      await mgr.handle({ type: 'amTicketQuickAdd', root: main, title: 'named' });
+      const id = listTickets(main)[0].id;
+      await mgr.handle({ type: 'amTicketLaunch', root: main, id, agentName: '', model: '', start: false });
+      const prompt = loadState(main).worktrees[0]?.queuedTask?.prompt ?? '';
+      expect(prompt).toContain('This ticket is on the "board-custom" Folds board.');
     } finally { mgr.dispose(); }
   }, 30_000);
 });

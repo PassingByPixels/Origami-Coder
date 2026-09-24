@@ -501,6 +501,41 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  // The chat card renders the picture from the FILE, never from the attachment's
+  // data URL (docs/TOOL_CARD_CONTRACT.md). So the display block must carry the
+  // absolute path, the sniffed mime and the size — a relative `filePath` input
+  // must still come back absolute, because a webview cannot resolve one.
+  it.live("an image read names the file for the card: absolute path, mime, bytes", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+        "base64",
+      )
+      yield* put(path.join(dir, "shot.png"), png)
+
+      const result = yield* exec(dir, { filePath: "shot.png" })
+      const display = result.metadata.display as
+        | { type: string; path: string; mime: string; bytes: number }
+        | undefined
+      expect(display?.type).toBe("image")
+      expect(path.isAbsolute(display!.path)).toBe(true)
+      expect(path.basename(display!.path)).toBe("shot.png")
+      expect(display?.mime).toBe("image/png")
+      expect(display?.bytes).toBe(png.length)
+    }),
+  )
+
+  it.live("a text read carries no image display block", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      yield* put(path.join(dir, "notes.txt"), "plain words\n")
+
+      const result = yield* exec(dir, { filePath: path.join(dir, "notes.txt") })
+      expect((result.metadata.display as { type?: string } | undefined)?.type).toBe("file")
+    }),
+  )
+
   it.live("detects attachment media from file contents", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()

@@ -233,7 +233,16 @@ export async function get(
     }),
   )
 
-  // prune existing models whose api.id isn't in the endpoint response
+  // AN ANSWER NOTHING SURVIVES IS A FAILED READ, NOT AN ENTITLEMENT OF NOTHING.
+  // The prune below deletes every `existing` model the answer does not name, so an
+  // empty `remote` erases the whole catalog and returns `{}` — and because that is
+  // not an error, copilot.ts's `.catch` fallback never runs, leaving the picker
+  // with the three-id seed. `decodeItem` and `usable` are both strict, so ONE
+  // renamed field at GitHub's end produces exactly that. Throwing takes the fallback.
+  if (remote.size === 0) {
+    throw new Error(`Failed to fetch models: ${data.data.length} entries returned, none usable`)
+  }
+
   for (const [key, model] of Object.entries(result)) {
     const m = remote.get(model.api.id)
     if (!m) {
@@ -243,7 +252,6 @@ export async function get(
     result[key] = build(key, m, baseURL, model)
   }
 
-  // add new endpoint models not already keyed in result
   for (const [id, m] of remote) {
     if (id in result) continue
     result[id] = build(id, m, baseURL)

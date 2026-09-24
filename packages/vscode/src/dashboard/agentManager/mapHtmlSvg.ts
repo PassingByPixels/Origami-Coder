@@ -1,20 +1,9 @@
-// The static artifact's PICTURE: the ground plates, the solids and their labels,
-// assembled from the geometry isoLayout.ts already computed. The connectors are
-// mapHtmlWires.ts's, split off for the same reason isoWires.ts is split from
-// isoLayout.ts — a box and a line between two boxes change for different causes.
-//
-// NO GEOMETRY IS INVENTED HERE. Every coordinate arrives from layoutMap(), so the
-// in-editor screen and this file draw the same picture by construction rather
-// than by two people keeping two sets of maths in step.
-//
-// Boxes are emitted in the order layoutMap() sorted them (back to front). SVG has
-// no depth buffer, so that order IS the occlusion — re-sorting here would silently
-// put the far boxes on top.
-//
-// Colour is written INLINE, per node, rather than through a CSS class per kind:
-// the three faces of one solid are three shades of one hue, and shade() is a
-// single expression on the host. A class-per-kind sheet would be 8 kinds x 3
-// faces of near-duplicate rules that a new `kind` in a map would fall out of.
+// The static artifact's picture: ground plates, solids and labels, assembled from
+// isoLayout.ts's geometry — no geometry is invented here, so the in-editor screen and this
+// file draw the same picture by construction. Boxes are emitted in painter's-order (back to
+// front); SVG has no depth buffer so re-sorting here would silently misdraw occlusion.
+// Colour is written inline per node (three shades of one hue) rather than a CSS class per
+// kind.
 
 import type { IsoBox, IsoLayout, IsoZone } from './isoLayout';
 import { polyPoints } from './isoProject';
@@ -31,9 +20,8 @@ export const esc = (s: string): string =>
  *  of the five pillars (it used to, unguarded by the mirror's drift test). */
 export const pillarName = (n: number): string => PILLARS.find((p) => p.number === n)?.name ?? `Pillar ${n}`;
 
-/** A caption has no ellipsis in SVG, so a long name is cut here and the full one
- *  lives in the <title> the browser shows on hover. Cut on the RAW name: escaping
- *  first would slice `&amp;` into `&a`, which renders as literal text. */
+/** A caption is cut on the raw name (before escaping, or `&amp;` would slice mid-entity);
+ *  the full name lives in the <title> tooltip. */
 const short = (s: string, max = 22): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 
 /** One solid: the two side faces darkened from the kind's hue, the top face in
@@ -54,9 +42,8 @@ function nodeSvg(b: IsoBox): string {
     + `<title>${esc(title)}</title></g>`;
 }
 
-/** A street's tint is its flow's colour; a district's is its pillar's. The LABEL
- *  is composed here from the map and the schema's pillar table — the geometry
- *  carries only the flow index and the pillar number. */
+/** A street's tint is its flow's colour; a district's is its pillar's — the label is
+ *  composed here since the geometry carries only the index/number. */
 function zoneSvg(z: IsoZone, map: RepoMap): { plate: string; label: string } {
   const street = z.kind === 'street';
   const flow = street ? map.flows[z.flow] : undefined;
@@ -82,10 +69,9 @@ export function isoSvg(layout: IsoLayout, map: RepoMap): string {
     `<text class="slab" x="${s.at.x}" y="${s.at.y}">${esc(`${s.section} (${s.count})`)}</text>`).join('');
   const captions = layout.boxes.map((b) =>
     `<text class="caption" data-name="${esc(b.id)}" data-deg="${b.degree + b.flows}" x="${b.foot.x}" y="${b.foot.y}">${esc(short(b.name))}</text>`).join('');
-  // No xmlns: the <svg> is INLINE in HTML, where the parser assigns the SVG
-  // namespace itself. Emitting the namespace URI would put the only `http://`
-  // string in the whole artifact into a file whose contract is that it fetches
-  // nothing — and the guard test asserts that literally, on the whole document.
+  // No xmlns: the inline <svg> gets its namespace from the HTML parser. Emitting it would put
+  // the artifact's only http:// string into a document whose contract is that it fetches
+  // nothing — a guard test asserts this.
   return `<svg id="stage" viewBox="${v.x} ${v.y} ${v.w} ${v.h}" preserveAspectRatio="xMidYMid meet">`
     + `<g id="cam"><g id="zones">${zones.map((z) => z.plate).join('')}</g>`
     + `<g id="boxes">${layout.boxes.map(nodeSvg).join('')}</g>`

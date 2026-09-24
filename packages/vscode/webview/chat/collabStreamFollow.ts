@@ -14,7 +14,10 @@
 //
 // A CONTROLLER, not a component method: CollabStream.svelte is 2 lines under its
 // architecture cap, and a rule nobody can test is a rule nobody can trust.
-import { dropScrollAnchor, isNearBottom, markScrollAnchor, stickToBottom } from '../dashboard/panes/chatScroll';
+import { dropScrollAnchor, stickToBottom } from '../dashboard/panes/chatScroll';
+import { rearmOnGrowth, rearmOnScroll } from '../dashboard/panes/chatScrollRearm';
+import { noteSeen } from '../dashboard/panes/chatScrollSeen';
+import { wheelUnsticks } from '../dashboard/panes/chatScrollInput';
 
 export interface StreamFollow {
   /** The scroller to follow. `null` while the pane is between renders. */
@@ -23,8 +26,10 @@ export interface StreamFollow {
    *  This also runs for our OWN programmatic scroll, which lands at the bottom
    *  and so re-arms the follow rather than fighting it. */
   onScroll(): void;
-  /** Upward wheel intent, read BEFORE the first movement clears the threshold. */
-  onWheel(deltaY: number): void;
+  /** Upward wheel intent, read BEFORE the first movement clears the threshold.
+   *  Ignored on a stream with nothing to scroll — there is no reading back — and when a box inside
+   *  the stream (`from`) takes the wheel instead (chatScrollInput.ts). */
+  onWheel(deltaY: number, from?: EventTarget | null): void;
   /**
    * Catch the stream up, unless the user has moved away.
    *
@@ -54,10 +59,9 @@ export function makeStreamFollow(
     bind(node) { el = node; },
     onScroll() {
       if (!el) return;
-      markScrollAnchor(el);
-      stuck = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+      stuck = rearmOnScroll(el, stuck);
     },
-    onWheel(deltaY) { if (deltaY < 0) stuck = false; },
+    onWheel(deltaY, from = null) { if (el && wheelUnsticks(el, deltaY, from)) stuck = false; },
     follow(newestSeq = 0, byHuman = false) {
       if (byHuman && newestSeq > armedAt) {
         armedAt = newestSeq;
@@ -67,8 +71,14 @@ export function makeStreamFollow(
         if (el) dropScrollAnchor(el);
       }
       frame(() => {
-        if (!el || !stuck) return;
+        if (!el) return;
+        // GROWTH RE-ARM (chatScrollRearm.ts): a stream back on the bottom the
+        // user last SAW, or one with nothing to scroll, follows again.
+        if (!stuck && !rearmOnGrowth(el)) return;
+        stuck = true;
         if (!stickToBottom(el)) stuck = false;
+        // Record the frame: this move's scroll event may land after the next message (t-v47ytt).
+        noteSeen(el, stuck);
       });
     },
   };

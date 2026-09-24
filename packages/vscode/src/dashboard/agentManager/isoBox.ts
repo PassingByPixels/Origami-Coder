@@ -1,11 +1,6 @@
-// ONE COMPONENT AS A SOLID: how big it is, how tall it stands, what its badge
-// says, and the faces that get drawn for it. Pure — a node and a grid cell in,
-// geometry out.
-//
-// Split from isoLayout.ts, which decides WHERE things stand. This is the part
-// both placements share: a box on a flow street and a box docked in a district
-// are sized by exactly the same rules, and having one `emit` is what guarantees
-// that. It is also the only file that knows pillar 5 is drawn as a stack.
+// One component as a solid: its size, height, badge and drawn faces. Split from
+// isoLayout.ts, which decides placement; this is the part both flow-street and docked
+// placements share.
 
 import { boxFaces, project, type IsoFaces, type Pt } from './isoProject';
 import type { MapNode, RepoMap } from './mapSchema';
@@ -35,10 +30,8 @@ export interface IsoBox {
   centre: Pt;
   /** Where the caption sits, already offset clear of the solid. */
   foot: Pt;
-  /** gx + gy — the painter's-order key. `boxes` arrives ALREADY sorted by it, so
-   *  a renderer that iterates in order gets correct occlusion; one that re-sorted
-   *  by screen y would put tall boxes in front of the short ones standing before
-   *  them, which is the classic iso mistake. */
+  /** gx+gy, the painter's-order key. `boxes` arrives already sorted by it so occlusion is
+   *  correct without any renderer having to re-sort. */
   depth: number;
 }
 
@@ -51,14 +44,9 @@ export interface Sizes {
   flows: (id: string) => number;
 }
 
-/**
- * Footprint from connectivity, height from flow participation — so a hub looks
- * like a hub with nobody hand-placing it.
- *
- * Key files get a FLOOR of 3 cells, and that is not decoration: half the nodes in
- * a real map have degree 0, so degree alone is a flat signal and the handful of
- * files the map itself calls important would come out the same size as a leaf.
- */
+/** Footprint from connectivity, height from flow participation, so a hub looks like a hub
+ *  with nobody hand-placing it. Key files get a floor of 3 cells — half a real map's nodes
+ *  have degree 0, so degree alone would size them the same as a leaf. */
 export function sizesOf(map: RepoMap): Sizes {
   const degree = new Map<string, number>();
   for (const e of map.edges) {
@@ -80,9 +68,8 @@ export function sizesOf(map: RepoMap): Sizes {
   };
 }
 
-/** The badge. Initials of the first two words, else the first two characters —
- *  iterated by CODE POINT so a name starting with an astral character is not cut
- *  in half into two broken surrogates. */
+/** The badge: initials of the first two words, else the first two characters, iterated by
+ *  code point so an astral character isn't split into broken surrogates. */
 export function codeOf(name: string): string {
   const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
   if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
@@ -90,11 +77,8 @@ export function codeOf(name: string): string {
   return [...name.trim()].slice(0, 2).join('') || '?';
 }
 
-/** Stand one node on the grid at (gx, gy) and append its solid.
- *
- *  Pillar 5 is Artifacts & Outputs, so its nodes are drawn as a STACK of thin
- *  plates rather than one block — a pile of generated files, readable as such
- *  from across the diagram. */
+/** Stand one node on the grid and append its solid. Pillar 5 (Artifacts & Outputs) draws as
+ *  a stack of thin plates rather than one block. */
 export function emit(n: MapNode, gx: number, gy: number, s: Sizes, out: IsoBox[]): void {
   const fp = s.fp(n);
   const flows = s.flows(n.id);

@@ -12,14 +12,18 @@
 import { describe, it, expect } from 'vitest';
 import { startThenAnnounce } from '../../../src/dashboard/sessionAnnounce';
 
-/** Records the order announce and start happened in. */
+/** Records the order announce, the pane open, start and settle happened in. */
 const trace = () => {
   const seen: string[] = [];
   return {
     seen,
     announce: () => { seen.push('announce'); },
+    open: () => { seen.push('open'); },
+    settled: () => { seen.push('settled'); },
     resolving: async () => { seen.push('start'); return 'ses_1'; },
     rejecting: async () => { seen.push('start'); throw new Error('engine refused the agent'); },
+    /** A start that has NOT answered yet — the 2.4-2.5 s the engine really takes. */
+    hanging: () => { seen.push('start'); return new Promise<string>(() => {}); },
   };
 };
 
@@ -65,5 +69,59 @@ describe('an ORDINARY chat', () => {
     await startThenAnnounce({ provisional: false, announce: t.announce, start: t.resolving });
 
     expect(t.seen).toEqual(['announce', 'start']);
+  });
+});
+
+// t-hb1b7e. The chat's editor TAB used to be created after the awaited `start()`, so
+// "New chat" left the screen unchanged for the whole engine start-up (2.4-2.5 s of
+// engine on this PC, more on the Mac, where the owner saw no pane at all until they
+// clicked the sidebar row). The tab is a surface, not a consequence of the engine
+// answering, so it is opened with the announce.
+describe('the chat pane', () => {
+  it('is opened BEFORE start() resolves — a start that never answers still has a pane', async () => {
+    const t = trace();
+
+    // Deliberately not awaited: this start never settles, which is the whole point.
+    void startThenAnnounce({ provisional: false, announce: t.announce, open: t.open, start: t.hanging });
+    await Promise.resolve();
+
+    expect(t.seen, 'the pane exists while the engine is still starting').toEqual(['announce', 'open', 'start']);
+  });
+
+  it('is opened once, and stays open when start() rejects', async () => {
+    const t = trace();
+
+    await expect(
+      startThenAnnounce({ provisional: false, announce: t.announce, open: t.open, settled: t.settled, start: t.rejecting }),
+    ).rejects.toThrow('engine refused the agent');
+
+    // No second open, and nothing closes it: the failure is reported INSIDE the pane.
+    expect(t.seen).toEqual(['announce', 'open', 'start', 'settled']);
+  });
+
+  it('settles the starting state on the happy path too', async () => {
+    const t = trace();
+
+    await startThenAnnounce({ provisional: false, announce: t.announce, open: t.open, settled: t.settled, start: t.resolving });
+
+    expect(t.seen).toEqual(['announce', 'open', 'start', 'settled']);
+  });
+
+  it('is NOT opened for a refused bot chat — a provisional session shows nothing', async () => {
+    const t = trace();
+
+    await expect(
+      startThenAnnounce({ provisional: true, announce: t.announce, open: t.open, settled: t.settled, start: t.rejecting }),
+    ).rejects.toThrow('engine refused the agent');
+
+    expect(t.seen, 'no tab for a chat the engine refused').toEqual(['start', 'settled']);
+  });
+
+  it('opens no tab for a headless agent session, which passes none', async () => {
+    const t = trace();
+
+    await startThenAnnounce({ provisional: false, announce: t.announce, settled: t.settled, start: t.resolving });
+
+    expect(t.seen).toEqual(['announce', 'start', 'settled']);
   });
 });

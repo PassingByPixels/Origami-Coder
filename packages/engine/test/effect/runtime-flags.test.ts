@@ -203,6 +203,22 @@ describe("RuntimeFlags", () => {
     }),
   )
 
+  // t-ffjau8. Side quests are the headline feature, not an opt-in: ON with
+  // nothing set, and the variable is the EXPLICIT off switch. A flag that only
+  // inherited ORIGAMI_EXPERIMENTAL left the tool missing on every ordinary
+  // install, which is what sent the model looking for it in the catalog.
+  it.effect("experimentalSideQuests is ON by default and OFF only for an explicit false", () =>
+    Effect.gen(function* () {
+      const bare = yield* readFlags.pipe(Effect.provide(fromConfig({})))
+      const off = yield* readFlags.pipe(Effect.provide(fromConfig({ ORIGAMI_EXPERIMENTAL_SIDE_QUESTS: "false" })))
+      const on = yield* readFlags.pipe(Effect.provide(fromConfig({ ORIGAMI_EXPERIMENTAL_SIDE_QUESTS: "true" })))
+
+      expect(bare.experimentalSideQuests).toBe(true)
+      expect(off.experimentalSideQuests).toBe(false)
+      expect(on.experimentalSideQuests).toBe(true)
+    }),
+  )
+
   it.effect("specific experimental flags override ORIGAMI_EXPERIMENTAL", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
@@ -379,4 +395,26 @@ describe("RuntimeFlags", () => {
       expect(flags.disableClaudeCodeSkills).toBe(true)
     }),
   )
+})
+
+// t-fijeld. The variable a user types by hand: any spelling of a false word
+// turns the tool off, and an unparsable value keeps the default instead of
+// failing the whole flags read.
+describe("experimentalSideQuests reads the off switch as text", () => {
+  for (const value of ["FALSE", "False", " false ", "0", "off", "no"]) {
+    it.effect(`"${value}" is off`, () =>
+      Effect.gen(function* () {
+        const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ ORIGAMI_EXPERIMENTAL_SIDE_QUESTS: value })))
+        expect(flags.experimentalSideQuests).toBe(false)
+      }),
+    )
+  }
+  for (const value of ["", "TRUE", "banana", " on "]) {
+    it.effect(`"${value}" keeps the default (on)`, () =>
+      Effect.gen(function* () {
+        const flags = yield* readFlags.pipe(Effect.provide(fromConfig({ ORIGAMI_EXPERIMENTAL_SIDE_QUESTS: value })))
+        expect(flags.experimentalSideQuests).toBe(true)
+      }),
+    )
+  }
 })

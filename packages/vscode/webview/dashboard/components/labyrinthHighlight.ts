@@ -1,43 +1,43 @@
-// WHICH PART OF THE MAP one spend chip is about.
+// Which part of the map one spend chip is about.
 //
-// The strip's chips and the map are two views of ONE step list: a delegated
-// chip is keyed by its branch's first step INDEX (`BranchUsage.first`), and an
-// agent chip by the bucket name labyrinthUsage.ts sorted the same steps into.
-// So "show me where this chip's work happened" needs no second model — it is
-// the branch ledger and the `agent` field the totals were already summed from.
-// A parallel one here is how a chip and the region it lights end up disagreeing
-// about the run they are both describing.
-//
-// The answer is what to FADE, not what to light. An empty answer then means
-// "nothing is hovered", which is exactly the ordinary map, so every caller asks
-// one question — `has(...)` — with no null check and no inverted flag to get
-// the wrong way round.
-//
-// Pure — no DOM. jsdom has no opacity to read, so the render tests assert this
-// membership and the owner's eye judges the fade itself.
+// Chips and the map are two views of one step list: a delegated chip is
+// keyed by its branch's first step index, an agent chip by the bucket
+// labyrinthUsage.ts sorted steps into.
+// The answer is what to fade, not light: an empty answer means nothing
+// is hovered. Pure, no DOM: jsdom has no opacity to read, so render
+// tests assert membership and the owner's eye judges the fade itself.
 
 import { branchModel, type BranchStep } from './labyrinthBranches';
+import { toolCategory, type Category } from './labyrinthCategory';
+import { isThreshold } from './labyrinthLanes';
 
 /** The part of a step this reads. `LayoutStep` and `UsageStep` satisfy it. */
 export interface HighlightStep extends BranchStep {
   agent?: string;
+  /** Read only by the `category` target; absent is a category of its own. */
+  tool?: string;
 }
 
-/** What the pointer is on. `first` is a step INDEX, mirroring BranchUsage. */
+/**
+ * What the pointer is on. `first` is a step index, mirroring BranchUsage.
+ * `category`/`errors` target the analytics Flight view's bars and pills,
+ * which point at the same chart the spend chips point at — a second
+ * highlight model there would let two models of one run disagree.
+ */
 export type HighlightTarget =
   | { kind: 'branch'; first: number }
-  | { kind: 'agent'; agent: string };
+  | { kind: 'agent'; agent: string }
+  | { kind: 'category'; category: Category }
+  | { kind: 'errors' };
 
 export interface MapFade {
   /** Ordinals of the MARKERS to fade — thread, flight and corridor alike. */
   steps: ReadonlySet<number>;
   /**
-   * `first` indices of the branch RAILS (thread) and SWIMLANES (flight) to
-   * fade. Deliberately not read off the spawn's own marker: a `task` call is
-   * the step of the thread that MADE it, so hovering that thread's agent chip
-   * leaves the spawn lit while every step on the branch below it fades — and a
-   * rail keyed on the spawn would then stay bright around faded work. A rail
-   * follows the work ON it.
+   * `first` indices of branch rails (thread) and swimlanes (flight) to
+   * fade. Not read off the spawn's own marker: a `task` call is the step
+   * of the thread that made it, so a rail keyed on the spawn would stay
+   * bright while the branch below it fades. A rail follows the work on it.
    */
   branches: ReadonlySet<number>;
 }
@@ -45,26 +45,23 @@ export interface MapFade {
 const NOTHING: MapFade = { steps: new Set<number>(), branches: new Set<number>() };
 
 /**
- * What to fade so the target's own work stands out.
- *
- * Two cases deliberately fade NOTHING rather than something:
- *  - a target no step matches (a chip whose branch the thresholds toggle took
- *    off the map). A map with every marker faded and none lit reads as "this
- *    run did none of that work", when the truth is that the chip and the drawn
- *    steps are looking at different lists.
- *  - a target that matches EVERY step — one agent that ran the whole run. A
- *    highlight that highlights everything says nothing, and paying for it in
- *    contrast is worse than not drawing it.
+ * What to fade so the target's own work stands out. Two cases fade
+ * nothing rather than something: a target no step matches (its branch
+ * left the map), where fading everything would read as "did none of
+ * this work" instead of "different lists"; and a target matching every
+ * step, where highlighting everything says nothing and costs contrast.
  */
 export function mapFade(steps: readonly HighlightStep[], target: HighlightTarget | null): MapFade {
   if (!target || steps.length === 0) return NOTHING;
   const { host, spans } = branchModel(steps);
   // The spawn is the head of the branch it opened, so a BRANCH chip lights it
   // even though `host` attributes its usage to the thread that made the call.
-  const branch = target.kind === 'branch' ? target.first : null;
-  const agent = target.kind === 'agent' ? target.agent : null;
-  const mine = (step: HighlightStep, i: number): boolean =>
-    branch === null ? (step.agent || 'unknown') === agent : host[i] === branch || i === branch;
+  const mine = (step: HighlightStep, i: number): boolean => {
+    if (target.kind === 'branch') return host[i] === target.first || i === target.first;
+    if (target.kind === 'agent') return (step.agent || 'unknown') === target.agent;
+    if (target.kind === 'category') return toolCategory(step) === target.category;
+    return isThreshold(step);
+  };
   const lit = new Set(steps.filter(mine).map((s) => s.ordinal));
   if (lit.size === 0 || lit.size === steps.length) return NOTHING;
 

@@ -1,25 +1,18 @@
-// Agent Manager - specRun.ts (Folds board, UAT round 1 item 3): the SPEC flow.
-// A Triage ticket is a raw idea; this drives the conversation that turns it into
-// a spec'd Todo one. Deliberately NOT a fold: the session's cwd is the REPO ROOT
-// with no worktree and no WorktreeRecord, because the only file it may write is
-// the ticket itself - a worktree copy would strand the spec on a branch nobody
-// merges. The chat is opened BEFORE the prompt is sent: speccing is a
-// CONVERSATION with the user, not a background run, so the window has to be in
-// front of them when the agent asks its first question.
-//
-// The ticket FILE decides the outcome, never the agent's report of it: at the end
-// of the turn the file is re-read and only real `- [ ]` acceptance lines move the
-// ticket to Todo.
+// The SPEC flow: turns a raw Triage idea into a spec'd Todo ticket. Deliberately not a
+// fold — the session's cwd is the repo root with no worktree, since the only file it may
+// write is the ticket itself. The chat opens BEFORE the prompt: speccing is a conversation
+// with the user, so the window must be in front of them for the agent's first question. The
+// ticket file decides the outcome, never the agent's report — only real `- [ ]` acceptance
+// lines move it to Todo.
 
 import * as path from 'node:path';
 import { repoKey } from './registry';
 import { acceptance, noteTicket, readTicket, scalar, serializeTicket, type Ticket } from './tickets';
 import { effectiveModel, type RunContext } from './run';
 
-/** `repoKey::id` of every ticket with a LIVE spec session. A module map - like
- *  the ticket poll's hashes next door - so the fleet owner holds no ticket state
- *  and stays under its line cap. tickets.ts reads it through the lookup manager.ts
- *  passes INTO its projection, never by importing this module (which imports it). */
+/** repoKey::id of every ticket with a LIVE spec session, a module map so the fleet owner
+ *  holds no ticket state. tickets.ts reads it through the lookup manager.ts passes in, never
+ *  by importing this module. */
 const active = new Set<string>();
 
 function key(root: string, id: string): string {
@@ -36,10 +29,8 @@ export function resetSpecRuns(): void {
   active.clear();
 }
 
-/** The spec brief: the ticket EXACTLY as it is on disk, its ABSOLUTE path, and the
- *  to-spec bar. The path is spelled out because the session's cwd is the repo
- *  root, not the tickets dir - the agent must edit that one file rather than
- *  write a spec document somewhere else. */
+/** The spec brief: the ticket exactly as it is on disk, its absolute path, and the to-spec
+ *  bar — spelled out since the session's cwd is the repo root, not the tickets dir. */
 export function specBrief(t: Ticket, file: string): string {
   return [
     `Spec ticket ${t.id} — "${scalar(t.fm, 'title') || t.id}" — together with the user.`,
@@ -69,17 +60,15 @@ export async function runSpec(
   if (!t) { amError('That ticket no longer exists.'); return; }
   if (t.malformed) { amError(`Ticket ${t.id} does not parse — fix its frontmatter before speccing it.`); return; }
   const k = key(root, t.id);
-  // A second click landing before the first broadcast paints the chip would spawn
-  // a second engine child onto the same file, and the first completion would then
-  // clear the mark out from under the second.
+  // A second click landing before the first broadcast would spawn a second engine child onto
+  // the same file, and the first completion would clear the mark out from under the second.
   if (active.has(k)) { amError(`Ticket ${t.id} already has a spec session open.`); return; }
   active.add(k);
   ctx.broadcast();
   try {
     const sessionId = await host.createAgentSession(root, agentName || undefined);
-    // Pin before the prompt, exactly like a fold run: a throw is FATAL (never
-    // silently spec on the wrong model), and the repo default applies when the
-    // picker named no model of its own.
+    // Pin before the prompt, exactly like a fold run: a throw is fatal, and the repo default
+    // applies when the picker named no model.
     const effModel = effectiveModel(root, model);
     if (effModel) {
       try {
@@ -91,11 +80,9 @@ export async function runSpec(
     host.openChat(sessionId); // in front of the user BEFORE the first question
     await host.promptSession(sessionId, specBrief(t, path.resolve(t.file)));
     active.delete(k);
-    // The FILE is the truth about whether this ticket is spec'd. No acceptance
-    // criteria = still a raw idea: it stays in Triage and SAYS so, rather than
-    // moving to Todo on an empty promise. No sessionAlive death-check here (a
-    // fold run has one): the turn resolved, so whatever is on disk is the result
-    // even if the user closed the chat as it finished.
+    // The FILE is the truth about whether this ticket is spec'd: no acceptance criteria means it
+    // stays in Triage. No sessionAlive death-check here (unlike a fold run) — the turn resolved,
+    // so whatever is on disk is the result even if the user closed the chat as it finished.
     const after = readTicket(root, t.id);
     if (after && acceptance(after.body).total > 0) noteTicket(root, t.id, 'spec complete', 'todo');
     else noteTicket(root, t.id, 'spec session ended without acceptance');

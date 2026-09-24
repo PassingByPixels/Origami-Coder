@@ -227,7 +227,9 @@ describe('sub-agent override — ONE surface, and it is the chat model picker', 
   };
 
   it('ModelPicker.svelte is the only webview file that sends setSubagentModel', () => {
-    expect(sendersOf('setSubagentModel')).toEqual([path.join('dashboard', 'components', 'ModelPicker.svelte')]);
+    // shared/nestWriteGate.ts names the type to BLOCK it on a chat on another desk (t-t7lfho); it sends nothing.
+    const senders = sendersOf('setSubagentModel').filter((f) => f !== path.join('shared', 'nestWriteGate.ts'));
+    expect(senders).toEqual([path.join('dashboard', 'components', 'ModelPicker.svelte')]);
   });
 
   it('the picker still carries both halves of the override — the model and the context length', () => {

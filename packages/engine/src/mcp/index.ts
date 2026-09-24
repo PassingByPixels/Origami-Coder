@@ -186,6 +186,26 @@ function remoteURL(value: string) {
   if (URL.canParse(value)) return new URL(value)
 }
 
+const STDERR_TAIL_BYTES = 16 * 1024
+
+/**
+ * Drain a local MCP server's stderr pipe so a chatty server never blocks on a
+ * full OS pipe (finding 10: `stderr: "pipe"` with nothing reading it since the
+ * reader was removed in c06ad7c881, a blanket refactor that also deleted every
+ * `log.*` call in this file). That old reader forwarded every chunk straight
+ * to the app logger at INFO -- for a server that logs every request to
+ * stderr, that floods `origami.log` (the very growth finding 23 rotates
+ * against). This keeps only a bounded tail instead, read but not logged
+ * unless the connection actually fails, when it is folded into the error.
+ */
+function drainStderr(transport: StdioClientTransport) {
+  let tail = ""
+  transport.stderr?.on("data", (chunk: Buffer) => {
+    tail = (tail + chunk.toString("utf8")).slice(-STDERR_TAIL_BYTES)
+  })
+  return { tail: () => tail.trim() }
+}
+
 interface CreateResult {
   mcpClient?: MCPClient
   status: Status
@@ -430,6 +450,7 @@ const layer = Layer.effect(
           ...mcp.environment,
         },
       })
+      const stderr = drainStderr(transport)
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       return yield* connectTransport(transport, connectTimeout).pipe(
@@ -439,7 +460,9 @@ const layer = Layer.effect(
         })),
         Effect.catch((error): Effect.Effect<{ client: MCPClient | undefined; status: Status }> => {
           const msg = error instanceof Error ? error.message : String(error)
-          return Effect.succeed({ client: undefined, status: { status: "failed", error: msg } })
+          const tail = stderr.tail()
+          const withTail = tail ? `${msg}\nstderr: ${tail}` : msg
+          return Effect.succeed({ client: undefined, status: { status: "failed", error: withTail } })
         }),
       )
     })

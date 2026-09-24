@@ -1,10 +1,6 @@
-// Agent Manager - archetypesLegacy.ts (S12): the FROZEN prior-generation archetype
-// payloads, moved out of archetypes.ts so the live file stays readable. ARCHETYPES_V1
-// is the S9 shipping set; ARCHETYPES_V2 is the S11 shipping set. ensureArchetypes treats
-// a file byte-identical to ANY of these as pristine (safe to overwrite with the current
-// v3), and user-edited otherwise. DO NOT EDIT - editing a payload here would make the
-// pristine check treat a real prior install as user-edited and strand its upgrade. New
-// generations append a new frozen const; they never rewrite an old one.
+// FROZEN prior-generation archetype payloads (V1=initial, V2=next). ensureArchetypes treats
+// a file byte-identical to either as pristine (safe to upgrade); DO NOT EDIT — that would
+// strand real prior installs as falsely user-edited.
 
 export const ARCHETYPES_V1: Array<{ file: string; content: string }> = [
   {

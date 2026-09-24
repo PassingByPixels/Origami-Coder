@@ -1,21 +1,12 @@
-// chatFind.ts — the rules behind Ctrl+F inside one chat cell.
+// chatFind.ts: Ctrl+F rules for one chat cell (owning cell, text hits, "next" at list end).
 //
-// WHY A LEAF. The widget itself is a bar with a box and two arrows. The parts
-// that can be WRONG all live below it: which cell claims the key when a grid is
-// showing twelve chats at once, which runs of text a query actually hits when a
-// transcript is a tree of markdown elements, and what "next" means at the end
-// of the list. None of that needs a rendered pane to be checked, and all of it
-// is checked here (chatFind.test.ts).
-//
-// NOT SEARCHED, deliberately, in v1: a COLLAPSED tool card, thought block or
-// compacted block has no body in the DOM at all — ToolCard.svelte mounts its
-// output only while the card is open — so a DOM-text search cannot see it, and
-// this module does not pretend to. Auto-expanding cards to reach that text
-// would rewrite the reader's transcript underneath them on every keystroke.
+// Collapsed tool cards are not searched: they have no DOM body until
+// opened, and auto-expanding them to search would rewrite the transcript
+// on every keystroke. A closed <details> (thought, compaction) keeps its
+// text in the DOM, so it IS counted, and landing on it opens it (revealMatch).
 
-/** One hit, as the two DOM endpoints it spans. Node references, not indices:
- *  an index into a transcript that is still streaming means nothing a moment
- *  later. */
+/** One hit as the two DOM endpoints it spans. Node references, not
+ *  indices: an index means nothing once a streaming transcript changes. */
 export interface FindMatch {
   startNode: Text;
   startOffset: number;
@@ -26,12 +17,9 @@ export interface FindMatch {
 /** Where one text node's characters landed in the joined haystack. */
 export interface Segment { node: Text; start: number; }
 
-/** Elements that do NOT break a run of text. A match may cross these — "the
- *  `code`" is one phrase to a reader and two text nodes to the DOM — but never
- *  a block boundary, or the last word of one message would join the first word
- *  of the next into a match nobody can see on screen. A TAG-NAME rule, not a
- *  layout one, on purpose: jsdom has no layout engine, so a rule that asked
- *  what `display` computes to could not be tested at all. */
+/** Elements that don't break a run of text. A match may cross these but
+ *  never a block boundary. Keyed on tag name, not computed `display`:
+ *  jsdom has no layout engine, so a display-based rule couldn't be tested. */
 const INLINE_TAGS = new Set([
   'A', 'ABBR', 'B', 'BDI', 'BDO', 'BR', 'CITE', 'CODE', 'DFN', 'EM', 'I', 'KBD',
   'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TIME',
@@ -44,11 +32,9 @@ function blockOf(node: Node, root: Element): Element {
   return el ?? root;
 }
 
-/** Lower-cased, but LENGTH-PRESERVING. A handful of characters lower-case to
- *  two ('İ'.toLowerCase() is 'i̇'), which would shift every offset after them
- *  and paint the highlight over the wrong words. Those characters keep their
- *  original form instead — so they simply do not match case-insensitively,
- *  which is a miss rather than a lie. The fast path is the whole string. */
+/** Lower-cased but length-preserving. A few characters lower-case to two
+ *  chars (e.g. 'İ'), which would shift offsets after them; those keep
+ *  their original form, a miss rather than a lie. Fast path is the plain string. */
 function fold(s: string): string {
   const low = s.toLowerCase();
   if (low.length === s.length) return low;
@@ -57,11 +43,8 @@ function fold(s: string): string {
   return out;
 }
 
-/** Every text node under `root`, in document order, joined into ONE string with
- *  a newline wherever the block changes — plus where each node's text landed in
- *  it, so a hit in the string maps back to a node and an offset. The newline is
- *  what makes a cross-block match impossible: a query typed into a one-line box
- *  can never contain one. */
+/** Every text node under `root`, joined into one string with a newline
+ *  at each block boundary, so a match can't cross blocks. */
 export function buildHaystack(root: Element): { text: string; segments: Segment[] } {
   const doc = root.ownerDocument ?? document;
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -80,10 +63,8 @@ export function buildHaystack(root: Element): { text: string; segments: Segment[
   return { text, segments };
 }
 
-/** The node and offset an absolute haystack index falls on. Walks BACKWARDS:
- *  an index sitting exactly on a block separator belongs to the node before it,
- *  clamped to that node's end, which is the same DOM point as offset 0 of the
- *  node after. */
+/** The node/offset an index falls on. Walks backwards: an index on a
+ *  separator belongs to the node before it, clamped to its end. */
 function locate(segments: readonly Segment[], index: number): { node: Text; offset: number } | null {
   for (let i = segments.length - 1; i >= 0; i--) {
     const s = segments[i];
@@ -92,16 +73,9 @@ function locate(segments: readonly Segment[], index: number): { node: Text; offs
   return null;
 }
 
-/**
- * Every non-overlapping, case-insensitive hit of `query` under `root`, in
- * document order. Substring only — no regex, the paneSearch.ts call: a find box
- * that surprises you is worse than one that misses.
- *
- * An empty or whitespace-free-but-empty query matches NOTHING, which is the
- * OPPOSITE of paneSearch.ts's filter (where no filter means "keep everything").
- * A find bar with an empty box has nothing to step through and must not report
- * that it has.
- */
+/** Every non-overlapping, case-insensitive hit of `query`, in document
+ *  order. Substring only, no regex, so the find box never surprises.
+ *  Empty query matches nothing (unlike paneSearch.ts's filter). */
 export function findMatches(root: Element, query: string): FindMatch[] {
   const needle = fold(query);
   if (!needle) return [];
@@ -116,9 +90,8 @@ export function findMatches(root: Element, query: string): FindMatch[] {
   return out;
 }
 
-/** The DOM Range a match occupies. Built on demand and never stored: a Range
- *  holds live node references, and a transcript that streamed a new message
- *  under a kept Range is exactly how a highlight ends up over the wrong words. */
+/** The DOM Range a match occupies. Built on demand, never stored: a
+ *  stored Range under a streamed message ends up over the wrong words. */
 export function matchRange(m: FindMatch): Range {
   const range = (m.startNode.ownerDocument ?? document).createRange();
   range.setStart(m.startNode, m.startOffset);
@@ -126,32 +99,51 @@ export function matchRange(m: FindMatch): Range {
   return range;
 }
 
-/**
- * Next (`+1`) or previous (`-1`) match, WRAPPING. Wrapping is the browser-find
- * convention and it is why there is no "no more matches" state to get stuck in.
- * `total <= 0` answers 0, so a caller with nothing to step through cannot land
- * on -1 and index an empty list; a `current` left over from a longer list (the
- * transcript streamed and the recount came back smaller) folds back into range
- * rather than throwing.
- */
+/** Next/previous match, wrapping like browser find. `total <= 0` -> 0,
+ *  so an out-of-range `current` can't land on -1. */
 export function stepIndex(current: number, total: number, dir: 1 | -1): number {
   if (total <= 0) return 0;
   return (((current + dir) % total) + total) % total;
 }
 
+/** True when point (a, ao) comes before point (b, bo) in the document. */
+function before(a: Node, ao: number, b: Node, bo: number): boolean {
+  if (a === b) return ao < bo;
+  return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
+
 /**
- * WHICH cell a Ctrl+F belongs to when a grid is showing many chats at once.
- *
- * Focus first: a caret is the least ambiguous statement of intent there is, and
- * honouring it is also what makes Ctrl+F work from inside the composer, per the
- * browser-find convention that the key belongs to the page rather than to the
- * field. Then the pointer. Then the first cell on screen — which is the whole
- * answer in the single-chat and solo-tab layouts, where there is only one.
- *
- * An id that is not on screen is IGNORED at every arm: a stale active id would
- * otherwise open find on a cell nobody can see, with the key apparently doing
- * nothing at all.
+ * The match to land on next, found from the match the reader is ON, not from a number (t-v5qrdz).
+ * The list is re-read on every step, and rows prepended above (an older page) shift every index:
+ * a stored number then points at a different match. `dir` 0 = stay on `current`. `current` gone
+ * from the list: the first match after where it was (1, 0) or the last before it (-1). `current`
+ * gone from the document: `fallback`, the old index, as before.
  */
+export function stepFrom(matches: readonly FindMatch[], current: FindMatch | null, dir: 1 | -1 | 0, fallback = 0): number {
+  const n = matches.length;
+  if (n === 0) return 0;
+  if (!current) return dir === -1 ? n - 1 : 0;
+  const at = matches.findIndex((m) => m.startNode === current.startNode && m.startOffset === current.startOffset);
+  if (at >= 0) return dir === 0 ? at : stepIndex(at, n, dir);
+  if (!current.startNode.isConnected) return dir === 0 ? Math.min(Math.max(fallback, 0), n - 1) : stepIndex(fallback, n, dir);
+  const ahead = matches.filter((m) => before(m.startNode, m.startOffset, current.startNode, current.startOffset)).length;
+  return dir === -1 ? (ahead - 1 + n) % n : ahead % n;
+}
+
+/** Open every closed <details> around `node`, so a match the walk counted is on screen when it
+ *  is landed on (t-v5qrdz). A thought block, a compaction summary and a sub-agent's live output
+ *  keep their text in the DOM while closed: counted, but hidden, until this opens them. The
+ *  caller's `ontoggle` records the open, so a re-render does not close it again. */
+export function revealMatch(node: Node): void {
+  for (let d = node.parentElement?.closest('details'); d; d = d.parentElement?.closest('details')) {
+    // Its own summary stays drawn while closed: a match there needs nothing opened.
+    if (!d.open && !d.querySelector(':scope > summary')?.contains(node)) d.open = true;
+  }
+}
+
+/** Which cell owns Ctrl+F when many chats show at once. Priority: focus
+ *  caret, then pointer, then first cell on screen. Off-screen ids are
+ *  ignored at every step, so a stale active id can't steal focus. */
 export function pickFindTarget(
   cellIds: readonly string[],
   activeCellId: string | null,
@@ -162,33 +154,24 @@ export function pickFindTarget(
   return cellIds[0] ?? null;
 }
 
-/** The session id of the cell an element sits in — the DOM half of the rule
- *  above, kept here so that "focus is on the document body" answers null
- *  instead of throwing on a `closest` that found nothing. */
+/** Session id of the cell an element sits in; null if focus is on the document body. */
 export function cellIdOf(el: Element | null): string | null {
   return el?.closest<HTMLElement>('[data-session-id]')?.dataset.sessionId ?? null;
 }
 
-/** The two registered highlight names. MIRRORED in ChatFind.svelte's
- *  `::highlight()` rules, because a highlight is addressed by a string in two
- *  languages and neither compiler can see the other — so they carry the house
- *  obligation a mirror always does, a test that reads BOTH and asserts they
- *  still agree (ChatFind.test.ts). Rename one alone and the matches simply
- *  stop being coloured, with nothing failing anywhere. */
+/** Highlight names mirrored in ChatFind.svelte's `::highlight()` rules.
+ *  Neither compiler can see the other; a test asserts they agree
+ *  (ChatFind.test.ts). Renaming one alone silently breaks colour. */
 export const HL_ALL = 'og-chat-find';
 export const HL_CURRENT = 'og-chat-find-current';
 
-/** How many matches get painted. `new Highlight(...ranges)` is a spread, and a
- *  one-letter query against a long transcript can produce tens of thousands of
- *  hits — past the engine's argument limit, where the whole call throws. The
- *  COUNT and the stepping stay truthful past this; only the colour stops, and
- *  the current match is registered separately so it is never the one missing. */
+/** Cap on painted matches. `new Highlight(...ranges)` is a spread, and a
+ *  one-letter query can exceed the engine's argument limit. Counting and
+ *  stepping stay correct past this cap; only colour stops. */
 const HL_PAINT_CAP = 2000;
 
-/** MIRROR of the maplike half of `HighlightRegistry`. TypeScript 5.8's lib.dom
- *  declares that interface with `forEach` and nothing else — no `set`, no
- *  `delete` — so the registry cannot be written through its own published type.
- *  Structural rather than imported because there is nothing to import it from. */
+/** Mirror of the writable half of `HighlightRegistry`. lib.dom's type
+ *  only declares `forEach`, so the registry needs this to type `set`. */
 interface HighlightWriter {
   set(name: string, highlight: Highlight): unknown;
   delete(name: string): unknown;
@@ -199,15 +182,9 @@ function registry(): HighlightWriter | null {
   return (CSS.highlights as unknown as HighlightWriter | undefined) ?? null;
 }
 
-/**
- * Paint `matches`, with the one at `current` in its own highlight so "the one
- * you are on" is distinguishable from "the others".
- *
- * Returns FALSE when this browser has no CSS Custom Highlight API — jsdom has
- * none, and neither would an older webview — and the caller then carries on
- * counting, stepping and scrolling without colour. A find that stops working
- * because a paint threw is worse than one that is merely colourless.
- */
+/** Paint `matches`, with `current` in its own highlight to stand out.
+ *  Returns false when the browser has no CSS Custom Highlight API
+ *  (jsdom has none); callers still count, step and scroll without colour. */
 export function paintHighlights(matches: readonly FindMatch[], current: number): boolean {
   const reg = registry();
   if (!reg) return false;
@@ -220,9 +197,8 @@ export function paintHighlights(matches: readonly FindMatch[], current: number):
   return true;
 }
 
-/** Drop both highlights. Called on close AND on unmount: a highlight is
- *  registered on the DOCUMENT, so a widget that went away without clearing
- *  leaves colour on text nobody is searching any more. */
+/** Drop both highlights. Called on close and unmount: a highlight is
+ *  registered on the document, so an uncleared widget leaves colour on text nobody's searching. */
 export function clearHighlights(): boolean {
   const reg = registry();
   if (!reg) return false;

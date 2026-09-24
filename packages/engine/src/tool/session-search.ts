@@ -67,13 +67,13 @@ export function relTime(ms: number, now: number): string {
 export const SessionSearchTool = Tool.define(
   "session_search",
   Effect.gen(function* () {
-    // Capture the DB service at define time (like grep captures fs/ripgrep) so
-    // `execute` carries no Effect requirements - the tool framework needs its
-    // execute to be fully resolved (R = never).
+    // Capture the DB service at define time so `execute` carries no Effect
+    // requirements - the tool framework needs it fully resolved (R = never).
     const { db } = yield* Database.Service
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (params: { query: string; limit?: number; all_projects?: boolean }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const query = params.query?.trim()
@@ -82,10 +82,10 @@ export const SessionSearchTool = Tool.define(
           const like = `%${query}%`
           const scopeAll = params.all_projects === true
 
-          // Text parts of OTHER sessions that mention the query, newest first.
+          // Text parts of other sessions that mention the query, newest first.
           // Default-scoped to the current session's project so recall stays
-          // relevant (and doesn't leak another project's chats). Params are
-          // bound (no injection); the "type":"text" filter matches the engine's
+          // relevant and does not leak another project's chats. Params are bound
+          // (no injection); the "type":"text" filter matches the engine's
           // compact JSON serialization.
           const rows = yield* db
             .all<Row>(

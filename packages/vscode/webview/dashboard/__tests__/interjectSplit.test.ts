@@ -25,7 +25,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatPane from '../panes/ChatPane.svelte';
-import { armInterject, drainInterject, resolveInterject } from '../panes/interjectSplit';
+import { armInterject, drainInterject, resolveInterject, type InterjectLine } from '../panes/interjectSplit';
 
 const ASK = 'do the thing';
 const LINE = 'stop, use the other file';
@@ -60,7 +60,7 @@ async function mountTurn(): Promise<{ c: HTMLElement; sid: string }> {
   post({ type: 'modelStatus', sessionId: sid, ok: true, modelName: 'deepseek' });
   await tick();
   await fireEvent.input(container.querySelector('.input') as HTMLTextAreaElement, { target: { value: ASK } });
-  await fireEvent.click(container.querySelector('.btn.send') as HTMLButtonElement);
+  await fireEvent.click(container.querySelector('.action-btn') as HTMLButtonElement);
   await tick();
   return { c: container as HTMLElement, sid };
 }
@@ -339,20 +339,39 @@ describe('replay parity — a reloaded chat shows the same transcript as the liv
 });
 
 describe('interjectSplit — one interjection, one row', () => {
-  type Target = { interjecting?: boolean; pendingInterject?: string[] };
+  type Target = { interjecting?: boolean; pendingInterject?: InterjectLine[] };
+  const SHOT = 'data:image/png;base64,AAA';
 
   it('holds the line from the keypress until an answer, then hands it over once', () => {
     const s: Target = {};
 
     armInterject(s, LINE);
     expect(s.interjecting).toBe(true);
-    expect(s.pendingInterject).toEqual([LINE]);
+    expect(s.pendingInterject).toEqual([{ text: LINE }]);
 
-    expect(resolveInterject(s)).toBe(LINE);
+    expect(resolveInterject(s)).toEqual({ text: LINE });
     expect(s.interjecting).toBe(false);
     // `interjected` and a `turnDone` behind it both resolve; the second must
     // find nothing, or the same words go on screen twice.
     expect(resolveInterject(s)).toBeNull();
+  });
+
+  it('holds the ATTACHMENTS with the line, so the row can draw what was sent', () => {
+    const s: Target = {};
+
+    armInterject(s, LINE, [SHOT]);
+    expect(s.pendingInterject).toEqual([{ text: LINE, images: [SHOT] }]);
+    expect(resolveInterject(s)).toEqual({ text: LINE, images: [SHOT] });
+  });
+
+  it('a line with NO attachment carries no `images` key at all — not an empty one', () => {
+    // The row is built by the same `addMessage` an ordinary prompt uses, and an
+    // empty list there is not the same as none: it is an attachment strip with
+    // nothing in it.
+    const s: Target = {};
+    armInterject(s, LINE, []);
+    expect(s.pendingInterject).toEqual([{ text: LINE }]);
+    expect(Object.keys(s.pendingInterject![0])).toEqual(['text']);
   });
 
   it('resolving with nothing outstanding still releases the chip', () => {
@@ -368,11 +387,11 @@ describe('interjectSplit — one interjection, one row', () => {
     const s: Target = {};
     armInterject(s, 'first');
     armInterject(s, 'second');
-    expect(s.pendingInterject).toEqual(['first', 'second']);
+    expect(s.pendingInterject).toEqual([{ text: 'first' }, { text: 'second' }]);
 
-    expect(resolveInterject(s)).toBe('first');
+    expect(resolveInterject(s)).toEqual({ text: 'first' });
     expect(s.interjecting, 'one is still with the host').toBe(true);
-    expect(resolveInterject(s)).toBe('second');
+    expect(resolveInterject(s)).toEqual({ text: 'second' });
     expect(s.interjecting).toBe(false);
     expect(resolveInterject(s)).toBeNull();
   });
@@ -382,9 +401,9 @@ describe('interjectSplit — one interjection, one row', () => {
     armInterject(s, 'first');
     armInterject(s, 'second');
     armInterject(s, 'third');
-    expect(resolveInterject(s)).toBe('first');
+    expect(resolveInterject(s)).toEqual({ text: 'first' });
 
-    expect(drainInterject(s)).toEqual(['second', 'third']);
+    expect(drainInterject(s)).toEqual([{ text: 'second' }, { text: 'third' }]);
     expect(s.interjecting).toBe(false);
     // A late host answer for one of the drained lines must draw nothing.
     expect(resolveInterject(s)).toBeNull();

@@ -1,24 +1,11 @@
-// The default skill library seeded by /firstfold — the SKILL.md bodies keyed by
-// skill name. Data only: firstFold.ts owns the writing (and its idempotency),
-// so a new skill is one entry here and nothing else.
+// The default skill library seeded by /firstfold, keyed by skill name (also the directory name;
+// must match the body's own `name:` frontmatter). Data only — firstFold.ts owns the writing and its
+// idempotency.
 //
-// `wrap` and `example-skill` are deliberately NOT here. Both predate this module
-// and live in firstFold.ts beside the HANDOFF.md stub whose marker /wrap writes
-// into — splitting that pair across two files would let the skill and the file
-// it edits drift apart.
-//
-// Two rules the bodies encode, so a fresh workspace has one answer to each:
-//   - Feature tracking is LOCAL MARKDOWN under `.scratch/<feature-slug>/` —
-//     `spec.md` plus `issues/NN-<slug>.md`, each ticket opening with `Status:`
-//     and `Blocked by:`. No external tracker is assumed to exist.
-//   - Durable domain knowledge goes to the WIKI (`wiki/pages/<topic>.md`,
-//     catalogued in `wiki/index.md`) — the same place /wrap distils into.
-//
-// `slash: true` is set ONLY on the user-invoked skills (grill-me, to-spec,
-// to-tickets, triage, handoff, optimize-code). The model-invoked ones (tdd,
-// diagnosing-bugs, code-review, wayfinder) are loaded when they are relevant, and
-// putting them in the / palette would advertise a command whose answer is "I
-// already do this".
+// `wrap` and `example-skill` live in firstFold.ts instead, beside the HANDOFF.md stub /wrap edits.
+// `slash: true` is set only on user-invoked skills; model-invoked ones load when relevant and are
+// not in the / palette. CATEGORIES are lowercase (workflow, planning, testing, quality,
+// engineering, productivity, reference).
 
 const GRILL_ME = `---
 name: grill-me
@@ -339,18 +326,11 @@ wiki depth in one pass. This skill is the when-and-what guide around it.
   costs the next session more than it saves.
 `;
 
-// optimize-code is an ADAPTATION of saurabhkumar8112/cyclomatic-complexity-skill
-// (Apache-2.0), which the body credits. Upstream is a single-pass "measure then
-// refactor" instruction; this one is staged, because the target here is a whole
-// repository rather than the function in front of you. Three things the stages
-// add: a Stage 0 that pins a GREEN baseline from the project's own gates (a
-// behaviour-preserving refactor is only meaningful against a known-green start),
-// a batch cap in Stage 2 (a 40-file complexity diff is unreviewable, and one bad
-// extraction poisons the whole of it), and a Stage 4 that re-runs those same
-// gates before anything is reported. Upstream's two load-bearing rules — the
-// project's own configured threshold wins, and complexity must MOVE into
-// well-named functions rather than vanish into cleverness — are kept verbatim in
-// spirit and reinforced with this workspace's own honest-verification wording.
+// optimize-code adapts saurabhkumar8112/cyclomatic-complexity-skill (Apache-2.0). This version
+// stages the work for a whole repository rather than one function: a Stage 0 pins a green baseline
+// from the project's own gates, a batch cap in Stage 2 keeps a complexity diff reviewable, and
+// Stage 4 re-runs the gates before reporting. The project's configured threshold still wins, and
+// complexity must move into well-named functions, never vanish into cleverness.
 const OPTIMIZE_CODE = `---
 name: optimize-code
 category: quality
@@ -494,12 +474,462 @@ Next batch: <the next hotspots by score>
 Adapted from \`saurabhkumar8112/cyclomatic-complexity-skill\` (Apache-2.0).
 `;
 
+// ---------------------------------------------------------------------------
+// The `engineering` + `productivity` half of the library covers what the first ten skills miss:
+// where to begin, the build step between tickets and review, and standing habits (design
+// vocabulary, merge conflicts, teaching, authoring skills). ask-tsuru is the front door and names
+// every other skill, so its routing list must be kept in step with this map.
+// ---------------------------------------------------------------------------
+
+const ASK_TSURU = `---
+name: ask-tsuru
+category: engineering
+description: The routing front door — read the situation and pick the right skill or flow. Use when it is not obvious which skill fits.
+slash: true
+---
+
+# /ask-tsuru — pick the right flow
+
+You do not remember every skill, so ask. This maps a situation to the right
+flow. It is what turns the skill library from a pile into a self-guiding system.
+
+## The main flow (idea to ship)
+
+\`/grill-with-docs\` -> \`/to-spec\` -> \`/to-tickets\` -> \`/implement\` (which drives
+\`tdd\` internally, then closes with \`code-review\`).
+
+## Route by situation
+
+- **Incoming bugs and requests** -> \`/triage\`
+- **Something is broken** -> \`diagnosing-bugs\`
+- **A huge, foggy effort** -> \`/wayfinder\`
+- **Codebase health** -> \`/improve-codebase-architecture\`
+- **A repository heavy with complexity** -> \`/optimize-code\`
+- **A merge or rebase in conflict** -> \`resolving-merge-conflicts\`
+- **The vocabulary underneath** -> \`domain-modeling\`, \`codebase-design\`
+- **Crossing a session boundary** -> \`/handoff\`, which runs \`/wrap\`
+- **Standalone** -> \`/grill-me\`, \`/prototype\`, \`/research\`, \`/teach\`,
+  \`writing-great-skills\`
+
+## Rules
+
+- Read the situation first, then route. Do not default to one flow.
+- If no skill clearly fits, start with \`/grill-me\` to clarify the task.
+- When the user wants a work backlog, route through the tracker pipeline:
+  \`/setup\` -> \`/triage\` -> \`/to-spec\` -> \`/to-tickets\` -> \`/implement\`.
+`;
+
+const GRILLING = `---
+name: grilling
+category: productivity
+description: The reusable interview loop behind grill-me and grill-with-docs. Model-invoked — it drives the one-question-at-a-time session.
+---
+
+# grilling — the reusable interview loop
+
+The shared engine behind \`/grill-me\` (alignment only) and \`/grill-with-docs\`
+(alignment plus shared language). Model-invoked: do not call it directly unless
+you are the grill loop.
+
+## The loop
+
+1. Ask ONE question at a time.
+2. Wait for the answer.
+3. Branch: if the answer opens sub-questions, follow them to the end first.
+4. Loop until the design tree is fully understood.
+5. Optionally capture what was learned (\`/grill-with-docs\` is that variant).
+
+## Rules
+
+- Never ask two questions at once.
+- Never move to the next branch while the current one is still ambiguous.
+- Prefer concrete, testable statements over abstract agreement.
+- Stop as soon as the picture is complete. Do not over-grill.
+`;
+
+const GRILL_WITH_DOCS = `---
+name: grill-with-docs
+category: engineering
+description: A grilling session that also builds the project's shared language — wiki glossary and decision records. Use before starting work on a feature.
+slash: true
+---
+
+# /grill-with-docs — align AND build shared language
+
+The \`grilling\` loop, plus capture of the project's vocabulary and hard
+decisions as you go. The result is that later conversations use one word where
+they used twenty.
+
+## How
+
+1. Run the interview loop from \`grilling\`.
+2. As terms resolve into a settled meaning, record them.
+3. As hard decisions are made, record them as decision records.
+4. The wiki is the store: \`wiki/pages/<topic>.md\` for the glossary and the
+   decision pages, tagged and cross-linked, with one line per new page in
+   \`wiki/index.md\`.
+5. Use the settled vocabulary in all later output — ticket titles, test names,
+   refactor proposals. Do not drift to synonyms.
+
+## Rules
+
+- Record lazily: only when a term or a decision actually resolves. Do not write
+  pages speculatively.
+- If an existing page contradicts a new decision, surface the conflict rather
+  than silently overriding it.
+- Done when the design tree is understood AND the vocabulary is captured.
+`;
+
+const IMPLEMENT = `---
+name: implement
+category: engineering
+description: Build from a spec or a ticket set, driving tdd internally and closing with code-review. Use to implement work that is already agreed.
+slash: true
+---
+
+# /implement — build from a spec
+
+The workhorse pipeline: take an agreed spec or ticket set and turn it into
+working, reviewed code.
+
+## How
+
+1. Read the spec — \`.scratch/<feature-slug>/spec.md\`, or the wiki page.
+2. Work ticket by ticket, in blocking order (the \`Blocked by:\` lines).
+3. Drive each ticket with \`tdd\`: the failing test first, then make it pass.
+4. Use the project's shared vocabulary from the wiki.
+5. Close with \`code-review\` — standards and spec, as parallel sub-agents.
+6. Fix the findings, then re-verify.
+
+## Rules
+
+- Build against the spec, not from memory of the conversation.
+- Follow each ticket's brief exactly: interfaces and types over file paths.
+- Definition of done: tests green with evidence, and review findings resolved.
+`;
+
+const PROTOTYPE = `---
+name: prototype
+category: engineering
+description: Build a throwaway prototype to answer one design question. Use when a decision needs evidence before you commit to it.
+slash: true
+---
+
+# /prototype — answer a design question
+
+Build a throwaway prototype whose only purpose is to answer a specific design
+question. It is disposable. Do not let it become production code.
+
+## How
+
+1. State the exact question the prototype must answer.
+2. Build the smallest thing that answers it.
+3. Capture the answer with evidence — what you ran, what it printed.
+4. Discard the prototype, or extract only the proven parts into real code.
+
+## Rules
+
+- The prototype is a means to an answer, not a deliverable.
+- Do not polish, test or harden it beyond what the question needs.
+- Never let a prototype silently become the shipped implementation.
+`;
+
+const RESEARCH = `---
+name: research
+category: engineering
+description: Investigate a question against primary sources and capture the result as cited Markdown. Use when an answer must carry evidence.
+slash: true
+---
+
+# /research — investigate against primary sources
+
+Answer a question by investigating primary sources, and capture the result as
+cited Markdown another agent or the user can trust.
+
+## How
+
+1. State the question precisely.
+2. Find primary sources — the original docs, specs, code or vendor material —
+   not secondary summaries.
+3. Read them, and extract the part that answers the question.
+4. Capture the result as cited Markdown, every claim tied to its source. A
+   finding worth keeping goes to \`wiki/pages/<topic>.md\`.
+5. Note what could not be verified, explicitly.
+
+## Rules
+
+- Prefer primary sources over summaries and hearsay.
+- Cite every claim. Do not assert without a source.
+- Separate verified fact from inference.
+- If two sources disagree, surface the conflict rather than picking one.
+`;
+
+const TEACH = `---
+name: teach
+category: productivity
+description: Teach the user a skill over several sessions, one step at a time. Use when the user wants to learn something, not to have it done for them.
+slash: true
+---
+
+# /teach — teach the user over sessions
+
+Teach a skill across several sessions so the user retains it, instead of doing
+it for them once.
+
+## How
+
+- Pick ONE concept per session. Do not overload.
+- Explain the why, then the how, with a small worked example.
+- Give the user a chance to do it before showing the answer.
+- Check understanding, and correct gently.
+- Plan the next session's topic before stopping.
+- Keep a short record of what has been taught — a wiki page — so the sessions
+  chain instead of repeating.
+
+## Rules
+
+- Do not take the task over. The user must do the work to learn.
+- Match the pace to the user. Slow down on confusion.
+`;
+
+const SETUP = `---
+name: setup
+category: engineering
+description: One-time per-repository setup for the work backlog — where issues live, and where the shared language is written. Use once, when adopting the pipeline.
+slash: true
+---
+
+# /setup — configure the work pipeline
+
+One-time per-repository setup that answers where issues live and where the
+shared language is written. Run it once, when you want a real backlog.
+
+## Step 1 — choose the tracker
+
+Ask where issues live.
+
+| Tracker | Back end | Tooling |
+|---|---|---|
+| Local markdown | files under \`.scratch/\` | none |
+| GitHub | GitHub Issues | \`gh\` CLI |
+| GitLab | GitLab Issues | \`glab\` CLI |
+| Other | freeform prose | whatever the user names |
+
+**Local markdown is the default**, and it is what every other skill in this
+library assumes. It gives a solo user the whole pipeline out of \`.md\` files,
+with nothing to install and no account to hold:
+
+\`\`\`
+.scratch/<feature-slug>/
+  spec.md
+  issues/
+    01-<slug>.md
+    02-<slug>.md
+\`\`\`
+
+Choose another tracker only if the user asks for one.
+
+## Step 2 — write the choice down
+
+Record it in \`.scratch/pipeline.md\`, so the next agent reads the decision
+instead of guessing at it:
+
+- the tracker, and the command used to reach it;
+- the triage labels — the real label strings behind \`bug\`, \`enhancement\`, and
+  the states \`triage\` uses;
+- where the shared language lives.
+
+## Step 3 — shared language
+
+The wiki is the store: \`wiki/pages/<topic>.md\`, catalogued in
+\`wiki/index.md\`. Read the relevant pages before exploring, use their
+vocabulary, and surface any conflict against them.
+
+## Output
+
+\`.scratch/pipeline.md\`, plus a note in AGENTS.md pointing agents at the skill
+library and the wiki.
+`;
+
+const DOMAIN_MODELING = `---
+name: domain-modeling
+category: engineering
+description: Build and sharpen the project's domain model, keeping the wiki glossary and the decision records current. Use when terms or decisions need settling.
+---
+
+# domain-modeling — build the domain model
+
+The vocabulary underneath the code. Capture the project's shared language and
+its hard decisions, so every session stays concise and consistent.
+
+## How
+
+- As a term settles into a stable meaning, record it in the wiki glossary —
+  \`wiki/pages/<topic>.md\`, tagged and cross-linked.
+- As a hard decision is made, record it as a decision record beside it.
+- Add one line per new page to \`wiki/index.md\`.
+- Use the settled vocabulary in all output. Do not drift to synonyms.
+- If a decision contradicts an existing page, surface the conflict explicitly.
+
+## When
+
+- Lazily, when a term or a decision actually resolves. Never speculatively.
+- On demand, when the domain model is fuzzy or drifting.
+
+## Rules
+
+- One topic per page, and reuse the existing tags.
+- Every page links out to a related page.
+`;
+
+const CODEBASE_DESIGN = `---
+name: codebase-design
+category: engineering
+description: The vocabulary and the discipline for designing deep modules. Use when designing new code or reviewing existing structure.
+---
+
+# codebase-design — design deep modules
+
+The discipline behind good structure. The goal is modules with a DEEP interface
+— a small, stable entry point hiding a lot of implementation — rather than
+shallow ones that leak their internals to every caller.
+
+## Principles
+
+- **Deep modules** — hide complexity behind a simple, stable interface.
+- **Information hiding** — keep the implementation private.
+- **Small interfaces** — expose the least surface that works.
+- **Cohesion** — each module does one thing.
+- **No speculative generality** — the least code that solves the problem.
+
+## How to use
+
+- Apply it when designing a new module, or when reviewing whether an existing
+  one has gone shallow.
+- Name the module's single responsibility before writing it. If the name needs
+  an "and", it is two modules.
+- Push complexity DOWN into the module, never out to its callers.
+
+## Rules
+
+- A senior engineer must not be able to call the result overcomplicated.
+- Prefer editing to rewriting. Change only what the task needs.
+`;
+
+const IMPROVE_CODEBASE_ARCHITECTURE = `---
+name: improve-codebase-architecture
+category: engineering
+description: Scan the codebase for deepening opportunities, report them ranked, then grill the user on what to act on. Use periodically to slow software entropy.
+slash: true
+---
+
+# /improve-codebase-architecture — the periodic deepening scan
+
+A periodic scan that finds where the codebase has gone shallow, tangled or
+drifting, reports what it found, and grills the user on what to do about it.
+
+## How
+
+1. Scan for deepening opportunities: shallow modules, duplicated logic, leaked
+   internals, dead code, a missing abstraction.
+2. Rank them by impact against effort, and PUBLISH the ranked list before
+   touching anything.
+3. Run the \`grilling\` loop over the findings to decide what to act on.
+4. Do not act unasked. Present, then discuss.
+
+## Rules
+
+- Every finding is specific: the file, the concrete symptom, the shape you
+  propose instead. A finding that is not actionable is not a finding.
+- Do not refactor adjacent code unasked.
+- This is a periodic health check, not an every-task default.
+`;
+
+const RESOLVING_MERGE_CONFLICTS = `---
+name: resolving-merge-conflicts
+category: engineering
+description: Resolve in-progress merge or rebase hunks by intent, never by aborting. Use when a merge or a rebase stops on conflicts.
+---
+
+# resolving-merge-conflicts — resolve by intent
+
+Resolve in-progress merge or rebase conflicts by understanding the intent of
+both sides. Never abort as a way out.
+
+## How
+
+1. Read each conflicting hunk in context, from BOTH sides.
+2. Determine what each side was trying to do.
+3. Combine the intents where both are wanted. Pick one side only where they
+   genuinely contradict.
+4. Keep the resolution minimal and correct. It is not a rewrite.
+5. Finish the merge or the rebase, then verify: build and tests green.
+
+## Rules
+
+- Understand before editing. Never guess which side to keep.
+- If you cannot determine an intent, surface it instead of guessing.
+- Never \`--abort\` to dodge the work.
+- Verify after resolving. A resolved conflict that does not build is not done.
+`;
+
+const WRITING_GREAT_SKILLS = `---
+name: writing-great-skills
+category: productivity
+description: The reference for writing and editing skills. Use when creating, reviewing or maintaining a skill in this library.
+---
+
+# writing-great-skills — the reference for authoring skills
+
+The library in \`.origami/skills/\` is where a workspace keeps what it knows.
+This is the reference for writing entries that stay useful and predictable.
+
+## Structure
+
+- One skill, one topic. If it does two unrelated things, split it.
+- The file is \`.origami/skills/<name>/SKILL.md\`, and the folder name must
+  match the \`name:\` in the frontmatter — the registry keys off the frontmatter,
+  so a mismatch makes the skill answer to a name nobody can find it under.
+- Frontmatter:
+
+\`\`\`
+---
+name: <kebab-case, same as the folder>
+category: <workflow|planning|engineering|testing|quality|productivity>
+description: <what it does, and when to use it>
+slash: true
+---
+\`\`\`
+
+- \`category\` is what the skills UI groups by. Reuse an established value rather
+  than coining a new one.
+- \`slash: true\` marks a skill a USER invokes. Leave it off a skill the agent
+  loads for itself — advertising it as a command promises something a user
+  cannot usefully type.
+- Every frontmatter value is a plain scalar. A bare colon inside one makes the
+  whole block unparseable, and the skill then disappears with only a warning.
+- Write in Simplified Technical English: short sentences, one meaning per word,
+  no metaphors.
+
+## The quality bar
+
+- A clear trigger: when should this be loaded?
+- Concrete steps, not vague advice.
+- The least content that solves the problem. No padding.
+- Predictable vocabulary. Reuse terms instead of inventing synonyms.
+
+## Review
+
+- Does the description make the trigger obvious?
+- Would a fresh agent follow it exactly as written?
+- Can it be shortened without losing meaning?
+`;
+
 /**
- * Default skills seeded into `.origami/skills/<name>/SKILL.md` on /firstfold,
- * keyed by skill name. The key is also the directory name, and must match the
- * body's own `name:` frontmatter — the engine keys its registry off the
- * frontmatter, so a mismatch seeds a skill that answers to a different name
- * than the folder it sits in.
+ * Default skills seeded into `.origami/skills/<name>/SKILL.md` on /firstfold, keyed by skill name —
+ *  the key is also the directory name and must match the body's own `name:` frontmatter.
+ * ORDER IS PART OF THE CONTRACT: GLOBAL_SEEDS (seedGlobal.ts) maps over these entries, so a new
+ *  skill goes on the end.
  */
 export const DEFAULT_SKILLS: Record<string, string> = {
   'grill-me': GRILL_ME,
@@ -512,4 +942,17 @@ export const DEFAULT_SKILLS: Record<string, string> = {
   wayfinder: WAYFINDER,
   handoff: HANDOFF,
   'optimize-code': OPTIMIZE_CODE,
+  'ask-tsuru': ASK_TSURU,
+  grilling: GRILLING,
+  'grill-with-docs': GRILL_WITH_DOCS,
+  implement: IMPLEMENT,
+  prototype: PROTOTYPE,
+  research: RESEARCH,
+  teach: TEACH,
+  setup: SETUP,
+  'domain-modeling': DOMAIN_MODELING,
+  'codebase-design': CODEBASE_DESIGN,
+  'improve-codebase-architecture': IMPROVE_CODEBASE_ARCHITECTURE,
+  'resolving-merge-conflicts': RESOLVING_MERGE_CONFLICTS,
+  'writing-great-skills': WRITING_GREAT_SKILLS,
 };

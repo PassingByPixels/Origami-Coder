@@ -14,6 +14,8 @@
 
 const esbuild = require('esbuild');
 const sveltePlugin = require('esbuild-svelte');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const watch = process.argv.includes('--watch');
 
@@ -61,21 +63,102 @@ function svelteViewOptions(entry, outfile) {
 /** CHAT view — Svelte → out/webview/chat.js (+ chat.css). */
 const chatOptions = svelteViewOptions('webview/chat/main.ts', 'out/webview/chat.js');
 
+/** PHONE SHELL — the Origami Remote static bundle, out/remote/*.
+ *
+ *  It is NOT a third view: it is a HOST for the chat view. remote.js installs
+ *  an acquireVsCodeApi() shim that seals every postMessage into a wire frame,
+ *  then loads the SAME out/webview/chat.js the VS Code panel loads. So the
+ *  chat bundle is copied next to it rather than rebuilt — one bundle, two
+ *  hosts, and no chance of the phone drifting from the desktop.
+ *
+ *  Plain TS/CSS, no Svelte plugin: the shell owns only a status strip and a
+ *  PIN sheet, both hand-written in index.html.  makes
+ *  esbuild emit the sidecar out/remote/remote.css, the same mechanism the
+ *  chat view uses for its theme sidecar. */
+const remoteOptions = {
+  entryPoints: ['webview/remote/main.ts'],
+  bundle: true,
+  outfile: 'out/remote/remote.js',
+  format: 'iife',
+  platform: 'browser',
+  target: 'es2022',
+  // The relay serves this bundle to the open internet, so a release build
+  // carries no source map and is minified. The map shipped every original
+  // .ts file, comments included; the unminified bundle read as source.
+  // Watch mode keeps both, so local debugging is unchanged.
+  sourcemap: watch,
+  minify: !watch,
+  logLevel: 'info',
+};
+
+/** Static files the shell needs beside its bundle. The chat pair is copied
+ *  from out/webview, so this must run AFTER the chat build. */
+function copyRemoteStatics() {
+  const out = path.join(__dirname, 'out', 'remote');
+  fs.mkdirSync(out, { recursive: true });
+  const copies = [
+    ['webview/remote/index.html', 'index.html'],
+    ['webview/remote/manifest.webmanifest', 'manifest.webmanifest'],
+    ['out/webview/chat.js', 'chat.js'],
+    ['out/webview/chat.css', 'chat.css'],
+    ['media/icon.png', 'icon.png'],
+  ];
+  for (const [from, to] of copies) {
+    const src = path.join(__dirname, from);
+    if (!fs.existsSync(src)) throw new Error('[esbuild] remote shell is missing ' + from);
+    fs.copyFileSync(src, path.join(out, to));
+  }
+
+  // chat.js is copied, not rebuilt, so it still carries the sourceMappingURL
+  // of the map that stays behind in out/webview. Drop the line: the relay
+  // serves this folder publicly and the map must never be fetchable.
+  const chat = path.join(out, 'chat.js');
+  const text = fs.readFileSync(chat, 'utf8');
+  const marker = text.lastIndexOf('//# sourceMappingURL=');
+  if (marker !== -1) fs.writeFileSync(chat, text.slice(0, marker).trimEnd());
+
+  // This folder is BOTH the build output and the folder operators are told to
+  // copy to the relay, which serves it to the open internet. A map here leaks
+  // the original TypeScript, comments included — remote.js.map shipped that
+  // way once (2026-09-12).
+  //
+  // Watch mode writes maps on purpose, so the check is release-only. That is
+  // also what makes it useful: a map left behind by an earlier watch run is
+  // not cleaned by anything, and would otherwise ride a later release build
+  // out to the relay unnoticed. Here it stops the build instead.
+  if (!watch) {
+    const leaked = fs.readdirSync(out).filter((f) => f.endsWith('.map'));
+    if (leaked.length) {
+      throw new Error(
+        '[esbuild] out/remote must not contain source maps: ' + leaked.join(', ') +
+          ' — delete them (a watch build wrote them) and rebuild.',
+      );
+    }
+  }
+}
+
 async function build() {
   if (watch) {
-    const [extCtx, chatCtx] = await Promise.all([
+    const [extCtx, chatCtx, remoteCtx] = await Promise.all([
       esbuild.context(extensionOptions),
       esbuild.context(chatOptions),
+      esbuild.context(remoteOptions),
     ]);
-    await Promise.all([extCtx.watch(), chatCtx.watch()]);
-    console.log('[esbuild] watching extension + chat for changes...');
+    await Promise.all([extCtx.watch(), chatCtx.watch(), remoteCtx.watch()]);
+    // One-shot: the statics are copies, not builds, so a watch rebuild of
+    // chat.js does NOT refresh out/remote/chat.js. Re-run a full build before
+    // testing the phone shell against a chat change.
+    copyRemoteStatics();
+    console.log('[esbuild] watching extension + chat + remote for changes...');
   } else {
     await Promise.all([
       esbuild.build(extensionOptions),
       esbuild.build(chatOptions),
+      esbuild.build(remoteOptions),
     ]);
+    copyRemoteStatics();
     console.log(
-      '[esbuild] build complete -> out/extension.js + out/webview/chat.js',
+      '[esbuild] build complete -> out/extension.js + out/webview/chat.js + out/remote/',
     );
   }
 }

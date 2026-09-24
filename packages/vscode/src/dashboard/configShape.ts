@@ -1,27 +1,13 @@
-// A MIRROR of the parts of the engine's config schema that this extension's
-// writers can actually violate — so a writer refuses before it persists a
-// document the engine will throw the whole file away for.
+// A mirror of the parts of the engine's config schema this extension's writers can violate, so a
+// writer refuses before persisting a document the engine would discard whole.
 //
-// WHY A MIRROR AND NOT AN IMPORT. The real schema is Effect-based and lives in
-// packages/core/src/v1/config/{config,provider}.ts, decoded by
-// packages/engine/src/config/parse.ts. This monorepo installs per package:
-// `effect`, `@origami/core` and `jsonc-parser` are all UNRESOLVABLE from
-// packages/vscode, at runtime and under vitest alike (verified with
-// require.resolve from this package). So the house mirror pattern applies, the
-// same one modelBanner.ts / permissionOptions.ts / repoMapPillars.ts use — and
-// with it the house obligation: a mirror needs a test that reads BOTH files and
-// asserts they still agree. That test is configShape.test.ts; it parses the
-// real schema source and fails when this file stops matching it.
+// A mirror not an import: the real schema's deps (effect, @origami/core, jsonc-parser) are
+// unresolvable from this package. configShape.test.ts reads the real schema source and fails when
+// this file drifts from it.
 //
-// WHY IT MATTERS THAT THIS IS NARROW. The engine rejects a config file as a
-// WHOLE (parse.ts throws InvalidError for one bad nested field, and
-// config.ts's cachedGlobal swallows it into `{}` with a single log line no UI
-// reads). So a writer that persists one NaN cost does not lose that field — it
-// silently reverts the user to no configuration at all, with the panel still
-// showing every pill green. This file's job is to catch the shapes a writer in
-// THIS package can produce, not to re-implement the schema.
-//
-// Pure data in, string list out. No I/O, no `vscode` import.
+// Narrow on purpose: the engine rejects a whole config file for one bad nested field, so a writer
+// that persists one bad value can silently revert the user to no configuration at all. This covers
+// only the shapes this package's writers can produce.
 
 /** The literal set `Model.modalities.{input,output}` accepts.
  *  MIRRORS packages/core/src/v1/config/provider.ts. */
@@ -112,12 +98,10 @@ function modelProblems(where: string, model: unknown): string[] {
 }
 
 /**
- * Everything wrong with `cfg` that would make the ENGINE discard the whole
- * file. Empty array = the engine will accept it.
- *
- * Deliberately not exhaustive — see the header. It covers the top-level key
- * set, the `model` pointer, and every numeric/enum field the seven writers in
- * this package put into a provider block.
+ * Everything wrong with `cfg` that would make the engine discard the whole file. Empty array = the
+ *  engine will accept it.
+ * Not exhaustive: covers the top-level key set, the `model` pointer, and every numeric/enum field
+ *  the writers in this package put into a provider block.
  */
 export function configShapeErrors(cfg: unknown): string[] {
   const out: string[] = [];

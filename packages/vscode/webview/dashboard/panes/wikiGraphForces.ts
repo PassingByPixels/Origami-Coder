@@ -1,21 +1,9 @@
-// The memory graph's "Showcase" force recipe: the tuned constants plus the
-// four forces the graph did not have before, kept out of WikiSearchPane.svelte
-// so the maths is testable with no canvas/DOM — the same split
-// wikiGraphPhysics.ts made for the integrator's clamps.
-//
-// PROVENANCE. Every number here is a dial from the graph lab
-// (origami-graph-lab-v2/index.html), frozen at the value the owner signed off:
-// its `showcase` preset (lab L1176-1185) plus three later overrides —
-// containment, swirl and centre pull. The lab's 45-dial UI does NOT ship; the
-// lab stays the place to re-tune, and a new recipe lands here as new numbers.
-//
-// A dial the owner left at its default is absent on purpose: it was already the
-// shipped value, so naming it here would only add a second place to disagree
-// with the code it came from.
+// The memory graph's "Showcase" force recipe: tuned constants plus four forces,
+// kept out of WikiSearchPane.svelte so the maths is testable with no canvas/DOM.
+// Every number is a dial from the graph lab, frozen at its `showcase` preset; a
+// dial left at its default is absent on purpose.
 
-/** A node's force-relevant fields — a subset of WikiSearchPane's GraphNode,
- *  generic so this module never imports that component's types. Matches
- *  wikiGraphPhysics.PhysicsNode's shape for the same reason. */
+/** A node's force-relevant fields; matches wikiGraphPhysics.PhysicsNode's shape. */
 export interface ForceNode {
   id: string;
   x: number;
@@ -25,41 +13,26 @@ export interface ForceNode {
   fixed?: boolean;
 }
 
-// --- Tuned constants: forces that already existed ---------------------------
 
 /** All-pairs repulsion strength. Lab `repel`, 2000 -> 2600. */
 export const REPEL = 2600;
-/** Folder hub <-> folder hub repulsion multiplier — hubs must not pile up.
- *  Lab `hubRepelMult`, 10 -> 14. */
+/** Folder hub repulsion multiplier, hubs must not pile up. Lab `hubRepelMult`, 10 -> 14. */
 export const HUB_REPEL_MULT = 14;
 /** Edge spring constant during settle. Lab `attract`, 0.08 -> 0.075. */
 export const ATTRACT = 0.075;
-/** Sibling (same-folder page) repulsion after settle. Lab `childRepel`,
- *  640 -> 900. */
+/** Sibling (same-folder page) repulsion after settle. Lab `childRepel`, 640 -> 900. */
 export const CHILD_REPEL = 900;
-/** Page<->page wikilink springs pull at this fraction of a metadata edge, so
- *  structure reads without collapsing folders. Lab `linkScale`, 0.45 -> 0.5. */
+/** Page<->page wikilink springs pull at this fraction of a metadata edge. Lab `linkScale`. */
 export const LINK_ATTRACT_SCALE = 0.5;
-/** Tag springs are slackened to this fraction, or the ring below never wins
- *  against them and the tags stay inside the cloud. Lab `tagEdgeScale`,
- *  1 (no such multiplier existed) -> 0.22. */
+/** Tag springs are slackened so the ring below can win against them. Lab `tagEdgeScale`. */
 export const TAG_EDGE_SCALE = 0.22;
 /** Velocity retained per settle tick. Lab `dampSettle`, 0.75 -> 0.78. */
 export const DAMP_SETTLE = 0.78;
 /** Velocity retained per post-settle tick. Lab `dampFollow`, 0.82 -> 0.85. */
 export const DAMP_FOLLOW = 0.85;
 
-// --- Perimeter tag ring (new) -----------------------------------------------
-//
-// Tags used to sit wherever their page springs left them, which is inside the
-// cloud. Here each tag gets a radial spring toward a ring around ITS OWN
-// folder hub (the lab's ring mode 1, "around each cluster" — the mode the
-// owner picked), plus a pull toward an evenly spaced slot on that ring. The
-// slot is what turns a fat band into distinct satellites.
-//
-// The lab's ring mode 2 (one ring around the whole graph) is deliberately not
-// ported: the shipped recipe never selects it, and an unreachable branch is a
-// second layout nobody would ever see fail.
+// --- Perimeter tag ring: each tag gets a radial spring toward a ring around its
+// own folder hub, plus a pull toward an evenly spaced slot on it.
 
 /** Ring radius around the folder hub, in world units. Lab `ringRadius`. */
 export const RING_RADIUS = 210;
@@ -67,29 +40,25 @@ export const RING_RADIUS = 210;
 export const RING_PULL = 0.07;
 /** How hard a tag is pulled toward its own even-angle slot. Lab `ringSpread`. */
 export const RING_SPREAD = 0.5;
-/** Fixed gain the lab applies to the slot pull (lab L604) so `ringSpread`
- *  reads 0..1 rather than 0..0.02. Not a dial; part of the force. */
+/** Fixed gain so `ringSpread` reads 0..1 rather than 0..0.02; not a dial. */
 export const RING_SPREAD_GAIN = 0.02;
 
-/** One tag's ring input: the folders of every page carrying it. Plain data so
- *  the caller keeps ownership of the node/edge arrays. */
+/** One tag's ring input: the folders of every page carrying it. */
 export interface TagRingInput {
   id: string;
   label: string;
   folders: string[];
 }
 
-/** The folder a tag rings, and its angle on that folder's ring. */
+/** The folder a tag rings, and its angle on that ring. */
 export interface RingSlot {
   folder: string;
   angle: number;
 }
 
 /** Assign every tag to the folder most of its pages live in, then space that
- *  folder's tags evenly around it. Ties go to the folder seen first, and a tag
- *  with no carrying pages falls back to '(root)' — both matching the lab.
- *  Sorted by label so the slot a tag gets is stable across rebuilds rather
- *  than following map insertion order. */
+ *  folder's tags evenly around it. Ties go to the folder seen first; a tag with no
+ *  carrying pages falls back to '(root)'. Sorted by label so a slot is stable. */
 export function ringSlots(tags: readonly TagRingInput[]): Map<string, RingSlot> {
   const byFolder = new Map<string, TagRingInput[]>();
   for (const t of tags) {
@@ -112,10 +81,9 @@ export function ringSlots(tags: readonly TagRingInput[]): Map<string, RingSlot> 
   return out;
 }
 
-/** Push each tag toward the ring around its folder's anchor, and toward its
- *  own slot on that ring. Mutates vx/vy in place (the plain-array house style).
- *  `anchorOf` returning undefined leaves that tag alone — a tag whose folder
- *  hub is missing has nothing to ring. */
+/** Push each tag toward the ring around its folder's anchor, and toward its own
+ *  slot on that ring. Mutates vx/vy in place. `anchorOf` returning undefined leaves
+ *  that tag alone: a tag whose folder hub is missing has nothing to ring. */
 export function applyTagRingForce(
   tags: readonly ForceNode[],
   slots: ReadonlyMap<string, RingSlot>,
@@ -139,30 +107,18 @@ export function applyTagRingForce(
   }
 }
 
-// --- Bubble clustering (new) ------------------------------------------------
-//
-// The folder spring sets a rest LENGTH and sibling repel pushes members apart,
-// so between them the SPACING was already right — but nothing constrained a
-// cluster's OUTLINE, leaving a ragged blob with a few members flung well past
-// the pack.
-//
-// Containment is deliberately ONE-SIDED: only members past their own cluster's
-// boundary are pulled back. A two-sided spring toward a target radius would
-// evacuate the middle and leave an annulus; leaving the interior alone lets
-// sibling repel keep filling it, so a cluster reads as a disc.
-//
-// The boundary comes from the cluster's OWN mean member distance, not a
-// constant, so a 60-page folder still gets a bigger bubble than a 4-page one.
-// This force rounds a silhouette; it does not resize anything.
+// --- Bubble clustering: containment is ONE-SIDED, so only members past their own
+// cluster's boundary are pulled back. A two-sided spring toward a target radius
+// would evacuate the middle into an annulus; leaving the interior alone lets
+// sibling repel keep filling it, so a cluster reads as a disc. The boundary is the
+// cluster's own mean member distance, so a 60-page folder gets a bigger bubble.
 
-/** Containment spring constant, applied to the overshoot past the boundary.
- *  Lab `bubbleContain` (owner override, at the dial's maximum). */
+/** Containment spring constant, applied to the overshoot past the boundary. */
 export const BUBBLE_CONTAIN = 0.3;
-/** Tangential drift, SETTLE ONLY — see applyBubbleForce. Lab `bubbleSwirl`
- *  (owner override). */
+/** Tangential drift, settle only (see applyBubbleForce). Lab `bubbleSwirl`. */
 export const BUBBLE_SWIRL = 0.114;
-/** Headroom over the typical member before the boundary bites, so a
- *  well-behaved cluster never feels it and only stragglers are drawn in. */
+/** Headroom over the typical member before the boundary bites, so only stragglers
+ *  are drawn in. */
 export const BUBBLE_HEADROOM = 1.25;
 /** Under this many members there is no silhouette to round. */
 export const BUBBLE_MIN_MEMBERS = 3;
@@ -173,12 +129,9 @@ export interface BubbleGroup {
   kids: readonly ForceNode[];
 }
 
-/** Round each cluster's silhouette. Mutates member vx/vy in place.
- *
- *  `settling` gates the swirl and nothing else. A tangential force still
- *  running at rest would hold the layout above followTick's rest threshold
- *  forever, so the rAF loop would never stop and the pane would burn a core
- *  doing nothing visible. */
+/** Round each cluster's silhouette. Mutates member vx/vy in place. `settling` gates
+ *  the swirl only: a tangential force still running at rest would hold the layout
+ *  above followTick's rest threshold forever, burning a core doing nothing. */
 export function applyBubbleForce(groups: readonly BubbleGroup[], settling: boolean): void {
   const swirl = settling ? BUBBLE_SWIRL : 0;
   for (const { hub, kids } of groups) {
@@ -200,8 +153,7 @@ export function applyBubbleForce(groups: readonly BubbleGroup[], settling: boole
         n.vy -= uy * f;
       }
       if (swirl > 0) {
-        // Scaled by how far out the member sits — the rim shears around faster
-        // than the core, which is what fills the corners in.
+        // Scaled by how far out the member sits, so the rim shears faster than the core.
         const t = Math.min(1, dist / bound);
         n.vx += -uy * swirl * t;
         n.vy += ux * swirl * t;
@@ -210,37 +162,19 @@ export function applyBubbleForce(groups: readonly BubbleGroup[], settling: boole
   }
 }
 
-// --- Centre pull (new), anchored in WORLD space -----------------------------
 
-/** Spring constant toward the view centre during settle. Lab `centrePull`
- *  (owner override). The pane had no centre pull at all: the last attempt used
- *  the canvas midpoint as if it were a world point and packed every hub onto
- *  it, so it was removed rather than fixed. viewCentreWorld is that fix. */
+/** Spring constant toward the view centre during settle. Anchored in WORLD space:
+ *  using the canvas midpoint as a world point packs every hub onto it. */
 export const CENTRE_PULL = 0.031;
 
-/** Below this the canvas box is not laid out yet — the same threshold
- *  WikiSearchPane's canvasCenter() uses to decide a box is real. */
+/** Below this the canvas box isn't laid out yet (WikiSearchPane's canvasCenter() threshold). */
 export const LIVE_CANVAS_MIN = 40;
 
-/** The WORLD point under the middle of the viewport.
- *
- *  The pane's canvasCenter() returns SCREEN coordinates — CSS pixels from the
- *  canvas's top-left — and feeds them into world-space maths. At zoom 1 / pan 0
- *  the two spaces coincide, which is why the confusion survived; but
- *  resetView() installs a fitted zoom and a non-zero pan, after which the
- *  screen midpoint and the world point beneath it are different places.
- *  Anchoring an attractive force on the former drags the whole cloud toward a
- *  corner. This inverts the transform render() applies, so the anchor is where
- *  the user is actually looking.
- *
- *  DPR is absent on purpose: clientWidth/Height are CSS pixels and render()
- *  pre-multiplies dpr onto BOTH the scale and the pan
- *  (`setTransform(dpr*zoom, 0, 0, dpr*zoom, dpr*panX, dpr*panY)`), so the
- *  device-pixel factor cancels out of the inversion.
- *
- *  A canvas that is not laid out yet falls back to (400, 300) — the same dead
- *  fallback canvasCenter() seeds around, so a pre-layout graph is pulled toward
- *  the point it was seeded around rather than toward the origin. */
+/** The world point under the middle of the viewport. canvasCenter() returns screen
+ *  coordinates; after resetView() installs a fitted zoom and pan the two spaces
+ *  diverge, and anchoring an attractive force on the screen midpoint drags the
+ *  cloud toward a corner. This inverts the transform render() applies; DPR is
+ *  absent on purpose, since it cancels out of the inversion. */
 export function viewCentreWorld(
   width: number,
   height: number,
@@ -252,8 +186,7 @@ export function viewCentreWorld(
   return { x: (width / 2 - panX) / zoom, y: (height / 2 - panY) / zoom };
 }
 
-/** The velocity a node gains this tick from the centre pull. Scaled by the
- *  anneal alpha like every other settle force, so it cools with the layout. */
+/** The velocity a node gains this tick from the centre pull, scaled by the anneal alpha. */
 export function centrePullDelta(
   node: { x: number; y: number },
   centre: { x: number; y: number },

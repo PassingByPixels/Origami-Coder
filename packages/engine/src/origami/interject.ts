@@ -6,23 +6,14 @@ import { SessionID } from "@/session/schema"
 /**
  * A message the user pushed INTO a running turn.
  *
- * Two halves live here because they are the same idea seen from both ends:
- *
- *  1. The ENVELOPE the model reads. An interjection is not the turn ending and
- *     not a fresh task - a model that reads it as either abandons work it was
- *     halfway through. The wording says so explicitly, and it rides as a
- *     `synthetic` text part so the user never sees the instructions written on
- *     their behalf.
- *  2. The SIGNAL a blocking foreground shell watches. A command that runs for
- *     minutes never reaches a tool boundary, so the boundary has to be brought
- *     forward: the signal completes the shell's wait, the shell takes its
- *     existing promotion path (process untouched, output still streaming), and
- *     the turn reaches the boundary where the message is waiting.
- *
- * The signal is per SESSION, not per shell, and completes EVERY waiter: a turn
- * can have several foreground shells in flight at once, and leaving any of them
- * blocking would leave the interjection undelivered for exactly as long as the
- * slowest one.
+ * Two halves, the same idea from both ends. The ENVELOPE the model reads: an
+ * interjection is not the turn ending and not a fresh task, and it rides as a
+ * `synthetic` text part so the user never sees the instructions written on
+ * their behalf. The SIGNAL a blocking foreground shell watches: a command that
+ * runs for minutes never reaches a tool boundary, so the signal completes the
+ * shell's wait and the turn reaches the boundary where the message waits. It is
+ * per SESSION and completes EVERY waiter - one turn can have several foreground
+ * shells in flight.
  */
 export const ENVELOPE =
   "[The user sent this message while you were working. Address it, then continue your current task unless it changes your instructions.]"
@@ -32,16 +23,11 @@ interface State {
 }
 
 export interface Interface {
-  /**
-   * Complete every foreground shell currently blocking in this session, so the
-   * turn reaches a tool boundary. A session with nothing blocking is a no-op -
-   * the interjection simply waits for the boundary that was already coming.
-   */
+  /** Complete every foreground shell currently blocking in this session, so the
+   *  turn reaches a tool boundary. A session with nothing blocking is a no-op. */
   readonly signal: (sessionID: SessionID) => Effect.Effect<number>
-  /**
-   * Completes when `signal` is called for this session. Deregisters itself on
-   * any exit, so a command that finishes normally leaves nothing behind.
-   */
+  /** Completes when `signal` is called for this session. Deregisters itself on
+   *  any exit, so a command that finishes normally leaves nothing behind. */
   readonly wait: (sessionID: SessionID) => Effect.Effect<void>
 }
 

@@ -1,16 +1,10 @@
-// acpToolContent.ts — decode a `tool_call_update.content` array.
-//
-// Extracted from acpClient.ts's tool_call_update case, which sat against its
-// architecture cap when the browser tool's SCREENSHOTS needed a third block
-// kind. The array can carry several blocks at once (acp/tool.ts's
-// completedToolContent pushes text, then any diff, then any image), and the
-// donor read only `content[0]` — so an edit's diff was dropped. Reading the
-// WHOLE array is the rule this module exists to keep:
+// acpToolContent.ts — decode a `tool_call_update.content` array. The array can
+// carry several blocks at once, and reading only `content[0]` dropped an edit's
+// diff. Reading the WHOLE array is the rule this module exists to keep:
 //   { type:'content', content:{ type:'text' } }  -> the first one is the body
 //   { type:'diff' }                              -> the structured before/after
 //   { type:'content', content:{ type:'image' } } -> a data: URI, in order
-// An image block is the `browser` tool's screenshot; every other tool sends
-// none, so the field stays absent and no card changes.
+// An image block is the `browser` tool's screenshot; every other tool sends none.
 
 export interface ToolContentBlocks {
   contentText?: string;

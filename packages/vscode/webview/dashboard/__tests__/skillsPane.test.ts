@@ -10,7 +10,7 @@
 // where it answered "Open a chat first" with two chats open — see the last
 // describe block for the state that produced it.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import SkillsPane from '../panes/SkillsPane.svelte';
@@ -109,6 +109,36 @@ describe('SkillsPane — a skill that failed to load is shown, not dropped', () 
     const { container } = await withData({ skills: [skill('alpha')] });
     expect(container.querySelectorAll('.skill-card')).toHaveLength(1);
     expect(container.querySelector('.skills-problems')).toBeNull();
+  });
+});
+
+// t-fisfs5 R12 — the pane's window listener was added at init and never
+// removed, so every mount of the Skills tab left another closure on `window`
+// writing into a destroyed component's state.
+describe('SkillsPane — the message listener is torn down with the pane', () => {
+  it('removes the exact handler it added when the component is destroyed', () => {
+    const added: EventListenerOrEventListenerObject[] = [];
+    const removed: EventListenerOrEventListenerObject[] = [];
+    const add = vi.spyOn(window, 'addEventListener').mockImplementation(((t: string, h: EventListenerOrEventListenerObject) => {
+      if (t === 'message') added.push(h);
+    }) as typeof window.addEventListener);
+    const remove = vi.spyOn(window, 'removeEventListener').mockImplementation(((t: string, h: EventListenerOrEventListenerObject) => {
+      if (t === 'message') removed.push(h);
+    }) as typeof window.removeEventListener);
+    try {
+      const { unmount } = render(SkillsPane);
+      expect(added).toHaveLength(1);
+      unmount();
+      expect(removed).toEqual(added);
+    } finally {
+      add.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
+  it('still asks for its list on mount', () => {
+    render(SkillsPane);
+    expect(posts().filter((p) => p['type'] === 'listSkills')).toHaveLength(1);
   });
 });
 
@@ -285,6 +315,88 @@ describe('SkillsPane — expandable card + Edit', () => {
   });
 });
 
+// t-7vslix — Local/Global selector: filters the list, persists across a
+// remount (the "tab switch / window reload" acceptance item), and the empty
+// state names the directories `scanRoots` says were scanned for that scope.
+describe('SkillsPane — Local/Global selector (t-7vslix)', () => {
+  /** The webview state blob really persisting across a remount, the same
+   *  helper ChatsList.test.ts uses for its own vscode.getState()-backed toggle. */
+  function persistentState(): { value: unknown } {
+    const held: { value: unknown } = { value: undefined };
+    globalThis.__vscodeApiMock.getState.mockImplementation(() => held.value);
+    globalThis.__vscodeApiMock.setState.mockImplementation((next: unknown) => { held.value = next; });
+    return held;
+  }
+
+  afterEach(() => {
+    globalThis.__vscodeApiMock.getState.mockReset();
+    globalThis.__vscodeApiMock.setState.mockReset();
+  });
+
+  it('defaults to Global with no saved state', async () => {
+    persistentState();
+    const { container } = await withData({
+      skills: [skill('g1', '', { scope: 'global' }), skill('l1', '', { scope: 'local' })],
+    });
+    expect(container.querySelector('.skills-seg-btn.on')?.textContent).toBe('Global');
+    expect(container.querySelectorAll('.skill-card')).toHaveLength(1);
+    expect(container.querySelector('.skill-name')?.textContent).toBe('g1');
+  });
+
+  it('switching to Local filters out the global entries', async () => {
+    persistentState();
+    const { container } = await withData({
+      skills: [skill('g1', '', { scope: 'global' }), skill('l1', '', { scope: 'local' })],
+    });
+
+    await fireEvent.click([...container.querySelectorAll('.skills-seg-btn')].find((b) => b.textContent === 'Local')!);
+    await tick();
+
+    expect(container.querySelectorAll('.skill-card')).toHaveLength(1);
+    expect(container.querySelector('.skill-name')?.textContent).toBe('l1');
+  });
+
+  it('persists the choice across a remount — a reload must not fall back to the default', async () => {
+    const held = persistentState();
+    const first = await withData({ skills: [skill('l1', '', { scope: 'local' })] });
+    await fireEvent.click([...first.container.querySelectorAll('.skills-seg-btn')].find((b) => b.textContent === 'Local')!);
+    await tick();
+    expect(held.value).toEqual({ skillsScope: 'local' });
+
+    cleanup();
+    const second = await withData({ skills: [skill('l1', '', { scope: 'local' })] });
+    expect(second.container.querySelector('.skills-seg-btn.on')?.textContent).toBe('Local');
+  });
+
+  it('an empty scope names the directories scanRoots reports for it, not a blank list', async () => {
+    persistentState();
+    const { container } = await withData({
+      skills: [skill('g1', '', { scope: 'global' })],
+      scanRoots: { local: ['C:\\ws\\.origami\\skills', 'C:\\ws\\.claude\\skills'], global: ['C:\\Users\\pat\\.claude\\skills'] },
+    });
+
+    await fireEvent.click([...container.querySelectorAll('.skills-seg-btn')].find((b) => b.textContent === 'Local')!);
+    await tick();
+
+    const empty = container.querySelector('.skills-empty')!;
+    expect(empty.textContent).toContain('No local skills found');
+    expect(empty.textContent).toContain('C:\\ws\\.origami\\skills');
+    expect(empty.textContent).toContain('C:\\ws\\.claude\\skills');
+    // Cross-scope hint: it knows the other scope actually has something.
+    expect(empty.textContent).toContain('found under global');
+  });
+
+  it('an entry with no scope (older host) shows under either filter rather than vanishing', async () => {
+    persistentState();
+    const { container } = await withData({ skills: [skill('unscoped')] });
+
+    expect(container.querySelectorAll('.skill-card')).toHaveLength(1);
+    await fireEvent.click([...container.querySelectorAll('.skills-seg-btn')].find((b) => b.textContent === 'Local')!);
+    await tick();
+    expect(container.querySelectorAll('.skill-card')).toHaveLength(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // HOST SIDE (src/dashboard/skillsPane.ts) — and the regression that extracted it.
 //
@@ -313,10 +425,11 @@ describe('skillsPane host — which session the list is read from', () => {
     },
   });
 
-  const host = (map: Map<string, SkillsPaneSession>, activeId: string | null): SkillsPaneHost => ({
+  const host = (map: Map<string, SkillsPaneSession>, activeId: string | null, cwd = 'C:\\ws'): SkillsPaneHost => ({
     sessions: () => map,
     activeSessionId: () => activeId,
     post: (msg) => { posts.push(msg); },
+    cwd: () => cwd,
   });
 
   const lastSkills = () => [...posts].reverse().find((p) => p['type'] === 'skillsData')!;
@@ -388,5 +501,87 @@ describe('skillsPane host — which session the list is read from', () => {
 
     expect(lastSkills()['error']).toBe('engine is down');
     expect(lastSkills()['skills']).toEqual([]);
+  });
+
+  // t-fisfs5 R11: the empty state names the directories that were scanned
+  // (t-7vslix). Both failure branches used to post none, so the pane drew the
+  // error over a blank list with no directory in sight.
+  it("the engine's failure still names the directories that were scanned", async () => {
+    const map = new Map<string, SkillsPaneSession>([['session-1', { client: client([], 'engine is down') }]]);
+
+    await handleSkillsPaneMessage(host(map, 'session-1'), { type: 'listSkills' });
+
+    const roots = lastSkills()['scanRoots'] as { local: string[]; global: string[] };
+    expect(roots.local.length).toBeGreaterThan(0);
+    expect(roots.global.length).toBeGreaterThan(0);
+    expect(roots.local.every((p) => p.startsWith('C:\\ws'))).toBe(true);
+  });
+
+  it('"open a chat first" names them too — the host knows them without an engine', async () => {
+    await handleSkillsPaneMessage(host(new Map(), 'session-3'), { type: 'listSkills' });
+
+    const roots = lastSkills()['scanRoots'] as { local: string[]; global: string[] };
+    expect(roots.local.length).toBeGreaterThan(0);
+    expect(roots.global.length).toBeGreaterThan(0);
+  });
+});
+
+// t-7vslix — the Local/Global filter's host-side half: every returned skill
+// gets a `scope`, tested against the workspace root (`host.cwd()`), and the
+// payload carries `scanRoots` so the pane can name what it scanned.
+describe('skillsPane host — scope classification (t-7vslix)', () => {
+  let posts: Array<Record<string, unknown>> = [];
+
+  const client = (skills: unknown[]) => ({
+    extMethod: async () => ({ skills, problems: [] }) as Record<string, unknown>,
+  });
+
+  const host = (skills: unknown[], cwd: string): SkillsPaneHost => ({
+    sessions: () => new Map([['session-1', { client: client(skills) }]]),
+    activeSessionId: () => 'session-1',
+    post: (msg) => { posts.push(msg); },
+    cwd: () => cwd,
+  });
+
+  const lastSkills = () => [...posts].reverse().find((p) => p['type'] === 'skillsData')!;
+
+  beforeEach(() => { posts = []; });
+
+  it('marks a skill under the open project as local', async () => {
+    await handleSkillsPaneMessage(
+      host([{ name: 'alpha', location: 'C:\\ws\\.origami\\skills\\alpha\\SKILL.md' }], 'C:\\ws'),
+      { type: 'listSkills' },
+    );
+    expect((lastSkills()['skills'] as Array<Record<string, unknown>>)[0]['scope']).toBe('local');
+  });
+
+  it('marks a skill under the user home directory as global', async () => {
+    await handleSkillsPaneMessage(
+      host([{ name: 'alpha', location: 'C:\\Users\\pat\\.claude\\skills\\alpha\\SKILL.md' }], 'C:\\ws'),
+      { type: 'listSkills' },
+    );
+    expect((lastSkills()['skills'] as Array<Record<string, unknown>>)[0]['scope']).toBe('global');
+  });
+
+  it('does not treat a same-prefix sibling folder as inside the project', async () => {
+    // C:\ws-old is NOT under C:\ws — a bare string prefix test would get this wrong.
+    await handleSkillsPaneMessage(
+      host([{ name: 'alpha', location: 'C:\\ws-old\\.origami\\skills\\alpha\\SKILL.md' }], 'C:\\ws'),
+      { type: 'listSkills' },
+    );
+    expect((lastSkills()['skills'] as Array<Record<string, unknown>>)[0]['scope']).toBe('global');
+  });
+
+  it('forwards scanRoots for both scopes, rooted at cwd and the real home directory', async () => {
+    await handleSkillsPaneMessage(host([], 'C:\\ws'), { type: 'listSkills' });
+    const roots = lastSkills()['scanRoots'] as { local: string[]; global: string[] };
+    expect(roots.local.every((d) => d.startsWith('C:\\ws'))).toBe(true);
+    expect(roots.global.some((d) => d.includes('.claude'))).toBe(true);
+    expect(roots.global.some((d) => d.includes('.origami'))).toBe(true);
+  });
+
+  it('leaves a skill with no location field unclassified rather than throwing', async () => {
+    await handleSkillsPaneMessage(host([{ name: 'alpha' }], 'C:\\ws'), { type: 'listSkills' });
+    expect((lastSkills()['skills'] as Array<Record<string, unknown>>)[0]['scope']).toBeUndefined();
   });
 });

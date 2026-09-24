@@ -1,22 +1,9 @@
-// Agent Manager - mapSchema.ts (S15): the repo architecture MAP schema + a
-// structural validator. A CARTOGRAPHER run writes .origami/map/map.json to this
-// shape; the board tooling validates it before stamping/rendering, and future
-// board agents read it for architecture context. Pure + vscode-free so it unit-
-// tests on plain objects and is shared by the run lifecycle (mapRun.ts) and the
-// static HTML renderer (mapHtml.ts).
-//
-// Validation is STRUCTURAL and reference-checked, with precise errors: a node
-// whose `pillar` is not 1-5, an edge endpoint that is not a node id,
-// and a flow step referencing an unknown node are all ERRORS (a broken map must
-// never render as a real one). Empty edges/flows are fine (a small repo may have
-// neither). `builtAt` is OPTIONAL: the agent writes the map WITHOUT it (the
-// prompt says leave it out) and the tooling stamps it after a git rev-parse, so
-// validateMap must accept the map both before (unstamped) and after (stamped).
-//
-// V2 schema change: `layers` replaced by 5 fixed pillars (numbered 1-5).
-// Nodes reference `pillar` (number) instead of `layer` (string). Nodes may
-// optionally carry a `status` field for diff-tracking across map rebuilds and
-// a `section` field for sub-section grouping within a pillar column.
+// The repo architecture MAP schema + a structural validator. A cartographer run writes
+// .origami/map/map.json to this shape; board tooling validates before stamping/rendering.
+// Validation is structural and reference-checked: an out-of-range pillar, an edge/flow-step
+// naming an unknown node id are errors, but empty edges/flows are fine. `builtAt` is
+// optional — the agent writes without it and the tooling stamps it after a git rev-parse.
+// `layers` was replaced by 5 fixed numbered pillars.
 
 export interface MapBuiltAt {
   sha: string;
@@ -95,14 +82,9 @@ function isStr(v: unknown): v is string {
   return typeof v === 'string';
 }
 
-/**
- * Validate a parsed (already-JSON.parse'd) value against the map schema. Returns
- * the typed map on success, or a list of PRECISE errors on failure - shape
- * errors first, then the three reference checks (node->pillar, edge->node,
- * flowStep->node). `builtAt`, when present, must be a well-shaped stamp; when
- * absent it is fine (an unstamped, agent-authored map). Empty edges/flows/nodes
- * are structurally valid; the reference checks only fire on what IS present.
- */
+/** Validate a parsed map against the schema: typed map on success, or precise errors (shape
+ *  first, then the three reference checks: node->pillar, edge->node, flowStep->node). A
+ *  present `builtAt` must be well-shaped; absent is fine (unstamped, agent-authored). */
 export function validateMap(raw: unknown): ValidateResult {
   const errors: string[] = [];
   if (!isObj(raw)) return { ok: false, errors: ['map is not an object'] };

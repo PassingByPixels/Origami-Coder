@@ -1,21 +1,9 @@
-// Agent Manager - gitRun.ts (S6d): the git child-process layer, extracted from
-// worktrees.ts (at its line cap) so the third capture variant could land beside
-// its two siblings. Three ways to run git, all sharing ONE Semaphore(3) and the
-// same never-reject / timeout / output-cap hardening:
-//   - runGit             : utf8, stdout+stderr MERGED into one string (the caller
-//                          reads git's human error text on failure).
-//   - runGitStdoutToFile : stdout streamed byte-perfect to a file (binary patches;
-//                          runGit's utf8-decode+cap would corrupt a real patch).
-//   - runGitStdout       : stdout captured to a string, stderr collected SEPARATELY
-//                          (S6d). The merged runGit glued git's per-file
-//                          "LF will be replaced by CRLF" stderr warnings onto the
-//                          FRONT of stdout's first token (stderr is unbuffered,
-//                          piped stdout is block-buffered), so `parseInt` on a
-//                          numstat's first adds field read the warning text and
-//                          silently returned 0. Separated streams keep stdout pure.
-//
-// Deliberately vscode-free: plain child_process + fs so the whole layer runs
-// against a throwaway `git init` fixture in vitest.
+// The git child-process layer: three ways to run git, sharing one Semaphore(3) and the same
+// never-reject/timeout/output-cap hardening. runGit merges stdout+stderr;
+// runGitStdoutToFile streams stdout byte-perfect to a file (binary patches); runGitStdout
+// captures stdout separately from stderr, since a merged stream can glue a stderr warning
+// onto stdout's first token and corrupt a parsed field (e.g. numstat). Deliberately
+// vscode-free so the layer runs against a throwaway `git init` fixture in vitest.
 
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -25,8 +13,7 @@ const GIT_OUTPUT_CAP = 20_000;
 
 export interface GitResult { ok: boolean; code: number | null; output: string }
 
-// Cap concurrent git child processes (Kilo runs the same Semaphore(3) on its
-// git/gh spawns): the pollers fan one stats call per worktree per tick, and
+// Cap concurrent git child processes: pollers fan one stats call per worktree per tick, and
 // unbounded spawns on Windows are slower than three at a time.
 const GIT_MAX_CONCURRENT = 3;
 let gitActive = 0;
@@ -46,14 +33,9 @@ function gitSlotRelease(): void {
   if (next) next();
 }
 
-/**
- * Run git with an ARG ARRAY (never shell:true - worktree paths and branch
- * names must not pass through cmd.exe quoting). Same hardening shape as
- * runGate: never rejects, timeout, output cap. At most GIT_MAX_CONCURRENT
- * children run at once; excess calls queue. stdout+stderr are MERGED, so on
- * failure the caller sees git's error text - do NOT use this where stdout is
- * PARSED (numstat/rev-list): use runGitStdout so a stderr warning can't corrupt it.
- */
+/** Run git with an arg array (never shell:true — paths/branch names must not pass through
+ *  cmd.exe quoting). At most GIT_MAX_CONCURRENT children run at once. stdout+stderr are
+ *  merged — don't use this where stdout is parsed; use runGitStdout instead. */
 export async function runGit(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   await gitSlot();
   try {
@@ -86,18 +68,10 @@ function runGitNow(args: string[], cwd: string, timeoutMs: number): Promise<GitR
   });
 }
 
-/**
- * Run git capturing stdout ONLY into a string (utf8, capped), with stderr
- * collected SEPARATELY (S6d). On success `output` is the clean stdout; on
- * failure `output` is stderr (git's error text). Use this for any command whose
- * stdout is PARSED - it is immune to the stderr-glued-to-stdout contamination
- * that corrupted numstat's first field under core.autocrlf. Shares the Semaphore(3).
- *
- * `maxOutput` caps the CAPTURED stdout (default GIT_OUTPUT_CAP = 20KB, fine for
- * numstat/rev-list). A caller reading a large blob (a per-file diff whose own
- * truncation check is well above 20KB) MUST raise it, or the transport silently
- * cuts the text mid-stream below the caller's threshold and it looks complete.
- */
+/** Run git capturing stdout only (utf8, capped), with stderr collected separately —
+ *  immune to the stderr-glued-to-stdout contamination that corrupted numstat's first field.
+ *  `maxOutput` caps captured stdout (default 20KB); a caller reading a larger blob must
+ *  raise it or risk silent truncation below its own threshold. */
 export async function runGitStdout(args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS, maxOutput = GIT_OUTPUT_CAP): Promise<GitResult> {
   await gitSlot();
   try {
@@ -121,11 +95,8 @@ export async function runGitStdout(args: string[], cwd: string, timeoutMs = GIT_
   }
 }
 
-/**
- * Run git streaming stdout straight to a file (never a JS string): runGit is
- * utf8-decoded AND capped, which truncates/corrupts a real `git diff --binary`
- * patch. Binary-perfect + uncapped; stderr still captured. Shares the Semaphore(3).
- */
+/** Run git streaming stdout straight to a file — runGit's utf8-decode+cap would
+ *  truncate/corrupt a real binary patch. Stderr still captured. */
 export async function runGitStdoutToFile(args: string[], cwd: string, outFile: string, timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   await gitSlot();
   let fd: number;

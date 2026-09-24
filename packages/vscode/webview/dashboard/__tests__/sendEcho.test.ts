@@ -48,7 +48,7 @@ async function mountChat(): Promise<{ c: HTMLElement; sid: string }> {
 /** Type into the composer and press its send button — a real send, not a post. */
 async function sendFromComposer(c: HTMLElement, text: string) {
   await fireEvent.input(c.querySelector('.input') as HTMLTextAreaElement, { target: { value: text } });
-  await fireEvent.click(c.querySelector('.btn.send') as HTMLButtonElement);
+  await fireEvent.click(c.querySelector('.action-btn') as HTMLButtonElement);
   await tick();
 }
 

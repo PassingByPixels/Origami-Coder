@@ -51,7 +51,9 @@ export class Handler {
     const previous = this.queues.get(permission.sessionID) ?? Promise.resolve()
     const next = previous
       .then(() => this.process(event))
-      .catch(() => {})
+      // `process` answers its own failures (see `refuse`). This is the last net
+      // for a throw inside that answer, and it is never silent.
+      .catch((cause) => logAsk(permission.id, "was not answered", cause))
       .finally(() => {
         if (this.queues.get(permission.sessionID) === next) {
           this.queues.delete(permission.sessionID)
@@ -69,13 +71,10 @@ export class Handler {
     // misses, walk the domain parent chain (shared helper - acp/ancestor.ts, also
     // used by the event boundary) to the nearest registered ancestor and surface
     // the ask under THAT ancestor's ACP session id (the only id the client knows).
-    const session =
-      (await Effect.runPromise(this.input.session.tryGet(permission.sessionID))) ??
-      (await ACPAncestor.resolveRegisteredAncestor({
-        sdk: this.input.sdk,
-        session: this.input.session,
-        sessionID: permission.sessionID,
-      }))
+    const session = await this.findSession(permission.sessionID).catch((cause) => {
+      logAsk(permission.id, `could not resolve session ${permission.sessionID}`, cause)
+      return undefined
+    })
     // NO SESSION, NO SILENCE. An early return here left the ask pending with
     // nothing on either end of it: the client never sees a bar, the tool call
     // sits `running` for the life of the session, and a parent waiting on the
@@ -89,35 +88,50 @@ export class Handler {
     // approval; a reject stores nothing, so nothing is scoped to the wrong
     // project by this.
     if (!session) {
+      console.error(`[acp-permission] ask ${permission.id}: no registered session for ${permission.sessionID}, refusing it`)
       await this.reply(permission.id, "reject", process.cwd())
       return
     }
 
+    // t-tc2es2. ERRORS ANSWER THE ASK. A throw from here on (a client that
+    // throws instead of rejecting, a reply the engine refused) used to reach the
+    // queue's empty catch: the ask stayed pending, a main-session ask has no
+    // timeout, and the turn sat "running" with no bar. Now it is refused WITH
+    // the cause, so the tool row says what failed. No clock is added.
+    try {
+      await this.ask(permission, session)
+    } catch (cause) {
+      await this.refuse(permission.id, session.cwd, cause)
+    }
+  }
+
+  private async findSession(sessionID: string) {
+    return (
+      (await Effect.runPromise(this.input.session.tryGet(sessionID))) ??
+      (await ACPAncestor.resolveRegisteredAncestor({ sdk: this.input.sdk, session: this.input.session, sessionID }))
+    )
+  }
+
+  private async ask(permission: PermissionEvent["properties"], session: { id: string; cwd: string }) {
     if (!this.input.connection.requestPermission) {
       await this.reply(permission.id, "reject", session.cwd)
       return
     }
 
-    const result = await this.input.connection
-      .requestPermission({
-        // Forward under the RESOLVED session (self for a registered session, the
-        // registered ancestor for a subagent). The reply below still targets the
-        // ORIGINAL permission id, and the Permission service keys pending requests
-        // on request id (not session id), so the reply resolves the real ask.
-        sessionId: session.id,
-        toolCall: await permissionToolCall({
-          toolCallId: permission.tool?.callID ?? permission.id,
-          toolName: permission.permission,
-          input: permission.metadata,
-        }),
-        options: permissionOptions(permission.always),
-      })
-      .catch(async () => {
-        await this.reply(permission.id, "reject", session.cwd)
-        return undefined
-      })
-
-    if (!result) return
+    const result = await this.input.connection.requestPermission({
+      // Forward under the RESOLVED session (self for a registered session, the
+      // registered ancestor for a subagent). The reply below still targets the
+      // ORIGINAL permission id, and the Permission service keys pending requests
+      // on request id (not session id), so the reply resolves the real ask.
+      sessionId: session.id,
+      toolCall: await permissionToolCall({
+        requestID: permission.id,
+        toolCallId: permission.tool?.callID ?? permission.id,
+        toolName: permission.permission,
+        input: permission.metadata,
+      }),
+      options: permissionOptions(permission.always),
+    })
 
     const reply = selectedReply(result)
     if (reply !== "once" && reply !== "always") {
@@ -126,18 +140,37 @@ export class Handler {
     }
 
     if (permission.permission === "edit") {
-      await this.writeProposedEdit(session.id, permission.metadata).catch(() => {})
+      await this.writeProposedEdit(session.id, permission.metadata).catch((cause) =>
+        logAsk(permission.id, "proposed edit was not written", cause),
+      )
     }
 
     await this.reply(permission.id, reply, session.cwd)
   }
 
-  private async reply(requestID: string, reply: Reply, directory: string) {
-    await this.input.sdk.permission.reply({
+  /** The ask could not be put to the user, or its answer could not be delivered.
+   *  Refuse it with the cause as the message: the engine turns that into a
+   *  CorrectedError whose text reaches the tool row and the agent. */
+  private async refuse(requestID: string, directory: string, cause: unknown) {
+    logAsk(requestID, "failed, refusing it", cause)
+    await this.reply(
+      requestID,
+      "reject",
+      directory,
+      `Nobody was asked: Origami could not show this permission prompt or deliver its answer (${describeCause(cause)}). Do not retry the same call; tell the user what failed.`,
+    ).catch((again) => logAsk(requestID, "refusal was not delivered either", again))
+  }
+
+  /** The SDK RETURNS `{ error }` on a non-2xx instead of throwing, so an answer
+   *  the engine refused looked delivered. Throw it, so the caller can act on it. */
+  private async reply(requestID: string, reply: Reply, directory: string, message?: string) {
+    const result = await this.input.sdk.permission.reply({
       requestID,
       reply,
       directory,
+      ...(message ? { message } : {}),
     })
+    if (result?.error) throw new Error(`the engine did not take the "${reply}" reply: ${describeCause(result.error)}`)
   }
 
   private async writeProposedEdit(sessionId: string, metadata: ToolInput) {
@@ -151,15 +184,36 @@ export class Handler {
       return
     }
 
-    void this.input.connection.writeTextFile({
-      sessionId,
-      path: filepath,
-      content: next,
-    })
+    // Not awaited, as before. The catch keeps a rejecting client from becoming
+    // an unhandled rejection, which ends a Bun process.
+    this.input.connection
+      .writeTextFile({
+        sessionId,
+        path: filepath,
+        content: next,
+      })
+      .catch((cause) => console.error(`[acp-permission] proposed edit to ${filepath} was not written: ${describeCause(cause)}`))
+  }
+}
+
+/** One stderr line per failure, naming the ask. stderr, never stdout: stdout is the JSON-RPC channel. */
+function logAsk(requestID: string, what: string, cause: unknown) {
+  console.error(`[acp-permission] ask ${requestID} ${what}: ${describeCause(cause)}`)
+}
+
+/** An error as one line of text, for a log or a refusal. Shared with acp/question.ts. */
+export function describeCause(cause: unknown): string {
+  if (cause instanceof Error) return cause.message
+  if (typeof cause === "string") return cause
+  try {
+    return JSON.stringify(cause) ?? String(cause)
+  } catch {
+    return String(cause)
   }
 }
 
 async function permissionToolCall(input: {
+  readonly requestID: string
   readonly toolCallId: string
   readonly toolName: string
   readonly input: ToolInput
@@ -172,7 +226,13 @@ async function permissionToolCall(input: {
       title: permissionTitle(input.toolName, input.input),
     },
   })
-  const content = await permissionContent(input.toolName, input.input)
+  // The diff preview is a courtesy; the ask is not. A file that cannot be read
+  // (EISDIR, EACCES, or EBUSY when another Windows process holds it) gives an
+  // ask with no diff, never no ask.
+  const content = await permissionContent(input.toolName, input.input).catch((cause): ToolCallContent[] => {
+    logAsk(input.requestID, "is shown without a diff preview", cause)
+    return []
+  })
   return {
     ...toolCall,
     locations: permissionLocations(input.toolName, input.input),

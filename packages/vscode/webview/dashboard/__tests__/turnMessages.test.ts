@@ -45,8 +45,8 @@ function hostWith(client: ReturnType<typeof clientThat> | null, sessionId?: stri
 const drain = () => new Promise((r) => setTimeout(r, 0));
 
 describe('TURN_MESSAGE_TYPES — the routing set', () => {
-  it('claims exactly the two message types, and nothing the switch still owns', () => {
-    expect([...TURN_MESSAGE_TYPES].sort()).toEqual(['interject', 'stopBackgroundShell']);
+  it('claims exactly the three message types, and nothing the switch still owns', () => {
+    expect([...TURN_MESSAGE_TYPES].sort()).toEqual(['interject', 'stopBackgroundShell', 'stopSubagent']);
   });
 });
 
@@ -197,5 +197,156 @@ describe('interject — the line goes INTO the running turn', () => {
     const client = clientThat();
     await interjectIntoTurn(client, 'sess-9', 'now');
     expect(client.calls).toEqual([{ method: 'interject', params: { sessionId: 'sess-9', text: 'now' } }]);
+  });
+});
+
+// t-4ahs3u — the attachments half. A picture on a mid-turn line used to reach
+// this file as nothing at all: the composer held the draft rather than posting
+// it, and the wire had no field to carry it in either. Both halves are fixed;
+// this describes THIS one — the panel turning `{dataUrl,name}` into the same
+// `{mimeType,data}` pair `sendWithImages` builds for a fresh prompt.
+describe('interject — the pictures go in with the line', () => {
+  const PNG = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('parses the attachment into the pair the ACP prompt wire already uses', async () => {
+    const client = clientThat();
+    const { host } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'interject', text: 'this bit', images: [{ dataUrl: PNG, name: 'shot.png' }] });
+    await drain();
+
+    expect(client.calls).toEqual([
+      {
+        method: 'interject',
+        params: {
+          sessionId: ENGINE_SESSION,
+          text: 'this bit',
+          images: [{ mimeType: 'image/png', data: 'iVBORw0KGgo=' }],
+        },
+      },
+    ]);
+  });
+
+  it('sends a picture with NO words — "look at this" is a message, not an empty one', async () => {
+    const client = clientThat();
+    const { host, out } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'interject', text: '', images: [{ dataUrl: PNG, name: 'shot.png' }] });
+    await drain();
+
+    expect(client.calls[0]!.params).toMatchObject({ text: '', images: [{ mimeType: 'image/png' }] });
+    expect(out).toEqual([{ type: 'interjected', sessionId: SESSION }]);
+  });
+
+  it('a text-only interjection puts NO images key on the wire — byte-identical to before', async () => {
+    const client = clientThat();
+    const { host } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'interject', text: 'unchanged', images: [] });
+    await drain();
+
+    expect(client.calls[0]!.params).toEqual({ sessionId: ENGINE_SESSION, text: 'unchanged' });
+  });
+
+  it('an unparseable attachment with no text is a dead end, and says so', async () => {
+    // The parse drops what it cannot read (imageDataUrls.ts). With no words
+    // behind it that leaves nothing to deliver — which must be REPORTED, because
+    // the composer is sitting on a chip only a message clears.
+    const client = clientThat();
+    const { host, out } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'interject', text: '', images: [{ dataUrl: 'not-a-data-url', name: 'x.png' }] });
+    await drain();
+
+    expect(client.calls, 'nothing half-formed reaches the engine').toEqual([]);
+    expect(out[0]).toMatchObject({ type: 'error', sessionId: SESSION });
+    expect(String(out[0]!['message'])).toContain('Interject failed');
+  });
+
+  it('the ACP leaf carries the images when there are some, and omits the key when not', async () => {
+    const client = clientThat();
+    await interjectIntoTurn(client, 'sess-9', 'now', [{ mimeType: 'image/png', data: 'AAA' }]);
+    await interjectIntoTurn(client, 'sess-9', 'now', []);
+
+    expect(client.calls[0]!.params).toEqual({
+      sessionId: 'sess-9',
+      text: 'now',
+      images: [{ mimeType: 'image/png', data: 'AAA' }],
+    });
+    expect(client.calls[1]!.params).toEqual({ sessionId: 'sess-9', text: 'now' });
+  });
+});
+
+// t-q910fo: the per-row sub-agent Stop. Its id is the CHILD's engine session id,
+// which arrives from the engine on the task rider — so unlike the other two this
+// one must be forwarded UNCHANGED. Translating it through the chat's own engine
+// id is the failure mode this asserts against.
+describe('stopSubagent — one child, by its own id', () => {
+  it('reaches the engine as subagent_stop with the id the row carried', () => {
+    const client = clientThat();
+    const { host } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'stopSubagent', sessionId: 'ses_child_7', label: 'Explore · T2 · audit' });
+
+    expect(client.calls).toEqual([{ method: 'subagent_stop', params: { sessionId: 'ses_child_7' } }]);
+  });
+
+  it('a failure is reported on the posting chat, and NAMES the child', async () => {
+    const client = clientThat('reject', 'engine gone');
+    const { host, out } = hostWith(client, SESSION);
+
+    handleTurnMessage(host, { type: 'stopSubagent', sessionId: 'ses_child_7', label: 'Explore · T2 · audit' });
+    await drain();
+
+    expect(out).toEqual([
+      { type: 'error', message: 'Could not stop Explore · T2 · audit: engine gone', sessionId: SESSION },
+    ]);
+  });
+
+  it('no child id, or no posting chat, does nothing at all', () => {
+    const client = clientThat();
+    const { host, out } = hostWith(client, SESSION);
+    handleTurnMessage(host, { type: 'stopSubagent' });
+    handleTurnMessage(hostWith(client).host, { type: 'stopSubagent', sessionId: 'ses_child_7' });
+    expect(client.calls).toEqual([]);
+    expect(out).toEqual([]);
+  });
+});
+
+// t-v5qi8q: Stop must always SETTLE the row. The engine answers with the job's
+// status after the stop (engine acp/subagent-stop.ts): `cancelled` when it was
+// running, its old status when it had already ended, `not_found` when no job is
+// registered. The row used to ignore the answer, so Stop on a child whose run
+// had already ended left it RUNNING with nothing to press.
+describe('stopSubagent — the reply settles the row', () => {
+  const CHILD = 'ses_child_7';
+  function stopWith(status: string) {
+    const client = { currentSessionId: ENGINE_SESSION, extMethod: () => Promise.resolve({ status }) };
+    const entry = { kind: 'tool', text: '', timestamp: 1, tool: { call: { toolCallId: 'call_1', taskSessionId: CHILD }, result: {} } };
+    const session = { messageLog: [entry] as never[], runningChildren: new Set([CHILD]) };
+    const out: Record<string, unknown>[] = [];
+    handleTurnMessage({ client, sessionId: SESSION, session, post: (m) => void out.push(m) }, { type: 'stopSubagent', sessionId: CHILD, label: 'T1' });
+    return { out, entry, session };
+  }
+
+  it.each([
+    ['completed', 'completed'], // its run had already ended: the owner's case
+    ['not_found', 'completed'], // no job at all (an engine restart): nothing runs
+    ['cancelled', 'error'], // it WAS running and the stop ended it
+    ['error', 'error'],
+  ])('engine status %s -> the card ends as %s, in the pane and in the log', async (status, state) => {
+    const { out, entry, session } = stopWith(status);
+    await drain();
+    expect(out).toEqual([{ type: 'subagentDone', taskSessionId: CHILD, state, endedAt: expect.any(Number), sessionId: SESSION }]);
+    // The log is what a reopened chat is rebuilt from: the reload must agree.
+    expect((entry.tool.result as { taskDone?: string }).taskDone).toBe(state);
+    expect(session.runningChildren.has(CHILD)).toBe(false);
+  });
+
+  it('a status that says it is still running changes nothing: the marker path owns that', async () => {
+    const { out, entry } = stopWith('running');
+    await drain();
+    expect(out).toEqual([]);
+    expect(entry.tool.result).toEqual({});
   });
 });

@@ -60,14 +60,34 @@ async function mounted() {
 }
 
 describe('ChatPane — the transcript follows the stream only while you are at the bottom', () => {
-  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
   // MANDATORY here, not housekeeping. scrollToBottom resolves its target with
   // `document.querySelector('.cell-messages[data-session-id=…]')` — the FIRST
   // match in the document. Leave a previous test's container mounted and every
   // later test scrolls that one instead of its own, which reads as the stick
   // failing when nothing is wrong. The house pattern boardShell.test.ts and
   // collabAgentsPane.test.ts already follow.
-  afterEach(() => cleanup());
+  //
+  // cleanup() takes the DOM away; it cannot take the LISTENER. ChatPane adds a
+  // window `message` handler per instance and never removes it, so an unmounted
+  // instance still answers postFromHost and still resolves `.cell-messages`
+  // document-wide — onto THIS test's scroller. It stayed invisible only while a
+  // dropped follow could never come back: a stale instance was frozen by its own
+  // false latch. Now that a follow re-arms, the stale instance re-arms too and
+  // scrolls a pane it does not own. So the listeners go with the DOM.
+  const strays: EventListenerOrEventListenerObject[] = [];
+  const realAdd = window.addEventListener.bind(window);
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+    window.addEventListener = ((type: string, fn: EventListenerOrEventListenerObject, opts?: unknown) => {
+      if (type === 'message') strays.push(fn);
+      realAdd(type as keyof WindowEventMap, fn as EventListener, opts as AddEventListenerOptions);
+    }) as typeof window.addEventListener;
+  });
+  afterEach(() => {
+    cleanup();
+    for (const fn of strays.splice(0)) window.removeEventListener('message', fn);
+    window.addEventListener = realAdd;
+  });
 
   it('holds position while a chunk streams into a transcript the user scrolled up in', async () => {
     const { el } = await mounted();
@@ -148,7 +168,9 @@ describe('ChatPane — the transcript follows the stream only while you are at t
 
     const box = await need<HTMLTextAreaElement>(container, 'textarea.input');
     await fireEvent.input(box, { target: { value: 'carry on' } });
-    const send = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Send')!;
+    // The composer's one action control: an arrow glyph, not the word "Send"
+    // (CHANGES.md round 2, change 25). Its aria-label is what names it now.
+    const send = container.querySelector('button.action-btn') as HTMLButtonElement;
     await fireEvent.click(send);
 
     grow(el, 1400);
@@ -249,6 +271,72 @@ describe('ChatPane — the transcript follows the stream only while you are at t
     expect(el.scrollTop).toBe(100);
   });
 
+  // ── Coming back must WORK — the two ways the re-arm used to die ──────────
+  //
+  // Unsticking is only half a rule. A follow that cannot be turned back on is
+  // a follow the user loses for the rest of the turn, and both paths below hit
+  // that with no scrollbar left to drag: the transcript keeps growing under a
+  // pane that has stopped tracking it.
+
+  it('re-arms on a scroll back to the bottom the user SAW, even when a chunk grew the transcript first', async () => {
+    // THE GROWTH RACE. `scroll` is queued to the next rendering opportunity, so
+    // a chunk can land between the drag and its event. Measured against the NEW
+    // bottom the user reads as 400px up; measured against the one they were
+    // looking at, they are exactly on it.
+    const { el } = await mounted();
+    fakeScroller(el, true);
+    await fireEvent.scroll(el);
+
+    el.scrollTop = 100;
+    await fireEvent.scroll(el);
+    postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: 'read this bit\n' });
+    await nextFrame();
+    expect(el.scrollTop).toBe(100);
+
+    el.scrollTop = 600;   // back on the bottom as it was DRAWN
+    grow(el, 1400);       // a chunk lands before the queued scroll event runs
+    await fireEvent.scroll(el);
+
+    postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: 'and follow again\n' });
+    await nextFrame();
+    expect(el.scrollTop).toBe(1400);
+  });
+
+  it('an upward wheel on a pane too short to scroll never freezes the follow', async () => {
+    // THE DEAD WHEEL LATCH. Nothing to scroll means no `scroll` event to re-arm
+    // on, so the latch would stay off and the transcript sit at the top for the
+    // rest of the turn — the moment it outgrows the pane is the moment it stops.
+    const { el } = await mounted();
+    await nextFrame();
+    Object.defineProperty(el, 'scrollHeight', { value: 300, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true });
+    el.scrollTop = 0;
+
+    await fireEvent.wheel(el, { deltaY: -20 });
+
+    grow(el, 1400);
+    postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: 'past the fold\n' });
+    await nextFrame();
+    expect(el.scrollTop).toBe(1400);
+  });
+
+  it('a reader parked above the bottom they last saw stays parked as it grows', async () => {
+    // The other edge of the re-arm: NEAR the seen bottom is not ON it. 200px up
+    // is a reader, and growth must never carry them back down.
+    const { el } = await mounted();
+    fakeScroller(el, true);
+    await fireEvent.scroll(el);
+    el.scrollTop = 400;
+    await fireEvent.scroll(el);
+
+    for (let i = 0; i < 3; i++) {
+      grow(el, 1400 + i * 200);
+      postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: `grow ${i}\n` });
+      await nextFrame();
+      expect(el.scrollTop).toBe(400);
+    }
+  });
+
   it('a transcript growing under an armed follow is not mistaken for a user scroll', async () => {
     // The other side of the guard above: only `scrollHeight` changes here, the
     // user touched nothing, and the follow must survive every growth step.
@@ -263,5 +351,20 @@ describe('ChatPane — the transcript follows the stream only while you are at t
       await nextFrame();
       expect(el.scrollTop).toBe(1000 + i * 200);
     }
+  });
+
+  it('an upward wheel outranks the bottom the user last saw when a chunk lands before the wheel scrolls', async () => {
+    // The follow had stuck, so the seen record says "on the bottom". The wheel
+    // is read before the browser applies its scroll; a chunk queued in that
+    // same frame must not read the stale position as a return to the bottom.
+    const { el } = await mounted();
+    fakeScroller(el, true);
+    await fireEvent.scroll(el);
+
+    await fireEvent.wheel(el, { deltaY: -20 });
+    postFromHost({ type: 'agentText', sessionId: ACP_UUID, text: 'chunk in the wheel frame\n' });
+    await nextFrame();
+
+    expect(el.scrollTop).toBe(600);
   });
 });

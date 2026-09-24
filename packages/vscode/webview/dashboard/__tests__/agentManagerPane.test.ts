@@ -189,6 +189,47 @@ describe('Folds board — the 2x3 grid of blocks', () => {
   });
 });
 
+// t-qn09vr, CHANGES.md change 35: a card's top edge is coloured by the
+// column it sits in. The porting trap named in the ticket: In progress and
+// Done render AgentCard's `.am-card`, not TicketCard's `.am-ticket` — a
+// selector keyed only to `.am-ticket` misses them entirely (round-3 change
+// 48 found the mock's own enhancer doing exactly that).
+describe('Folds board — cards carry a status-coloured top edge', () => {
+  it('a ticket card in Triage/Todo carries its column edge colour', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([repo('/repo/a', '', [], [
+      mkTicket({ id: 't-aaa111', status: 'triage' }),
+      mkTicket({ id: 't-bbb222', status: 'todo' }),
+    ])]);
+    await tick();
+    expect(ticketsIn(container, 'Triage')[0].getAttribute('style')).toContain('border-top-color: var(--og-text-muted)');
+    expect(ticketsIn(container, 'Todo')[0].getAttribute('style')).toContain('border-top-color: var(--og-chat)');
+  });
+
+  it('a fold card (.am-card) in Pending/In progress/Blocked/Done carries its own edge colour', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([repo('/repo/a', '', [
+      mkRow({ id: 'q', state: 'queued', queuedPrompt: 'do' }),
+      mkRow({ id: 'w', state: 'working', hasSession: true }),
+      mkRow({ id: 'e', state: 'error', errorDetail: 'boom' }),
+      mkRow({ id: 'i', state: 'idle' }),
+    ])]);
+    await tick();
+    expect(cardsIn(container, 'Pending')[0].getAttribute('style')).toContain('border-top-color: var(--og-accent)');
+    expect(cardsIn(container, 'In progress')[0].getAttribute('style')).toContain('border-top-color: var(--og-warning)');
+    expect(cardsIn(container, 'Blocked')[0].getAttribute('style')).toContain('border-top-color: var(--og-error)');
+    expect(cardsIn(container, 'Done')[0].getAttribute('style')).toContain('border-top-color: var(--og-success)');
+  });
+
+  it('a merged card reads as Done, not a fifth colour', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([repo('/repo/a', '', [mkRow({ id: 'm1', state: 'idle', mergedAt: Date.now() })])]);
+    await tick();
+    await toggleMerged(container);
+    expect(merged(container).querySelector('.am-card')!.getAttribute('style')).toContain('border-top-color: var(--og-success)');
+  });
+});
+
 describe('Folds board — the bucket table, rendered', () => {
   it('every state lands in its column: queued/working/idle/merged + triage/todo tickets', async () => {
     const { container } = render(AgentManagerPane);
@@ -321,38 +362,37 @@ describe('Folds board — the repo cards', () => {
     await tick();
     expect(Array.from(container.querySelectorAll('.am-repocard:not(.ghost)')).length).toBe(2);
     expect(container.querySelector('.am-repocard.ghost')!.textContent).toContain('Add repo');
-    // The face is the name and the PRIMARY's branch — and nothing else. The
-    // working / blocked / queued badges are gone on purpose: the In progress and
-    // Blocked columns two inches below already say it.
-    expect(card(container, 'alpha').querySelector('.am-repocard-branch')!.textContent).toBe('trunk');
+    // The face is the name and nothing else (t-qn09vr, round-3 change 51): the
+    // second line — the PRIMARY's branch — was removed, since RepoDetail's own
+    // per-checkout branch line two inches to the right already says it, and
+    // the working / blocked / queued badges were already gone on purpose: the
+    // In progress and Blocked columns two inches below say those.
+    expect(card(container, 'alpha').querySelector('.am-repocard-branch')).toBeNull();
     expect(card(container, 'alpha').querySelectorAll('.am-badge').length).toBe(0);
   });
 
-  // UAT round 2 on §11.6: ONE wrapping line used to hold the explainer, the cards
-  // and the open card's worktree reveal at once, so every extra repo pushed the
-  // board further down. Three panes share the row now, and the cards live in the
-  // MIDDLE one — the only one that scrolls.
-  it('the top strip is three panes: the explainer, the card strip, the selected repo', async () => {
+  // Redesign A3 (t-q8zufa): the explainer that used to sit left of the strip
+  // was removed as redundant with the panel titles below it — two panes share
+  // the row now, not three, and the cards live in the one that scrolls.
+  it('the top strip is two panes: the card strip, the selected repo — no explainer', async () => {
     const { container } = render(AgentManagerPane);
     amState([{ ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' }]);
     await tick();
     expect(container.querySelector('.am-topline'), 'the old single top line is gone').toBeNull();
     const top = container.querySelector('.am-toppanes') as HTMLElement;
     expect(top).not.toBeNull();
-    expect(top.querySelector('.am-explain .am-title')!.textContent).toContain('isolated git worktrees');
+    expect(top.querySelector('.am-explain'), 'the redundant explainer is gone').toBeNull();
     expect(top.querySelector('.am-detail')).not.toBeNull();
-    // EVERY card is in the strip, ghost included — none of them beside the text.
+    // EVERY card is in the strip, ghost included.
     expect(top.querySelectorAll('.am-strip .am-repocard').length).toBe(2); // alpha + the ghost
     expect(container.querySelectorAll('.am-repocard').length).toBe(2);
     expect(card(container, 'alpha').querySelector('.am-repocard-name')).not.toBeNull();
   });
 
-  // UAT round 3: "the middle panel should be two cards tall". One short row of
-  // cards floated in a pane tall enough for two, so the strip wasted the height
-  // it already had. The cards container is now a TWO-ROW grid that flows column
-  // first — an extra card adds a column, never a third row, and the strip around
-  // it still scrolls sideways.
-  it('every card, ghost last, is a direct child of ONE cards container', async () => {
+  // Redesign A3 (t-q8zufa): the repo strip is a carousel of full-height cards
+  // (CHANGES.md change 7), not the old two-row grid — the cards move into the
+  // carousel's scroll-snap track (RepoCarousel.svelte), with the ghost last.
+  it('every card, ghost last, ends up in the carousel track', async () => {
     const { container } = render(AgentManagerPane);
     amState([
       { ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' },
@@ -360,35 +400,49 @@ describe('Folds board — the repo cards', () => {
       { ...repo('/x/gamma'), groupId: 'g3', primary: '/x/gamma', branch: 'main' },
     ]);
     await tick();
-    const grid = container.querySelector('.am-strip .am-cards') as HTMLElement;
-    expect(grid).not.toBeNull();
-    // Three wraps + the ghost, all siblings: nothing may sit in a sub-row of its
-    // own, or the column-first flow would put it in the wrong place.
-    const kids = Array.from(grid.children);
+    const cards = container.querySelector('.am-strip .am-cards') as HTMLElement;
+    expect(cards).not.toBeNull();
+    const track = cards.querySelector('.rd-carousel-track') as HTMLElement;
+    expect(track, 'the cards live inside a carousel track').not.toBeNull();
+    const kids = Array.from(track.children);
     expect(kids.length).toBe(4);
     expect(kids.slice(0, 3).every((k) => k.classList.contains('am-repocard-wrap'))).toBe(true);
     expect(kids[3].classList.contains('ghost')).toBe(true); // the ghost stays LAST in the flow
   });
 
-  // jsdom has no layout, so the two-row rule itself can only be read off the
+  // jsdom has no layout, so the carousel's geometry can only be read off the
   // stylesheet — the same way the popover's "no transform" rule is asserted
-  // below. A flex row here would pass every DOM assertion above and still ship
-  // the one-row strip UAT threw out.
-  it('the cards container is declared a two-row, column-flowing grid', () => {
-    const src = readFileSync('webview/dashboard/components/RepoCards.svelte', 'utf8');
-    const rule = /\.am-cards\s*\{([\s\S]*?)\}/.exec(src)?.[1] ?? '';
-    expect(rule, '.am-cards rule not found').not.toBe('');
-    expect(rule).toMatch(/display:\s*grid/);
-    expect(rule).toMatch(/grid-template-rows:\s*repeat\(2,/);
-    expect(rule).toMatch(/grid-auto-flow:\s*column/);
-    expect(rule).not.toMatch(/display:\s*flex/);
+  // below. A test only checking DOM nesting would pass even if the gap or the
+  // fixed-size rule regressed.
+  it('the carousel track is a 4px-gap two-row grid of fixed 156x52 cards (t-qn09vr, change 50)', () => {
+    const track = readFileSync('webview/dashboard/components/RepoCarousel.svelte', 'utf8');
+    const rule = /\.rd-carousel-track\s*\{([\s\S]*?)\}/.exec(track)?.[1] ?? '';
+    expect(rule, '.rd-carousel-track rule not found').not.toBe('');
+    expect(rule).toMatch(/gap:\s*4px/);
+    const gridRule = /\.rd-carousel-track\.rd-car-grid\s*\{([\s\S]*?)\}/.exec(track)?.[1] ?? '';
+    expect(gridRule, '.rd-carousel-track.rd-car-grid rule not found').not.toBe('');
+    expect(gridRule).toMatch(/display:\s*grid/);
+    const cards = readFileSync('webview/dashboard/components/RepoCards.svelte', 'utf8');
+    // Matches `.am-repocard {`, not `.am-repocard-wrap {`: a `-` can't follow
+    // `repocard` and satisfy `\s*\{`.
+    const cardRule = /\.am-repocard\s*\{([\s\S]*?)\}/.exec(cards)?.[1] ?? '';
+    expect(cardRule, '.am-repocard rule not found').not.toBe('');
+    expect(cardRule).toMatch(/width:\s*156px/);
+    expect(cardRule).toMatch(/height:\s*52px/);
   });
 
-  it('a repo whose branch has not been resolved yet says "detached", never an empty line', async () => {
+  // The branch line came off the card face entirely (t-qn09vr, round-3 change
+  // 51) — a repo's branch, resolved or not, is RepoDetail's job now, per
+  // checkout. This pins the negative directly rather than only via the CSS
+  // shape assertion above.
+  it('carries no branch line on the card, resolved branch or not', async () => {
     const { container } = render(AgentManagerPane);
-    amState([repo('/x/alpha')]); // an older host: no groupId, no branch
+    amState([
+      { ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' },
+      repo('/x/beta'), // an older host: no groupId, no branch
+    ]);
     await tick();
-    expect(card(container, 'alpha').querySelector('.am-repocard-branch')!.textContent).toBe('detached');
+    expect(container.querySelectorAll('.am-repocard-branch').length).toBe(0);
   });
 
   it('the first repo is selected by default; clicking another card swaps the board', async () => {
@@ -423,8 +477,99 @@ describe('Folds board — the repo cards', () => {
     const detail = container.querySelector('.am-detail') as HTMLElement;
     expect(detail.querySelectorAll('.am-wtrow').length).toBe(0);
     expect(detail.textContent).toContain('folder missing from disk');
-    await fireEvent.click(container.querySelector('.am-repocard-x')!);
+    // The card ✕ asks first, with the same confirm as the toolbar's Remove.
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    const cardX = container.querySelector('.am-repocard-x') as HTMLElement;
+    await fireEvent.click(cardX);
+    await tick();
+    expect(posts().filter((p) => p.type === 'amRemoveRepo'), 'the card ✕ itself never posts').toEqual([]);
+    const modal = container.querySelector('.cm-card') as HTMLElement;
+    expect(modal, 'the confirm dialog is up').not.toBeNull();
+    expect(modal.textContent).toContain('Remove gone from the board?');
+    expect(modal.textContent).toContain('Files, tickets and worktrees on disk are untouched.');
+    await fireEvent.click(byText(modal, 'Cancel'));
+    await tick();
+    expect(posts().filter((p) => p.type === 'amRemoveRepo'), 'Cancel never posts').toEqual([]);
+    await fireEvent.click(cardX);
+    await tick();
+    await fireEvent.click(byText(container.querySelector('.cm-card') as HTMLElement, 'Remove'));
+    await tick();
     expect(posts()).toContainEqual({ type: 'amRemoveRepo', root: '/x/gone' });
+  });
+
+  // The toolbar ✕ used to post amRemoveRepo on the FIRST click — one misclick
+  // away from unregistering a healthy repo. It now ARMS the branded ConfirmModal
+  // (never a native confirm); nothing may reach the host until the modal's
+  // Remove. Cancel closes it silently, and a poll broadcast with the same repos
+  // must not disarm the confirm under the user's cursor.
+  it('a healthy repo\'s toolbar ✕ arms a confirm; Cancel posts nothing; Remove posts amRemoveRepo', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([{ ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' }]);
+    await tick();
+    const head = container.querySelector('.am-repohead') as HTMLElement;
+    const x = byTitle(head, 'Remove from board');
+    expect(x.getAttribute('title')).toBe('Remove from board (files stay on disk)');
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    await fireEvent.click(x);
+    await tick();
+    // Armed, not sent: the first click may post NOTHING.
+    expect(posts().filter((p) => p.type === 'amRemoveRepo'), 'the ✕ itself never posts').toEqual([]);
+    let modal = container.querySelector('.cm-card') as HTMLElement;
+    expect(modal, 'the confirm dialog is up').not.toBeNull();
+    expect(modal.textContent).toContain('Remove alpha from the board?');
+    expect(modal.textContent).toContain('Files, tickets and worktrees on disk are untouched.');
+    await fireEvent.click(byText(modal, 'Cancel'));
+    await tick();
+    expect(container.querySelector('.cm-card'), 'Cancel closes it').toBeNull();
+    expect(posts().filter((p) => p.type === 'amRemoveRepo'), 'Cancel never posts').toEqual([]);
+    await fireEvent.click(x);
+    await tick();
+    amState([{ ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' }]);
+    await tick();
+    modal = container.querySelector('.cm-card') as HTMLElement;
+    expect(modal, 'a poll tick with the same repo leaves the confirm open').not.toBeNull();
+    await fireEvent.click(byText(modal, 'Remove'));
+    await tick();
+    expect(posts()).toContainEqual({ type: 'amRemoveRepo', root: '/x/alpha' });
+  });
+
+  // Edit path: the button only asks the host, which opens the folder picker and
+  // validates the pick. A missing repo needs it most; the workspace repo never has it.
+  it('Edit path… posts amRepointRepo for a healthy or missing repo, never for the workspace repo', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([{ ...repo('/x/gone'), missing: true }]);
+    await tick();
+    globalThis.__vscodeApiMock.postMessage.mockClear();
+    await fireEvent.click(byText(container.querySelector('.am-repohead')!, 'Edit path…'));
+    expect(posts()).toContainEqual({ type: 'amRepointRepo', root: '/x/gone' });
+    amState([{ ...repo('/x/ws'), workspace: true }]);
+    await tick();
+    expect([...container.querySelectorAll('.am-repohead button')].map((b) => b.textContent)).not.toContain('Edit path…');
+  });
+
+  it('the workspace repo never offers remove — no toolbar ✕, no card ✕', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([{ ...repo('/x/ws'), workspace: true }]);
+    await tick();
+    expect(container.querySelector('.am-repohead'), 'the toolbar itself is drawn').not.toBeNull();
+    expect(container.querySelector('.am-repo-x')).toBeNull();
+    expect(container.querySelector('.am-repocard-x'), 'a healthy card carries no ✕ either').toBeNull();
+  });
+
+  // The armed repo can be removed by ANOTHER window while the confirm is up.
+  // The selection then falls back to the next repo — a confirm that survived
+  // the swap would name one repo and remove another.
+  it('a broadcast that swaps the selected repo under the confirm disarms it', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([repo('/x/alpha'), repo('/x/beta')]);
+    await tick();
+    await fireEvent.click(byTitle(container.querySelector('.am-repohead') as HTMLElement, 'Remove from board'));
+    await tick();
+    expect(container.querySelector('.cm-card')).not.toBeNull();
+    amState([repo('/x/beta')]); // alpha vanished; the selection falls back to beta
+    await tick();
+    expect(container.querySelector('.cm-card'), 'the stale confirm is gone').toBeNull();
+    expect(posts().filter((p) => p.type === 'amRemoveRepo')).toEqual([]);
   });
 
   // Cards carry NO rename pencil (round 4 added one; UAT round 5 removed it as
@@ -721,6 +866,78 @@ describe('Folds board — the selected repo fills the detail pane', () => {
     expect(rowsOf(container)).toHaveLength(0);
     expect(branchesOf(container)).toHaveLength(0);
     expect(detail(container).textContent).toContain('Reading worktrees');
+  });
+
+  // t-ro2ss4 — the whole pane used to scroll as one block (title, toggle AND
+  // rows together), so a repo with many checkouts grew the pane's own height
+  // and stretched the two-row card carousel beside it apart (RepoCarousel's
+  // `1fr` grid rows divided the extra height evenly, pulling the rows apart).
+  // The rows now live in their own `.am-detail-list` wrapper, capped to 3 rows;
+  // the head and the toggle sit outside it and never scroll.
+  it('the rows live in their own capped, scrollable wrapper — the head and toggle stay outside it', async () => {
+    const container = await openBoard();
+    const list = detail(container).querySelector('.am-detail-list') as HTMLElement;
+    expect(list, '.am-detail-list must exist').not.toBeNull();
+    expect(list.querySelectorAll('.am-wtrow').length).toBe(3);
+    // The head/toggle live outside the list — they must not travel with the
+    // rows into the scroller.
+    expect(detail(container).querySelector('.am-detail-title .am-detail-head')).not.toBeNull();
+    expect(list.querySelector('.am-detail-head')).toBeNull();
+    expect(list.querySelector('.am-viewbtn')).toBeNull();
+  });
+
+  it('five checkouts still render as five rows inside the capped wrapper — it scrolls, it does not truncate', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([{ ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' }]);
+    await tick();
+    sendWorktrees('/x/alpha', [
+      wt({ name: 'one', path: '/x/alpha' }),
+      wt({ name: 'two', path: '/x/2', primary: false }),
+      wt({ name: 'three', path: '/x/3', primary: false }),
+      wt({ name: 'four', path: '/x/4', primary: false }),
+      wt({ name: 'five', path: '/x/5', primary: false }),
+    ]);
+    await tick();
+    expect(rowsOf(container)).toHaveLength(5);
+  });
+
+  it('the list wrapper caps at 3 rows and scrolls beyond — max-height derived from the row height (CSS source)', () => {
+    const src = readFileSync('webview/dashboard/components/RepoDetail.svelte', 'utf8');
+    const listRule = /\.am-detail-list\s*\{([\s\S]*?)\}/.exec(src)?.[1] ?? '';
+    expect(listRule, '.am-detail-list rule not found').not.toBe('');
+    expect(listRule).toMatch(/max-height:\s*calc\(3 \* var\(--am-wtrow-h\)\)/);
+    expect(listRule).toMatch(/overflow-y:\s*auto/);
+    // The outer pane carries no overflow/scroll of its own any more — only the
+    // list wrapper scrolls, so the head and toggle cannot travel with it.
+    const detailRule = /(?<!-)\.am-detail\s*\{([\s\S]*?)\}/.exec(src)?.[1] ?? '';
+    expect(detailRule, '.am-detail rule not found').not.toBe('');
+    expect(detailRule).not.toMatch(/overflow/);
+    const rowSrc = readFileSync('webview/dashboard/components/RepoCheckoutRow.svelte', 'utf8');
+    expect(rowSrc).toMatch(/--am-wtrow-h/);
+  });
+
+  it('the carousel grid no longer stretches its rows apart when the detail pane is taller (CSS source)', () => {
+    const track = readFileSync('webview/dashboard/components/RepoCarousel.svelte', 'utf8');
+    // `auto`, not `1fr`: 1fr divides whatever extra height the flex row gives
+    // the track between the two card rows, which is the gap defect itself.
+    expect(track).toMatch(/grid-template-rows: repeat\(\$\{rows\}, auto\)/);
+    expect(track).not.toMatch(/grid-template-rows: repeat\(\$\{rows\}, 1fr\)/);
+    const gridRule = /\.rd-carousel-track\.rd-car-grid\s*\{([\s\S]*?)\}/.exec(track)?.[1] ?? '';
+    expect(gridRule).toMatch(/align-content:\s*start/);
+  });
+
+  // `auto` grid rows exposed a second defect a Playwright pass caught (jsdom
+  // has no layout to see it): `height: 100%` on every direct child resolves as
+  // unset while an `auto` track's intrinsic size is still being computed, so
+  // grid's own default stretch won and shrank the LAST card (the ghost
+  // "+ Add repo" button, which has no wrapping div) down to its text size
+  // instead of the fixed 52px every card already carries.
+  it('grid-mode children are NOT forced to height:100% — that fights their own fixed height (CSS source)', () => {
+    const track = readFileSync('webview/dashboard/components/RepoCarousel.svelte', 'utf8');
+    const gridChildRule = /\.rd-carousel-track\.rd-car-grid :global\(> \*\)\s*\{([\s\S]*?)\}/.exec(track)?.[1] ?? '';
+    expect(gridChildRule, '.rd-carousel-track.rd-car-grid :global(> *) rule not found').not.toBe('');
+    expect(gridChildRule).not.toMatch(/height:\s*100%/);
+    expect(gridChildRule).toMatch(/align-self:\s*start/);
   });
 });
 

@@ -1,20 +1,13 @@
-// subagentInbox.ts — where a sub-agent's SIDE CHANNEL lands: the forwarded
-// live chunk, the engine's terminal marker, and what happens when neither has
-// a card to land on.
+// subagentInbox.ts — where a sub-agent's side channel lands: the forwarded
+// live chunk, the engine's terminal marker, and what happens when neither
+// has a card to land on.
 //
-// EXTRACTED from ChatPane.svelte, which was at 2700/2700 when the drawer's
-// clock needed room. The split is by responsibility, matching the sibling
-// leaves: subagentEntry.ts decides WHO is on the roster, subagentRows.ts what
-// the drawer SHOWS, subagentFormat.ts how a row PRINTS — and this one where a
-// side-channel event GOES. All four are pure and DOM-free, so the rules can be
-// checked without a render.
+// Split by responsibility, matching sibling leaves (roster, rows, format,
+// and this one for side-channel events). All four are pure and DOM-free.
 //
-// The channel is real but invisible: both the chunk and the marker arrive under
-// the PARENT session tagged with a child's id, and both are dropped when no
-// card carries that id (a chunk that beat its own tool_call, a replayed
-// session). Dropping is right — a sub-agent's raw working notes do not belong
-// loose in the transcript — but dropping SILENTLY is how a whole child's stream
-// goes missing with nothing to show for it.
+// Both the chunk and the marker arrive under the parent session tagged
+// with a child's id, and both are dropped when no card carries that id.
+// Dropping silently would let a whole child's stream vanish unnoticed.
 
 import type { SubagentSpan } from './subagentTiming';
 
@@ -29,13 +22,9 @@ export interface SubagentCard extends SubagentSpan {
   taskDone?: 'completed' | 'error';
 }
 
-/**
- * Per-sub-agent live-stream budget, in characters. VOLUME GUARD for a fan-out:
- * ten sub-agents streaming concurrently is ten unbounded buffers otherwise. The
- * TAIL is kept (what it is doing NOW is the point of a live stream) and the
- * final result arrives separately as the tool result, so nothing load-bearing
- * is lost by dropping the head.
- */
+/** Per-sub-agent live-stream budget, in characters: a volume guard for a
+ *  fan-out, since ten concurrent streams would be ten unbounded buffers.
+ *  The tail is kept — the final result arrives separately as the tool result. */
 export const SUBAGENT_STREAM_CAP = 8000;
 
 /** The child id carried by a side-channel message, or `''` when it carries
@@ -44,11 +33,27 @@ export function childId(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** The card that spawned `child`, or none. A card carries no session id until
- *  the child session exists, so an early chunk genuinely has nowhere to go. */
+/** The card of `child`'s CURRENT run, or none. A card carries no session id until
+ *  the child session exists, so an early chunk genuinely has nowhere to go.
+ *  t-v5qi8q: the NEWEST card, because each resume (`task_id`) writes another card
+ *  for the same child and the drawer row reads the newest (subagentRows.ts). The
+ *  first card kept every marker, so a resumed child stayed RUNNING for ever. The
+ *  host's message log picks newest-first too (sessionLogSubagent.ts). */
 export function cardForChild<T extends SubagentCard>(messages: readonly T[], child: string): T | undefined {
   if (!child) return undefined;
-  return messages.find((m) => m.taskSessionId === child);
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.taskSessionId === child) return messages[i];
+  return undefined;
+}
+
+/** The terminal marker for `child`, stamped on its card. Returns the card, or
+ *  undefined when none carries that id (the caller logs that drop). The first
+ *  end wins: the injected turn can re-emit the marker with a later time. */
+export function settleChild<T extends SubagentCard>(messages: readonly T[], child: string, state: unknown, endedAt: unknown): T | undefined {
+  const card = cardForChild(messages, child);
+  if (!card) return undefined;
+  card.taskDone = state === 'error' ? 'error' : 'completed';
+  if (typeof endedAt === 'number' && card.taskEndedAt === undefined) card.taskEndedAt = endedAt;
+  return card;
 }
 
 /** `current` plus `text`, keeping the last SUBAGENT_STREAM_CAP characters. */
@@ -58,19 +63,14 @@ export function cappedStream(current: string | undefined, text: string): string 
 }
 
 /** How many drops of one kind, for one child, pass before another line is
- *  logged. A live sub-agent chunks continuously, so one line each would be the
- *  flood; a count that never surfaces is the silence this exists to end. */
+ *  logged — a live sub-agent chunks continuously, so every drop would flood. */
 export const DROP_LOG_EVERY = 100;
 
 /**
- * A counter for side-channel events that landed on no card, returning the line
- * to log or `''` when this one is only being counted.
- *
- * A FACTORY, not module state: the count belongs to the pane instance that
- * owns the transcript, and a test that had to reset a module-level map would be
- * testing the reset. The first drop of a kind for a child always reports (that
- * is the one saying a whole child's output is going nowhere); after it, every
- * DROP_LOG_EVERY-th carries the running total.
+ * A counter for side-channel events landed on no card; returns the line to
+ * log, or `''` when only counting. A factory, not module state, so the
+ * count belongs to the pane instance that owns the transcript. The first
+ * drop for a child always reports; after that, every `every`-th does.
  */
 export function makeDropLog(every: number = DROP_LOG_EVERY): (kind: string, child: string) => string {
   const counts = new Map<string, number>();

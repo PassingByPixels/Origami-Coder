@@ -1,13 +1,8 @@
-// Folds board — the PURE bucket + cluster logic behind the seven-column kanban
-// (contract §6). No DOM, no vscode API: which column a card lands in, and how
-// race siblings cluster, are decidable from data alone, so they are unit-tested
-// directly instead of through a rendered pane. (The repo-pill badge counts lived
-// here too until repo CARDS replaced the pills — the counts duplicated the In
-// progress and Blocked columns, so they went with them.)
-//
-// The TICKET is the entity; the FOLD is provisioned when work starts. That gives
-// the board two card kinds — a TicketCard (a markdown file in .origami/tickets)
-// and the fold AgentCard — and one rule that stops a launched ticket drawing both.
+// Folds board — the PURE bucket + cluster logic behind the seven-column
+// kanban (contract §6). Bucket and cluster placement are decidable from
+// data alone, unit-tested directly. The TICKET is the entity; the FOLD is
+// provisioned when work starts, and a launched ticket is absorbed into
+// its fold row, drawing only once.
 
 /** A fold row (ext contract §5: AgentRow + ticketId / ticketTitle / activity). */
 export interface Row {
@@ -18,7 +13,6 @@ export interface Row {
   mergedAt: number; groupId: string;
   /** The ticket this fold was launched from ('' = a plain fold). */
   ticketId: string;
-  /** That ticket's title, so the card can headline the WORK, not the branch slug. */
   ticketTitle: string;
   /** One live line of what the agent is doing right now ('' = nothing to say). */
   activity: string;
@@ -31,15 +25,12 @@ export interface TicketRow {
   labels: string[]; assignee: string;
   acceptance: { done: number; total: number };
   updatedAt: number; fold: string; branch: string; malformed?: boolean;
-  /**
-   * A spec chat is open for this ticket right now (contract §11.3). ABSENT on an
-   * older host, so every reader must treat undefined as "no spec session" — a
-   * card that assumed the field would never render its way out of "speccing…".
-   */
+  /** A spec chat is open for this ticket right now. Absent on an older
+   *  host reads as "no spec session", not a stuck "speccing…". */
   spec?: boolean;
 }
 
-/** S15 cartographer: the repo's architecture-map status, rides amState per repo. */
+/** The cartographer's architecture-map status for this repo; rides amState. */
 export interface RepoMapState {
   status: 'none' | 'ready' | 'building' | 'failed';
   sha?: string; branch?: string; builtAt?: number; behind?: number;
@@ -49,12 +40,10 @@ export interface RepoMapState {
 export interface RepoBoard {
   root: string; name: string; workspace: boolean; missing: boolean;
   defaultModel: string; rows: Row[]; map: RepoMapState; tickets: TicketRow[];
-  /** The checkout that owns this repository's tickets, folds and apply-to-main.
-   *  Equal to `root` unless someone set a primary. ABSENT on an older host, so a
-   *  reader must treat undefined as "the root itself". */
+  /** The checkout that owns tickets, folds and apply-to-main; absent reads
+   *  as "the root itself" (equal to `root` unless a primary was set). */
   primary?: string;
-  /** Repo cards: entries sharing a git common dir are ONE repository and draw one
-   *  card. '' / absent = git has not been asked yet; the entry stands alone. */
+  /** Repo cards: entries sharing a git common dir are one repo, draw one card. */
   groupId?: string;
   /** The primary checkout's current branch ('' = detached, or not resolved yet). */
   branch?: string;
@@ -64,9 +53,8 @@ export type ColumnId = 'triage' | 'todo' | 'pending' | 'doing' | 'blocked' | 'do
 
 export interface ColumnDef { id: ColumnId; label: string; subtitle: string }
 
-// Column ORDER is the ticket's own lifecycle, left to right. The subtitle says
-// what the column is FOR in one line — a head reading "Pending" alone leaves the
-// reader guessing which of queued-fold and unspec'd-idea it means.
+// Column ORDER is the ticket's own lifecycle, left to right. The subtitle
+// says what each column is FOR, since a bare "Pending" alone is ambiguous.
 export const COLUMNS: ColumnDef[] = [
   { id: 'triage', label: 'Triage', subtitle: 'raw ideas — spec them before launch' },
   { id: 'todo', label: 'Todo', subtitle: "spec'd with acceptance — ready to launch" },
@@ -79,11 +67,9 @@ export const COLUMNS: ColumnDef[] = [
 
 /** Which column a FOLD row belongs to. Blocked is DERIVED here, never stored. */
 export function bucketRow(r: Row): ColumnId {
-  // Merged (a clean apply-to-main) retires the card REGARDLESS of runtime state;
-  // every other bucket excludes a merged row.
+  // Merged retires the card regardless of runtime state; every other bucket excludes it.
   if (r.mergedAt > 0) return 'merged';
-  // Blocked before Pending/In progress: a run waiting on an answer, or one that
-  // failed, is the thing you must look at — its runtime state is the detail.
+  // Blocked outranks Pending/In progress: a needs-answer or failed run is what you check.
   if (r.needsYou || r.state === 'error') return 'blocked';
   if (r.state === 'queued') return 'pending';
   if (r.state === 'provisioning' || r.state === 'working') return 'doing';
@@ -91,22 +77,19 @@ export function bucketRow(r: Row): ColumnId {
 }
 
 /**
- * Which column a TICKET draws in, or null when it draws no card at all.
- * The dedupe rule: a ticket with `fold` set is ABSORBED by its fold row (which
- * carries ticketId/ticketTitle), so a launched ticket is ONE card, never two.
+ * Which column a TICKET draws in, or null for no card. A ticket with
+ * `fold` set is absorbed by its fold row, so it draws once, never twice.
  */
 export function bucketTicket(t: TicketRow): ColumnId | null {
-  // A file we could not parse is never dropped silently (contract §2) — it
-  // surfaces in Triage as a warning row, where the human can open and fix it.
-  // Checked FIRST because a malformed file's other fields cannot be trusted.
+  // A malformed file is never dropped silently — it surfaces in Triage as
+  // a warning row, checked first since its other fields can't be trusted.
   if (t.malformed) return 'triage';
   if (t.fold) return null;
   if (t.status === 'triage') return 'triage';
   if (t.status === 'todo') return 'todo';
   // The unlaunched-file case: a ticket marked merged that never got a fold.
   if (t.status === 'merged') return 'merged';
-  // pending / in_progress / done are stamped by the fold lifecycle, so without a
-  // fold they are a stale hand-edit; `closed` is hidden in v1. Neither draws.
+  // pending/in_progress/done need a fold, or they're a stale hand-edit; closed is hidden.
   return null;
 }
 
@@ -140,9 +123,8 @@ export function ticketMatches(t: TicketRow, filter: string): boolean {
     .some((v) => (v ?? '').toLowerCase().includes(q));
 }
 
-// ---- fan-out clustering: rows of one race group cluster adjacently under a
-//      slim group header; the header can Prune the losing siblings once any one
-//      of them has been merged (a clean apply-to-main). ----
+// Fan-out clustering: rows of one race group cluster under a slim group
+// header, which can prune losing siblings once one of them has merged.
 export type Cluster =
   | { kind: 'single'; row: Row }
   | { kind: 'group'; groupId: string; base: string; rows: Row[]; siblings: Row[] };
@@ -156,9 +138,8 @@ export function clusters(colRows: Row[], allRows: Row[]): Cluster[] {
     if (!r.groupId) { out.push({ kind: 'single', row: r }); continue; }
     if (placed.has(r.groupId)) continue;
     const rows = colRows.filter((x) => x.groupId === r.groupId);
-    // A lone sibling in THIS column (e.g. a merged winner sitting alone in
-    // Merged while its losers wait in Done) is not a cluster here — render it as
-    // an ordinary card, no race header and no second "Prune rest".
+    // A lone sibling in this column is not a cluster here — render it as
+    // an ordinary card, with no race header.
     if (rows.length < 2) { out.push({ kind: 'single', row: r }); continue; }
     placed.add(r.groupId);
     out.push({ kind: 'group', groupId: r.groupId, base: baseName(rows[0].name), rows, siblings: allRows.filter((x) => x.groupId === r.groupId) });

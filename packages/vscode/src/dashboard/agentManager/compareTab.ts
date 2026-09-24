@@ -1,19 +1,12 @@
-// Agent Manager - compareTab.ts (S6d): the race-Compare EDITOR TAB. Passing's
-// UAT verdict on the S6c in-column numbers table was that it doesn't let him SEE
-// how siblings differ, so Compare now opens a real diff SCREEN in its own editor
-// tab (the same createWebviewPanel + dashboard-bundle mount the board itself uses,
-// with a new __ORIGAMI_RACE_COMPARE__ payload). ONE tab per race group, keyed by
-// root+groupId and revealed/reused on re-click. Kept OUT of DashboardPanel (which
-// is at its line cap) behind a thin dispatch: the panel only guarantees the shared
-// host exists, then hands off here.
+// The race-Compare editor tab: opens a diff screen in its own tab (same webview mount as the
+// board) so siblings' differences are visible, rather than the old in-column numbers table.
+// One tab per race group (root+groupId), revealed/reused on re-click.
 
 import * as vscode from 'vscode';
 import type { WebviewHost } from '../DashboardPanel';
 
-/** The race identity injected into the compare webview (window.__ORIGAMI_RACE_COMPARE__).
- *  siblings is a SNAPSHOT taken when Compare was clicked - the screen fetches live
- *  per-file diffs on demand (amRaceFileDiffs) and offers a manual refresh; it does
- *  not live-poll the roster (v1). */
+/** The race identity injected into the compare webview. `siblings` is a snapshot at click
+ *  time; the screen fetches live diffs on demand and offers manual refresh. */
 export interface RaceCompareParams {
   root: string;
   groupId: string;
@@ -21,9 +14,8 @@ export interface RaceCompareParams {
   siblings: Array<{ id: string; name: string; state: string; agentName: string; model: string }>;
 }
 
-/** The narrow slice of DashboardPanel the tab needs: attach a secondary webview
- *  carrying the race payload (renderHtmlFor injects the global; the shared host
- *  routes the tab's am* messages + fans broadcasts to it). */
+/** The narrow slice of DashboardPanel the tab needs: attach a secondary webview carrying the
+ *  race payload. */
 export interface CompareTabHost {
   attachView(host: WebviewHost, bundle: 'chat', soloSessionId: undefined, memory: boolean, board: boolean, raceCompare: RaceCompareParams): void;
 }

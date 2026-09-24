@@ -50,8 +50,12 @@
 <style>
   /* Two FIXED lines on one alignment grid, never a wrap: the pane is under
      300px, so a wrapping row is a ragged row. `flex: none` because the pane is
-     the scroller — a row must not be squeezed to fit instead. */
-  .am-wtrow { flex: none; display: flex; flex-direction: column; gap: 1px; font-size: 10px; padding: 4px 4px 4px 6px; border-radius: 4px; }
+     the scroller — a row must not be squeezed to fit instead.
+     `min-height: var(--am-wtrow-h)` (t-ro2ss4): RepoDetail.svelte's list wrapper
+     caps itself at 3 * this SAME var, so the two stay in lockstep — the row
+     height is measured once (34px: two 10px/1.3 lines + 1px gap + 8px vertical
+     padding) and named, not repeated as a second magic number. */
+  .am-wtrow { flex: none; display: flex; flex-direction: column; gap: 1px; font-size: 10px; padding: 4px 4px 4px 6px; border-radius: 4px; min-height: var(--am-wtrow-h, 34px); box-sizing: border-box; }
   .am-wtrow:hover { background: var(--og-btn-bg, rgba(255, 255, 255, 0.05)); }
   /* The primary is marked TWICE and quietly: a raised ground and a 2px accent
      spine down its left edge. `--og-surface-alt` was the other candidate and it

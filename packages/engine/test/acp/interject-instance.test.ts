@@ -145,6 +145,47 @@ const textParts = (ctx: InstanceContext, sessionID: SessionID) =>
     ),
   )
 
+/** The same read, for the ATTACHMENTS: an interjected picture is a `file` part
+ *  carrying a data URL, which is the shape a prompted one takes. */
+const fileParts = (ctx: InstanceContext, sessionID: SessionID) =>
+  inInstance(
+    ctx,
+    Session.Service.use((sessions) => sessions.messages({ sessionID })).pipe(
+      Effect.map((msgs) =>
+        msgs.flatMap((msg) =>
+          msg.parts.flatMap((part) => (part.type === "file" ? [{ mime: part.mime, url: part.url }] : [])),
+        ),
+      ),
+      Effect.orDie,
+    ),
+  )
+
+/** A real 1x1 PNG. Small enough that `Image.normalize` keeps it whole, so the
+ *  URL that comes back out is the one that went in. */
+const PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+/** Hold the session the way a real turn holds it, with work that never settles.
+ *  The interjections below are MID-TURN ones, which is the case the composer
+ *  sends - and it keeps `interject` off its idle branch, which forks a whole
+ *  turn against a provider these fixtures do not have. */
+async function busyChat() {
+  const chat = await makeChat()
+  const turn = AppRuntime.runFork(
+    SessionRunState.Service.use((state) =>
+      state.ensureRunning(SessionID.make(chat.sessionId), Effect.never, Effect.never),
+    ).pipe(Effect.provideService(InstanceRef, chat.ctx)),
+  )
+  for (let i = 0; i < 200; i++) {
+    if (await busyNow(chat.ctx, SessionID.make(chat.sessionId))) break
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  return { ...chat, release: async () => {
+    await cancel(chat.ctx, SessionID.make(chat.sessionId))
+    turn.interruptUnsafe?.()
+  } }
+}
+
 describe("interject through the real ACP service", () => {
   it("delivers into a session whose turn has NOT started yet (the first-prompt case)", async () => {
     const chat = await makeChat()
@@ -203,6 +244,69 @@ describe("interject through the real ACP service", () => {
     } finally {
       await cancel(chat.ctx, SessionID.make(chat.sessionId))
       turn.interruptUnsafe?.()
+    }
+  }, 120_000)
+
+  // t-4ahs3u. The composer could not send a picture into a running turn at all,
+  // and the reason ran the whole depth of the stack: this method took `text` and
+  // nothing else. It takes the client's `image` blocks now and writes them as
+  // FILE parts on the same interjected message - which is what
+  // `SessionPrompt.createUserMessage` does with a fresh turn's attachments, so
+  // an interjected picture and a prompted one reach the model the same way.
+  it("writes an attached picture as a file part on the interjected message", async () => {
+    const chat = await busyChat()
+    await using _dir = chat.dir
+
+    try {
+      const reply = await Effect.runPromise(
+        chat.service.interject({
+          sessionId: chat.sessionId,
+          text: "what is wrong with this",
+          images: [{ mimeType: "image/png", data: PNG_BASE64 }],
+        }),
+      )
+
+      expect(reply).toMatchObject({ delivered: true, busy: true })
+      const files = await fileParts(chat.ctx, SessionID.make(chat.sessionId))
+      expect(files).toEqual([{ mime: "image/png", url: `data:image/png;base64,${PNG_BASE64}` }])
+      // The words and the envelope are still there: the attachment is EXTRA, not
+      // a replacement for the message it arrived with.
+      const texts = await textParts(chat.ctx, SessionID.make(chat.sessionId))
+      expect(texts).toContain("what is wrong with this")
+      expect(texts).toContain(Interject.ENVELOPE)
+    } finally {
+      await chat.release()
+    }
+  }, 120_000)
+
+  it("takes a picture with NO words, and refuses a message that is neither", async () => {
+    const chat = await busyChat()
+    await using _dir = chat.dir
+
+    try {
+      await Effect.runPromise(
+        chat.service.interject({
+          sessionId: chat.sessionId,
+          text: "",
+          images: [{ mimeType: "image/png", data: PNG_BASE64 }],
+        }),
+      )
+
+      const files = await fileParts(chat.ctx, SessionID.make(chat.sessionId))
+      expect(files, "the picture IS the message").toHaveLength(1)
+      // An empty text part would reach the model as a blank user turn, so none
+      // is written: the envelope is the only text this message carries.
+      const texts = await textParts(chat.ctx, SessionID.make(chat.sessionId))
+      expect(texts).toEqual([Interject.ENVELOPE])
+
+      // Neither words nor picture is nothing at all - refused, not written as an
+      // empty user turn.
+      const empty = await Effect.runPromise(
+        Effect.exit(chat.service.interject({ sessionId: chat.sessionId, text: "   " })),
+      )
+      expect(empty._tag).toBe("Failure")
+    } finally {
+      await chat.release()
     }
   }, 120_000)
 })

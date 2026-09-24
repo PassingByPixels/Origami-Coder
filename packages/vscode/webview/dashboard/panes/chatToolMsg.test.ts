@@ -71,6 +71,16 @@ describe('applyToolCall', () => {
     expect(both[0].taskResumed).toBe(false);
     expect(both[1].taskResumed).toBe(true);
   });
+
+  it('reads rawInput.subagent_type off a task call, for the map\'s caption', () => {
+    const m = applyToolCall<ToolCardMsg>([], call({ toolName: 'task', rawInput: { subagent_type: 'scout' } }), 1)[0];
+    expect(m.taskAgentType).toBe('scout');
+  });
+
+  it('ignores subagent_type on any tool that is not task', () => {
+    const m = applyToolCall<ToolCardMsg>([], call({ toolName: 'bash', rawInput: { subagent_type: 'scout' } }), 1)[0];
+    expect(m.taskAgentType).toBeUndefined();
+  });
 });
 
 describe('applyToolResult', () => {
@@ -374,5 +384,42 @@ describe('apply_patch row', () => {
     const out = applyToolResult(born, { toolCallId: 'tc-1', status: 'completed', title: 'src/written.ts', path: 'src/written.ts' }, 2);
     expect(out[0].label).toBe('write');
     expect(out[0].toolPath).toBe('src/written.ts');
+  });
+});
+
+// t-f6u661 — a `task` card carries WHO the sub-agent is, read off the call's
+// own input. It rides every frame, so the merge has to be write-if-present: a
+// completed frame that carries no input must not blank the name the drawer, the
+// tabs and the card are all printing.
+describe('a task card keeps its identity across the frames', () => {
+  const spawn = (over: Record<string, unknown> = {}) =>
+    call({ toolName: 'task', kind: 'think', title: 'task', rawInput: { description: 'audit the bundle', subagent_type: 'Explore', prompt: 'go' }, ...over });
+
+  it('reads the description and agent type off the pending frame', () => {
+    const m = applyToolCall<ToolCardMsg>([], spawn(), 1)[0];
+    expect([m.taskDescription, m.taskAgentType]).toEqual(['audit the bundle', 'Explore']);
+  });
+
+  it('does NOT erase them when a later frame carries no input', () => {
+    const seeded = applyToolCall<ToolCardMsg>([], spawn(), 1);
+    const m = applyToolResult<ToolCardMsg>(seeded, { toolCallId: 'tc-1', status: 'completed', content: 'done' }, 2)[0];
+    expect([m.taskDescription, m.taskAgentType]).toEqual(['audit the bundle', 'Explore']);
+  });
+
+  it('ADOPTS them from a later frame when the pending one had no input', () => {
+    // The restore path replays the stored call first; an engine that only rides
+    // the input on the running frame must still name the agent.
+    const seeded = applyToolCall<ToolCardMsg>([], call({ toolName: 'task', kind: 'think', title: 'task' }), 1);
+    expect(seeded[0].taskDescription).toBeUndefined();
+    const m = applyToolResult<ToolCardMsg>(seeded, {
+      toolCallId: 'tc-1', status: 'completed', content: 'done',
+      rawInput: { description: 'audit the bundle', subagent_type: 'Explore' },
+    }, 2)[0];
+    expect([m.taskDescription, m.taskAgentType]).toEqual(['audit the bundle', 'Explore']);
+  });
+
+  it("never reads an ordinary tool's input as a sub-agent name", () => {
+    const m = applyToolCall<ToolCardMsg>([], call({ rawInput: { command: 'npm test', description: 'run the tests' } }), 1)[0];
+    expect(m.taskDescription).toBeUndefined();
   });
 });

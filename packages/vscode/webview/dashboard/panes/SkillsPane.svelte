@@ -4,6 +4,7 @@
   // `list_skills` ACP ext method via DashboardPanel (`skillsData`).
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import { groupByCategory } from './skillsGrouping';
+  import { scopeIn, withScope, type SkillsScope } from './skillsScopeState';
   const vscode = getVsCodeApi();
 
   // Mirrors SkillEntry in src/acpExtTypes.ts (not imported: tsconfig.webview.json
@@ -22,6 +23,9 @@
     location: string;
     /** Opening excerpt of the skill body, hard-capped engine-side. */
     contentPreview?: string;
+    /** `local` (inside the open project) or `global` (user-level) — added host-side
+     *  (skillScope.ts) by testing `location` against the workspace folder. */
+    scope?: 'local' | 'global';
   }
 
   interface SkillProblem {
@@ -34,8 +38,21 @@
   let error: string | null = $state(null);
   let loaded = $state(false);
   let query = $state('');
+  /** The directories `list_skills` scans for each scope (skillScope.ts,
+   *  host-side) — named in the empty state so it reads as a diagnostic, not a
+   *  dead end. */
+  let scanRoots: { local: string[]; global: string[] } = $state({ local: [], global: [] });
+  /** Local/Global filter. Persisted via `vscode.getState()` (skillsScopeState.ts)
+   *  so it survives a tab switch and a window reload, the same seam ChatsList's
+   *  Claude-Code toggle uses. */
+  let view: SkillsScope = $state(scopeIn(vscode.getState()));
   /** Name of the one card showing its full details, or null when none is. */
   let expandedName: string | null = $state(null);
+
+  function setView(next: SkillsScope): void {
+    view = next;
+    vscode.setState(withScope(vscode.getState(), next));
+  }
 
   /**
    * `rescan` asks the engine to re-walk the skill directories. The engine scans
@@ -50,22 +67,36 @@
     vscode.postMessage({ type: 'listSkills', refresh: rescan });
   }
 
-  window.addEventListener('message', (event: MessageEvent) => {
-    const msg = event.data || {};
-    if (msg.type === 'skillsData') {
-      skills = Array.isArray(msg.skills) ? msg.skills : [];
-      problems = Array.isArray(msg.problems) ? msg.problems : [];
-      error = typeof msg.error === 'string' ? msg.error : null;
-      loaded = true;
-    }
+  // The listener is TORN DOWN with the pane (t-fisfs5 R12). It was added at
+  // init and never removed, so every mount of this tab left another closure on
+  // `window` writing into a dead component's state. The mount load rides the
+  // same effect, after the listener is attached.
+  $effect(() => {
+    const onMsg = (event: MessageEvent) => {
+      const msg = event.data || {};
+      if (msg.type === 'skillsData') {
+        skills = Array.isArray(msg.skills) ? msg.skills : [];
+        problems = Array.isArray(msg.problems) ? msg.problems : [];
+        error = typeof msg.error === 'string' ? msg.error : null;
+        scanRoots = msg.scanRoots && typeof msg.scanRoots === 'object'
+          ? { local: Array.isArray(msg.scanRoots.local) ? msg.scanRoots.local : [], global: Array.isArray(msg.scanRoots.global) ? msg.scanRoots.global : [] }
+          : { local: [], global: [] };
+        loaded = true;
+      }
+    };
+    window.addEventListener('message', onMsg);
+    load(false);
+    return () => window.removeEventListener('message', onMsg);
   });
 
-  // Load on mount.
-  load(false);
+  // The Local/Global selector narrows first — an entry with no `scope` (an
+  // older host, or a test fixture) is never silently hidden by a filter it
+  // predates, so it matches whichever view is active.
+  let scoped = $derived(skills.filter((s) => s.scope === undefined || s.scope === view));
 
   let filtered = $derived(
     query.trim()
-      ? skills.filter((s) => {
+      ? scoped.filter((s) => {
           const q = query.toLowerCase();
           return (
             s.name.toLowerCase().includes(q) ||
@@ -73,13 +104,16 @@
             (s.tags || []).some((t) => t.toLowerCase().includes(q))
           );
         })
-      : skills,
+      : scoped,
   );
 
   // Grouped AFTER filtering, so search narrows within every group and a group
   // left with no matches simply doesn't appear (groupByCategory only emits a
   // bucket for categories actually present in its input).
   let groups = $derived(groupByCategory(filtered));
+
+  /** The scope NOT currently shown — named in the empty state's cross-scope hint. */
+  let otherView: SkillsScope = $derived(view === 'local' ? 'global' : 'local');
 
   function toggleExpand(name: string) {
     expandedName = expandedName === name ? null : name;
@@ -103,8 +137,14 @@
 
 <div class="skills-pane">
   <div class="skills-toolbar">
+    <span class="skills-seg" role="tablist" aria-label="Skills scope">
+      <button class="skills-seg-btn" class:on={view === 'local'} role="tab" aria-selected={view === 'local'}
+        onclick={() => setView('local')}>Local</button>
+      <button class="skills-seg-btn" class:on={view === 'global'} role="tab" aria-selected={view === 'global'}
+        onclick={() => setView('global')}>Global</button>
+    </span>
     <input class="skills-search" type="text" placeholder="Search skills…" bind:value={query} />
-    <span class="skills-count">{filtered.length}/{skills.length}</span>
+    <span class="skills-count">{filtered.length}/{scoped.length}</span>
     <button class="skills-refresh" onclick={() => load(true)} title="Re-scan the skill directories">↻</button>
   </div>
 
@@ -123,8 +163,17 @@
     <div class="skills-empty">Loading skills…</div>
   {:else if error}
     <div class="skills-error">{error}</div>
-  {:else if skills.length === 0}
-    <div class="skills-empty">No skills found. Origami skills live in <code>&lt;workspace&gt;/skills/&lt;name&gt;/SKILL.md</code> — run setup or add a skill folder there.</div>
+  {:else if scoped.length === 0}
+    <!-- Names the directories THIS scope actually scans (scanRoots, from
+         skillScope.ts host-side) so an empty list reads as a diagnostic, not a
+         dead end — the whole point of t-7vslix's acceptance item 4. -->
+    <div class="skills-empty">
+      No {view} skills found. Origami scans:
+      {#each scanRoots[view] as dir}<code>{dir}</code>{/each}
+      {#if skills.length > 0}
+        <div>{skills.length} skill{skills.length === 1 ? '' : 's'} found under {otherView} — switch to see them.</div>
+      {/if}
+    </div>
   {:else if groups.length === 0}
     <div class="skills-empty">No skills match "{query}".</div>
   {:else}
@@ -181,7 +230,14 @@
 
 <style>
   .skills-pane { display: flex; flex-direction: column; height: 100%; }
-  .skills-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--og-border); flex-shrink: 0; }
+  .skills-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--og-border); flex-shrink: 0; flex-wrap: wrap; }
+  /* Same segmented-switch pattern as ToolsPane's Main agent | Sub-agents
+     control (.tl-seg): one border, two halves, the set one filled. */
+  .skills-seg { display: inline-flex; border: 1px solid var(--og-border); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+  .skills-seg-btn { background: var(--og-btn-bg); color: var(--og-text-muted); border: none; cursor: pointer; padding: 4px 10px; font-size: 11px; font-family: inherit; }
+  .skills-seg-btn + .skills-seg-btn { border-left: 1px solid var(--og-border); }
+  .skills-seg-btn:hover:not(.on) { background: var(--og-btn-hover); color: var(--og-text); }
+  .skills-seg-btn.on { background: var(--og-surface-alt); color: var(--og-text); font-weight: 700; }
   .skills-search { flex: 1; padding: 4px 8px; font-size: 12px; background: var(--og-input-bg, var(--og-btn-bg)); color: var(--og-text); border: 1px solid var(--og-border); border-radius: 4px; font-family: inherit; }
   .skills-count { font-size: 11px; color: var(--og-text-muted); font-variant-numeric: tabular-nums; }
   .skills-refresh { background: var(--og-btn-bg); border: 1px solid var(--og-border); color: var(--og-text); border-radius: 4px; cursor: pointer; padding: 2px 8px; font-size: 13px; }

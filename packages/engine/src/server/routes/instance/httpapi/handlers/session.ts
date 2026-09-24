@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
+import { writeSessionPermission } from "@/session/permission-write"
 import { duplicatePeerPrompt } from "@/session/peer-message"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
@@ -201,13 +202,16 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         // ruleset that means "ask me again". `isOverride` draws exactly that
         // line (preset rule vs ordinary configured allow), so a configured
         // allow already on the row survives the swap.
-        yield* session.setPermission({
-          sessionID: ctx.params.sessionID,
-          permission: Permission.merge(
-            (current.permission ?? []).filter((rule) => !PermissionPresets.isOverride(rule)),
-            ctx.payload.permission,
-          ),
-        })
+        yield* writeSessionPermission(
+          { sessions: session, permissions: permissionSvc },
+          {
+            sessionID: ctx.params.sessionID,
+            permission: Permission.merge(
+              (current.permission ?? []).filter((rule) => !PermissionPresets.isOverride(rule)),
+              ctx.payload.permission,
+            ),
+          },
+        )
       }
       if (ctx.payload.time?.archived !== undefined) {
         yield* session.setArchived({ sessionID: ctx.params.sessionID, time: ctx.payload.time.archived })
@@ -289,9 +293,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof SummarizePayload.Type
     }) {
       yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
-      const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+      // t-u54x6w: the newest user message only, not the whole session.
+      const lastUser = yield* SessionError.mapStorageNotFound(
+        session.findMessage(ctx.params.sessionID, (message) => message.info.role === "user"),
+      )
       const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      const currentAgent = Option.getOrUndefined(lastUser)?.info.agent ?? defaultAgent
 
       yield* compactSvc.create({
         sessionID: ctx.params.sessionID,

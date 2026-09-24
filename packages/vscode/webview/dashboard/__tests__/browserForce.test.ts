@@ -221,15 +221,23 @@ describe('forceAfterFailure — the rung, wired to the setting', () => {
     expect(r.calls).toEqual([]);
   });
 
-  it('treats a non-true setting value as OFF', async () => {
-    // `get()` can answer undefined (never set) or a string from a hand-edited
-    // settings.json. Neither is consent to skip a confirmation dialog.
+  // t-obf3jw: bypass-browser is now the default, so globalAutoApprove()
+  // (browserVsCode.ts) reads anything OTHER than an explicit `false` as ON —
+  // an absent setting or hand-edited junk in settings.json included.
+  it('treats any non-false setting value as ON — only an explicit false is OFF', async () => {
     for (const value of [undefined, 'true', 1, {}]) {
       fake.autoApprove = value;
       const r = runner(forced);
       const out = await forceAfterFailure(r.run, ctx(), { failed: UNACTIONABLE });
-      expect(r.calls).toEqual([]);
-      expect(out.seen.failed).toContain('was not tried');
+      expect(out.note, `value=${JSON.stringify(value)}`).toBeDefined();
     }
+  });
+
+  it('an explicit false setting value is OFF — the one thing that bars the forced click', async () => {
+    fake.autoApprove = false;
+    const r = runner(forced);
+    const out = await forceAfterFailure(r.run, ctx(), { failed: UNACTIONABLE });
+    expect(r.calls).toEqual([]);
+    expect(out.seen.failed).toContain('was not tried');
   });
 });

@@ -152,9 +152,25 @@ describe("session.system", () => {
   test("the base prompt tells the model to act, not to narrate", () => {
     const text = SystemPrompt.BASE_PROMPT_BUILTIN
     expect(text, "the autonomy/persistence section was removed").toContain("# Autonomy and persistence")
-    // The two halves that stop a turn from ending on a promise.
-    expect(text).toContain("Never end a turn on such a sentence.")
+    // The two halves that keep a turn from ending on a promise. origami_change
+    // (t-46a74d): both were rewritten from negative to positive framing on the
+    // hypothesis that a prompt whose salient verbs are "never" and "stop"
+    // primes exactly that. The RULES are unchanged and are what is asserted:
+    // a written commitment is followed by the call, and a turn ends for three
+    // named reasons.
+    expect(text).toContain("having written it, make the call")
     expect(text).toContain("the work is done, you are blocked, or the user redirected you")
+    expect(text).toContain("Keep going until the user's request is completely resolved")
+  })
+
+  // origami_change (t-46a74d): the persistence section is the one place a
+  // stop-shaped imperative does the most damage - it is what the model reads
+  // while deciding whether to carry on. These are the two spellings that were
+  // there and are deliberately gone.
+  test("the persistence section names what to do, not what to avoid", () => {
+    const section = SystemPrompt.BASE_PROMPT_BUILTIN.split("# Autonomy and persistence")[1]!.split("\n#")[0]!
+    expect(section).not.toContain("Never end a turn")
+    expect(section).not.toContain("Stop the turn")
   })
 
   test("nothing in the base prompt tells the model to answer before acting", () => {
@@ -163,6 +179,53 @@ describe("session.system", () => {
     const text = SystemPrompt.BASE_PROMPT_BUILTIN.toLowerCase()
     for (const contradiction of ["answer first before jumping to action", "when in doubt: ask"])
       expect(text, `the base prompt still says "${contradiction}"`).not.toContain(contradiction)
+  })
+
+  // --- t-s3pdlq: the base prompt is the only place that tells the model WHEN
+  // to publish an artifact. The tool descriptions (artifact-publish.txt etc.)
+  // carry the detail; this section is the trigger, and it must not duplicate
+  // the "tell the owner" nudge artifact.ts already appends to every tool
+  // result (t-rz3rym's PILL_NUDGE) — that would print it twice on a publish.
+
+  test("the base prompt carries exactly one artifact rule, under 90 words", () => {
+    const text = SystemPrompt.BASE_PROMPT_BUILTIN
+    const matches = text.split("# Artifacts").length - 1
+    expect(matches, "the artifact rule section appears more than once").toBe(1)
+
+    const section = text.split("# Artifacts")[1]!.split("\n#")[0]!.trim()
+    expect(section).toContain("artifact_publish")
+    expect(section.toLowerCase()).toContain("not artifacts")
+    const words = section.split(/\s+/).filter((word) => word.length > 0)
+    expect(words.length, `artifact rule is ${words.length} words`).toBeLessThan(90)
+
+    // t-s49986: the rule is a JUDGEMENT, not a list of formats. Each clause is
+    // one decision the model makes; losing one of them is losing that decision.
+    const lower = section.toLowerCase()
+    // Publish when the owner will look at or use the result…
+    expect(section).toContain("LOOK AT or USE")
+    for (const kind of ["page", "dashboard", "report", "review explainer", "prototype", "comparison table"])
+      expect(lower, `the rule names ${kind}`).toContain(kind)
+    // …answer in chat when the owner will read it or act on it in code…
+    expect(section).toContain("READ a short answer or ACT on it in code")
+    // …a request phrased as a question is still a publish…
+    expect(lower).toContain("can you write up x")
+    expect(lower).toContain("is still a publish")
+    // …never code or patches, and the reply names the artifact.
+    expect(lower).toContain("code and patches are not artifacts; never publish them")
+    expect(lower).toContain("name the artifact")
+
+    // Does not duplicate the tool result's own nudge line (t-rz3rym).
+    expect(section).not.toContain("Tell the user this is in the Artifacts pill")
+  })
+
+  test("no other shipped prompt file mentions the artifact_publish tool", () => {
+    const promptDir = path.join(import.meta.dir, "../../src/session/prompt")
+    const files = fs.readdirSync(promptDir).filter((name) => name !== "default.txt" && name.endsWith(".txt"))
+    expect(files.length, "expected sibling prompt files alongside default.txt").toBeGreaterThan(0)
+    for (const file of files) {
+      const text = fs.readFileSync(path.join(promptDir, file), "utf8")
+      expect(text, `${file} mentions artifact_publish`).not.toContain("artifact_publish")
+    }
   })
 
   // --- The user-global base-prompt override. The behaviour that matters is
@@ -214,9 +277,16 @@ describe("session.system", () => {
 
       expect(first).toBe(second)
 
-      const alpha = output.indexOf("<name>alpha-skill</name>")
-      const middle = output.indexOf("<name>middle-skill</name>")
-      const zeta = output.indexOf("<name>zeta-skill</name>")
+      // Compact listing (token_burn_plan §2.3): name + first-line description,
+      // no XML wrapper.
+      expect(output).toContain("- **alpha-skill**: Alpha skill.")
+      expect(output).toContain("- **middle-skill**: Middle skill.")
+      expect(output).toContain("- **zeta-skill**: Zeta skill.")
+      expect(output).not.toContain("<available_skills>")
+
+      const alpha = output.indexOf("**alpha-skill**")
+      const middle = output.indexOf("**middle-skill**")
+      const zeta = output.indexOf("**zeta-skill**")
 
       expect(alpha).toBeGreaterThan(-1)
       expect(middle).toBeGreaterThan(alpha)

@@ -1,6 +1,17 @@
 import { SessionV1 } from "@origami/core/v1/session"
 import { describe, expect, test } from "bun:test"
 import { ProviderV2 } from "@origami/core/provider"
+import {
+  AuthenticationReason,
+  HttpContext,
+  HttpRequestDetails,
+  HttpResponseDetails,
+  InvalidProviderOutputReason,
+  InvalidRequestReason,
+  LLMError,
+  ProviderInternalReason,
+  TransportReason,
+} from "@origami/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionRetry } from "../../src/session/retry"
 import { SessionStreamDrop } from "../../src/session/stream-drop"
@@ -152,5 +163,121 @@ describe("stream drop typing and budget", () => {
     expect(SessionRetry.retryable(error, provider)).toEqual({ message: "Rate limit reached" })
     expect(SessionRetry.delay(1, error)).toBe(SessionRetry.RETRY_INITIAL_DELAY)
     expect(SessionRetry.decide(SessionStreamDrop.LIMIT_DEFAULT + 1, error, provider)).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The same failures as seen through the native runtime (@origami/llm), which
+// keeps them typed instead of flattening them to a sentence. Every shape below
+// is one the executor or the OpenAI Chat protocol really constructs.
+// ---------------------------------------------------------------------------
+
+const native = (reason: LLMError["reason"]) => new LLMError({ module: "RequestExecutor", method: "execute", reason })
+const exchange = (status: number, body?: string) =>
+  new HttpContext({
+    request: new HttpRequestDetails({ method: "POST", url: "http://127.0.0.1:8000/v1/chat/completions", headers: {} }),
+    response: new HttpResponseDetails({ status, headers: { "retry-after": "2" } }),
+    body,
+  })
+const apiData = (value: ReturnType<typeof parse>) => (SessionV1.APIError.isInstance(value) ? value.data : undefined)
+
+describe("stream drop classifier — native runtime failures", () => {
+  test("a transport failure is a drop", () => {
+    const parsed = parse(native(new TransportReason({ message: "terminated", kind: "TransportError" })))
+    expect(SessionStreamDrop.isDrop(parsed)).toBe(true)
+    expect(apiData(parsed)?.isRetryable).toBe(true)
+    expect(apiData(parsed)?.message).toBe("terminated")
+  })
+
+  test("a body that stopped being readable mid-flight is a drop", () => {
+    const parsed = parse(
+      native(
+        new InvalidProviderOutputReason({
+          message: "Failed to read vllm/openai-compatible-chat stream",
+          raw: "TypeError: terminated",
+        }),
+      ),
+    )
+    expect(SessionStreamDrop.isDrop(parsed)).toBe(true)
+  })
+
+  test("an error frame the protocol could not decode is read by what the frame says", () => {
+    const idle = parse(
+      native(
+        new InvalidProviderOutputReason({
+          message: "Invalid vllm/openai-compatible-chat stream event",
+          raw: JSON.stringify({ error: { message: IDLE, type: "server_error" } }),
+        }),
+      ),
+    )
+    expect(SessionStreamDrop.isDrop(idle)).toBe(true)
+    // The user reads the provider's sentence, not the wrapper's.
+    expect(apiData(idle)?.message).toBe(IDLE)
+
+    const overflow = parse(
+      native(
+        new InvalidProviderOutputReason({
+          message: "Invalid vllm/openai-compatible-chat stream event",
+          raw: JSON.stringify({ type: "error", error: { code: "context_length_exceeded", message: "too long" } }),
+        }),
+      ),
+    )
+    expect(SessionV1.ContextOverflowError.isInstance(overflow)).toBe(true)
+
+    const other = parse(
+      native(new InvalidProviderOutputReason({ message: "Invalid stream event", raw: '{"choices":"nope"}' })),
+    )
+    expect(SessionStreamDrop.isDrop(other)).toBe(false)
+    expect(SessionV1.APIError.isInstance(other)).toBe(false)
+  })
+
+  test("an HTTP status failure reads like the AI SDK's APICallError", () => {
+    const denied = parse(
+      native(
+        new AuthenticationReason({
+          message: 'Provider request failed with HTTP 401: {"error":{"message":"Incorrect API key provided"}}',
+          kind: "invalid",
+          http: exchange(401, '{"error":{"message":"Incorrect API key provided"}}'),
+        }),
+      ),
+    )
+    expect(apiData(denied)?.statusCode).toBe(401)
+    expect(apiData(denied)?.message.startsWith("Unauthorized")).toBe(true)
+    expect(apiData(denied)?.message).toContain("Incorrect API key provided")
+    expect(SessionRetry.retryable(denied, "vllm")).toBeUndefined()
+
+    // No HTTP exchange at all (a missing credential) still counts as auth.
+    const missing = parse(native(new AuthenticationReason({ message: "Missing auth credential: apiKey", kind: "missing" })))
+    expect(apiData(missing)?.statusCode).toBe(401)
+
+    const down = parse(
+      native(
+        new ProviderInternalReason({
+          message: 'Provider request failed with HTTP 500: {"error":{"message":"Internal server error"}}',
+          status: 500,
+          http: exchange(500, '{"error":{"message":"Internal server error"}}'),
+        }),
+      ),
+    )
+    expect(apiData(down)?.statusCode).toBe(500)
+    expect(apiData(down)?.isRetryable).toBe(true)
+    expect(apiData(down)?.responseHeaders?.["retry-after"]).toBe("2")
+    expect(SessionRetry.retryable(down, "vllm")).toBeDefined()
+
+    const refused = parse(
+      native(
+        new InvalidRequestReason({
+          message: 'Provider request failed with HTTP 400: {"error":{"message":"Unsupported parameter: reasoning_effort"}}',
+          http: exchange(400, '{"error":{"message":"Unsupported parameter: reasoning_effort"}}'),
+        }),
+      ),
+    )
+    expect(apiData(refused)?.isRetryable).toBe(false)
+    expect(apiData(refused)?.responseBody).toContain("reasoning_effort")
+
+    const overflow = parse(
+      native(new InvalidRequestReason({ message: "Provider request failed with HTTP 413: too large", http: exchange(413, "too large") })),
+    )
+    expect(SessionV1.ContextOverflowError.isInstance(overflow)).toBe(true)
   })
 })

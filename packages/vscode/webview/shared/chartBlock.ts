@@ -74,7 +74,7 @@ const Y_AXIS_W = 34;
 export const SERIES_COLORS = [
   'var(--og-accent)',
   'var(--og-warning)',
-  'color-mix(in oklab, var(--og-chat) 65%, var(--og-text))',
+  'color-mix(in oklab, var(--og-chat) 65%, var(--og-chart-mix))',
   'var(--og-error)',
   'color-mix(in oklab, var(--og-accent-2) 5%, var(--og-text))',
   'var(--og-success)',

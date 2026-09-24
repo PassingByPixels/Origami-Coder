@@ -10,8 +10,11 @@
   interface Props {
     /** Rendered width/height in px. */
     size?: number;
+    /** No drift or wing motion (prefers-reduced-motion). SMIL ignores CSS, so the
+     *  animation elements are left out instead. */
+    still?: boolean;
   }
-  let { size = 18 }: Props = $props();
+  let { size = 18, still = false }: Props = $props();
 </script>
 
 <svg
@@ -22,13 +25,13 @@
   aria-hidden="true"
 >
   <g fill="currentColor">
-    <animateTransform attributeName="transform" type="translate" values="0 0; 0 -2; 0 0" keyTimes="0;0.5;1" dur="4.5s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+    {#if !still}<animateTransform attributeName="transform" type="translate" values="0 0; 0 -2; 0 0" keyTimes="0;0.5;1" dur="4.5s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>{/if}
     <g opacity="0.45">
-      <animateTransform attributeName="transform" type="rotate" values="0 36 40; 7 36 40; 0 36 40" keyTimes="0;0.5;1" dur="3.2s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+      {#if !still}<animateTransform attributeName="transform" type="rotate" values="0 36 40; 7 36 40; 0 36 40" keyTimes="0;0.5;1" dur="3.2s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>{/if}
       <polygon points="30,40 47,40 52,11"/>
     </g>
     <g>
-      <animateTransform attributeName="transform" type="rotate" values="0 34 40; -12 34 40; 0 34 40" keyTimes="0;0.5;1" dur="3.2s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>
+      {#if !still}<animateTransform attributeName="transform" type="rotate" values="0 34 40; -12 34 40; 0 34 40" keyTimes="0;0.5;1" dur="3.2s" repeatCount="indefinite" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1"/>{/if}
       <polygon points="26,40 48,40 43,7" opacity="0.92"/>
     </g>
     <polygon points="44,40 62,29 47,48" opacity="0.72"/>

@@ -100,6 +100,45 @@ describe("skill", () => {
     }),
   )
 
+  // token_burn_plan §2.3: the compact (non-verbose) listing is what
+  // `session/system.ts` now sends on every call, so it must be one line per
+  // skill and never let a long/multi-line description balloon it back up.
+  it.effect("compact listing is one line per skill, first-line-only, capped at 120 chars", () =>
+    Effect.sync(() => {
+      const N = 25
+      const list: Skill.Info[] = Array.from({ length: N }, (_, i) => ({
+        name: `skill-${String(i).padStart(2, "0")}`,
+        // A realistic multi-line SKILL.md description: only the first line
+        // should survive, and it alone is already over 120 chars.
+        description: `${"x".repeat(140)}\nsecond line the model must never see, ${"y".repeat(50)}`,
+        location: `/tmp/skill-${i}/SKILL.md`,
+        content: "",
+      }))
+
+      const output = Skill.fmt(list, { verbose: false })
+      // Whole-output check, not per-line: a leak that stays on the second
+      // physical line (e.g. an un-truncated multi-line description) must
+      // still fail this, not slip through a line-prefix filter.
+      expect(output).not.toContain("second line the model must never see")
+
+      const lines = output.split("\n").filter((line) => line.startsWith("- "))
+      expect(lines.length).toBe(N)
+      for (const line of lines) {
+        // "- **skill-NN**: " prefix (17 chars) + at most 120 chars of description.
+        expect(line.length).toBeLessThanOrEqual(17 + Skill.SKILL_DESCRIPTION_MAX_CHARS)
+      }
+    }),
+  )
+
+  it.effect("compact listing leaves a short single-line description untouched", () =>
+    Effect.sync(() => {
+      const list: Skill.Info[] = [
+        { name: "short-skill", description: "A short description.", location: "/tmp/s/SKILL.md", content: "" },
+      ]
+      expect(Skill.fmt(list, { verbose: false })).toBe(["## Available Skills", "- **short-skill**: A short description."].join("\n"))
+    }),
+  )
+
   it.live("discovers skills from .origami/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>

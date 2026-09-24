@@ -1,4 +1,5 @@
 import { LayerNode } from "@origami/core/effect/layer-node"
+import { cachedInvalidateForever } from "@origami/core/effect/cached"
 import path from "path"
 import { Global } from "@origami/core/global"
 import { FSUtil } from "@origami/core/fs-util"
@@ -219,7 +220,7 @@ const layer = Layer.effect(
       lookup: () => TxReentrantLock.make(),
       idleTimeToLive: 0,
     })
-    const state = yield* Effect.cached(
+    const [state] = yield* cachedInvalidateForever(
       Effect.gen(function* () {
         const dir = path.join(Global.Path.data, "storage")
         const marker = path.join(dir, "migration")

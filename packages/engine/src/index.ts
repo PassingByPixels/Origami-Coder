@@ -4,12 +4,14 @@ import { RunCommand } from "./cli/cmd/run"
 import { GenerateCommand } from "./cli/cmd/generate"
 import { ProvidersCommand } from "./cli/cmd/providers"
 import { AgentCommand } from "./cli/cmd/agent"
+import { FlockCommand } from "./cli/cmd/flock"
 import { UninstallCommand } from "./cli/cmd/uninstall"
 import { ModelsCommand } from "./cli/cmd/models"
 import { UI } from "./cli/ui"
 import { InstallationVersion } from "@origami/core/installation/version"
 import { FormatError } from "./cli/error"
 import { ServeCommand } from "./cli/cmd/serve"
+import { RelayCommand } from "./cli/cmd/relay"
 import { DebugCommand } from "./cli/cmd/debug"
 import { StatsCommand } from "./cli/cmd/stats"
 import { McpCommand } from "./cli/cmd/mcp"
@@ -86,8 +88,10 @@ const cli = yargs(args)
   .command(DebugCommand)
   .command(ProvidersCommand)
   .command(AgentCommand)
+  .command(FlockCommand)
   .command(UninstallCommand)
   .command(ServeCommand)
+  .command(RelayCommand)
   .command(WebCommand)
   .command(ModelsCommand)
   .command(StatsCommand)

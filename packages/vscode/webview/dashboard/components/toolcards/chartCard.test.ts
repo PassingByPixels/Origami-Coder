@@ -81,7 +81,10 @@ describe('ToolCard dispatch — chart', () => {
       title: 'read spec.json', kind: 'read', toolName: 'read', status: 'completed', result: BAR,
     });
     expect(container.querySelector('.ch-card')).toBeNull();
-    expect(container.querySelector('svg')).toBeNull();
+    // Scoped to the BODY: since t-qmzegs item 3 the header's status mark is an
+    // <svg> on every card, so a bare `svg` query would now find the tick and
+    // say a chart was drawn. The claim is and always was about the RESULT.
+    expect(container.querySelector('.tool-result svg')).toBeNull();
   });
 });
 
@@ -164,7 +167,12 @@ const TOOLCARD_SRC = readFileSync(
  *  undefined when it declares no rule for it. */
 function declaredMaxHeight(selector: string): string | undefined {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const body = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(TOOLCARD_SRC)?.[1];
+  // `(?:,[^{]*)?` — the selector may now head a LIST. t-qmzegs item 5 gave the
+  // read-image body the same opt-out the chart body has, and grouped the two.
+  // Without this the lookup silently returned undefined for a grouped rule and
+  // the caller fell back to the generic clamp, reporting a ceiling of 200px on
+  // a body that has none — a guard that lies is worse than one that is absent.
+  const body = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*(?:,[^{]*)?\\{([^}]*)\\}`).exec(TOOLCARD_SRC)?.[1];
   return body ? /max-height:\s*([^;]+)/.exec(body)?.[1].trim() : undefined;
 }
 

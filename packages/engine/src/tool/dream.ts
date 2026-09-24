@@ -113,22 +113,22 @@ function projectThin(msgs: readonly SessionV1.WithParts[]): string[] {
 export const DreamTool = Tool.define(
   "dream",
   Effect.gen(function* () {
-    // Capture services at DEFINE time so `execute` stays R=never (the
-    // session-search.ts / plan.ts pattern). InstanceState.context is the one
-    // exception — it resolves from the ambient instance inside execute.
+    // Capture services at define time so `execute` stays R=never.
+    // InstanceState.context is the one exception — it resolves from the ambient
+    // instance inside execute.
     const fs = yield* FSUtil.Service
     const session = yield* Session.Service
     const question = yield* Question.Service
 
-    // The memory-layout / dream-stage helpers ask for FSUtil themselves (they
-    // are shared with migrateMemory, which has no captured service). Feed them
-    // the one captured here so `execute` stays R=never like its siblings.
+    // The memory-layout / dream-stage helpers ask for FSUtil themselves, so feed
+    // them the one captured here to keep `execute` at R=never.
     const withFs = <A, E>(effect: Effect.Effect<A, E, FSUtil.Service>) =>
       effect.pipe(Effect.provideService(FSUtil.Service, fs))
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
+      deferrable: true,
       execute: (
         params: { action: "gather" | "review"; scope?: "project" | "global"; limit?: number },
         ctx: Tool.Context,
@@ -137,8 +137,7 @@ export const DreamTool = Tool.define(
           const instance = yield* InstanceState.context
           // Non-git workspaces resolve worktree to "/" (drive root), so a
           // "project" store there lands in C:\.origami — shared across users.
-          // Fall back to the per-user global store, matching the remember tool
-          // and plans (session.ts plan(): instance.project.vcs gates it).
+          // Fall back to the per-user global store, as the remember tool does.
           const scopeGlobal = params.scope === "global" || !instance.project.vcs
           const scopeLabel: "project" | "global" = scopeGlobal ? "global" : "project"
           const storePath = scopeGlobal ? globalMemoryPath(Global.Path.origami) : projectMemoryPath(instance.worktree)
@@ -147,13 +146,9 @@ export const DreamTool = Tool.define(
           const memdir = memoryDir(dir)
           const n = Math.max(1, Math.min(N_MAX, Math.floor(params.limit ?? N_DEFAULT)))
 
-          // Session mining is layout-independent — the transcripts a foldered
-          // curation pass reads are exactly the ones the flat pass reads.
-          //
-          // list() is auto-scoped to the current project and sorted newest-first
-          // (desc time_updated); roots:true drops subagent children. Mining is
-          // current-project regardless of store scope (global-across-all-projects
-          // is a later refinement via listGlobal).
+          // Session mining is layout-independent. list() is auto-scoped to the
+          // current project and sorted newest-first; roots:true drops subagent
+          // children. Mining stays current-project regardless of store scope.
           const mine = Effect.gen(function* () {
             const sessions = yield* session.list({ limit: n + 8, roots: true })
             const picked = sessions.filter((s) => s.id !== ctx.sessionID && s.parentID === undefined).slice(0, n)
@@ -172,13 +167,8 @@ export const DreamTool = Tool.define(
           })
 
           // ======================= FOLDERED LAYOUT ========================
-          // memory/ is a tree (MEMORY.md + one file per topic), so the curation
-          // is tree-shaped: the candidate is a DIRECTORY seeded by mirroring the
-          // live store, the model edits inside the mirror, and review reports a
-          // per-topic diff of the mirror against the live store. Seeding by
-          // mirror is what makes "curate, never discard silently" enforceable —
-          // anything missing from the candidate was actively removed, and
-          // diffStore lists every one of those for the user to veto.
+          // The candidate is a directory mirroring the live store; see the
+          // dream-stage.ts header for why seeding by mirror is the safety rule.
           const foldered = yield* fs.existsSafe(indexPath(memdir))
           if (foldered) {
             const cdir = candidateDir(dir)
@@ -187,10 +177,9 @@ export const DreamTool = Tool.define(
               const live = yield* withFs(readStore(memdir))
               const blocks = yield* mine
 
-              // An empty store with nothing to mine has no curation to propose.
-              // Staging a mirror of nothing would only invite the model to
-              // invent facts, so stage nothing and say why. Any stale candidate
-              // from an abandoned pass goes too — gather owns its lifecycle.
+              // An empty store with nothing to mine has no curation to propose,
+              // and staging a mirror of nothing would invite invented facts. Any
+              // stale candidate goes too — gather owns its lifecycle.
               if (live.topics.size === 0 && blocks.length === 0) {
                 yield* withFs(discardCandidate(dir))
                 const meta: Meta = {
@@ -300,11 +289,10 @@ export const DreamTool = Tool.define(
               summary,
             }
 
-            // Same Approve/Revise/Disapprove UX as the flat path. There is no
-            // file-vs-file diff to open here, so the per-topic summary travels
-            // IN the question — the user approves off the text they can see.
-            // Middle option MUST be named "Revise" (clients reveal a free-text
-            // box for it).
+            // No file-vs-file diff to open here, so the per-topic summary travels
+            // in the question — the user approves off the text they can see. The
+            // middle option must be named "Revise": clients key a free-text box
+            // off that exact word.
             const answers = yield* question
               .ask({
                 sessionID: ctx.sessionID,
@@ -338,10 +326,9 @@ export const DreamTool = Tool.define(
               }
             }
             if (choice === "Revise") {
-              // The candidate SURVIVES a Revise here, unlike the flat path. A
-              // flat candidate is one file the model can regenerate from its own
-              // context; a foldered one is a tree built over many edits, and
-              // deleting it would throw that away and force a full re-gather.
+              // The candidate survives a Revise here, unlike the flat path: a
+              // foldered candidate is a tree built over many edits, and deleting
+              // it would force a full re-gather.
               return {
                 title: "dream: revise",
                 metadata: meta,
@@ -402,8 +389,8 @@ export const DreamTool = Tool.define(
           const before = (store.match(/^- .*/gm) ?? []).length
           const after = (candidate.match(/^- .*/gm) ?? []).length
 
-          // SAFETY: a non-blank candidate that normalises to zero bullets means
-          // the model's facts weren't top-level "- " lines — adopting it would
+          // Safety: a non-blank candidate that normalises to zero bullets means
+          // the model's facts weren't top-level "- " lines, so adopting it would
           // wipe the store. Refuse rather than overwrite good facts with nothing.
           if (after === 0) {
             const meta: Meta = { action: "review", scope: scopeLabel, layout: "flat", before, after, candidatePath }
@@ -414,9 +401,8 @@ export const DreamTool = Tool.define(
             }
           }
 
-          // Rewrite the candidate file with the NORMALISED text BEFORE asking, so
-          // the diff the user reviews (the shell opens vscode.diff of this file)
-          // is byte-for-byte what Approve adopts — no approve-vs-adopt divergence.
+          // Rewrite the candidate with the normalised text BEFORE asking, so the
+          // diff the user reviews is byte-for-byte what Approve adopts.
           yield* fs.writeWithDirs(candidatePath, candidate)
 
           const rel = (path.relative(instance.worktree, storePath) || "memory.md").replaceAll("\\", "/")
@@ -433,8 +419,8 @@ export const DreamTool = Tool.define(
           }
 
           // The permission title carries "reorganised memory" so the VS Code shell
-          // opens a vscode.diff of the live store vs the staged candidate. Middle
-          // option MUST be named "Revise" (clients reveal a free-text box for it).
+          // opens a vscode.diff of the live store vs the staged candidate. The
+          // middle option must be named "Revise" — clients key a text box off it.
           const answers = yield* question
             .ask({
               sessionID: ctx.sessionID,
@@ -459,12 +445,10 @@ export const DreamTool = Tool.define(
           const cleanup = fs.remove(candidatePath).pipe(Effect.catch(() => Effect.void))
 
           if (choice === "Approve") {
-            // Back up the current store first (reversible), then overwrite it in
-            // place. A plain overwrite (not tmp+rename) because the vscode.diff
-            // view holds memory.md open, and MoveFileEx over an open file fails on
-            // Windows — a direct write succeeds and VS Code reloads. The file is a
-            // few KB, and memory.bak.md (written first) covers a crash mid-write.
-            // No permission prompt (purpose-built, like the remember tool).
+            // Back up first, then overwrite in place. A plain overwrite, not
+            // tmp+rename, because the vscode.diff view holds memory.md open and
+            // MoveFileEx over an open file fails on Windows. memory.bak.md
+            // (written first) covers a crash mid-write.
             if (store) yield* fs.writeWithDirs(path.join(dir, "memory.bak.md"), store)
             yield* fs.writeWithDirs(storePath, candidate)
             yield* cleanup

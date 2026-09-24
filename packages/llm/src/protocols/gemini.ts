@@ -26,9 +26,7 @@ const ADAPTER = "gemini"
 const MEDIA_MIMES = new Set<string>(ProviderShared.MEDIA_MIMES)
 export const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-// =============================================================================
 // Request Body Schema
-// =============================================================================
 const GeminiTextPart = Schema.Struct({
   text: Schema.String,
   thought: Schema.optional(Schema.Boolean),
@@ -144,30 +142,18 @@ interface ParserState {
   readonly reasoningSignature?: string
 }
 
-// =============================================================================
 // Tool Schema Conversion
-// =============================================================================
-// Tool-schema conversion has two distinct concerns:
+// Tool-schema conversion has two concerns, applied in order:
 //
-// 1. Sanitize — fix common authoring mistakes Gemini rejects: integer/number
-//    enums (must be strings), `required` entries that don't match a property,
-//    untyped arrays (`items` must be present), and `properties`/`required`
-//    keys on non-object scalars. Mirrors Origami's historical Gemini rules.
+// 1. Sanitize — fix authoring mistakes Gemini rejects: integer/number enums
+//    (must be strings), `required` naming a missing property, untyped arrays
+//    (`items` must be present), and `properties`/`required` on non-object scalars.
+// 2. Project — lossy map to Gemini's dialect, propagating only an allowlisted set
+//    of keys; anything else (`additionalProperties`, `$ref`) is silently dropped.
 //
-// 2. Project — lossy mapping from JSON Schema to Gemini's schema dialect:
-//    drop empty objects, derive `nullable: true` from `type: [..., "null"]`,
-//    coerce `const` to `[const]` enum, recurse properties/items, propagate
-//    only an allowlisted set of keys (description, required, format, type,
-//    properties, items, allOf, anyOf, oneOf, minLength). Anything outside the
-//    allowlist (e.g. `additionalProperties`, `$ref`) is silently dropped.
-//
-// Sanitize runs first, then project. The implementation lives in
-// `utils/gemini-tool-schema` so this protocol keeps the same shape as the other
-// provider protocols.
+// The implementation lives in `utils/gemini-tool-schema`.
 
-// =============================================================================
 // Request Lowering
-// =============================================================================
 const lowerTool = (tool: ToolDefinition, inputSchema: JsonSchema) => ({
   name: tool.name,
   description: tool.description,
@@ -332,21 +318,16 @@ const fromRequest = Effect.fn("Gemini.fromRequest")(function* (request: LLMReque
   }
 })
 
-// =============================================================================
 // Stream Parsing
-// =============================================================================
 // Gemini reports `promptTokenCount` (inclusive total) with a
-// `cachedContentTokenCount` subset. `candidatesTokenCount` is *exclusive*
-// of `thoughtsTokenCount` — visible-only, not a total — so we sum the two
-// to produce the inclusive `outputTokens` the rest of the contract expects.
+// `cachedContentTokenCount` subset. `candidatesTokenCount` is *exclusive* of
+// `thoughtsTokenCount`, so the two are summed for the inclusive `outputTokens`.
 const mapUsage = (usage: GeminiUsage | undefined) => {
   if (!usage) return undefined
   const cached = usage.cachedContentTokenCount
   const nonCached = ProviderShared.subtractTokens(usage.promptTokenCount, cached)
-  // `candidatesTokenCount` is visible-only; sum with thoughts to produce the
-  // inclusive `outputTokens` the contract expects. Only compute the total
-  // when the visible component is reported — otherwise we'd fabricate an
-  // inclusive number from a partial breakdown.
+  // Only compute the total when the visible component is reported; otherwise we
+  // would fabricate an inclusive number from a partial breakdown.
   const outputTokens =
     usage.candidatesTokenCount !== undefined ? usage.candidatesTokenCount + (usage.thoughtsTokenCount ?? 0) : undefined
   return new Usage({
@@ -475,18 +456,17 @@ const step = (state: ParserState, event: GeminiEvent) => {
   ] as const)
 }
 
-// =============================================================================
 // Protocol And Gemini Route
-// =============================================================================
-/**
- * The Gemini protocol — request body construction, body schema, and the
- * streaming-event state machine. Used by Google AI Studio Gemini and (once
- * registered) Vertex Gemini.
- */
+/** The Gemini protocol — request body construction, body schema, and the
+ *  streaming-event state machine. Used by Google AI Studio Gemini and (once
+ *  registered) Vertex Gemini. */
 export const protocol = Protocol.make({
   id: ADAPTER,
   body: {
     schema: GeminiBody,
+    // Gemini nests every sampling knob inside `generationConfig`, so the
+    // container itself is structure and the knobs travel via `generation`.
+    structure: ["contents", "systemInstruction", "tools", "toolConfig", "generationConfig"],
     from: fromRequest,
   },
   stream: {

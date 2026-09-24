@@ -166,4 +166,34 @@ describe('aggregateSessionChanges', () => {
     ]);
     expect(out.fileCount).toBe(2);
   });
+
+  // t-j3qxbp — the parent's OWN transcript is empty (a sub-agent's tool calls
+  // never land there), but the pill must still count what the child touched.
+  it('a sub-agent child that touched a file it counted in the pill, even with an empty parent transcript', () => {
+    const out = aggregateSessionChanges([], {
+      'child-1': [{ path: '/w/src/child.ts', oldText: 'a\nb\nc', newText: 'a\nB\nc' }],
+    });
+    expect(out.fileCount).toBe(1);
+    expect(out.adds).toBe(1);
+    expect(out.dels).toBe(1);
+    expect(out.files[0].path).toBe('/w/src/child.ts');
+  });
+
+  it('a child editing the SAME file the parent also touched sums into one row, not two', () => {
+    const out = aggregateSessionChanges(
+      [edit('/w/src/shared.ts', 'a\nb', 'a\nB')],
+      { 'child-1': [{ path: '/w/src/shared.ts', oldText: 'a\nB', newText: 'a\nB\nc' }] },
+    );
+    expect(out.fileCount).toBe(1);
+    expect(out.adds).toBe(2); // +1 from the parent's edit, +1 from the child's
+    expect(out.dels).toBe(1);
+  });
+
+  it('multiple children each contribute their own file to the pill', () => {
+    const out = aggregateSessionChanges([], {
+      'child-1': [{ path: '/w/a.ts', oldText: '', newText: 'x' }],
+      'child-2': [{ path: '/w/b.ts', oldText: '', newText: 'y' }],
+    });
+    expect(out.fileCount).toBe(2);
+  });
 });

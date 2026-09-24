@@ -4,12 +4,10 @@ import { Headers } from "effect/unstable/http"
 import { Auth, type AuthInput } from "../../route/auth"
 import { ProviderShared } from "../shared"
 
-/**
- * AWS credentials for SigV4 signing. Bedrock also supports Bearer API key auth,
- * which provider facades configure as route auth instead of SigV4. STS-vended
- * credentials should be refreshed by the consumer (rebuild the model) before
- * they expire; the route does not refresh.
- */
+/** AWS credentials for SigV4 signing. Bedrock also supports Bearer API key auth,
+ *  which provider facades configure as route auth instead of SigV4. STS-vended
+ *  credentials should be refreshed by the consumer (rebuild the model) before
+ *  they expire; the route does not refresh. */
 export interface Credentials {
   readonly region: string
   readonly accessKeyId: string

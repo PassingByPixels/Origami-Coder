@@ -16,13 +16,19 @@ import { NotFoundError } from "@/storage/storage"
 
 import { Effect, Layer, Context, Option } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { isOverflow as overflow, usable } from "./overflow"
+import { overflowCheck, preserveRecentBudget, fixedFloor } from "./overflow"
+import { SessionCompactionPrompt } from "./compaction-prompt"
+import { SessionCacheState } from "./cache-state"
+import { SessionCacheWarm } from "./cache-warm"
+import { SessionPromptCapture } from "./prompt-capture"
+import { SessionWindowFit } from "./window-fit"
+import { ProviderTransform } from "@/provider/transform"
+import type { ModelMessage } from "ai"
 import { serviceUse } from "@origami/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
-import { buildPrompt } from "@origami/core/session/compaction"
 import { SessionCompactionEvent } from "@origami/schema/session-compaction-event"
 
 export const Event = SessionCompactionEvent
@@ -30,10 +36,23 @@ export const Event = SessionCompactionEvent
 export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
+/** The harder cut, used only when the compaction request would not fit the window. */
+const TOOL_OUTPUT_TIGHT_CHARS = 400
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
-const MIN_PRESERVE_RECENT_TOKENS = 2_000
-const MAX_PRESERVE_RECENT_TOKENS = 8_000
+
+/**
+ * The share of the pre-compaction context an auto compaction has to buy back
+ * before its summary is allowed to take effect.
+ *
+ * A compaction is not free: it costs a whole generation and adds a summary to the
+ * context it is meant to shrink, and can end up growing it. So the result is
+ * measured before it is kept, on the engine's own estimator on both sides —
+ * comparing an estimate against a provider-reported count would decide a 10%
+ * question with two different rulers.
+ */
+export const MIN_COMPACTION_GAIN = 0.1
+
 type Turn = {
   start: number
   end: number
@@ -52,10 +71,9 @@ type CompletedCompaction = {
 }
 
 /**
- * Marks a text part the ENGINE wrote onto a summary message, so `summaryText`
- * can leave it out. A summary is model prose about the conversation; an engine
- * line about why the turn stopped is neither, and folding it in would send it
- * back as "previous summary" on the next compaction.
+ * Marks a text part the engine wrote onto a summary message, so `summaryText`
+ * can leave it out: folding an engine line about why the turn stopped into the
+ * summary would send it back as "previous summary" on the next compaction.
  */
 const NOTICE_KEY = "origami_compaction_stop"
 
@@ -93,13 +111,6 @@ function completedCompactions(messages: SessionV1.WithParts[]) {
     if (userIndex === undefined) return []
     return [{ userIndex, assistantIndex, summary: summaryText(msg) }]
   })
-}
-
-function preserveRecentBudget(input: { cfg: ConfigV1.Info; model: Provider.Model }) {
-  return (
-    input.cfg.compaction?.preserve_recent_tokens ??
-    Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable(input) * 0.25)))
-  )
 }
 
 function turns(messages: SessionV1.WithParts[]) {
@@ -149,9 +160,9 @@ export interface Interface {
   readonly isOverflow: (input: {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
-    /** The session whose per-chat threshold override (t-kgsdsw), if any,
-     *  should govern instead of the cfg-derived reserve. Optional so every
-     *  existing caller/test keeps its current (cfg-only) behaviour. */
+    /** The session whose per-chat threshold override, if any, should govern
+     *  instead of the cfg-derived reserve. Optional so an existing caller keeps
+     *  its cfg-only behaviour. */
     sessionID?: SessionID
   }) => Effect.Effect<boolean>
   readonly prune: (input: { sessionID: SessionID }) => Effect.Effect<void>
@@ -193,19 +204,32 @@ const layer = Layer.effect(
       model: Provider.Model
       sessionID?: SessionID
     }) {
-      // Row read is best-effort: a session that vanished mid-check (or no
-      // sessionID at all) just falls back to the cfg-only behaviour rather
-      // than failing the overflow check itself.
+      // Row read is best-effort: a session that vanished mid-check falls back to
+      // the cfg-only behaviour rather than failing the overflow check itself.
       const row = input.sessionID
         ? yield* session.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
         : undefined
-      return overflow({
+      const check = overflowCheck({
         cfg: yield* config.get(),
         tokens: input.tokens,
         model: input.model,
         outputTokenMax: flags.outputTokenMax,
         thresholdOverride: row ? Session.compactionThreshold(row) : undefined,
+        floor: fixedFloor(input.sessionID),
       })
+      // The window is full and compaction is not the answer: what is left is
+      // mostly the fixed block, which no summary can remove. Logged once with the
+      // numbers, because the alternative is a silent non-event.
+      if (check.gated)
+        yield* Effect.logInfo("compaction held back: too little history to remove", {
+          "session.id": input.sessionID,
+          count: check.count,
+          floor: check.floor,
+          history: check.history,
+          required: check.required,
+          usable: check.usable,
+        })
+      return check.overflow
     })
 
     const estimate = Effect.fn("SessionCompaction.estimate")(function* (input: {
@@ -318,12 +342,11 @@ const layer = Layer.effect(
     })
 
     /**
-     * The engine's own line in the chat, on the summary message, written the
-     * way `session/processor.ts`'s `notice` writes one: create the part,
-     * publish the delta, then persist the text. The delta is what puts it in
-     * front of the user - a whole-part text update is dropped by the ACP
-     * bridge's `handlePartUpdated`, so without it the line would surface only
-     * on a later history replay.
+     * The engine's own line in the chat, on the summary message, written the way
+     * `session/processor.ts`'s `notice` writes one: create the part, publish the
+     * delta, then persist the text. The delta is what puts it in front of the
+     * user — a whole-part text update is dropped by the ACP bridge, so without it
+     * the line would surface only on a later history replay.
      *
      * `summaryText` skips parts carrying `NOTICE_KEY`, so an engine line never
      * becomes summary prose the next compaction quotes back as history.
@@ -395,29 +418,85 @@ const layer = Layer.effect(
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
       const previousSummary = prior.at(-1)?.summary
+      // What this compaction can see, and therefore what it can remove. Hoisted
+      // out of `attempt` because the working-set extraction and the gain
+      // measurement both read it, and neither depends on which model runs.
+      const visible = history.filter((_, index) => !hidden.has(index))
       // Allow plugins to inject context or replace compaction prompt.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
         { sessionID: input.sessionID },
         { context: [], prompt: undefined },
       )
-      const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
+      const nextPrompt =
+        compacting.prompt ??
+        SessionCompactionPrompt.build({ previousSummary, context: compacting.context, messages: visible })
+
+      // origami_change-start (t-tc20mj): compaction's own request must fit the
+      // window, since it is how the history is made to fit. The selected head is
+      // otherwise unbounded, and in the field it overflowed the same way the turn
+      // did. When it does not fit with room for the summary, what is sent shrinks
+      // in steps, least loss first: the model's reasoning, then tool results cut
+      // harder, then the oldest messages.
+      const fitted = Effect.fnUntraced(function* (msgs: SessionV1.WithParts[], model: Provider.Model) {
+        const convert = (toolOutputMaxChars: number) =>
+          MessageV2.toModelMessagesEffect(msgs, model, { stripMedia: true, toolOutputMaxChars })
+        const full = yield* convert(TOOL_OUTPUT_MAX_CHARS)
+        const context = model.limit.context
+        if (context <= 0) return { messages: full, omitted: 0 }
+        // Room for the summary: what the request will ask for, and at most a
+        // quarter of the window, as for an unknown output limit (overflow.ts).
+        const reserve = Math.min(
+          ProviderTransform.maxOutputTokens(model, flags.outputTokenMax),
+          Math.floor(context / 4),
+        )
+        const limit = context - SessionWindowFit.margin(context) - reserve
+        const fixed = SessionWindowFit.estimate({
+          messages: [],
+          system: [agent.prompt ?? "", userMessage.system ?? "", nextPrompt],
+        })
+        const fits = (messages: ModelMessage[]) =>
+          SessionWindowFit.calibrate(input.sessionID, fixed + SessionWindowFit.estimate({ messages })) <= limit
+        if (fits(full)) return { messages: full, omitted: 0 }
+        const lean = SessionWindowFit.withoutReasoning(full)
+        const result = fits(lean)
+          ? { messages: lean, omitted: 0 }
+          : SessionWindowFit.newest({
+              messages: SessionWindowFit.withoutReasoning(yield* convert(TOOL_OUTPUT_TIGHT_CHARS)),
+              limit,
+              fixed,
+              sessionID: input.sessionID,
+            })
+        yield* Effect.logInfo("compaction request shrunk to fit the window", {
+          "session.id": input.sessionID,
+          context,
+          limit,
+          omitted: result.omitted,
+        })
+        return result
+      })
+      // origami_change-end
 
       // Everything from the selection down is per-attempt on purpose: how much
       // history fits, and how it is rendered, are facts about the model that
       // runs it, so a walk to another binding has to work them out again.
       const attempt = Effect.fnUntraced(function* (model: Provider.Model) {
         const selected = yield* select({
-          messages: history.filter((_, index) => !hidden.has(index)),
+          messages: visible,
           cfg,
           model,
         })
-        const msgs = structuredClone(selected.head)
+        // t-u54x6w: the copy keeps a plugin that rewrites messages away from
+        // `visible`, which the gain check below measures again. No plugin with
+        // that hook: nothing can write, and the copy of the whole history
+        // (screenshots included) was a block of the JS thread for nothing.
+        const rewriter = (yield* plugin.list()).some((hook) => hook["experimental.chat.messages.transform"])
+        const msgs = rewriter ? structuredClone(selected.head) : selected.head
         yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-        const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
-          stripMedia: true,
-          toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-        })
+        const { messages: modelMessages, omitted } = yield* fitted(msgs, model)
+        const prompt = omitted
+          ? `${nextPrompt}\n\nThe oldest ${omitted} messages of this conversation are not shown above: they did not fit the model's context window.`
+          : nextPrompt
         const ctx = yield* InstanceState.context
         const msg: SessionV1.Assistant = {
           id: MessageID.ascending(),
@@ -461,12 +540,12 @@ const layer = Layer.effect(
             ...modelMessages,
             {
               role: "user",
-              content: [{ type: "text", text: nextPrompt }],
+              content: [{ type: "text", text: prompt }],
             },
           ],
           model,
         })
-        return { selected, processor, result }
+        return { selected, processor, result, model }
       })
 
       /** Whether an attempt's own message already holds summary text. */
@@ -477,12 +556,19 @@ const layer = Layer.effect(
         return Option.match(found, { onNone: () => false, onSome: (item) => FlockHealth.produced(item.parts) })
       })
 
-      // Compaction is cheap background work, so it rides the subagent binding
-      // like the other hidden generations. It is also a STREAMED one — it writes
-      // a real assistant message — so a binding that failed after producing
-      // summary text is never walked past, and a chain that ran and failed keeps
-      // its own failed message rather than billing a second full-history
-      // generation on the caller's model.
+      /** The summary prose an attempt actually wrote, engine notices excluded. */
+      const summaryOf = Effect.fnUntraced(function* (messageID: MessageID) {
+        const found = yield* session
+          .findMessage(input.sessionID, (item) => item.info.id === messageID)
+          .pipe(Effect.catchCause(() => Effect.succeed(Option.none<SessionV1.WithParts>())))
+        return Option.match(found, { onNone: () => undefined, onSome: (item) => summaryText(item) })
+      })
+
+      // Compaction is cheap background work, so it rides the subagent binding like
+      // the other hidden generations. It is also a streamed one — it writes a real
+      // assistant message — so a binding that failed after producing summary text
+      // is never walked past, and a chain that ran and failed keeps its own failed
+      // message rather than billing a second full-history generation.
       const candidates = yield* flock.resolveSubagents()
       const walked = candidates?.length
         ? yield* FlockHealth.walk({
@@ -518,7 +604,7 @@ const layer = Layer.effect(
       // Only reachable if a failing attempt handed nothing back at all. Stopping
       // is the honest answer; re-running would bill the whole history again.
       if (!run) return "stop"
-      const { selected, processor, result } = run
+      const { selected, processor, result, model } = run
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({
@@ -531,6 +617,42 @@ const layer = Layer.effect(
         return "stop"
       }
 
+      // The result is measured before it is kept, and only for auto compaction: a
+      // manual /compact is the user asking for a summary and the engine does not
+      // overrule that. Only once summary text exists — with nothing written there
+      // is nothing to weigh.
+      if (input.auto) {
+        const summary = yield* summaryOf(processor.message.id)
+        if (summary) {
+          const floor = fixedFloor(input.sessionID)
+          const tailStart = selected.tail_start_id
+            ? visible.findIndex((item) => item.info.id === selected.tail_start_id)
+            : -1
+          const tail = tailStart >= 0 ? visible.slice(tailStart) : []
+          const before = floor + (yield* estimate({ messages: visible, model }))
+          const after =
+            floor + Token.estimate(summary) + (tail.length ? yield* estimate({ messages: tail, model }) : 0)
+          if (after > before * (1 - MIN_COMPACTION_GAIN)) {
+            // The summary stays in the transcript as a failed message on purpose:
+            // `completedCompactions` here and `filterCompacted` in message-v2.ts
+            // both skip a summary carrying an error, so the marker never takes
+            // effect and no message is deleted.
+            yield* Effect.logInfo("compaction discarded: it would not shrink the context", {
+              "session.id": input.sessionID,
+              before,
+              after,
+              floor,
+            })
+            processor.message.error = new SessionV1.ContextOverflowError({
+              message: `Compaction skipped - the summary would not shrink the context (${before} -> ${after} tokens, floor ${floor})`,
+            }).toObject()
+            processor.message.finish = "error"
+            yield* session.updateMessage(processor.message)
+            return "stop"
+          }
+        }
+      }
+
       if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
         yield* session.updatePart({
           ...compactionPart,
@@ -538,11 +660,10 @@ const layer = Layer.effect(
         })
       }
 
-      // Whether the turn goes on after this compaction. The autocontinue hook
-      // can switch it off, and when it does the caller has to be TOLD: the
-      // summary on its own satisfies `session/prompt.ts`'s exit gate, so a
-      // "continue" answer ends the turn anyway - just silently, with the user
-      // left looking at a summary and no reply.
+      // Whether the turn goes on after this compaction. The autocontinue hook can
+      // switch it off, and when it does the caller has to be told: the summary on
+      // its own satisfies `session/prompt.ts`'s exit gate, so the turn would
+      // otherwise end silently with the user looking at a summary and no reply.
       let continues = true
 
       if (result === "continue" && input.auto) {
@@ -648,6 +769,18 @@ const layer = Layer.effect(
       auto: boolean
       overflow?: boolean
     }) {
+      // A compaction rewrites the history, so the cached prefix is dead. Cancel
+      // any pending warm and keep this session cold until a real request has
+      // rebuilt the prefix (session/cache-warm.ts). Here rather than at the two
+      // call sites because this is the ONE entry both auto and /compact take.
+      SessionCacheWarm.compacted(input.sessionID)
+      // And the next step-finish must be able to SAY so: a compaction rewrites
+      // the history, so the miss that follows has one cause and it is this one,
+      // not whatever the message diff reports (t-rylleg).
+      SessionPromptCapture.markCompacted(input.sessionID)
+      // And the badge that says so on the composer (t-rylyhm): the same fact,
+      // reported rather than only acted on.
+      SessionCacheState.compacted(input.sessionID)
       const msg = yield* session.updateMessage({
         id: MessageID.ascending(),
         role: "user",

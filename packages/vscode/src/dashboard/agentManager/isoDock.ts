@@ -1,14 +1,7 @@
-// THE DOCK: everything the flows never mention, packed into pillar districts and
-// dropped below the last street.
-//
-// This is the other half of the flow-spine plan (isoLayout.ts owns the streets),
-// and it is the half with a search in it: nodes pack into a section block, blocks
-// pack into a district, districts pack into one slab — three nested calls to
-// isoPack's W+D minimisation, the last biased WIDE so the slab sits under the
-// streets rather than beside them.
-//
-// Its own file because it is the part that grows: a new grouping rule, a new
-// ordering, a different bias all land here, while the streets stay as they are.
+// The off-flow dock: packs everything the flow streets never touch into pillar districts
+// below the last street. Nodes pack into section blocks, blocks into districts, districts
+// into one slab — three nested calls to isoPack's W+D minimisation, the last biased wide so
+// the slab sits under the streets.
 
 import { HX, project, tileOutline } from './isoProject';
 import { bestPack } from './isoPack';
@@ -47,9 +40,8 @@ function sectionsOf(nodes: readonly MapNode[], pillar: number): Array<{ name: st
   });
 }
 
-/** Pack and place the off-flow components. Appends to the three output lists and
- *  returns nothing — a map whose flows already cover everything simply adds no
- *  district, which is an ordinary map rather than an error. */
+/** Pack and place the off-flow components; a map whose flows already cover everything simply
+ *  adds no district. */
 export function dockDistricts(
   map: RepoMap, s: Sizes, placed: ReadonlySet<string>, spanX: readonly number[],
   boxes: IsoBox[], zones: IsoZone[], labels: IsoSectionLabel[],
@@ -77,9 +69,8 @@ export function dockDistricts(
   slabs.sort((a, b) => b.w * b.d - a.w * a.d || a.pillar - b.pillar);
   const dp = bestPack(slabs, DIST_GAP, 2.0);
 
-  // Drop the slab below the last street and centre it on them. `dif` converts a
-  // screen-x offset back into the grid's (x - y), which is the only axis a
-  // horizontal shift has in this projection.
+  // Drop the slab below the last street and centre it on them; `dif` converts a screen-x
+  // offset back into the grid's (x - y) axis.
   const sum = 2 * (map.flows.length - 1) * STREET_PITCH + DOCK_CLEAR;
   const cx = spanX.length > 0 ? (Math.min(...spanX) + Math.max(...spanX)) / 2 : 0;
   const dif = cx / HX - dp.w / 2 + dp.d / 2;

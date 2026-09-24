@@ -5,6 +5,8 @@
   // worktree. Content is a snippet, so the block knows nothing about
   // ticket-vs-fold cards; the pane decides what goes in.
   import type { Snippet } from 'svelte';
+  // The SAME highlight the chat transcript cards wear — shared/spotlight.ts.
+  import { spotlight } from '../../shared/spotlight';
 
   interface Props {
     label: string;
@@ -36,7 +38,7 @@
 
 <!-- Named region, not a bare <section>: a block that takes a drop has to say what
      it is, both for a screen reader and for Svelte's a11y check. -->
-<section class="am-scol" class:blocked={tone === 'blocked'} class:dragover={over}
+<section class="am-scol og-spotlight" class:blocked={tone === 'blocked'} class:dragover={over} use:spotlight
   aria-label={label}
   ondragover={dragOver} ondragleave={() => (over = false)} ondrop={drop}>
   <div class="am-scol-head">

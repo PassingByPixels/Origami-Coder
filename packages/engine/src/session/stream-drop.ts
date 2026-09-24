@@ -1,37 +1,24 @@
 import { SessionV1 } from "@origami/core/v1/session"
+import { LLMError } from "@origami/llm"
+import { isRecord } from "@/util/record"
 import type { Err } from "./retry"
 
 /**
  * Stream drop: the provider stream dying AFTER the request succeeded.
  *
  * The AI SDK retries `doStream` — the call that opens the stream — and nothing
- * else (`ai/dist/index.mjs`, `retry(() => recordSpan({ name:
- * "ai.streamText.doStream" ... }))`). Once headers land, every later failure is
- * forwarded as a `fullStream` part of type `error` and the SDK is finished with
- * it. `session/llm/ai-sdk.ts` turns that part into `Effect.fail(event.error)`,
- * so the raw value the provider package chose reaches `MessageV2.fromError`
- * with no HTTP status, no headers and no `APICallError` wrapper.
- *
- * That is why the family needs its own classifier. `@ai-sdk/openai-compatible`
- * enqueues `{ type: "error", error: chunk.value.error.message }` — a BARE
- * STRING — for any `{"error":{...}}` frame in the SSE body, discarding the
- * code. A bare sentence matches none of `SessionRetry.retryable`'s branches
- * (not an APIError, not JSON that parses to an object), so it fell through to
- * `NamedError.Unknown` and the turn died on a transport hiccup. The owner's
- * live failure read `Internal error: "Upstream idle timeout exceeded"` — the
- * quotes are `JSON.stringify` on that string.
- *
- * The whole family is transient by construction: the request was accepted, the
- * transport failed. Re-sending the identical request is the only sound repair —
- * see `DISCARD-AND-REDO` below.
+ * else. Once headers land, every later failure is forwarded as a `fullStream`
+ * part of type `error`, so the raw value reaches `MessageV2.fromError` with no
+ * HTTP status, no headers and no `APICallError` wrapper, and
+ * `@ai-sdk/openai-compatible` flattens such a frame to a BARE STRING that
+ * matches none of `SessionRetry.retryable`'s branches. Hence this family's own
+ * classifier. It is transient by construction — the request was accepted, the
+ * transport failed — so re-sending the identical request is the only sound
+ * repair; see `DISCARD-AND-REDO` below.
  */
 
-/**
- * Marker written into `APIError.metadata.code`, so the retry policy can tell a
- * dropped stream from a rate limit without re-parsing the message. Sits beside
- * the codes the other transport errors already write there (`ECONNRESET`,
- * `ProviderHeaderTimeoutError`, `ProviderResponseStreamError`).
- */
+/** Marker written into `APIError.metadata.code`, so the retry policy can tell a
+ *  dropped stream from a rate limit without re-parsing the message. */
 export const CODE = "stream_drop"
 
 /**
@@ -39,32 +26,19 @@ export const CODE = "stream_drop"
  *
  * `session/prompt.ts` builds `streamInput.messages` ONCE per step and hands the
  * same array to `handle.process`, so `Effect.retry` re-sends a byte-identical
- * request. The engine has no continuation mechanism at all: resuming from the
- * partial text would mean synthesising an assistant prefix or a "continue"
- * user turn, which is exactly the pattern that is banned. So a retry redoes
- * the step from the same context and the model starts the step again.
- *
- * The partial parts the failed attempt already persisted are LEFT IN PLACE.
- * Removing them is possible (`Session.removePart`) but not honest: a tool part
- * can record a side effect that really happened, and deleting the prose the
- * user already watched arrive would hide what the provider did. The retry
- * notice is written between the two, so the transcript reads as what it is —
- * a cut-off attempt, a stated retry, then the real answer.
+ * request. The engine has no continuation mechanism: resuming from the partial
+ * text would mean synthesising an assistant prefix or a "continue" user turn,
+ * which is banned. The partial parts already persisted are LEFT IN PLACE — a
+ * tool part can record a side effect that really happened — with the retry
+ * notice written between the two.
  */
 
 /**
- * Attempts spent on a dropped stream, and the pause between them.
- *
- * Deliberately tighter than `SessionRetry.RETRY_LIMIT_DEFAULT` (8). A 429 costs
- * nothing to repeat — the provider rejected the request before generating. A
- * dropped stream is the opposite: the prompt was accepted, processed and
- * BILLED, and every redo bills it again. Eight redos of a long-context step is
- * real money spent silently. Three attempts covers a transient hiccup; a fourth
- * failure means the route is genuinely unwell and the user should be told.
- *
- * The backoff is short for the same reason the ladder is: nothing is asking us
- * to wait. A rate limit names a wait; a severed socket does not, and a user
- * watching a stalled chat gains nothing from 30 seconds of silence.
+ * Attempts spent on a dropped stream, and the pause between them. Tighter than
+ * `SessionRetry.RETRY_LIMIT_DEFAULT` (8) because a dropped stream was accepted,
+ * processed and BILLED, so every redo bills it again. The backoff is short
+ * because nothing is asking us to wait: a rate limit names a wait, a severed
+ * socket does not.
  */
 export const LIMIT_DEFAULT = 3
 export const DELAY_BASE = 500
@@ -82,28 +56,17 @@ export function delay(attempt: number) {
 }
 
 /**
- * A stream that ran out of events without ever naming a finish reason, AND
- * left nothing behind worth keeping.
+ * A stream that ran out of events without ever naming a finish reason, AND left
+ * nothing behind worth keeping. The two runtimes spell the same silence
+ * differently: `@origami/llm`'s OpenAI Chat protocol emits its finish lifecycle
+ * only `if (reason)`, leaving `finish` unset, while the AI SDK path maps the
+ * missing reason to the literal `"unknown"`.
  *
- * The two runtimes spell the same silence differently. `@origami/llm`'s OpenAI
- * Chat protocol emits its whole finish lifecycle only `if (reason)`
- * (`protocols/openai-chat.ts`, `finishEvents`), so a body that ends with no
- * `finish_reason` produces NO `step-finish` at all and the assistant message
- * keeps an unset `finish`. The AI SDK path instead maps the missing reason to
- * the literal `"unknown"` (`llm/ai-sdk.ts`, `finishReason`). Both spellings
- * mean the same thing: nobody told us how this step ended.
- *
- * That fact alone does NOT decide the repair. `session/processor.ts` splits it
- * on a second one — whether the attempt committed prose. Prose plus an
- * unreadable reason is a finished generation with a mangled label, so the turn
- * is kept and the loop continues instead (upstream opencode 1.18.21's rule,
- * bounded in `session/prompt.ts` by `UNKNOWN_CONTINUE_LIMIT`). Only the silent
- * case reaches this error.
- *
- * It belongs to this family because for THAT case the cure is the family's own
- * — re-send the identical request, a bounded number of times, and say so. It is
- * carried as a `code` rather than as prose so the classifier reads it the way it
- * reads undici's `UND_ERR_*`, and so no provider sentence can collide with it.
+ * That alone does NOT decide the repair. `session/processor.ts` splits on a
+ * second fact — whether the attempt committed prose. Prose plus an unreadable
+ * reason is a finished generation with a mangled label, so the turn is kept and
+ * the loop continues (bounded by `UNKNOWN_CONTINUE_LIMIT`); only the silent case
+ * reaches this error. Carried as a `code` so no provider sentence can collide.
  */
 export const NO_FINISH_CODE = "stream_ended_early"
 
@@ -112,27 +75,38 @@ export function endedEarly() {
 }
 
 /**
- * Every member is keyed on a message this engine has actually seen, or on a
- * code the runtime under it emits by name. Nothing here is inferred from what a
- * gateway "probably" says.
+ * A stream that DID name a finish reason - "stop" - and left NOTHING on the
+ * message: no prose, no tool call. The shape is OpenAI's Responses API, which
+ * can end a response `completed` carrying only a `reasoning` output item;
+ * `@ai-sdk/openai` maps that to "stop", so `session/processor.ts` sets
+ * `terminal`, the silent-stream guard above (which tests `!terminal`) never sees
+ * it, and the loop's exit gate ends the turn mid-task on an empty message.
  *
+ * A separate code from `NO_FINISH_CODE` because the notice quotes the sentence:
+ * this stream was not silent about how it ended, it was empty.
+ */
+export const EMPTY_REPLY_CODE = "stream_empty_reply"
+
+export function emptyReply() {
+  return Object.assign(new Error("The provider ended the reply with no content."), { code: EMPTY_REPLY_CODE })
+}
+
+/**
  * The bar for membership is one question: could re-sending the identical
  * request plausibly succeed? A refusal, a bad key, a context overflow and a
- * content filter all answer no, and none of them can match these patterns.
+ * content filter all answer no, and none of them may match these patterns.
  */
 const PATTERNS: readonly { readonly re: RegExp; readonly why: string }[] = [
   {
-    // The owner's live failure, 2026-08-21, openrouter/stealth/ox-alpha: a long
-    // reasoning pause with no token emitted, so OpenRouter's gateway cut the
-    // stream. Reaches us as the bare string "Upstream idle timeout exceeded".
+    // A gateway cutting a stream that emitted no token for too long; reaches us
+    // as the bare string "Upstream idle timeout exceeded".
     re: /\bidle timeout\b/i,
     why: "gateway idle timeout",
   },
   {
-    // Node/undici socket faults. The engine already treats the top-level
-    // `code === "ECONNRESET"` shape as retryable in `MessageV2.fromError`; these
-    // are the same faults once a provider package has flattened them to text,
-    // where that `code` check no longer reaches them.
+    // Node/undici socket faults, once a provider package has flattened them to
+    // text and `MessageV2.fromError`'s top-level `code` check no longer reaches
+    // them.
     re: /\b(?:econnreset|econnaborted|etimedout|epipe|socket hang ?up|connection reset)\b/i,
     why: "socket reset",
   },
@@ -157,8 +131,7 @@ const PATTERNS: readonly { readonly re: RegExp; readonly why: string }[] = [
     why: "upstream server error",
   },
   {
-    // Capacity, mid-stream. The APIError path already reads "Overloaded"; this
-    // is the same condition arriving as a stream frame instead of a status.
+    // Capacity arriving as a stream frame instead of a status.
     re: /\b(?:overloaded|temporarily unavailable|no instances available)\b/i,
     why: "provider overloaded",
   },
@@ -167,6 +140,11 @@ const PATTERNS: readonly { readonly re: RegExp; readonly why: string }[] = [
     // Error's `code`, so this arrives the same way a socket fault's code does.
     re: new RegExp(`\\b${NO_FINISH_CODE}\\b`),
     why: "no finish reason",
+  },
+  {
+    // Same route in, written by `emptyReply` above.
+    re: new RegExp(`\\b${EMPTY_REPLY_CODE}\\b`),
+    why: "empty reply",
   },
 ]
 
@@ -197,12 +175,13 @@ function text(value: unknown, depth = 0): string {
  *
  * Conservative on purpose, in both directions. A value it cannot read falls
  * through to the existing unknown-error path unchanged, and an aborted turn is
- * never a drop — the user cancelled, and undici reports a cancelled body with
- * the same vocabulary a severed one uses. `MessageV2.fromError` already makes
- * that distinction for `ZlibError`; this makes it for the same reason.
+ * never a drop — undici reports a cancelled body with the same vocabulary a
+ * severed one uses.
  */
 export function detect(value: unknown, aborted?: boolean): { message: string; why: string } | undefined {
   if (aborted) return undefined
+  const native = nativeDrop(value)
+  if (native) return native
   const flat = text(value)
   if (!flat) return undefined
   const hit = PATTERNS.find((pattern) => pattern.re.test(flat))
@@ -211,6 +190,43 @@ export function detect(value: unknown, aborted?: boolean): { message: string; wh
   // one, never the JSON blob `NamedError.Unknown` used to produce.
   const message = typeof value === "string" ? value : messageOf(value) || flat
   return { message: message.trim(), why: hit.why }
+}
+
+/**
+ * The same family as seen through `@origami/llm`, which keeps the fault typed
+ * instead of flattening it to a sentence. A transport failure is a drop by
+ * definition, and so is a body that stopped being readable mid-flight. An error
+ * FRAME the protocol could not decode is a drop only when the frame text — not
+ * the wrapper — matches a pattern above.
+ */
+function nativeDrop(value: unknown): { message: string; why: string } | undefined {
+  if (!(value instanceof LLMError)) return undefined
+  const reason = value.reason
+  if (reason._tag === "Transport")
+    return { message: reason.message.trim(), why: reason.kind ? `transport ${reason.kind}` : "transport failure" }
+  if (reason._tag !== "InvalidProviderOutput") return undefined
+  if (reason.message.startsWith("Failed to read ")) return { message: reason.message.trim(), why: "premature close" }
+  const raw = reason.raw ?? ""
+  const hit = PATTERNS.find((pattern) => pattern.re.test(raw))
+  if (!hit) return undefined
+  return { message: (frameMessage(raw) ?? raw).trim(), why: hit.why }
+}
+
+/** The provider's own sentence inside an `{"error":{"message":…}}` frame. */
+function frameMessage(raw: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed)) return undefined
+    const error = parsed["error"]
+    if (typeof error === "string") return error
+    if (isRecord(error)) {
+      const message = error["message"]
+      return typeof message === "string" ? message : undefined
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
 }
 
 function messageOf(value: unknown): string {
@@ -229,13 +245,71 @@ export function isDrop(error: Err): boolean {
 }
 
 /**
- * The one line the user reads in the chat, in place of a dead turn. `detail` is
- * the provider's own sentence, kept verbatim so the transcript records WHICH
- * gateway said what — the reason a drop happened is often the only clue the
- * user has about which route is unwell.
+ * The notice the user reads in place of a dead turn, as DATA rather than a
+ * sentence.
+ *
+ * It used to be a text part, so it landed in the agent's bubble under the
+ * agent's name, and a run of drops ran together in one blob. A client cannot
+ * take that apart again without matching the wording, and the wording is half
+ * provider prose: one real detail reads `fetch failed (ECONNRESET)`, brackets
+ * and all. So the engine names the facts and the client draws the card.
+ *
+ * `detail` is the provider's own sentence, kept verbatim so the transcript
+ * records which gateway said what. `terminal` is the difference between a card
+ * that says "retrying" and one that says the ladder is spent and offers Retry.
  */
-export function notice(attempt: number, detail: string): string {
-  return `Stream dropped (${detail}) — retrying, attempt ${attempt} of ${limit()}.`
+export interface Notice {
+  /** `retrying` = another attempt follows. `stopped` = the ladder is spent. */
+  kind: "retrying" | "stopped"
+  /** 1-based, the attempt that JUST failed. */
+  attempt: number
+  /** How many attempts this family spends in total - `limit()` when it ran. */
+  max: number
+  detail: string
+  terminal: boolean
+}
+
+/**
+ * Where a notice rides: the key on the notice part's `metadata`, and the same
+ * key on the ACP `_meta` of the empty `agent_message_chunk` that carries it to
+ * a client (`acp/event.ts`). One string, so the part a session stores and the
+ * frame a client reads name the notice identically.
+ *
+ * MIRRORED in `packages/vscode/src/acpStreamDrop.ts`. That package cannot
+ * resolve this one, so the mirror is a literal there with this note beside it.
+ */
+export const NOTICE_KEY = "origami_stream_drop"
+
+export function notice(kind: Notice["kind"], attempt: number, detail: string): Notice {
+  return { kind, attempt, max: limit(), detail, terminal: kind === "stopped" }
+}
+
+/** The notice carried by a part's (or an ACP frame's) metadata, or undefined.
+ *  Fail-closed: a half-written rider draws nothing rather than a card with
+ *  `undefined` in it. */
+export function readNotice(metadata: unknown): Notice | undefined {
+  if (!isRecord(metadata)) return undefined
+  const raw = metadata[NOTICE_KEY]
+  if (!isRecord(raw)) return undefined
+  const kind = raw["kind"]
+  const attempt = raw["attempt"]
+  const max = raw["max"]
+  const detail = raw["detail"]
+  if (kind !== "retrying" && kind !== "stopped") return undefined
+  if (!Number.isInteger(attempt) || !Number.isInteger(max)) return undefined
+  if (typeof detail !== "string") return undefined
+  return { kind, attempt: attempt as number, max: max as number, detail, terminal: kind === "stopped" }
+}
+
+/**
+ * The one-line prose form of a notice, for surfaces with no card to draw: the
+ * non-interactive `origami run` (plain and `--format json`). The chat never
+ * sees this string; it draws the structured notice.
+ */
+export function describeNotice(n: Notice): string {
+  return n.kind === "retrying"
+    ? `Stream dropped (${n.detail}) - retrying, attempt ${n.attempt} of ${n.max}.`
+    : `Stream dropped (${n.detail}) - stopped after ${n.attempt} of ${n.max} attempts.`
 }
 
 export * as SessionStreamDrop from "./stream-drop"

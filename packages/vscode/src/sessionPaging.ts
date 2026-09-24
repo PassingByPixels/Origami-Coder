@@ -1,11 +1,8 @@
-// Paging for ACP `session/list`, split out of acpClient.ts (which sits on its
-// architecture cap) so the loop and its two guards are assertable on their own.
-//
-// The agent answers `session/list` with at most ONE page plus a `nextCursor`
-// when more remain. The extension used to ask once and stop, so past the page
-// size the older half of a workspace's chat history simply stopped appearing —
-// no message, no gap, just a run index that quietly forgot. This asks until the
-// agent says there is nothing left.
+// Paging for ACP `session/list`, split out of acpClient.ts so the loop and its two
+// guards are assertable on their own. The agent answers with at most ONE page plus
+// a `nextCursor`; asking once and stopping meant the older half of a workspace's
+// chat history quietly stopped appearing. This asks until the agent says there is
+// nothing left.
 
 /** Round-trip ceiling. The engine holds up to 5000 root sessions per directory
  *  and pages them at 100, so this reaches the store's own ceiling with room to
@@ -22,15 +19,11 @@ const rowsOf = (resp: unknown): SessionRow[] =>
     ? (resp as { sessions: SessionRow[] }).sessions
     : [];
 
-/**
- * Every session the agent will admit to, across as many pages as it takes.
- *
- * Two guards, because a cursor arrives from the other side of a wire. Rows are
- * de-duplicated by id — a page boundary may legitimately re-send the sessions
- * sharing its timestamp, which is exactly how the engine avoids splitting a tie
- * group. And the loop stops the moment a page adds nothing new or repeats a
- * cursor, so an agent that loops costs a couple of round trips, never a hang.
- */
+/** Every session the agent will admit to, across as many pages as it takes. Two
+ *  guards, because a cursor arrives from the other side of a wire: rows are
+ *  de-duplicated by id (a page boundary may legitimately re-send the sessions
+ *  sharing its timestamp, which is how the engine avoids splitting a tie group), and
+ *  the loop stops the moment a page adds nothing new or repeats a cursor. */
 export async function pageSessions(list: ListSessionsCall, params: { cwd?: string }): Promise<SessionRow[]> {
   const out: SessionRow[] = [];
   const seenIds = new Set<string>();

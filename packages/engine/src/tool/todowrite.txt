@@ -1,13 +1,9 @@
 Create and maintain a structured task list for the current coding session. Tracks progress, organizes multi-step work, and surfaces status to the user.
 
-## When to use
-Use proactively when:
-- The task requires 3+ distinct steps or actions (not just 3 tool calls for a single conceptual step)
-- The work is non-trivial and benefits from planning
-- The user provides multiple tasks (numbered or comma-separated) or explicitly asks for a todo list
-- New instructions arrive - capture them as todos
-- You start a task - mark it `in_progress` (only one at a time) before working
-- You finish a task - mark it `completed` and add any follow-ups discovered during the work
+## Use it by default
+Create a todo list at the start of any task with more than one or two steps, before your first other tool call. Skip it only for single-step requests or pure questions. When in doubt, use it.
+
+The list is the PLAN, not a log. Write the shape of the whole job first, then work it. When new instructions arrive, capture them in the list.
 
 ## When NOT to use
 Skip when:
@@ -17,25 +13,29 @@ Skip when:
 
 ## States
 - `pending` - not started
-- `in_progress` - actively working (exactly ONE at a time)
+- `in_progress` - actively working (one STEP at a time, and the wave above it)
 - `completed` - finished successfully
 - `cancelled` - no longer needed
 
-## Nesting
-Use the optional `depth` field to show that one task is a step of another.
-- `depth` 0 (or omitted) is a top-level task
-- a sub-task has its parent's `depth` + 1, and comes DIRECTLY AFTER that parent in the list
-- maximum depth is 3
-- the list is replaced WHOLE on every call, so re-send each item's `depth` every time you rewrite it -
+## Waves and steps
+A plan has two levels, and the `depth` field carries them.
+- `depth` 0 is a WAVE: one phase of the work. The waves in order are the plan.
+- `depth` 1 is a STEP of the wave above it. A step has its parent's `depth` + 1, and comes DIRECTLY AFTER that parent in the list.
+- Maximum depth is 3. Two levels is the normal shape.
+- Write every wave when you start. Add the steps you can already name, and add more to a later wave as you learn them.
+- Keep exactly one STEP `in_progress`. Its wave is `in_progress` with it. Close a step when its check passes. Close a wave when its steps are closed.
+- The list is replaced WHOLE on every call, so re-send each item's `depth` every time you rewrite it -
   including after a summary or a context reset, where the list you are shown carries the nesting as
   indentation only
 
 ```json
 [
-  { "content": "Add the export button", "status": "in_progress", "priority": "high", "depth": 0 },
+  { "content": "Ship the export button", "status": "in_progress", "priority": "high", "depth": 0 },
   { "content": "Wire the click handler", "status": "completed", "priority": "high", "depth": 1 },
   { "content": "Write the file", "status": "in_progress", "priority": "high", "depth": 1 },
-  { "content": "Update the docs", "status": "pending", "priority": "low", "depth": 0 }
+  { "content": "Run the suite", "status": "pending", "priority": "high", "depth": 1 },
+  { "content": "Document the new flag", "status": "pending", "priority": "low", "depth": 0 },
+  { "content": "Update the README", "status": "pending", "priority": "low", "depth": 1 }
 ]
 ```
 
@@ -51,7 +51,7 @@ the parent.
 ## Rules
 - Update status in real time; don't batch completions
 - Mark `completed` only after the required work is actually done, including any required verification. Never based on intent.
-- Keep exactly one `in_progress` while work remains
+- Keep exactly one STEP `in_progress` while work remains. Its wave is `in_progress` with it.
 - If blocked or partial, keep it `in_progress` and add a follow-up todo describing the blocker
 - Preserve user-provided commands verbatim (flags, args, order)
 - Items should be specific and actionable; break large work into smaller steps
@@ -67,5 +67,3 @@ Skip it:
 - "How do I print Hello World in Python?" -> informational
 - "Add a comment to calculateTotal" -> single edit
 - "Run npm install and tell me what happened" -> one command
-
-When in doubt, use it.

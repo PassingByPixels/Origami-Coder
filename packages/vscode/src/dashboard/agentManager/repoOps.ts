@@ -1,10 +1,5 @@
-// Agent Manager - repoOps.ts (S4/S5): repo-scoped registry mutations extracted
-// from manager.ts to keep the owner under its line cap. S4 moved the two small
-// state ops (setRepoDefault / updateQueued); S5 additionally moves the hub
-// add/remove-repo handlers (onAddRepo / onRemoveRepo, their natural home) to
-// reclaim room for the fan-out routing. Verbatim behaviour moves - only `this.*`
-// became `ctx.*`; the AgentManager builds the narrow contexts these drive it
-// through. No new behaviour lives here.
+// Repo-scoped registry mutations extracted from manager.ts: the two small state ops
+// (setRepoDefault/updateQueued) plus the hub add/remove-repo handlers.
 
 import { loadState, saveState } from './state';
 import { findEntry, isGitRepo, normalizeRepoPath, repoKey, type RepoEntry } from './registry';
@@ -32,11 +27,9 @@ export function setRepoDefault(ctx: RepoOpsContext, root: string | undefined, mo
   ctx.broadcast();
 }
 
-/** Edit a queued record's stored task in place (amUpdateQueued). Valid only
- *  while the record HAS a queuedTask and nothing is in flight for it (else
- *  amError, NO side effects). Only the provided fields are changed; model may
- *  be set to '' ("repo default resolved at start time"). run.ts is untouched -
- *  a later amStart re-reads the edited task straight from the state file. */
+/** Edit a queued record's stored task in place. Valid only while it has a queuedTask and
+ *  nothing in flight for it (else amError, no side effects); model may be set to '' to
+ *  resolve the repo default at start time. */
 export function updateQueued(ctx: RepoOpsContext, root: string, id: string, m: { [k: string]: unknown }): void {
   const state = loadState(root);
   const rec = state.worktrees.find((r) => r.id === id);
@@ -56,8 +49,7 @@ export function updateQueued(ctx: RepoOpsContext, root: string, id: string, m: {
 }
 
 /** The wider context the hub add/remove-repo handlers drive the owner through:
- *  reconciliation + poll hooks and the reconciled/missingSeen one-shot sets
- *  (shared by reference so their deletes reach the manager's sets). */
+ *  reconciliation + poll hooks and the one-shot sets, shared by reference. */
 export interface RepoRegistryContext {
   host: ManagerHost;
   runtime: Map<string, Runtime>;
@@ -74,7 +66,7 @@ export interface RepoRegistryContext {
 }
 
 /** True while any of the repo's records is mid-create or actively running. */
-function repoHasLiveWork(ctx: RepoRegistryContext, root: string): boolean {
+export function repoHasLiveWork(ctx: RepoRegistryContext, root: string): boolean {
   return loadState(primaryFor(root)).worktrees.some((rec) => {
     if (ctx.busy.has(rec.id)) return true;
     const st = ctx.runtime.get(rec.id)?.state;
@@ -98,10 +90,9 @@ export async function onAddRepo(ctx: RepoRegistryContext): Promise<void> {
   ctx.schedulePoll(0);
 }
 
-/** Rename how a repo is DISPLAYED on the board (the pill/header label) — never
- *  the real `name` a ticket file or the engine's board_* tools key by, and never
- *  written to the repo/folder itself. Empty/whitespace clears the override back
- *  to the real name. Refuses only when the root isn't a composed repo at all. */
+/** Rename how a repo is DISPLAYED on the board — never the real `name` a ticket file or the
+ *  engine's board_* tools key by, and never written to disk. Empty/whitespace clears the
+ *  override. */
 export function setRepoDisplayName(ctx: RepoOpsContext, root: string | undefined, displayName: string): void {
   const entry = findEntry(ctx.composed(), root);
   if (!entry) { ctx.repoUnavailable(root); return; }
@@ -112,17 +103,14 @@ export function setRepoDisplayName(ctx: RepoOpsContext, root: string | undefined
   ctx.broadcast();
 }
 
-/** Unregister a repo from the hub (never touches disk). Refuses while it has an
- *  in-flight create or a live session (that work would be orphaned); the
- *  workspace's own repo is never on the list. Clears its one-shot reconcile/
- *  missing markers so a re-add re-reconciles registry vs (possibly drifted) disk. */
+/** Unregister a repo from the hub (never touches disk). Refuses while it has an in-flight
+ *  create or a live session, so work is never orphaned. */
 export function onRemoveRepo(ctx: RepoRegistryContext, root: string | undefined): void {
   if (!root) return;
   const target = normalizeRepoPath(root);
   const key = repoKey(target);
-  // Read the primary BEFORE the entry is dropped below: ensureReconciled keys its
-  // one-shot by the PRIMARY, so clearing only `key` would leave a re-added repo
-  // un-reconciled against a disk that drifted while it was gone.
+  // Read the primary BEFORE the entry is dropped: reconciliation is keyed by primary, so
+  // clearing only `key` would leave a re-added repo un-reconciled against a drifted disk.
   const work = repoKey(primaryFor(target));
   if (findEntry(ctx.composed(), root)?.workspace) return; // the window's own repo isn't in the list
   if (repoHasLiveWork(ctx, target)) {
@@ -136,9 +124,8 @@ export function onRemoveRepo(ctx: RepoRegistryContext, root: string | undefined)
   const known = ctx.host.knownRepos();
   const filtered = known.filter((k) => repoKey(normalizeRepoPath(k)) !== key);
   if (filtered.length !== known.length) ctx.host.saveKnownRepos(filtered); // never touches disk
-  // repos.json is a SHARED file now, so its sync PRESERVES what the extension
-  // does not compose. Unregistering therefore has to say so explicitly - else the
-  // entry survives and adopt-on-read puts the repo straight back on the board.
+  // repos.json is shared now, so unregistering has to say so explicitly, or the entry
+  // survives and adopt-on-read puts the repo straight back.
   updateRepoFile((doc) => dropEntry(doc, target));
   ctx.reconciled.delete(key); // a re-add must re-reconcile registry vs (possibly drifted) disk
   ctx.reconciled.delete(work);

@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "722e5dde-9436-41ca-89da-712b8b97ac68",
+  "id": "135c64c3-55fb-42c8-8b5f-c55634743006",
   "prevIds": [
-    "aee15856-140a-4564-af65-462d020edcdf"
+    "7390d14c-00a9-45b4-8051-86dbca806249"
   ],
   "ddl": [
     {
@@ -1779,6 +1779,36 @@
       "default": "0",
       "generated": null,
       "name": "tokens_cache_write",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "steps",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fork_session_id",
+      "entityType": "columns",
+      "table": "session"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "fork_time",
       "entityType": "columns",
       "table": "session"
     },

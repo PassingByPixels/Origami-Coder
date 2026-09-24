@@ -194,3 +194,60 @@ describe("acp.tools problems", () => {
     }),
   )
 })
+
+// t-fijeld. Two ways the Main-agent ledger disagreed with the spawn path.
+describe("ACPTools.project agrees with the spawn path (t-fijeld)", () => {
+  const list = [
+    { id: "read", description: "Read a file" },
+    { id: "task", description: "Spawn" },
+    { id: "task_list", description: "List tasks" },
+    { id: "webfetch", description: "Fetch a page" },
+  ]
+  const on = { experimental: { tool_search: { enabled: true, mcp: true, defer: [], always: [] } } }
+
+  it("reads a def's own deferrable flag off the meta map, for the main row and the matrix", () => {
+    const meta = new Map<string, ACPTools.ToolMeta>([["webfetch", { source: "builtin", deferrable: true }]])
+    const result = ACPTools.project(list, on, meta, [], [
+      { name: "worker", mode: "subagent", permission: [{ permission: "*", pattern: "*", action: "allow" }] },
+    ])
+    expect(result.tools.find((t) => t.id === "webfetch")?.deferred).toBe(true)
+    expect(result.tools.find((t) => t.id === "read")?.deferred).toBe(false)
+    expect(result.subagents.find((row) => row.agent === "worker")?.states["webfetch"]).toBe("deferred")
+    // Without the flag the same tool reads loaded: the meta map is the source.
+    expect(ACPTools.project(list, on).tools.find((t) => t.id === "webfetch")?.deferred).toBe(false)
+  })
+
+  // t-h8s3xg: `subagent_depth: 2` here is what keeps this test about the
+  // COMPANION rule. At the default cap of 1 every sub-agent row reads `task`
+  // and both its sidecars `off` whatever the deferral lists say, which would
+  // make the assertions below pass for the wrong reason.
+  it("does not let an OFF task keep its companions loaded", () => {
+    const nestable = { ...on, subagent_depth: 2 }
+    const config = { ...nestable, tools: { task: false } }
+    const meta = new Map<string, ACPTools.ToolMeta>([["task_list", { source: "builtin", deferrable: true }]])
+    const result = ACPTools.project(list, config, meta, [], [
+      { name: "worker", mode: "subagent", permission: [{ permission: "*", pattern: "*", action: "allow" }] },
+    ])
+    const main = result.tools.find((t) => t.id === "task_list")
+    expect(main?.deferred).toBe(true)
+    expect(result.tools.find((t) => t.id === "task")?.disabled).toBe(true)
+    expect(result.subagents.find((row) => row.agent === "worker")?.states["task_list"]).toBe("deferred")
+    // With task ON the companion rule holds on both surfaces - for a sub-agent
+    // only when its own rules NAME `task` (the default sub-agent deny cages it,
+    // and a caged task takes its companions with it, as at spawn).
+    const loaded = ACPTools.project(list, nestable, meta, [], [
+      { name: "worker", mode: "subagent", permission: [{ permission: "*", pattern: "*", action: "allow" }] },
+      {
+        name: "orchestrator",
+        mode: "subagent",
+        permission: [
+          { permission: "*", pattern: "*", action: "allow" },
+          { permission: "task", pattern: "*", action: "allow" },
+        ],
+      },
+    ])
+    expect(loaded.tools.find((t) => t.id === "task_list")?.deferred).toBe(false)
+    expect(loaded.subagents.find((row) => row.agent === "orchestrator")?.states["task_list"]).toBe("loaded")
+    expect(loaded.subagents.find((row) => row.agent === "worker")?.states["task_list"]).toBe("deferred")
+  })
+})

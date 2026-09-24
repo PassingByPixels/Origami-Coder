@@ -10,7 +10,22 @@
 // CONTRACT the UI relies on, not the function body.
 
 import { describe, expect, it } from 'vitest';
-import { inferCategory, buildSlashCommand } from './slashCommands';
+import { inferCategory, buildSlashCommand, SHELL_COMMANDS, DEFAULT_COMMANDS } from './slashCommands';
+
+// A shell-only command is one the ENGINE never lists, so `availableCommands`
+// can only ever REPLACE it — the composer re-appends this array on every push.
+// t-v5qv6u: `/btw` left the list when the composer's Fork button replaced it
+// (owner's decision). The host still catches a typed /btw and only forks.
+describe('shell-only commands', () => {
+  it('no longer offers /btw — forking is the Fork button', () => {
+    expect(SHELL_COMMANDS.map((c) => c.name)).not.toContain('/btw');
+    expect(DEFAULT_COMMANDS.map((c) => c.name)).not.toContain('/btw');
+  });
+
+  it('still offers the shell commands the engine never lists', () => {
+    expect(SHELL_COMMANDS.map((c) => c.name)).toEqual(['/firstfold', '/spend', '/loop', '/compose']);
+  });
+});
 
 describe('slashCommands categoriser — no custodian paradigm', () => {
   it('never returns a Custodian category for any input', () => {
@@ -40,5 +55,28 @@ describe('slashCommands categoriser — no custodian paradigm', () => {
     for (const raw of [{ name: '/nyx' }, { name: 'lili' }, { name: '/help' }]) {
       expect(buildSlashCommand(raw).category).not.toBe('Custodian');
     }
+  });
+});
+
+// A FOREIGN vocabulary keeps the label its sender gave it. `inferCategory` is a
+// lookup table of the ENGINE's own command names, so re-deriving someone else's
+// through it buckets nearly all of it as 'Other' — which is how a Claude Code
+// session's 53 commands lost the one label that said where they came from.
+describe('slashCommands — a stated category is not second-guessed', () => {
+  it('keeps a category the sender supplied', () => {
+    expect(buildSlashCommand({ name: 'delegate', category: 'Claude Code' })).toEqual({
+      name: '/delegate', description: '', category: 'Claude Code',
+    });
+    // …even where the guesser HAS an opinion, which is the case that matters:
+    // Claude Code publishes a `/compact` too, and it is not the engine's Mode one.
+    expect(inferCategory('plan')).toBe('Mode');
+    expect(buildSlashCommand({ name: 'plan', category: 'Claude Code' }).category).toBe('Claude Code');
+  });
+
+  it('still guesses when the sender said nothing, or said nothing useful', () => {
+    expect(buildSlashCommand({ name: 'memory' }).category).toBe('Memory');
+    expect(buildSlashCommand({ name: 'memory', category: '' }).category).toBe('Memory');
+    expect(buildSlashCommand({ name: 'memory', category: '   ' }).category).toBe('Memory');
+    expect(buildSlashCommand({ name: 'memory', category: 42 }).category).toBe('Memory');
   });
 });

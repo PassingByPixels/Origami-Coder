@@ -15,7 +15,7 @@
           "anthropic-version": "2023-06-01",
           "content-type": "application/json"
         },
-        "body": "{\"model\":\"claude-haiku-4-5-20251001\",\"system\":[{\"type\":\"text\",\"text\":\"Call tools exactly as requested.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Call get_weather with city exactly Paris.\"}]}],\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get current weather for a city.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"stream\":true,\"max_tokens\":80,\"temperature\":0}"
+        "body": "{\"model\":\"claude-haiku-4-5-20251001\",\"system\":[{\"type\":\"text\",\"text\":\"Call tools exactly as requested.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Call get_weather with city exactly Paris.\"}]}],\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get current weather for a city.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false},\"eager_input_streaming\":true}],\"tool_choice\":{\"type\":\"tool\",\"name\":\"get_weather\"},\"stream\":true,\"max_tokens\":80,\"temperature\":0}"
       },
       "response": {
         "status": 200,

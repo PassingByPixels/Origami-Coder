@@ -12,7 +12,7 @@
 // express, so a member's lane comes from its own `agent` against the roster.
 
 /** A historyList row; the collab trio is absent on an ordinary run. */
-export interface CollabRow { sessionId: string; title: string; folder: string; cwd?: string; updatedAt: string; collabId?: string; collabTitle?: string; agentSlug?: string }
+export interface CollabRow { sessionId: string; title: string; folder: string; cwd?: string; updatedAt: string; collabId?: string; collabTitle?: string; agentSlug?: string; kind?: 'origami' | 'claude' }
 
 /** One entry in the run index: a plain run, or a collab and its members. */
 export interface IndexGroup {
@@ -22,7 +22,7 @@ export interface IndexGroup {
   subtitle: string;
   /** The member rows under a header, in listed order; empty on a plain run. */
   members: CollabRow[];
-  title: string; collab: boolean; folder: string; updatedAt: string;
+  title: string; collab: boolean; folder: string; updatedAt: string; kind?: 'origami' | 'claude'; // 'claude' = a transcript, not an engine run
 }
 
 /** An index row's timestamp, local. Unparseable prints NOTHING, never "Invalid Date". */
@@ -56,7 +56,7 @@ export function collabIndex(rows: readonly CollabRow[]): IndexGroup[] {
   for (const row of rows) {
     const id = row.collabId;
     if (!id) {
-      out.push({ pickId: row.sessionId, title: row.title, subtitle: '', collab: false, folder: row.folder, updatedAt: row.updatedAt, members: [] });
+      out.push({ pickId: row.sessionId, title: row.title, subtitle: '', collab: false, folder: row.folder, updatedAt: row.updatedAt, members: [], ...(row.kind ? { kind: row.kind } : {}) });
       continue;
     }
     let group = seen.get(id);

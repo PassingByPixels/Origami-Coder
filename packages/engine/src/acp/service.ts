@@ -34,27 +34,43 @@ import { AppNodeBuilder } from "@origami/core/effect/app-node-builder"
 import { AppRuntime } from "@/effect/app-runtime"
 // origami_change (t-kgu05m): peer discovery reads the ACP session store.
 import { AgentBroker } from "@/origami/agent-broker"
-import type { AssistantMessage, Message, OrigamiClient, SessionMessageResponse } from "@origami/sdk/v2"
+import type { AssistantMessage, Message, OrigamiClient, Part, SessionMessageResponse } from "@origami/sdk/v2"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import * as ACPError from "./error"
 import { buildConfigOptions, parseModelSelection } from "./config-option"
-import { promptContentToParts } from "./content"
+import { promptContentToParts, type PromptPart } from "./content"
 import { Directory } from "./directory"
 import { ACPEvent } from "./event"
 import { Instructions } from "./instructions"
 import { ACPAgentPlugins } from "./agent-plugins"
+import { FlockBoot } from "@/flock/boot"
+import { ACPArtifacts } from "./artifacts"
+import { ACPFlock } from "./flock"
 import { ACPMcp } from "./mcp"
 import { ACPProviderAuth } from "./provider-auth"
 import { ACPProviderUsage } from "./provider-usage"
+import { ACPSecondOpinion } from "./second-opinion"
+import { SessionCacheState } from "@/session/cache-state"
 import { SessionPromptCapture } from "@/session/prompt-capture"
+import { StorageRetention } from "@/storage/retention" // origami_change: the Insights Storage card's two ext methods
+import { StorageJournal } from "@/storage/journal" // origami_change: journal compaction and the one-time VACUUM
+import { ACPNests } from "./nests" // origami_change (t-s9jgzh): Nests L4a ext methods
 import { SessionPrompt } from "@/session/prompt" // origami_change
-import { SessionID } from "@/session/schema" // origami_change
+import { MessageID, PartID, SessionID } from "@/session/schema" // origami_change
+import { MessageV2 } from "@/session/message-v2" // origami_change: t-krxap7 paged subagent transcript
 import { PermissionPresets } from "@/permission/presets"
 import { RunSteps } from "./run-steps"
 import { RunStats } from "./run-stats"
+import { ForeignTranscript } from "./foreign-transcript" // origami_change: session_append_foreign
 import { SubagentTranscript } from "./subagent-transcript"
+import { ACPHistory } from "./history" // origami_change (t-ucnjwp): bounded restore, history pages, global find
+import { ACPHistoryStore } from "./history-store" // origami_change (t-ucnjwp)
+import { SubagentTodos } from "./subagent-todos" // origami_change (t-qd2riw): bounded todowrite lookup
+import { SubagentChanges } from "./subagent-changes" // origami_change (t-ru0by6): bounded diff-parts lookup
+import * as SubagentStop from "./subagent-stop" // origami_change (t-q910fo): the per-row sub-agent stop
 import { Skills } from "./skills"
 import { ACPTools } from "./tools"
+import { ACPSubagentTools } from "./subagent-tools"
 import { ACPCollab } from "@/collab/acp"
 import type { CollabRunner } from "@/collab/runner"
 import type { CollabStore } from "@/collab/store"
@@ -64,7 +80,11 @@ import { ACPProfile } from "./profile"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { Provider } from "@/provider/provider"
+import { ClaudeSubscription } from "@/provider/claude-subscription"
+import { ProviderCatalogCache } from "@/provider/catalog-cache"
+import { resetDiscoveryCache } from "@/provider/discovery"
 import {
+  Session, // origami_change: session_append_foreign writes through the store's OWN service
   isDefaultTitle,
   withSubagentModel,
   withCompactionThreshold,
@@ -74,6 +94,7 @@ import {
 import { Command } from "@/command" // origami_change: the late MCP-prompt fold needs the service, not just its type
 import { Config } from "@/config/config" // origami_change: provider_refresh re-reads config in-process
 import { InstanceRef } from "@/effect/instance-ref" // origami_change
+import { InstanceState } from "@/effect/instance-state" // origami_change: session_append_foreign stamps the real cwd/root
 import { InstanceStore } from "@/project/instance-store" // origami_change
 import { BackgroundJob } from "@/background/job"
 
@@ -83,7 +104,7 @@ export type Error = ACPError.Error
 type ServiceConnection = Pick<AgentSideConnection, "sessionUpdate"> &
   Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile" | "extNotification">>
 
-export type Interface = {
+export type Interface = ACPNests.Methods & {
   readonly initialize: (input: InitializeRequest) => Effect.Effect<InitializeResponse, Error>
   readonly authenticate: (input: AuthenticateRequest) => Effect.Effect<AuthenticateResponse, Error>
   readonly newSession: (input: NewSessionRequest) => Effect.Effect<NewSessionResponse, Error>
@@ -99,14 +120,35 @@ export type Interface = {
   readonly setSessionModel: (input: SetSessionModelRequest) => Effect.Effect<SetSessionModelResponse, Error>
   readonly prompt: (input: PromptRequest) => Effect.Effect<PromptResponse, Error>
   readonly cancel: (input: CancelNotification) => Effect.Effect<void, Error>
+  readonly sessionDelete: (input: SessionDeleteRequest) => Effect.Effect<{ ok: true }, Error>
+  readonly sessionAppendForeign: (
+    input: SessionAppendForeignRequest,
+  ) => Effect.Effect<SessionAppendForeignResult, Error>
   readonly runSteps: (input: RunStepsRequest) => Effect.Effect<RunSteps.RunStepsResult, Error>
   readonly runStats: (input: RunStatsRequest) => Effect.Effect<RunStats.RunStatsResult, Error>
   readonly subagentTranscript: (
     input: SubagentTranscriptRequest,
   ) => Effect.Effect<SubagentTranscript.SubagentTranscriptResult, Error>
+  // origami_change (t-qd2riw): the child's latest todowrite, without reading its
+  // whole stored session.
+  readonly subagentTodos: (input: SubagentTodosRequest) => Effect.Effect<SubagentTodos.SubagentTodosResult, Error>
+  // origami_change (t-ru0by6): the child's diff-bearing tool parts, capped and
+  // paged, without reading its whole stored session.
+  readonly subagentChanges: (input: SubagentChangesRequest) => Effect.Effect<SubagentChangesResult, Error>
+  // origami_change (t-ucnjwp): lazy loading. An older page of the chat as tagged frames,
+  // an engine-side find over the whole chat, and one row per sub-agent from the rows.
+  readonly historyPage: (input: ACPHistory.HistoryPageRequest) => Effect.Effect<ACPHistory.HistoryPageResult, Error>
+  readonly historySearch: (
+    input: ACPHistory.HistorySearchRequest,
+  ) => Effect.Effect<ACPHistory.HistorySearchResult, Error>
+  readonly subagentRoster: (input: ACPHistory.SubagentRosterRequest) => Effect.Effect<ACPHistory.SubagentRoster, Error>
   readonly listInstructions: (input: ListInstructionsRequest) => Effect.Effect<Instructions.InstructionSet, Error>
   readonly promptCapture: (input: PromptCaptureRequest) => Effect.Effect<PromptCaptureResult, Error>
   readonly cacheStats: (input: CacheStatsRequest) => Effect.Effect<CacheStatsResult, Error>
+  readonly storageStats: () => Effect.Effect<StorageRetention.Stats, Error>
+  readonly storagePrune: (input: StoragePruneRequest) => Effect.Effect<StorageRetention.PruneResult, Error>
+  readonly storageCompact: (input: StorageCompactRequest) => Effect.Effect<StorageJournal.CompactionResult, Error>
+  readonly storageVacuum: (input: StorageVacuumRequest) => Effect.Effect<StorageJournal.VacuumResult, Error>
   readonly listSkills: (input: ListSkillsRequest) => Effect.Effect<Skills.SkillsResult, Error>
   readonly listTools: (input: ListToolsRequest) => Effect.Effect<ACPTools.ToolsResult, Error>
   readonly listAgentPlugins: (input: ListAgentPluginsRequest) => Effect.Effect<ACPAgentPlugins.PluginsResult, Error>
@@ -114,6 +156,34 @@ export type Interface = {
   readonly agentPluginSetEnabled: (
     input: AgentPluginSetEnabledRequest,
   ) => Effect.Effect<ACPAgentPlugins.SetEnabledResult, Error>
+  // Flock (cross-person questions); request shapes live in `acp/flock.ts`. The two
+  // queue methods need an instance context; the other seven are plain file work.
+  readonly flockState: (input: FlockCwdRequest) => Effect.Effect<ACPFlock.State, Error>
+  readonly flockPending: (input: FlockCwdRequest) => Effect.Effect<{ questions: readonly ACPFlock.PendingQuestion[] }, Error>
+  readonly flockInvite: (input: ACPFlock.InviteRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockAccept: (input: ACPFlock.AcceptRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockRevoke: (input: ACPFlock.HandleRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockSetIdentity: (input: ACPFlock.SetIdentityRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockSetPolicy: (input: ACPFlock.SetPolicyRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockFrontDesk: (input: ACPFlock.FrontDeskRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockSetSpecialties: (input: ACPFlock.SpecialtiesRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockMailbox: (input: FlockCwdRequest) => Effect.Effect<ACPFlock.Mailbox, Error>
+  readonly flockDiagnose: (input: FlockCwdRequest) => Effect.Effect<ReturnType<typeof ACPFlock.diagnose>, Error>
+  readonly flockDecide: (input: ACPFlock.DecideRequest & { cwd?: string }) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockSend: (input: ACPFlock.SendRequest & { cwd?: string }) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockPost: (input: ACPFlock.PostRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockMark: (input: ACPFlock.MarkRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  readonly flockDeliver: (input: ACPFlock.DeliverRequest) => Effect.Effect<ACPFlock.WriteResult, Error>
+  // Artifacts (the pages an agent publishes); request shapes live in `acp/artifacts.ts`.
+  // All six are store work on this process's one ArtifactStore — no instance context,
+  // wrapped in `request` for the uniform error mapping.
+  readonly artifactList: (input: ACPArtifacts.ListRequest) => Effect.Effect<ACPArtifacts.ListResult, Error>
+  readonly artifactVersions: (input: ACPArtifacts.ArtifactIdRequest) => Effect.Effect<ACPArtifacts.VersionsResult, Error>
+  readonly artifactOpen: (input: ACPArtifacts.OpenRequest) => Effect.Effect<ACPArtifacts.OpenResult, Error>
+  readonly artifactRestore: (input: ACPArtifacts.RestoreRequest) => Effect.Effect<ACPArtifacts.RestoreResult, Error>
+  readonly artifactDiff: (input: ACPArtifacts.DiffRequest) => Effect.Effect<ACPArtifacts.DiffResult, Error>
+  readonly artifactRename: (input: ACPArtifacts.RenameRequest) => Effect.Effect<ACPArtifacts.RenameResult, Error>
+  readonly artifactDelete: (input: ACPArtifacts.DeleteRequest) => Effect.Effect<ACPArtifacts.DeleteResult, Error>
   readonly mcpList: (input: McpListRequest) => Effect.Effect<ACPMcp.ListResult, Error>
   readonly mcpAdd: (input: McpAddRequest) => Effect.Effect<ACPMcp.WriteResult, Error>
   readonly mcpRemove: (input: McpNameRequest) => Effect.Effect<ACPMcp.WriteResult, Error>
@@ -131,6 +201,12 @@ export type Interface = {
   ) => Effect.Effect<ACPProviderAuth.CallbackResult, Error>
   readonly providerAuthUsage: (input: ProviderAuthUsageRequest) => Effect.Effect<ACPProviderUsage.UsageResult, Error>
   readonly providerRefresh: (input: ProviderRefreshRequest) => Effect.Effect<{ ok: true }, Error>
+  /** Gate B's last answer for the picker (t-tjt9wd): synchronous, no CLI spawn —
+   *  see provider/claude-subscription.ts's `readiness()`/`readinessWireState`. */
+  readonly claudeSubscriptionStatus: () => Effect.Effect<ClaudeSubscription.WireStatus, Error>
+  readonly secondOpinion: (
+    input: SecondOpinionRequest,
+  ) => Effect.Effect<ACPSecondOpinion.SecondOpinionResult, Error>
   readonly collabAgents: (
     input: CollabAgentsRequest,
   ) => Effect.Effect<{ agents: readonly ACPCollab.AgentEntry[] }, Error>
@@ -159,28 +235,67 @@ export type Interface = {
   readonly collabAddParticipant: (input: CollabParticipantRequest) => Effect.Effect<{ ok: true }, Error>
   readonly collabRemoveParticipant: (input: CollabParticipantRequest) => Effect.Effect<{ ok: true }, Error>
   readonly shellStop: (input: ShellStopRequest) => Effect.Effect<{ status: string }, Error>
+  // origami_change (t-q910fo): stop ONE sub-agent child, by its own session id.
+  readonly subagentStop: (input: SubagentStopRequest) => Effect.Effect<SubagentStopResult, Error>
   // origami_change: push a message INTO the running turn.
   readonly interject: (input: InterjectRequest) => Effect.Effect<InterjectReply, Error>
 }
 
-/**
- * How many root sessions `listSessions` will read out of the store for ONE
- * directory before it stops. This is the ceiling the DB layer used to apply
- * silently at 100 (`session/session.ts` listByProject, `limit ?? 100`); naming
- * it here makes the cut visible and moves it far enough out that the cursor
- * paging — not an invisible default — decides what a client sees.
- */
+/** Ceiling on root sessions `listSessions` reads for ONE directory, so cursor paging -
+ *  not an invisible DB default - decides what a client sees. */
 export const SESSION_LIST_MAX = 5000
 
 export type ShellStopRequest = { readonly jobId: string; readonly sessionId: string }
+/** origami_change (t-q910fo): `sessionId` is the CHILD's session id, which is also
+ *  the id its background job is registered under (tool/task.ts `background.start`).
+ *  `cwd` picks the instance the job lives in, like every other read here. */
+export type SubagentStopRequest = { readonly sessionId: string; readonly cwd?: string }
+/** `stopped` for a job this call cancelled, `not_found` when no sub-agent job is
+ *  registered under that id (already settled, or never a child), and the job's own
+ *  status for one that had already ended. */
+export type SubagentStopResult = { readonly status: string }
 // origami_change-start (interject)
-export type InterjectRequest = { readonly sessionId: string; readonly text: string }
-/** `delivered` is the acknowledgement the composer waits on: the message is
- *  durably in the transcript, and the turn will read it at its next tool
- *  boundary. `promoted` counts the blocking foreground shells handed to the
- *  background to bring that boundary forward. */
+/** `images` are the base64 pairs an ACP `image` content block carries; they become
+ *  parts through the SAME converter a prompted image uses (`promptContentToParts`). */
+export type InterjectRequest = {
+  readonly sessionId: string
+  readonly text: string
+  readonly images?: readonly { readonly mimeType: string; readonly data: string }[]
+}
+/** `delivered`: the message is durably in the transcript, to be read at the turn's next
+ *  tool boundary. `promoted` counts foreground shells backgrounded to bring it forward. */
 export type InterjectReply = { readonly delivered: true; readonly busy: boolean; readonly promoted: number }
 // origami_change-end
+
+/**
+ * Fork-owned ext method `session_delete`: remove ONE stored session.
+ *
+ * The only destructive session method this layer exposes. `Session.remove` cascades
+ * into child sessions, their jobs, messages and parts, so a client never walks the
+ * tree itself. NOT reversible and there is no soft-delete tier under it:
+ * `collab_archive` is the "put it away and keep it readable" option.
+ */
+export type SessionDeleteRequest = {
+  readonly sessionId: string
+  readonly cwd?: string
+}
+
+/** Fork-owned ext method `session_append_foreign`: copy a transcript produced
+ *  somewhere ELSE into this session's own message store, WITHOUT running a turn.
+ *  Bounded and idempotent: at most MAX_MESSAGES per call, and a message whose `id`
+ *  this session already carries is skipped rather than doubled. The rows it writes
+ *  are unpriced - see foreign-transcript.ts. */
+export type SessionAppendForeignRequest = {
+  readonly sessionId: string
+  readonly source: string
+  readonly messages: readonly ForeignTranscript.ForeignMessage[]
+  readonly cwd?: string
+}
+
+export type SessionAppendForeignResult = {
+  readonly appended: number
+  readonly skipped: number
+}
 
 /** Fork-owned ext method `run_steps`: review a past run's steps. Read-only. */
 export type RunStepsRequest = {
@@ -198,21 +313,58 @@ export type RunStatsRequest = {
  * Fork-owned ext method `subagent_transcript`: ONE sub-agent's own conversation,
  * projected into the shapes the chat renders. Read-only.
  *
- * `sessionId` is the CHILD's id — the one `tool/task.ts` stamps on the spawning
- * tool part's metadata and the engine rides as `_meta.origami_task_session`.
- * `cwd` scopes the read exactly as it does for `run_steps`.
- *
- * NOT scoped to a caller's own children, deliberately, and the same way
- * `run_steps` is not: any stored session id can be reviewed. The transport IS
- * the boundary — a local shell that spawned this engine over its own stdio —
- * and it is the same shell that would call `run_steps` on the parent to learn
- * the child id in the first place. Enforcing descent would also cost a second
- * read of the parent and would refuse the legitimate case of a grandchild,
- * whose spawn is recorded in the child's stream, not the caller's.
+ * `sessionId` is the CHILD's id - the one `tool/task.ts` stamps on the spawning tool
+ * part's metadata. `cwd` scopes the read exactly as it does for `run_steps`.
+ * Any stored session id can be reviewed; the transport is the boundary.
  */
 export type SubagentTranscriptRequest = {
   readonly sessionId: string
   readonly cwd?: string
+  /** t-krxap7. Page size: the NEWEST `limit` stored messages, not the whole run.
+   *  Omitted (or <= 0) keeps the original whole-transcript read, byte for byte. */
+  readonly limit?: number
+  /** t-krxap7. Opaque cursor from a previous paged answer's `cursor`. Only read
+   *  when `limit` is set, because the store rejects `before` without a limit. */
+  readonly before?: string
+}
+
+/**
+ * Fork-owned ext method `subagent_todos` (t-qd2riw): the CHILD's latest
+ * todowrite call, found by paging its stored session backward in bounded
+ * blocks instead of the whole-transcript read `subagent_transcript` still
+ * makes for the same job. `sessionId`/`cwd` mean exactly what they mean there.
+ */
+export type SubagentTodosRequest = {
+  readonly sessionId: string
+  readonly cwd?: string
+}
+
+/**
+ * Fork-owned ext method `subagent_changes` (t-ru0by6, same family as
+ * `subagent_todos`): the CHILD's diff-bearing tool parts, found by paging its
+ * stored session backward in bounded blocks instead of the whole-transcript
+ * read `subagent_transcript` still makes for the changed-files pill.
+ * `sessionId`/`cwd` mean exactly what they mean there.
+ */
+export type SubagentChangesRequest = {
+  readonly sessionId: string
+  readonly cwd?: string
+}
+
+export type SubagentChangesResult = {
+  readonly sessionId: string
+  /** False when the child's messages could not be read at all. Same meaning
+   *  as `SubagentTranscriptResult.found`. */
+  readonly found: boolean
+  /** Diff-bearing tool parts, newest first, capped at SUBAGENT_CHANGES_CAP. */
+  readonly diffs: readonly SubagentChanges.RawFileDiff[]
+  /** True when the walk stopped (the cap, or SUBAGENT_CHANGES_MAX_PAGES) before
+   *  reaching the head of the child's history — there may be older diffs this
+   *  answer does not carry. */
+  readonly hasMore: boolean
+  /** Opaque `before` cursor for the block preceding the last page read, only
+   *  when `hasMore` is true. */
+  readonly cursor?: string
 }
 
 /** Fork-owned ext method `list_instructions`: what feeds the system prompt. */
@@ -220,25 +372,16 @@ export type ListInstructionsRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `list_tools`: the workspace's base tool list with the
- * deferred-catalog verdict per tool. Read-only, and `cwd` is optional exactly
- * like `list_instructions` — an active-session caller omits it.
- */
+/** Fork-owned ext method `list_tools`: the workspace's base tool list with the
+ *  deferred-catalog verdict per tool. Read-only, and `cwd` is optional. */
 export type ListToolsRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `prompt_capture`: what the engine ACTUALLY sent the
- * model on this session's last turn. Takes no `cwd` — unlike the inventory
- * methods it resolves nothing from disk, and an engine session id already
- * identifies one session in this process.
- *
- * Unlike `list_instructions`, this DOES send text. That is the whole feature:
- * sizes alone cannot answer "what is in those 10k tokens", and the caller is
- * the local shell that spawned this engine over its own stdio.
- */
+/** Fork-owned ext method `prompt_capture`: what the engine ACTUALLY sent the model on
+ *  this session's last turn. Takes no `cwd` - an engine session id already names one
+ *  session in this process. Unlike `list_instructions` this DOES send text: sizes alone
+ *  cannot answer "what is in those 10k tokens". */
 export type PromptCaptureRequest = {
   readonly sessionId: string
 }
@@ -249,13 +392,9 @@ export type PromptCaptureResult = {
   readonly capture: SessionPromptCapture.Capture | null
 }
 
-/**
- * Fork-owned ext method `cache_stats`: this session's prompt-cache token
- * accounting plus a LIFETIME sum across the directory, for the Insights
- * cache-hit-ratio card (t-kgtw47). `cwd` is optional exactly like
- * `list_instructions` — an active-session caller omits it and the engine
- * resolves its own process directory.
- */
+/** Fork-owned ext method `cache_stats`: this session's prompt-cache token accounting
+ *  plus a LIFETIME sum across the directory. `cwd` is optional, as for
+ *  `list_instructions`. */
 export type CacheStatsRequest = {
   readonly sessionId: string
   readonly cwd?: string
@@ -269,6 +408,31 @@ export type CacheStatsResult = {
   readonly lifetime: UsageService.SessionCacheTokens
   /** How many session rows fed the lifetime sum — context for the number. */
   readonly sessionCount: number
+}
+
+/** Fork-owned ext method `storage_prune`: compact old tool payloads out of the
+ *  session store. Takes no `cwd` - the store is one file for the whole machine,
+ *  not a per-directory thing. `dryRun` measures and writes nothing, which is what
+ *  the Insights card shows before it offers the confirm. */
+export type StoragePruneRequest = {
+  readonly olderThanDays: number
+  readonly dryRun: boolean
+}
+
+/** Fork-owned ext method `storage_compact`: collapse the event journal to one row
+ *  per part. `dryRun` measures and writes nothing, like the prune above.
+ *  `sessionId` limits the pass to one chat; without it every eligible session is
+ *  compacted. */
+export type StorageCompactRequest = {
+  readonly dryRun: boolean
+  readonly sessionId?: string
+}
+
+/** Fork-owned ext method `storage_vacuum`: rewrite the store so the pages a
+ *  compaction freed go back to the disk. `confirm` is the user having pressed the
+ *  second button, not the first: without it this measures and refuses. */
+export type StorageVacuumRequest = {
+  readonly confirm: boolean
 }
 
 /** Fork-owned ext method `list_skills`: the workspace's discovered skills. */
@@ -297,6 +461,14 @@ export type AgentPluginSetEnabledRequest = {
   readonly cwd?: string
   readonly spec: string
   readonly enabled: boolean
+}
+
+/** The two Flock reads that need an INSTANCE: the pending queue is the live
+ *  `Permission` service's per-instance state. The other seven take no cwd at all. */
+export type FlockCwdRequest = {
+  readonly cwd?: string
+  /** Test-only override of the global config directory; never sent by a client. */
+  readonly directory?: string
 }
 
 /** Fork-owned ext method `mcp_list`: every MCP server the engine knows -
@@ -347,9 +519,8 @@ export type ProviderAuthAuthorizeRequest = {
 }
 
 /** Fork-owned ext method `provider_auth_callback`: finish the flow `authorize`
- *  started. For a "code" method `code` carries what the user pasted; for an
- *  "auto" method this AWAITS the browser/device callback the plugin is
- *  already listening for. */
+ *  started. For a "code" method `code` carries what the user pasted; for an "auto"
+ *  method this AWAITS the browser/device callback the plugin is listening for. */
 export type ProviderAuthCallbackRequest = {
   readonly cwd?: string
   readonly providerID: string
@@ -358,49 +529,43 @@ export type ProviderAuthCallbackRequest = {
 }
 
 /** Fork-owned ext method `provider_auth_usage`: how much of a SUBSCRIPTION
- *  connection's quota is spent. Read-only, no flow, and — unlike the other three
- *  — no `cwd`: the credential store is global, not per-instance. Answers
- *  `{ ok: false, unavailable }` rather than failing whenever the provider has no
- *  usage source, which is the normal case for every provider except openai. */
+ *  connection's quota is spent. Read-only, and no `cwd` - the credential store is
+ *  global. Answers `{ ok: false, unavailable }` when a provider has no usage source. */
 export type ProviderAuthUsageRequest = {
   readonly providerID: string
 }
 
 /**
- * Fork-owned ext method `provider_refresh`: re-read provider configuration in a
- * RUNNING engine, so a credential the shell just wrote takes effect without a
- * window reload.
+ * Fork-owned ext method `second_opinion`: hand ONE chat's last completed turn to a
+ * DIFFERENT model - the one the user picked - and answer with its review.
  *
- * THE PROBLEM IT SOLVES. The shell writes `provider.<id>.options.apiKey` into
- * the global origami.json itself, and nothing in the engine notices: the global
- * file is cached with `Duration.infinity` (config/config.ts), the merged
- * per-instance config and the provider list are `InstanceState` entries with no
- * TTL, and there is no watcher on the config directory. Until this existed the
- * only cure was restarting the engine - which is what "reload the window" in
- * the connect toast has always meant.
- *
- * WHAT IT INVALIDATES, and what it deliberately does not. Two memos, in the
- * session's own instance: `Config.invalidateInstance()` (the global file cache
- * plus the merged config) and `Provider.invalidate()` (the provider list, the
- * SDK client map and the language-model map, which are built FROM that config
- * and survive its invalidation on their own). Nothing else is touched.
- *
- * Not the HTTP `config.refresh` route, even though `resolveConfiguredModel` and
- * `resolveRequestedAgent` both call it for their own self-heal: that route
- * disposes the WHOLE instance (`markInstanceForDisposal`), taking session, MCP
- * and background state with it, and it can only do so because disposal is hung
- * off an HTTP pre-response handler. This call has no request to hang anything
- * off, and a connect can land while a turn is streaming. Neither state
- * invalidated here registers a finalizer, so this is a memo drop and not a
- * teardown - an in-flight turn keeps the client it holds and its next step
- * rebuilds against the new credential.
- *
- * NOT a snapshot refresh either. A model that only exists in config written a
- * moment ago is already self-healed on use by `resolveConfiguredModel`, which
- * refreshes the directory snapshot and retries once.
+ * `providerID`/`modelID` arrive already split by the extension host;
+ * `currentModelLabel` is display text inside the review instruction. Long-running by
+ * design, which is safe because the ACP SDK dispatches without awaiting each request.
  */
+export type SecondOpinionRequest = {
+  readonly cwd?: string
+  readonly sessionId: string
+  readonly providerID: string
+  readonly modelID: string
+  readonly currentModelLabel?: string
+}
+
+/** Fork-owned ext method `provider_refresh`: re-read provider configuration in a
+ *  RUNNING engine, so a credential the shell just wrote takes effect without a window
+ *  reload. Nothing else notices that write: the global config file is cached with
+ *  `Duration.infinity` and the provider list is untimed `InstanceState`.
+ *  Invalidates exactly two memos in the session's own instance -
+ *  `Config.invalidateInstance()` and `Provider.invalidate()`. Deliberately NOT the HTTP
+ *  `config.refresh` route, which disposes the WHOLE instance: a connect can land while
+ *  a turn is streaming, and a memo drop lets that turn keep the client it holds. */
 export type ProviderRefreshRequest = {
   readonly cwd?: string
+  /** origami_change (t-ttmo5w): the Connections Refresh button. Also forget every
+   *  memoised live-discovery answer and every cached catalog on disk, so the rebuild
+   *  asks each provider again. The plain refresh (every picker open) keeps both.
+   *  t-ty02bb: hard also re-runs Claude (subscription)'s Gate B. */
+  readonly hard?: boolean
 }
 
 /** Fork-owned ext method `collab_agents`: the agent definitions that opted into Collabs. */
@@ -422,17 +587,12 @@ export type CollabCreateRequest = {
 }
 
 /**
- * Fork-owned ext method `collab_post`: add a HUMAN message. Answers with its
- * sequence number as soon as the message is durable - the turns it fans out to
- * the roster run detached, and are observed through `collab_state`.
+ * Fork-owned ext method `collab_post`: add a HUMAN message. Answers with its sequence
+ * number as soon as the message is durable; the turns it fans out to the roster run
+ * detached and are observed through `collab_state`.
  *
- * `mentions` addresses the post to named agents. Every slug must be on the
- * ACTIVE roster; one that is not fails the call outright rather than recording
- * a message nobody will ever receive.
- *
- * `images` attaches `data:` URLs to the post. Bounded by the engine in count
- * and size; a set that breaks either bound fails the call and appends nothing,
- * for the same reason a bad mention does.
+ * `mentions` must name ACTIVE roster slugs, and `images` must be inside the engine's
+ * count and size bounds; either breach fails the call and appends nothing.
  */
 export type CollabPostRequest = {
   readonly collabId: string
@@ -442,25 +602,19 @@ export type CollabPostRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_preview`: who the draft in the composer WOULD
- * wake. A pure read - nothing is posted, no turn is scheduled and no token is
- * spent - so it is safe to call while the human is still typing.
- *
- * There is no `text`: the wake rules read a message's kind and its address
- * list, never its prose, so the draft's words cannot change the answer.
- */
+/** Fork-owned ext method `collab_preview`: who the draft in the composer WOULD wake. A
+ *  pure read - nothing posted, no turn scheduled, no token spent - so it is safe to
+ *  call while the human is still typing. There is no `text`: the wake rules read a
+ *  message's kind and its address list, never its prose. */
 export type CollabPreviewRequest = {
   readonly collabId: string
   readonly mentions?: readonly string[]
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_state`: the whole Collab picture in one
- * round-trip. `sinceSeq` narrows the MESSAGES only; the roster, the per-agent
- * turn status and the suspended verdict always describe the whole stream.
- */
+/** Fork-owned ext method `collab_state`: the whole Collab picture in one
+ *  round-trip. `sinceSeq` narrows the MESSAGES only; the roster, the per-agent
+ *  turn status and the suspended verdict always describe the whole stream. */
 export type CollabStateRequest = {
   readonly collabId: string
   readonly sinceSeq?: number
@@ -474,35 +628,27 @@ export type CollabSetCapRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_set_concurrency`: how many participant turns
- * this room dispatches at once. 1 is the serial default. Raising it is REFUSED
- * unless every member is read-only for files - see CollabParallel's header for
- * why that gate exists instead of per-worker worktrees.
- */
+/** Fork-owned ext method `collab_set_concurrency`: how many participant turns
+ *  room dispatches at once. 1 is the serial default. Raising it is REFUSED unless every
+ *  member is read-only for files - see CollabParallel for why that gate exists. */
 export type CollabSetConcurrencyRequest = {
   readonly collabId: string
   readonly concurrency: number
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_set_flavor`: what KIND of room this is -
- * `discuss` (the chain) or `council` (one question to every member at once,
- * blind, then a synthesis). Turning a room into a council is REFUSED unless
- * every member is read-only for files, because a council dispatches in
- * parallel; going back is never refused.
- */
+/** Fork-owned ext method `collab_set_flavor`: `discuss` (the chain) or `council` (one
+ *  question to every member at once, blind, then a synthesis). Becoming a council is
+ *  REFUSED unless every member is read-only for files, because a council dispatches in
+ *  parallel; going back is never refused. */
 export type CollabSetFlavorRequest = {
   readonly collabId: string
   readonly flavor: string
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_set_lead`: name the agent an unaddressed human
- * message reaches, or clear the seat with an explicit null.
- */
+/** Fork-owned ext method `collab_set_lead`: name the agent an unaddressed human
+ *  message reaches, or clear the seat with an explicit null. */
 export type CollabSetLeadRequest = {
   readonly collabId: string
   readonly agentSlug: string | null
@@ -523,11 +669,9 @@ export type CollabTaskAddRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_task_update`: move one task along the board.
- * Only the contracted transitions are accepted; anything else is refused with
- * the reason, so a stale button in a shell cannot corrupt the board.
- */
+/** Fork-owned ext method `collab_task_update`: move one task along the board.
+ *  Only the contracted transitions are accepted; anything else is refused with
+ *  the reason, so a stale button in a shell cannot corrupt the board. */
 export type CollabTaskUpdateRequest = {
   readonly collabId: string
   readonly taskId: string
@@ -538,13 +682,10 @@ export type CollabTaskUpdateRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_review`: the human's verdict on a task an agent
- * completed - `approve` accepts it, `reject` sends it back to its owner with
- * the reason, which the room row then carries so the owner can act on it. Runs
- * the same two board transitions `collab_task_update` does; only a COMPLETED
- * task can take a verdict.
- */
+/** Fork-owned ext method `collab_review`: the human's verdict on a task an agent
+ *  completed - `approve` accepts it, `reject` sends it back to its owner with the
+ *  reason. Runs the same two board transitions `collab_task_update` does; only a
+ *  COMPLETED task can take a verdict. */
 export type CollabReviewRequest = {
   readonly collabId: string
   readonly taskId: string
@@ -560,35 +701,26 @@ export type CollabLedgerRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_stop`: interrupt the turn in flight, drop the
- * queue behind it and spend the rest of the hop budget. The next human post
- * buys a new one - this is a pause, not an archive.
- */
+/** Fork-owned ext method `collab_stop`: interrupt the turn in flight, drop the
+ *  queue behind it and spend the rest of the hop budget. The next human post
+ *  buys a new one - this is a pause, not an archive. */
 export type CollabStopRequest = {
   readonly collabId: string
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_stop_agent`: stop ONE agent and leave the room
- * running. Its turn in flight is interrupted and its child session cancelled,
- * its slug alone comes out of the queue, and the hop budget is untouched -
- * everything `collab_stop` does to the whole room, narrowed to one member.
- */
+/** Fork-owned ext method `collab_stop_agent`: everything `collab_stop` does to the
+ *  whole room, narrowed to one member - its turn in flight interrupted, its child
+ *  session cancelled, its slug alone out of the queue, hop budget untouched. */
 export type CollabStopAgentRequest = {
   readonly collabId: string
   readonly agentSlug: string
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext method `collab_redirect`: correct ONE agent. A human message
- * addressed to it alone, with its turn moved to the front of the queue so the
- * correction lands before the work it corrects carries on. Buys a fresh hop
- * budget like any human post, so a suspended room can be steered as well as
- * released.
- */
+/** Fork-owned ext method `collab_redirect`: correct ONE agent. A human message
+ *  addressed to it alone, with its turn moved to the front of the queue. Buys a fresh
+ *  hop budget like any human post, so a suspended room can be steered as well as released. */
 export type CollabRedirectRequest = {
   readonly collabId: string
   readonly agentSlug: string
@@ -596,12 +728,9 @@ export type CollabRedirectRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext methods `collab_archive` / `collab_unarchive`: close a stream,
- * and reopen it. Archived collabs stay listable - archiving is "read-only from
- * here", not "delete" - and `collab_unarchive` is what makes that true, because
- * a room with no way back is a delete the user was told was not one.
- */
+/** Fork-owned ext methods `collab_archive` / `collab_unarchive`: close a stream, and
+ *  reopen it. Archived collabs stay listable - archiving is "read-only from here", not
+ *  "delete" - and `collab_unarchive` is what keeps that true. */
 export type CollabArchiveRequest = {
   readonly collabId: string
   readonly cwd?: string
@@ -614,12 +743,9 @@ export type CollabRenameRequest = {
   readonly cwd?: string
 }
 
-/**
- * Fork-owned ext methods `collab_add_participant` / `collab_remove_participant`:
- * change the roster of a live stream. Removal is a SOFT delete - the agent's
- * session and its messages both survive it, and adding the slug back restores
- * the same member rather than a fresh one.
- */
+/** Fork-owned ext methods `collab_add_participant` / `collab_remove_participant`:
+ *  change the roster of a live stream. Removal is a SOFT delete - the agent's session
+ *  and its messages both survive it, and adding the slug back restores the same member. */
 export type CollabParticipantRequest = {
   readonly collabId: string
   readonly agentSlug: string
@@ -627,6 +753,11 @@ export type CollabParticipantRequest = {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@origami/ACP/Service") {}
+
+/** Ceiling on ONE directory (provider snapshot) rebuild during a model switch.
+ *  Below the shell's own 30 s switch deadline on purpose: the engine gives up
+ *  first, so the user is told WHICH provider stalled. */
+export const DIRECTORY_REFRESH_TIMEOUT_MS = 20_000
 
 export function make(input: {
   sdk: OrigamiClient
@@ -640,43 +771,56 @@ export function make(input: {
   skills?: Skills.Interface
   collab?: ACPCollab.Interface
   eventSubscription?: (subscription: ACPEvent.Subscription) => void
-  /**
-   * origami_change: reader for the engine's SETTLED command vocabulary — the
-   * one that waits for background MCP prompt discovery (see `settledCommands`).
-   *
-   * ABSENT means no late fold, and that is the default on purpose: the real
-   * reader runs the process-wide AppRuntime, which a caller that fakes the sdk
-   * has no engine for. `ACP.init` wires it, because the ACP CLI is the one
-   * place that really does run the engine in this process.
-   */
+  /** t-tc2rlo #8: overrides how the subscription gets its event stream.
+   *  Defaults to `ACPEvent.globalBusEventSource` (in-process); a test that
+   *  cares about the SDK-transport path itself (subscribe count, and so on)
+   *  can pass its own fake `sdk.global.event`-backed source here. */
+  events?: Parameters<typeof ACPEvent.start>[0]["events"]
+  /** origami_change: reader for the engine's SETTLED command vocabulary (see
+   *  `settledCommands`). ABSENT means no late fold, and that is the default on purpose:
+   *  the real reader needs the process-wide AppRuntime, which only `ACP.init` has. */
   settledCommands?: (directory: string) => Promise<readonly Command.Info[]>
+  /** Ceiling on a model switch's directory rebuild; injectable so a test need not wait 20 s. */
+  directoryRefreshTimeoutMs?: number
+  /** origami_change (t-ucnjwp): the message count and the descendant rows, read in-process.
+   *  ABSENT (the default, as for `settledCommands`) = no total and an empty roster; only
+   *  `ACP.init` wires the real reader, which needs the process-wide AppRuntime. */
+  history?: ACPHistoryStore.Reader
 }): Interface {
   const session = input.session ?? makeSessionService()
   const directoryService = input.directory ?? makeDirectoryService(input.sdk)
+  const directoryRefreshTimeoutMs = input.directoryRefreshTimeoutMs ?? DIRECTORY_REFRESH_TIMEOUT_MS
   const registeredMcp = new Map<string, Set<string>>()
   const sessionSnapshots = new Map<string, Directory.Snapshot>()
   const instructionsService = input.instructions ?? makeInstructionsService()
-  // Plain module state, not an AppRuntime call: the prompt loop writes this map
-  // in THIS process (cli/cmd/acp.ts starts the server in-process), so there is
-  // nothing to resolve and no service to yield.
+  // Plain module state, not an AppRuntime call: the prompt loop writes this map in
+  // THIS process (cli/cmd/acp.ts starts the server in-process).
   const readCapture = input.promptCapture ?? SessionPromptCapture.get
   const skillsService = input.skills ?? makeSkillsService()
   const collabService = input.collab ?? makeCollabService()
-  // ONE instance for the whole connection. It was built per call before, which
-  // threw away its context-limit cache every time; now it also owns the
+  // ONE instance for the whole connection: it caches context limits and owns the
   // mid-turn throttle, which is meaningless without a stable instance.
-  const usageService = input.usage ?? makeUsageService(input.sdk)
+  const usageService = input.usage ?? UsageService.makeUsageService(input.sdk, readCapture, input.history)
   const events = input.connection
-    ? ACPEvent.start({ sdk: input.sdk, connection: input.connection, session, usage: usageService })
+    ? ACPEvent.start({
+        sdk: input.sdk,
+        connection: input.connection,
+        session,
+        usage: usageService,
+        // t-tc2rlo #8: read GlobalBus in-process instead of looping this
+        // engine's own events back through its own HTTP server.
+        events: input.events ?? ACPEvent.globalBusEventSource,
+      })
     : undefined
   if (events) input.eventSubscription?.(events)
-  // origami_change (t-kgu05m): the peer broker publishes which sessions are
-  // reachable. This store is the only place that knows which are INTERACTIVE —
-  // a sub-agent's session is never registered here — so "interactive only" is a
-  // property of the source. Handing over a reader, not data: the broker's own
-  // heartbeat decides when to read it, and a process that never registered
-  // (every test that builds this service) writes nothing at all.
+  // origami_change (t-kgu05m): the peer broker publishes which sessions are reachable.
+  // This store is the only place that knows which are INTERACTIVE - a sub-agent's
+  // session is never registered here - so "interactive only" is a property of the
+  // source. A reader, not data: the broker's own heartbeat decides when to read it.
   AgentBroker.attachSessions(() => Effect.runSync(session.list()).map((info) => info.id))
+  // origami_change (t-s9jgzh): Nests L4a. Inert until the host calls a nest method
+  // with `enabled: true` (see ACPNests.dispatch).
+  const nests = ACPNests.make({ sdk: input.sdk, session, request })
 
   const initialize = Effect.fn("ACP.initialize")(function* (params: InitializeRequest) {
     const started = performance.now()
@@ -696,15 +840,11 @@ export function make(input: {
       }
     }
 
-    // origami_change: the peer broker's display name for THIS
-    // engine process, riding agentInfo._meta — the ACP-sanctioned extension
-    // point (Implementation._meta), same pattern authMethod._meta uses above.
-    // Undefined for a background engine that never registered (AgentBroker.
-    // self() is then undefined), so the key is left off entirely rather than
-    // published as an empty string. This is the ONLY string that resolves the
-    // "which chat is which agent" question: it is exactly the name send_message
-    // and list_agents address this session by (agents.ts, AgentBroker.self()),
-    // not the archetype/mode label the UI already calls "agentName".
+    // origami_change: the peer broker's display name for THIS engine process, riding
+    // agentInfo._meta, the ACP-sanctioned extension point. Undefined for a background
+    // engine that never registered, so the key is left off rather than sent empty. This
+    // is the name send_message and list_agents address this session by, not the
+    // archetype/mode label the UI calls "agentName".
     const peerName = AgentBroker.self()?.name
     const response = {
       protocolVersion: 1,
@@ -752,18 +892,13 @@ export function make(input: {
 
   // origami_change-start: MCP prompt commands land AFTER the chat is live.
   //
-  // `session/new` no longer waits for MCP servers to connect (command/index.ts
-  // says why), so the snapshot it answers from carries the builtin, config-file
-  // and skill commands only. This is the other half: once discovery settles,
-  // re-read the vocabulary and, if it grew, push a fresh
-  // `available_commands_update`. That notification is a REPLACEMENT on the
-  // client — the composer rebuilds its list from each message it receives
-  // (`InputBar.svelte`: "Engine commands replace the list") — so a late set
-  // needs no session restart.
+  // `session/new` no longer waits for MCP servers to connect, so the snapshot it
+  // answers from carries builtin, config-file and skill commands only. Once discovery
+  // settles, re-read the vocabulary and, if it grew, push a fresh
+  // `available_commands_update` - a REPLACEMENT on the client, so no session restart.
   //
-  // One job per directory, shared by every chat in it: the reload behind it is
-  // a full directory load, and N chats opening at once must not each pay for
-  // one.
+  // One job per directory, shared by every chat in it: the reload behind it is a full
+  // directory load, and N chats opening at once must not each pay for one.
   const commandFolds = new Map<string, Promise<Directory.Snapshot | undefined>>()
 
   const foldMcpCommands = (
@@ -778,12 +913,16 @@ export function make(input: {
       .then((all) => {
         const known = new Set(snapshot.availableCommands.map((item) => item.name))
         if (all.every((item) => known.has(item.name))) return undefined
-        // The snapshot is immutable and cached per directory, and `prompt` reads
-        // it to resolve a typed `/name` — so a late command has to land THERE
-        // too, or the slash the composer now offers would silently do nothing.
+        // The snapshot is immutable and cached per directory, and `prompt` resolves a
+        // typed `/name` from it - so a late command has to land THERE too.
         return Effect.runPromise(directoryService.refresh(cwd))
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // A failed read or reload is not kept (t-tijhw6): the next chat in
+        // this folder folds again.
+        if (commandFolds.get(cwd) === job) commandFolds.delete(cwd)
+        return undefined
+      })
       .then((next) => {
         ACPProfile.duration("acp.directory.command.mcpFold", started, { folded: !!next })
         return next
@@ -819,12 +958,9 @@ export function make(input: {
   /**
    * The agent a client asked a session to be created AS, off ACP's `_meta` bag.
    *
-   * `session/new` has no agent field, and `_meta` is the protocol's own
-   * extension point (the same channel `agentInfo._meta.peerName` and the usage
-   * update's `_meta.subagents` already ride). NOT a second way to say who is
-   * speaking: it feeds the one field a turn resolves identity from — the
-   * `agent` on `session.prompt` — one call earlier than the client could
-   * otherwise reach it.
+   * `session/new` has no agent field, and `_meta` is the protocol's own extension
+   * point. NOT a second way to say who is speaking: it feeds the `agent` on
+   * `session.prompt`, one call earlier than the client could otherwise reach it.
    */
   const requestedAgent = (meta: NewSessionRequest["_meta"]) => {
     const value = meta?.["agent"]
@@ -833,25 +969,14 @@ export function make(input: {
     return trimmed.length > 0 ? trimmed : undefined
   }
 
-  /**
-   * An agent id, resolved fail-closed against a directory snapshot, refreshing
-   * ONCE on a miss.
-   *
-   * The same self-heal `resolveConfiguredModel` does for a model the snapshot
-   * predates, and for the same reason: a definition written a moment ago (the
-   * Bots pane scaffolds one, then offers "Start session") is not in the agent
-   * registry this snapshot was built from, and `Agent.rescan` is called from
-   * the collab paths only. `config.refresh` disposes the directory's instance,
-   * so the next read rebuilds the registry from disk.
-   *
-   * Returns the (possibly refreshed) snapshot, because the caller answers with
-   * `configOptions` built from it — a stale one would advertise a mode list
-   * that does not contain the agent the session is now running as.
-   *
-   * A second miss is a real refusal, and it NAMES the ids the engine offers:
-   * the shell cannot fix an identity it is not told the valid values for, and
-   * at session-create time it has no session to read a mode option from.
-   */
+  /** An agent id, resolved fail-closed against a directory snapshot, refreshing ONCE on
+   *  a miss - the same self-heal `resolveConfiguredModel` does, and for the same reason:
+   *  a definition written a moment ago (the Bots pane scaffolds one) is not in the
+   *  registry this snapshot was built from. `config.refresh` disposes the directory's
+   *  instance, so the next read rebuilds from disk.
+   *  Returns the (possibly refreshed) snapshot, because the caller answers with
+   *  `configOptions` built from it. A second miss is a real refusal, and it NAMES the
+   *  ids the engine offers. */
   const resolveRequestedAgent = Effect.fn("ACP.resolveRequestedAgent")(function* (
     cwd: string,
     snapshot: Directory.Snapshot,
@@ -884,9 +1009,9 @@ export function make(input: {
   const newSession = Effect.fn("ACP.newSession")(function* (params: NewSessionRequest) {
     const started = performance.now()
     const requested = requestedAgent(params._meta)
-    // Resolved BEFORE `session.create`, so a refusal creates nothing. A chat
-    // that opened, named after a bot, and answered as the engine default is the
-    // defect this whole path exists to close (test/acp/bot-session-agent.test.ts).
+    // Resolved BEFORE `session.create`, so a refusal creates nothing. A chat that
+    // opened named after a bot and answered as the engine default is the defect this
+    // path exists to close (test/acp/bot-session-agent.test.ts).
     const snapshot = requested
       ? yield* resolveRequestedAgent(params.cwd, yield* directorySnapshot(params.cwd), requested)
       : yield* directorySnapshot(params.cwd)
@@ -929,9 +1054,8 @@ export function make(input: {
         model: state.model ?? selected,
         variant: state.variant,
         modeId: state.modeId,
-        // Off the row the engine just created, like the three restore paths
-        // below - a brand-new session carries no preset rules, so this is
-        // `default`, but it is read rather than assumed.
+        // Off the row the engine just created, like the three restore paths below. A
+        // brand-new session is `default`, but it is read rather than assumed.
         permissionMode: PermissionPresets.modeFor(created.permission),
       }),
     }
@@ -942,15 +1066,10 @@ export function make(input: {
   /**
    * Push the session's STORED todo list to the client on a restore.
    *
-   * The live drawer is fed by the `todowrite` tool frames, which a reopened
-   * chat only gets if the transcript is replayed - `resume` does not replay at
-   * all, and a fork's replayed transcript describes the PARENT's writes. The
-   * todo table is the one durable copy, so a restore reads that and says where
-   * it came from (`session_restore`). Sent as the ext notification the client
-   * already handles, so nothing on the extension side changes.
-   *
-   * Best-effort by construction: a client without `extNotification`, or a read
-   * that fails, must not stop a chat from opening.
+   * The live drawer is fed by the `todowrite` tool frames, which a reopened chat only
+   * gets if the transcript is replayed - `resume` does not replay at all, and a fork's
+   * replay describes the PARENT's writes. The todo table is the one durable copy.
+   * Best-effort: a client without `extNotification` must not stop a chat from opening.
    */
   const replayTodos = Effect.fn("ACP.replayTodos")(function* (cwd: string, sessionId: string) {
     // Bound, so the connection keeps its own `this` when it is called later.
@@ -965,14 +1084,10 @@ export function make(input: {
       send("origami/todoSnapshot", {
         sessionId,
         source: "session_restore",
-        // The client's wire shape. `activeForm` mirrors what the live todowrite
-        // path sends (it falls back to `content`), so a restored strip and a
-        // live one render the same.
-        // `depth` is read STRUCTURALLY, not off the SDK's row type: that type is
-        // generated from the checked-in OpenAPI document (script/generate.ts)
-        // and is regenerated on its own cadence, so it lags a schema field by
-        // however long that takes. The value itself comes off the engine's own
-        // encoder, and the client clamps whatever arrives.
+        // The client's wire shape. `activeForm` mirrors what the live todowrite path
+        // sends, so a restored strip and a live one render the same. `depth` is read
+        // STRUCTURALLY, not off the SDK's generated row type, which lags the schema; the
+        // value comes off the engine's own encoder and the client clamps what arrives.
         todos: todos.map((todo, index) => {
           const depth = (todo as Record<string, unknown>).depth
           return {
@@ -987,17 +1102,228 @@ export function make(input: {
     )
   })
 
+  // --- origami_change (t-ucnjwp): the bounded restore and the history calls ---
+  // wire shapes: reports/lazy_loading_plan_2026-09-24/wire_contract.md
+
+  /** ONE page: `limit + 1` rows asked, the newest `limit` kept, then the byte cap. */
+  const readPage = (
+    cwd: string | undefined,
+    sessionId: string,
+    before?: string,
+    limit: number = ACPHistory.PAGE_SIZE,
+    byteCap: number = ACPHistory.PAGE_BYTE_CAP,
+  ) =>
+    request(
+      () =>
+        input.sdk.session.messages(
+          { ...(cwd ? { directory: cwd } : {}), sessionID: sessionId, limit: limit + 1, ...(before ? { before } : {}) },
+          { throwOnError: true },
+        ),
+      "session",
+    ).pipe(Effect.map((rows) => ACPHistory.cutPage(rows ?? [], limit, byteCap)))
+
+  /**
+   * The newest page, plus the model/variant/mode today's full read gave. Older pages
+   * are read (model fields only, never replayed) only while no user message with a
+   * model has been seen, with a yield between them (plan 3.2 R3; check M5).
+   */
+  const restoreHistory = Effect.fn("ACP.restoreHistory")(function* (cwd: string, sessionId: string) {
+    const page = yield* readPage(cwd, sessionId)
+    const scan = ACPHistory.restoreScan()
+    let cursor = scan.visit(page.kept) ? null : page.cursor
+    while (cursor) {
+      yield* Effect.yieldNow
+      const older = yield* readPage(cwd, sessionId, cursor, ACPHistory.PAGE_SIZE, Number.POSITIVE_INFINITY)
+      cursor = scan.visit(older.kept) ? null : older.cursor
+    }
+    return { page, ...scan.result() }
+  })
+
+  const countMessages = (sessionId: string) => {
+    const reader = input.history
+    if (!reader) return Effect.succeed(null)
+    return Effect.tryPromise(() => reader.countMessages(sessionId)).pipe(
+      Effect.map((count): number | null => count),
+      Effect.catch(() => Effect.succeed(null)),
+    )
+  }
+
+  /** `context` of one child (owner answer Q3): ONE read of its newest message, never
+   *  its transcript. null when that message has no measured step. */
+  const childContext = (cwd: string | undefined, childId: string) =>
+    request(
+      () =>
+        input.sdk.session.messages(
+          { ...(cwd ? { directory: cwd } : {}), sessionID: childId, limit: 1 },
+          { throwOnError: true },
+        ),
+      "session",
+    ).pipe(
+      Effect.map((rows) => {
+        const stat = RunStats.stat(childId, rows ?? [])
+        return stat.tokens && typeof stat.context === "number" ? stat.context : null
+      }),
+      Effect.catch(() => Effect.succeed(null)),
+    )
+
+  /** Every sub-agent of the chat, from the rows: its descendants and, for a fork, the
+   *  source's up to the fork point (t-uhxos2, the store's `roster`). undefined when the
+   *  read failed. */
+  const readRoster = Effect.fn("ACP.readRoster")(function* (cwd: string | undefined, sessionId: string) {
+    const reader = input.history
+    if (!reader) return { sessionId, rows: [], truncated: false } satisfies ACPHistory.SubagentRoster
+    const tree = yield* Effect.tryPromise(() =>
+      reader.roster ? reader.roster(sessionId) : reader.descendants(sessionId),
+    ).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+    )
+    if (!tree) return undefined
+    const status = yield* request(
+      () => input.sdk.session.status({ ...(cwd ? { directory: cwd } : {}) }, { throwOnError: true }),
+      "session",
+    ).pipe(
+      Effect.map((value) => (value ?? {}) as Record<string, { type?: string } | undefined>),
+      Effect.catch(() => Effect.succeed({} as Record<string, { type?: string } | undefined>)),
+    )
+    const contexts = yield* Effect.forEach(tree.rows, (row) => childContext(cwd, row.id), { concurrency: 8 })
+    return {
+      sessionId,
+      rows: tree.rows.map(
+        (row, index): ACPHistory.RosterRow => ({
+          ...row,
+          status: status[row.id]?.type && status[row.id]?.type !== "idle" ? "running" : "idle",
+          context: contexts[index] ?? null,
+        }),
+      ),
+      truncated: tree.truncated,
+    } satisfies ACPHistory.SubagentRoster
+  })
+
+  /** A task marker's rider for a child with no roster row: its ROW plus one newest message. */
+  const rowRider = (cwd: string | undefined) => async (childId: string) => {
+    const child = await input.sdk.session
+      .get({ ...(cwd ? { directory: cwd } : {}), sessionID: childId }, { throwOnError: true })
+      .then((response) => response.data)
+      .catch(() => undefined)
+    if (!child) return undefined
+    // `steps` is read STRUCTURALLY: lane L2 adds the column, and the SDK type lags it.
+    const steps = (child as Record<string, unknown>).steps
+    return ACPHistory.riderOf({
+      tokens: {
+        input: child.tokens?.input ?? 0,
+        output: child.tokens?.output ?? 0,
+        reasoning: child.tokens?.reasoning ?? 0,
+        cacheRead: child.tokens?.cache?.read ?? 0,
+        cacheWrite: child.tokens?.cache?.write ?? 0,
+      },
+      cost: child.cost ?? 0,
+      steps: typeof steps === "number" ? steps : null,
+      context: await Effect.runPromise(childContext(cwd, childId)),
+    })
+  }
+
+  const notify = (method: string, params: Record<string, unknown>) => {
+    const send = input.connection?.extNotification?.bind(input.connection)
+    if (!send) return Effect.void
+    return Effect.promise(() => send(method, params).catch(() => {}))
+  }
+
+  /**
+   * load and fork, after the ACP session exists: the roster (before the first frame,
+   * so a child above the page has a row), the newest page, then the window. Reads no
+   * child transcript: each marker's rider comes from the roster row.
+   */
+  const replayRestore = Effect.fn("ACP.replayRestore")(function* (
+    cwd: string,
+    sessionId: string,
+    history: Effect.Success<ReturnType<typeof restoreHistory>>,
+  ) {
+    const roster = yield* readRoster(cwd, sessionId)
+    if (roster) yield* notify("origami/subagentRoster", roster)
+    const rows = new Map((roster?.rows ?? []).map((row) => [row.id, row]))
+    const fallback = rowRider(cwd)
+    const spend = (childId: string) => {
+      const row = rows.get(childId)
+      return row ? Promise.resolve(ACPHistory.riderOf(row)) : fallback(childId)
+    }
+    yield* replayMessages(events, history.page.kept, { spend })
+    const window = ACPHistory.historyWindow({
+      sessionId,
+      page: history.page,
+      totalMessages: yield* countMessages(sessionId),
+      latestUser: history.latestUser,
+    })
+    yield* notify("origami/historyWindow", window)
+    return window
+  })
+
+  const historyPage = Effect.fn("ACP.historyPage")(function* (params: ACPHistory.HistoryPageRequest) {
+    // Loaded on THIS connection, or `session not found` (-32602): the frames are
+    // addressed to a chat the client has open.
+    const current = yield* session.get(params.sessionId)
+    const cwd = params.cwd ?? current.cwd
+    const pageId = params.pageId ?? params.before ?? "head"
+    const page = yield* readPage(cwd, params.sessionId, params.before, params.limit ?? ACPHistory.PAGE_SIZE)
+    yield* replayMessages(events, page.kept, { page: pageId, spend: rowRider(cwd) })
+    return {
+      sessionId: params.sessionId,
+      pageId,
+      cursor: page.cursor,
+      hasMore: page.hasMore,
+      messageIds: ACPHistory.messageIds(page.kept),
+      messages: page.kept.length,
+      totalMessages: yield* countMessages(params.sessionId),
+      capped: page.capped,
+    } satisfies ACPHistory.HistoryPageResult
+  })
+
+  const historySearch = Effect.fn("ACP.historySearch")(function* (params: ACPHistory.HistorySearchRequest) {
+    const cwd = params.cwd ?? (yield* session.tryGet(params.sessionId))?.cwd
+    const limit = params.limit ?? ACPHistory.SEARCH_LIMIT_DEFAULT
+    const pattern = ACPHistory.searchPattern(params.query)
+    const start = params.cursor ? ACPHistory.decodeSearchCursor(params.cursor) : undefined
+    const hits: ACPHistory.SearchHit[] = []
+    let before = start?.b
+    let fromEnd = start?.n ?? 0
+    let scanned = 0
+    const answer = (done: boolean, cursor: string | null) =>
+      ({ sessionId: params.sessionId, query: params.query, hits, scanned, done, cursor }) satisfies ACPHistory.HistorySearchResult
+    while (true) {
+      if (scanned > 0) yield* Effect.yieldNow
+      const page = yield* readPage(cwd, params.sessionId, before, ACPHistory.PAGE_SIZE, Number.POSITIVE_INFINITY)
+      for (let index = page.kept.length - 1; index >= 0; index--) {
+        const message = page.kept[index]!
+        hits.push(...ACPHistory.searchMessage(message, pattern, fromEnd))
+        fromEnd++
+        scanned++
+        if (hits.length < limit && scanned < ACPHistory.SEARCH_SCAN_BUDGET) continue
+        const at = index > 0 || page.hasMore ? ACPHistory.cursorOf(message) : null
+        return answer(at === null, at === null ? null : ACPHistory.encodeSearchCursor({ b: at, n: fromEnd }))
+      }
+      if (!page.hasMore || !page.cursor) return answer(true, null)
+      before = page.cursor
+    }
+  })
+
+  const subagentRoster = Effect.fn("ACP.subagentRoster")(function* (params: ACPHistory.SubagentRosterRequest) {
+    const cwd = params.cwd ?? (yield* session.tryGet(params.sessionId))?.cwd
+    return (
+      (yield* readRoster(cwd, params.sessionId)) ??
+      ({ sessionId: params.sessionId, rows: [], truncated: false } satisfies ACPHistory.SubagentRoster)
+    )
+  })
+  // --- end t-ucnjwp ---
+
   const loadSession = Effect.fn("ACP.loadSession")(function* (params: LoadSessionRequest) {
     const snapshot = yield* directorySnapshot(params.cwd)
     const row = yield* request(
       () => input.sdk.session.get({ directory: params.cwd, sessionID: params.sessionId }, { throwOnError: true }),
       "session",
     )
-    const messages = yield* request(
-      () => input.sdk.session.messages({ directory: params.cwd, sessionID: params.sessionId }, { throwOnError: true }),
-      "session",
-    )
-    const restored = restoreFromMessages(messages.map((item) => item.info))
+    // t-ucnjwp: the NEWEST page, not the whole chat; older pages come on demand
+    // through `history_page`.
+    const history = yield* restoreHistory(params.cwd, params.sessionId)
+    const restored = history.restored
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: params.sessionId,
@@ -1006,22 +1332,20 @@ export function make(input: {
       model,
       variant: restored.variant ?? selectVariant(snapshot, model),
       modeId: restored.modeId ?? (snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined),
-      // The auto-approve preset lives on the ROW, so it is the row that says
-      // which one this chat was left on. Dropping it here made a reopened chat
-      // report `default` and then CLEAR its own stored grant with the empty
-      // `tools` map its next prompt sends.
+      // The auto-approve preset lives on the ROW, so it is the row that says which one
+      // this chat was left on. Dropping it made a reopened chat report `default` and
+      // then CLEAR its own stored grant with the empty `tools` map its next prompt sends.
       permissionMode: PermissionPresets.modeFor(row.permission),
     })
     sessionSnapshots.set(state.id, snapshot)
 
     yield* registerMcpServers(input.sdk, registeredMcp, params.cwd, state.id, params.mcpServers)
     yield* pushAvailableCommands(state.id, params.cwd, snapshot) // origami_change
-    // The row's stored title, pushed the way the live one is. This is the only
-    // moment a reconnecting client can learn the name of the chat it just
-    // reopened: `session.updated` fired in the engine process that generated the
-    // title, which no longer exists.
+    // The row's stored title, pushed the way the live one is. The only moment a
+    // reconnecting client can learn the name of the chat it just reopened:
+    // `session.updated` fired in an engine process that no longer exists.
     yield* replayTitle(events, state.id, row.title)
-    yield* replayMessages(events, messages)
+    const window = yield* replayRestore(params.cwd, state.id, history)
     // After the replay: the transcript can carry an older todowrite frame, and
     // the stored list is the one that should have the last word.
     yield* replayTodos(params.cwd, state.id).pipe(Effect.ignore)
@@ -1036,6 +1360,7 @@ export function make(input: {
         // that outlived the window it was set in.
         permissionMode: PermissionPresets.modeFor(row.permission),
       }),
+      _meta: { origami_history: window },
     }
   })
 
@@ -1048,34 +1373,22 @@ export function make(input: {
           {
             ...(params.cwd ? { directory: params.cwd } : {}),
             roots: true,
-            // HONEST CEILING, stated here because the alternative was an
-            // invisible one. `session.list` defaults to `limit ?? 100` down in
-            // the DB layer (session/session.ts, listByProject), so omitting it
-            // silently returned only the 100 most recently updated roots and
-            // dropped everything older — no cursor could reach past it, because
-            // the cursor below filters a list that had ALREADY been cut. The
-            // paging in this function was therefore decorative: `nextCursor`
-            // could never be emitted, since 100 rows in never exceeds a page of
-            // 100. Asking for the ceiling makes the DB cut visible and puts the
-            // paging back in charge of what a client actually sees.
+            // Ask for the ceiling explicitly. `session.list` defaults to `limit ?? 100`
+            // down in the DB layer, which cut the list before the cursor below could page
+            // it - so `nextCursor` could never be emitted and the paging was decorative.
             limit: SESSION_LIST_MAX,
           },
           { throwOnError: true },
         ),
       "session",
     )
-    // Purge turnless "New session - <ISO>" placeholders: a default title, untouched
-    // since creation (no turn ever ran), not currently open, AND at least a day
-    // old. The age floor is load-bearing: each shell chat runs its OWN engine
-    // process against the shared store, so a fresh turnless session in the list
-    // may be another live instance's just-created chat — `liveIds` only covers
-    // THIS instance, and deleting a sibling's newborn session bricks its first
-    // prompt ({"service":"session"} internal error). KNOWN HOLE the floor only
-    // narrows: a sibling's chat opened >24h ago and never typed in is STILL
-    // reaped here (its liveness is invisible to us) — its next prompt fails and
-    // the user must open a new chat. Real cross-instance ownership (an owner-
-    // asserted liveness marker) is the v2 backend's job; until then the floor
-    // trades a seconds-wide race for a day-wide one.
+    // Purge turnless "New session - <ISO>" placeholders: a default title, no turn ever
+    // ran, not currently open, AND at least a day old. The age floor is load-bearing:
+    // each shell chat runs its OWN engine process against the shared store, so a fresh
+    // turnless session may be another live instance's just-created chat, and deleting a
+    // sibling's newborn session bricks its first prompt. KNOWN HOLE the floor only
+    // narrows: a sibling's chat opened >24h ago and never typed in is still reaped.
+    // Real cross-instance ownership is the v2 backend's job.
     const REAP_AGE_MS = 24 * 60 * 60 * 1000
     const reapBefore = Date.now() - REAP_AGE_MS
     const live = yield* session.list(params.cwd ?? undefined)
@@ -1121,11 +1434,9 @@ export function make(input: {
         ? sorted
         : sorted.filter((item) => new Date(item.updatedAt ?? 0).getTime() < cursor)
     const page = filtered.slice(0, limit)
-    // Never split a group of sessions that share one `updatedAt`. The cursor
-    // below is a plain millisecond stamp and the filter above is a STRICT `<`,
-    // so a tie straddling the page edge would leave the ones after the edge
-    // unreachable by any cursor — a silent, permanent drop. Extending the page
-    // to the end of the tie group is what makes `<` exact.
+    // Never split a group of sessions that share one `updatedAt`. The cursor below is a
+    // plain millisecond stamp and the filter above is a STRICT `<`, so a tie straddling
+    // the page edge would be unreachable by any cursor - a silent, permanent drop.
     if (page.length === limit) {
       const edge = new Date(page.at(-1)?.updatedAt ?? 0).getTime()
       for (const item of filtered.slice(limit)) {
@@ -1142,10 +1453,92 @@ export function make(input: {
     }
   })
 
+  // The SAME `sdk.session.delete` the turnless-placeholder reaper calls, exposed for one
+  // named session. `throwOnError: true` is the difference that matters: the reaper is
+  // best-effort and swallows a failure, whereas a user who pressed Delete has to be told.
+  // No existence pre-check - a read-then-delete would report "already gone" for a session
+  // another engine process removed a moment earlier while still racing it.
+  const sessionDelete = Effect.fn("ACP.sessionDelete")(function* (params: SessionDeleteRequest) {
+    yield* nests.guard(params.sessionId, "delete") // origami_change (t-sb9tlk)
+    yield* request(
+      () =>
+        input.sdk.session.delete(
+          { sessionID: params.sessionId, ...(params.cwd ? { directory: params.cwd } : {}) },
+          { throwOnError: true },
+        ),
+      "session",
+    )
+    return { ok: true } as const
+  })
+
+  // origami_change-start (session_append_foreign): mirror a transcript that another
+  // harness produced into this session's OWN message store.
+  //
+  // The seam is the turn loop's own: messages are published with
+  // `Session.updateMessage` / `Session.updatePart` and the projector turns those into
+  // the rows `sdk.session.messages` reads back. Writing SQLite directly would bypass the
+  // projector, the event log and every subscriber. `inInstance` is mandatory for the
+  // reason `provider_refresh` documents on itself. Idempotency is decided against what
+  // the session already holds, so a window reload cannot double a transcript.
+  const sessionAppendForeign = Effect.fn("ACP.sessionAppendForeign")(function* (
+    params: SessionAppendForeignRequest,
+  ) {
+    yield* nests.guard(params.sessionId, "append") // origami_change (t-sb9tlk)
+    const cwd = params.cwd ?? process.cwd()
+    const sessionID = SessionID.make(params.sessionId)
+    return yield* request(
+      () =>
+        AppRuntime.runPromise(
+          inInstance(
+            cwd,
+            Effect.gen(function* () {
+              // Refuses an id that names no session: `get` fails NotFound, and a
+              // client that mirrored into nothing has to be told.
+              const info = yield* Session.Service.use((sessions) => sessions.get(sessionID))
+              const existing = yield* Session.Service.use((sessions) => sessions.messages({ sessionID }))
+              // The same pair the turn loop stamps on an assistant message, read from
+              // the instance `inInstance` just resolved - so a worktree session's root
+              // is its worktree, not a second copy of its cwd.
+              const ctx = yield* InstanceState.context
+              const { rows, skipped } = ForeignTranscript.plan({
+                sessionID,
+                source: params.source,
+                incoming: params.messages,
+                stored: ForeignTranscript.storedIds(existing),
+                ...optionalLastUser(ForeignTranscript.lastUserID(existing)),
+                path: { cwd: ctx.directory, root: ctx.worktree },
+                agent: info.agent ?? "build",
+                // The FOREIGN harness owns the model, so BOTH halves say so: the
+                // session's own `model` is the ENGINE's and would misattribute the turn.
+                // The batch does not carry the CLI's resolved model id today.
+                providerID: params.source,
+                modelID: params.source,
+                nextMessageID: () => MessageID.ascending(),
+                nextPartID: () => PartID.ascending(),
+                now: () => Date.now(),
+              })
+              yield* Session.Service.use((sessions) =>
+                Effect.forEach(rows, (row) =>
+                  Effect.gen(function* () {
+                    yield* sessions.updateMessage(row.info)
+                    for (const part of row.parts) yield* sessions.updatePart(part)
+                  }),
+                ),
+              )
+              // Sorts the chat to the top of History, the same as a real turn.
+              if (rows.length > 0) yield* Session.Service.use((sessions) => sessions.touch(sessionID))
+              return { appended: rows.length, skipped } satisfies SessionAppendForeignResult
+            }),
+          ),
+        ),
+      "session",
+    )
+  })
+  // origami_change-end
+
   // Read-only review of a COMPLETED run. Deliberately does not touch
-  // `session.load`/`create`/`resume`: the session being reviewed is usually not
-  // open in this connection, and opening it would replay its events into the
-  // live UI. Only `session.messages` is called, which is a plain GET.
+  // `session.load`/`create`/`resume`: the session is usually not open in this
+  // connection, and opening it would replay its events into the live UI.
   const runSteps = Effect.fn("ACP.runSteps")(function* (params: RunStepsRequest) {
     const read = (sessionID: string) =>
       request(
@@ -1159,11 +1552,10 @@ export function make(input: {
 
     const messages = yield* read(params.sessionId)
 
-    // Expand subagents breadth-first: each level's task steps name the next
-    // level's sessions. Bounded on BOTH axes — depth by MAX_SUBAGENT_DEPTH, and
-    // total reads by MAX_CHILD_SESSIONS, so a fan-out of 30 sub-agents cannot
-    // turn one review into an open-ended burst of round trips. Anything past
-    // the budget is simply not expanded; its spawning step is still returned.
+    // Expand subagents breadth-first: each level's task steps name the next level's
+    // sessions. Bounded on BOTH axes - depth by MAX_SUBAGENT_DEPTH, total reads by
+    // MAX_CHILD_SESSIONS. Anything past the budget is not expanded; its spawning step
+    // is still returned.
     const children = new Map<string, readonly SessionMessageResponse[]>()
     let frontier = RunSteps.childSessionIds(messages ?? [])
     for (let depth = 0; depth < RunSteps.MAX_SUBAGENT_DEPTH && frontier.length > 0; depth++) {
@@ -1219,20 +1611,26 @@ export function make(input: {
     return { stats, truncated, requested: (params.sessionIds ?? []).length }
   })
 
-  // ONE plain GET of the child's stored messages, the same read `runSteps` uses
-  // and for the same reason: the child is not open in this connection, and
-  // `load`/`resume` would replay a finished run's events into the live UI.
-  //
-  // An unreadable child degrades to an empty, FOUND:FALSE answer instead of
-  // failing — the caller is a panel that has to draw something, and a rejected
-  // promise there kills the view. Same convention `runStats` uses for a session
-  // it cannot read, and the opposite of `runSteps`, whose caller asked to review
-  // one named run and deserves to be told it is gone.
+  // ONE plain GET of the child's stored messages, the same read `runSteps` uses and for
+  // the same reason: `load`/`resume` would replay a finished run into the live UI.
+  // An unreadable child degrades to an empty, FOUND:FALSE answer instead of failing -
+  // the caller is a panel that has to draw something. The opposite of `runSteps`, whose
+  // caller asked to review one named run and deserves to be told it is gone.
   const subagentTranscript = Effect.fn("ACP.subagentTranscript")(function* (params: SubagentTranscriptRequest) {
+    // t-krxap7. A page is ONE extra row over the asked-for size: the reply being
+    // longer than `limit` is what proves an older block exists, and it costs one
+    // row rather than a second COUNT query. The store's own index covers it
+    // (session_id, time_created, id - core/session/sql.ts).
+    const limit = typeof params.limit === "number" && params.limit > 0 ? Math.floor(params.limit) : 0
     const messages = yield* request(
       () =>
         input.sdk.session.messages(
-          { ...(params.cwd ? { directory: params.cwd } : {}), sessionID: params.sessionId },
+          {
+            ...(params.cwd ? { directory: params.cwd } : {}),
+            sessionID: params.sessionId,
+            ...(limit > 0 ? { limit: limit + 1 } : {}),
+            ...(limit > 0 && params.before ? { before: params.before } : {}),
+          },
           { throwOnError: true },
         ),
       "session",
@@ -1240,7 +1638,90 @@ export function make(input: {
     // `null` is the read failing; `undefined`/`[]` is a real session with
     // nothing in it yet, which is a transcript, not an absence.
     if (messages === null) return SubagentTranscript.missing(params.sessionId)
-    return SubagentTranscript.project(params.sessionId, messages ?? [], params.cwd)
+    if (limit <= 0) return SubagentTranscript.project(params.sessionId, messages ?? [], params.cwd)
+    const slice = SubagentTranscript.pageSlice(messages ?? [], limit)
+    return SubagentTranscript.project(params.sessionId, slice.kept, params.cwd, {
+      hasMore: slice.hasMore,
+      ...(slice.oldest
+        ? { cursor: MessageV2.cursor.encode({ id: slice.oldest.id as MessageID, time: slice.oldest.time }) }
+        : {}),
+    })
+  })
+
+  // t-qd2riw. Same page size the transcript panel pages at (t-krxap7); walking
+  // backward in bounded blocks IS the fix — every `session.messages` call asks
+  // for at most PAGE+1 rows, never the whole session, however far back the
+  // child's last todowrite sits. MAX_PAGES is a runaway guard, not the
+  // boundedness mechanism itself: a page that never sets `hasMore:false` (a
+  // store bug) must not spin forever.
+  const SUBAGENT_TODOS_PAGE = 50
+  const SUBAGENT_TODOS_MAX_PAGES = 40
+  const subagentTodos = Effect.fn("ACP.subagentTodos")(function* (params: SubagentTodosRequest) {
+    let before: string | undefined
+    for (let page = 0; page < SUBAGENT_TODOS_MAX_PAGES; page++) {
+      const messages = yield* request(
+        () =>
+          input.sdk.session.messages(
+            {
+              ...(params.cwd ? { directory: params.cwd } : {}),
+              sessionID: params.sessionId,
+              limit: SUBAGENT_TODOS_PAGE + 1,
+              ...(before ? { before } : {}),
+            },
+            { throwOnError: true },
+          ),
+        "session",
+      ).pipe(Effect.catch(() => Effect.succeed(null)))
+      if (messages === null) return { sessionId: params.sessionId, found: false }
+      const slice = SubagentTranscript.pageSlice(messages ?? [], SUBAGENT_TODOS_PAGE)
+      const hit = SubagentTodos.latestTodoWrite(slice.kept)
+      if (hit) return { sessionId: params.sessionId, found: true, rawInput: hit.rawInput }
+      if (!slice.hasMore || !slice.oldest) return { sessionId: params.sessionId, found: true }
+      before = MessageV2.cursor.encode({ id: slice.oldest.id as MessageID, time: slice.oldest.time })
+    }
+    // Walked MAX_PAGES blocks without a hit or reaching the head — report "read
+    // fine, nothing found" rather than spinning past the guard.
+    return { sessionId: params.sessionId, found: true }
+  })
+
+  // t-ru0by6, same family as t-qd2riw above: bounded backward walk, capped on
+  // TOTAL diffs collected (not just page count) since a page can hold many.
+  // Every `session.messages` call still asks for at most PAGE+1 rows.
+  const SUBAGENT_CHANGES_PAGE = 50
+  const SUBAGENT_CHANGES_MAX_PAGES = 40
+  const SUBAGENT_CHANGES_CAP = 200
+  const subagentChanges = Effect.fn("ACP.subagentChanges")(function* (params: SubagentChangesRequest) {
+    const diffs: SubagentChanges.RawFileDiff[] = []
+    let before: string | undefined
+    for (let page = 0; page < SUBAGENT_CHANGES_MAX_PAGES; page++) {
+      const messages = yield* request(
+        () =>
+          input.sdk.session.messages(
+            {
+              ...(params.cwd ? { directory: params.cwd } : {}),
+              sessionID: params.sessionId,
+              limit: SUBAGENT_CHANGES_PAGE + 1,
+              ...(before ? { before } : {}),
+            },
+            { throwOnError: true },
+          ),
+        "session",
+      ).pipe(Effect.catch(() => Effect.succeed(null)))
+      if (messages === null) return { sessionId: params.sessionId, found: diffs.length > 0, diffs, hasMore: false }
+      const slice = SubagentTranscript.pageSlice(messages ?? [], SUBAGENT_CHANGES_PAGE)
+      const projected = SubagentTranscript.project(params.sessionId, slice.kept, params.cwd)
+      diffs.push(...SubagentChanges.diffBearingParts(projected.entries))
+      if (diffs.length >= SUBAGENT_CHANGES_CAP) {
+        return { sessionId: params.sessionId, found: true, diffs: diffs.slice(0, SUBAGENT_CHANGES_CAP), hasMore: true, ...(before ? { cursor: before } : {}) }
+      }
+      if (!slice.hasMore || !slice.oldest) {
+        return { sessionId: params.sessionId, found: true, diffs, hasMore: false }
+      }
+      before = MessageV2.cursor.encode({ id: slice.oldest.id as MessageID, time: slice.oldest.time })
+    }
+    // Walked MAX_PAGES blocks without reaching the head — report what was
+    // collected so far, flagged as incomplete, rather than spinning past the guard.
+    return { sessionId: params.sessionId, found: true, diffs, hasMore: true, ...(before ? { cursor: before } : {}) }
   })
 
   const listInstructions = Effect.fn("ACP.listInstructions")(function* (params: ListInstructionsRequest) {
@@ -1251,49 +1732,70 @@ export function make(input: {
     return { sessionId: params.sessionId, capture: readCapture(params.sessionId) } satisfies PromptCaptureResult
   })
 
-  // ONE read (roots:false, same listing the sendUpdate rollup already uses)
-  // covers both this session's own row and the lifetime sum — a failed
-  // listing degrades to an empty answer rather than failing the card, same
-  // convention as sendUpdate's rollup.
+  // ONE read covers this session's own row and the lifetime sum: every session of its
+  // project (and of `cwd`, when given), subagents included. t-ucndru: a store read with
+  // no limit - `session.list` stopped at the 100 newest rows. A failed read, or a
+  // service made without the store (`input.history`), degrades to an empty answer
+  // rather than failing the card.
   const cacheStats = Effect.fn("ACP.cacheStats")(function* (params: CacheStatsRequest) {
-    const rows = yield* request(
-      () =>
-        input.sdk.session.list(
-          { ...(params.cwd ? { directory: params.cwd } : {}), roots: false },
-          { throwOnError: true },
-        ),
-      "session",
-    ).pipe(
-      Effect.map((rows) => rows as readonly UsageService.SessionRow[]),
-      Effect.catch(() => Effect.succeed([] as readonly UsageService.SessionRow[])),
-    )
+    const read = input.history?.projectTokens
+    const rows = read
+      ? yield* Effect.tryPromise(() => read(params.sessionId, params.cwd)).pipe(
+          Effect.catch(() => Effect.succeed([] as readonly UsageService.SessionRow[])),
+        )
+      : []
     const { current, lifetime, sessionCount } = UsageService.cacheStatsFromRows(rows, params.sessionId)
     return { sessionId: params.sessionId, current, lifetime, sessionCount } satisfies CacheStatsResult
+  })
+
+  // Retention. Both run on the process-wide AppRuntime for the reason the plugin
+  // trio below documents: the store is reached through `Database.Service`, which
+  // only that runtime holds. The measurement is a full scan of a multi-gigabyte
+  // table and takes seconds, so the card asks for it rather than polling.
+  const storageStats = Effect.fn("ACP.storageStats")(function* () {
+    return yield* request(() => AppRuntime.runPromise(StorageRetention.stats()), "storage")
+  })
+
+  const storagePrune = Effect.fn("ACP.storagePrune")(function* (params: StoragePruneRequest) {
+    return yield* request(
+      () => AppRuntime.runPromise(StorageRetention.prune({ olderThanDays: params.olderThanDays, dryRun: params.dryRun })),
+      "storage",
+    )
+  })
+
+  const storageCompact = Effect.fn("ACP.storageCompact")(function* (params: StorageCompactRequest) {
+    return yield* request(
+      () =>
+        AppRuntime.runPromise(
+          StorageJournal.compact({
+            dryRun: params.dryRun,
+            ...(params.sessionId ? { sessionID: params.sessionId } : {}),
+          }),
+        ),
+      "storage",
+    )
+  })
+
+  const storageVacuum = Effect.fn("ACP.storageVacuum")(function* (params: StorageVacuumRequest) {
+    return yield* request(() => AppRuntime.runPromise(StorageJournal.vacuum({ confirm: params.confirm })), "storage")
   })
 
   const listSkills = Effect.fn("ACP.listSkills")(function* (params: ListSkillsRequest) {
     return yield* skillsService.list(params.cwd ?? process.cwd(), { refresh: params.refresh === true })
   })
 
-  // The list is the engine's OWN `/experimental/tool` answer, so the pane can
-  // never drift from what a turn is offered; only the deferral verdict is
-  // computed here (acp/tools.ts), from the same config the session layer reads.
-  // A config read that fails degrades to the shipped defaults rather than
-  // failing the pane — the tool list is the part the user came for.
+  // The list is the engine's OWN `/experimental/tool` answer, so the pane cannot drift
+  // from what a turn is offered; only the deferral verdict is computed here
+  // (acp/tools.ts). A config read that fails degrades to the shipped defaults.
   //
-  // `meta` is a THIRD, separate read (source/location per tool, for the Tools
-  // pane's source badge and copy-path button) run on the process-wide
-  // AppRuntime — same rationale as makeInstructionsService below: this process
-  // already boots the engine in-process, and it degrades to an empty map
-  // rather than failing the pane, same as the config read beside it. An empty
-  // map is a HONEST degrade, not a silent one: every row then reads
-  // `source: "builtin"` with no location, so the pane offers no copy-path
-  // button rather than offering one that would copy nothing.
+  // `meta` (source/location per tool) is a THIRD read on the process-wide AppRuntime,
+  // same rationale as makeInstructionsService below. An empty map is an HONEST degrade:
+  // every row reads `source: "builtin"` and the pane offers no copy-path button.
   const listTools = Effect.fn("ACP.listTools")(function* (params: ListToolsRequest) {
     const cwd = params.cwd ?? process.cwd()
     const snapshot = yield* directoryService.get(cwd)
     const model = selectDefaultModel(snapshot)
-    const [list, config, meta, problems] = yield* Effect.all([
+    const [list, config, meta, problems, agents] = yield* Effect.all([
       request(
         () =>
           input.sdk.tool.list(
@@ -1308,24 +1810,26 @@ export function make(input: {
       request(() => AppRuntime.runPromise(inInstance(cwd, ACPTools.meta())), "tool").pipe(
         Effect.catch(() => Effect.succeed(new Map<string, ACPTools.ToolMeta>())),
       ),
-      // Degrades to "no problems" for the same reason `meta` degrades to an
-      // empty map: a pane that cannot say WHY a tool is missing is still better
-      // than no pane. The message these carry is a path to the USER'S OWN file
-      // plus the loader's reason — deliberately NOT run through the
-      // `fromUnknownError` redaction that hid this failure class in the first
-      // place. A filename is not a secret, and the redacted
-      // "Origami service failure" is what made the original incident
-      // undiagnosable from the client.
+      // Degrades to "no problems" for the same reason `meta` degrades to an empty map.
+      // The message carries a path to the USER'S OWN file plus the loader's reason,
+      // deliberately NOT run through the `fromUnknownError` redaction that hid this
+      // failure class: a filename is not a secret, and the redacted "Origami service
+      // failure" is what made the original incident undiagnosable from the client.
       request(() => AppRuntime.runPromise(inInstance(cwd, ACPTools.problems())), "tool").pipe(
         Effect.catch(() => Effect.succeed([] as ACPTools.ToolProblem[])),
       ),
+      // The sub-agent matrix's rows. Degrades to "no rows" like the two reads
+      // above: the pane then shows the workspace tools and says the sub-agent
+      // section could not be read, rather than drawing a matrix of guesses.
+      request(() => AppRuntime.runPromise(inInstance(cwd, ACPTools.agents())), "tool").pipe(
+        Effect.catch(() => Effect.succeed([] as ACPSubagentTools.SubagentInfo[])),
+      ),
     ])
-    return ACPTools.project(list, config, meta, problems)
+    return ACPTools.project(list, config, meta, problems, agents)
   })
 
-  // Same rationale as listTools' `meta` read above: this process already boots
-  // the engine in-process, so these run on the process-wide AppRuntime rather
-  // than a private layer stack, which would stand up a second instance.
+  // Same rationale as listTools' `meta` read above: this process already boots the
+  // engine in-process, so these run on the process-wide AppRuntime.
   const listAgentPlugins = Effect.fn("ACP.listAgentPlugins")(function* (params: ListAgentPluginsRequest) {
     const cwd = params.cwd ?? process.cwd()
     return yield* request(() => AppRuntime.runPromise(ACPAgentPlugins.list(cwd)), "agent-plugins")
@@ -1379,13 +1883,9 @@ export function make(input: {
     return yield* request(() => AppRuntime.runPromise(ACPMcp.disconnect(cwd, params.name)), "mcp")
   })
 
-  /**
-   * Blocks for as long as the sign-in takes - safe for the reason
-   * `providerAuthCallback` documents (the SDK dispatches without awaiting).
-   * The authorization URL goes out as a NOTIFICATION the moment the flow
-   * produces it, because the ANSWER to this request cannot arrive until the
-   * user has already finished with that URL.
-   */
+  /** Blocks for as long as the sign-in takes - safe for the reason
+   *  `providerAuthCallback` documents (the SDK dispatches without awaiting). The
+   *  authorization URL goes out as a NOTIFICATION the moment the flow produces it. */
   const mcpAuthenticate = Effect.fn("ACP.mcpAuthenticate")(function* (params: McpNameRequest) {
     const cwd = params.cwd ?? process.cwd()
     const send = input.connection?.extNotification?.bind(input.connection)
@@ -1398,6 +1898,117 @@ export function make(input: {
   const mcpAuthRemove = Effect.fn("ACP.mcpAuthRemove")(function* (params: McpNameRequest) {
     const cwd = params.cwd ?? process.cwd()
     return yield* request(() => AppRuntime.runPromise(ACPMcp.authRemove(cwd, params.name)), "mcp")
+  })
+
+  // Artifacts: the pane over the local artifact store. Every one of these is one
+  // short read (or, for restore, one copy-forward) on the store this process already
+  // holds, so there is no instance context to thread — `request` is here for the
+  // error mapping alone, exactly as it is for the flock file reads below.
+  const artifactList = Effect.fn("ACP.artifactList")(function* (params: ACPArtifacts.ListRequest) {
+    return yield* request(() => ACPArtifacts.list(params), "artifact")
+  })
+
+  const artifactVersions = Effect.fn("ACP.artifactVersions")(function* (params: ACPArtifacts.ArtifactIdRequest) {
+    return yield* request(() => ACPArtifacts.versions(params), "artifact")
+  })
+
+  const artifactOpen = Effect.fn("ACP.artifactOpen")(function* (params: ACPArtifacts.OpenRequest) {
+    return yield* request(() => ACPArtifacts.open(params), "artifact")
+  })
+
+  const artifactRestore = Effect.fn("ACP.artifactRestore")(function* (params: ACPArtifacts.RestoreRequest) {
+    return yield* request(() => ACPArtifacts.restore(params), "artifact")
+  })
+
+  const artifactDiff = Effect.fn("ACP.artifactDiff")(function* (params: ACPArtifacts.DiffRequest) {
+    return yield* request(() => ACPArtifacts.diff(params), "artifact")
+  })
+
+  const artifactRename = Effect.fn("ACP.artifactRename")(function* (params: ACPArtifacts.RenameRequest) {
+    return yield* request(() => ACPArtifacts.rename(params), "artifact")
+  })
+
+  const artifactDelete = Effect.fn("ACP.artifactDelete")(function* (params: ACPArtifacts.DeleteRequest) {
+    return yield* request(() => ACPArtifacts.remove(params), "artifact")
+  })
+
+  // Flock: the cross-person question feature's pane. Seven of these are synchronous
+  // file work on the GLOBAL config directory, wrapped in `request` only for the uniform
+  // error mapping. The two that touch the live permission queue go through `inInstance`:
+  // that queue is per-instance state, and answering into the wrong instance would leave
+  // the real one blocked forever.
+  const flockState = Effect.fn("ACP.flockState")(function* (params: FlockCwdRequest) {
+    return yield* request(async () => ACPFlock.state(params.directory ? { directory: params.directory } : {}), "flock")
+  })
+
+  // A FILE READ, not an instance one: the queue is a view over `flock.json` and needs
+  // no session context.
+  const flockPending = Effect.fn("ACP.flockPending")(function* (params: FlockCwdRequest) {
+    return yield* request(async () => ACPFlock.pending(params.directory ? { directory: params.directory } : {}), "flock")
+  })
+
+  const flockMailbox = Effect.fn("ACP.flockMailbox")(function* (params: FlockCwdRequest) {
+    return yield* request(async () => ACPFlock.mailbox(params.directory ? { directory: params.directory } : {}), "flock")
+  })
+
+  // One read that explains a silent Flock - identity, contacts and their route, the
+  // lease, this engine's transport, whether a desk model is set, the mailbox counts and
+  // the last lifecycle lines. No wire, no writes; safe from anywhere.
+  const flockDiagnose = Effect.fn("ACP.flockDiagnose")(function* (params: FlockCwdRequest) {
+    return yield* request(async () => ACPFlock.diagnose(params.directory ? { directory: params.directory } : {}), "flock")
+  })
+
+  const flockInvite = Effect.fn("ACP.flockInvite")(function* (params: ACPFlock.InviteRequest) {
+    return yield* request(async () => ACPFlock.invite(params), "flock")
+  })
+
+  const flockAccept = Effect.fn("ACP.flockAccept")(function* (params: ACPFlock.AcceptRequest) {
+    return yield* request(async () => ACPFlock.accept(params), "flock")
+  })
+
+  const flockSetIdentity = Effect.fn("ACP.flockSetIdentity")(function* (params: ACPFlock.SetIdentityRequest) {
+    return yield* request(async () => ACPFlock.setIdentity(params), "flock")
+  })
+
+  const flockRevoke = Effect.fn("ACP.flockRevoke")(function* (params: ACPFlock.HandleRequest) {
+    return yield* request(async () => ACPFlock.revoke(params), "flock")
+  })
+
+  const flockSetPolicy = Effect.fn("ACP.flockSetPolicy")(function* (params: ACPFlock.SetPolicyRequest) {
+    return yield* request(async () => ACPFlock.setPolicy(params), "flock")
+  })
+
+  const flockFrontDesk = Effect.fn("ACP.flockFrontDesk")(function* (params: ACPFlock.FrontDeskRequest) {
+    return yield* request(async () => ACPFlock.frontDesk(params), "flock")
+  })
+
+  const flockSetSpecialties = Effect.fn("ACP.flockSetSpecialties")(function* (params: ACPFlock.SpecialtiesRequest) {
+    return yield* request(async () => ACPFlock.setSpecialties(params), "flock")
+  })
+
+  // The desk turn needs a cwd, the store write does not. `FlockBoot.runner` opens its
+  // child session inside the instance the owner is looking at, which is what makes the
+  // Front Desk chat one they can watch; everything else here is global `flock.json`.
+  const flockDecide = Effect.fn("ACP.flockDecide")(function* (params: ACPFlock.DecideRequest & { cwd?: string }) {
+    const cwd = params.cwd ?? process.cwd()
+    return yield* request(() => ACPFlock.decide(params, { runner: FlockBoot.runner(cwd), worktree: cwd }), "flock")
+  })
+
+  const flockSend = Effect.fn("ACP.flockSend")(function* (params: ACPFlock.SendRequest & { cwd?: string }) {
+    const cwd = params.cwd ?? process.cwd()
+    return yield* request(() => ACPFlock.send(params, { runner: FlockBoot.runner(cwd), worktree: cwd }), "flock")
+  })
+
+  const flockPost = Effect.fn("ACP.flockPost")(function* (params: ACPFlock.PostRequest) {
+    return yield* request(() => ACPFlock.post(params), "flock")
+  })
+
+  const flockMark = Effect.fn("ACP.flockMark")(function* (params: ACPFlock.MarkRequest) {
+    return yield* request(async () => ACPFlock.mark(params), "flock")
+  })
+
+  const flockDeliver = Effect.fn("ACP.flockDeliver")(function* (params: ACPFlock.DeliverRequest) {
+    return yield* request(() => ACPFlock.deliver(params), "flock")
   })
 
   // Provider OAuth. Thin proxies over ProviderAuth.Service — the flow itself is
@@ -1426,37 +2037,58 @@ export function make(input: {
     )
   })
 
-  // Usage is NOT part of the sign-in flow, so it does not go through
-  // ProviderAuth — acp/provider-usage.ts reads the stored credential itself and
-  // makes one lazy GET. Kept beside the three above because it is the same
-  // surface to a caller: "what is the state of this OAuth connection".
+  // Usage is NOT part of the sign-in flow, so it does not go through ProviderAuth -
+  // acp/provider-usage.ts reads the stored credential itself and makes one lazy GET.
+  // Kept beside the three above because to a caller it is the same surface.
   const providerAuthUsage = Effect.fn("ACP.providerAuthUsage")(function* (params: ProviderAuthUsageRequest) {
     return yield* request(() => AppRuntime.runPromise(ACPProviderUsage.usage(params.providerID)), "provider-auth")
   })
 
-  // Make a just-written provider credential live. See ProviderRefreshRequest for
-  // what this invalidates and why it is not the HTTP `config.refresh` route.
+  // Second opinion — one turn, reviewed by the model the user named. The whole
+  // job (digest, model resolution, the tool-less one-shot) is acp/second-opinion.ts;
+  // this is the cwd default every other method here also applies.
+  const secondOpinion = Effect.fn("ACP.secondOpinion")(function* (params: SecondOpinionRequest) {
+    const cwd = params.cwd ?? process.cwd()
+    return yield* request(
+      () =>
+        AppRuntime.runPromise(
+          ACPSecondOpinion.review({
+            directory: cwd,
+            sessionId: params.sessionId,
+            providerID: params.providerID,
+            modelID: params.modelID,
+            currentModelLabel: params.currentModelLabel ?? "",
+          }),
+        ),
+      "second-opinion",
+    )
+  })
+
+  // Make a just-written provider credential live. See ProviderRefreshRequest for what
+  // this invalidates and why it is not the HTTP `config.refresh` route.
   //
-  // `inInstance` is not optional here: this runs on the bare fiber `acp/agent.ts`
-  // starts every request on, and both services reach their state through
-  // `InstanceState`, which DIES with "InstanceRef not provided" when the
-  // reference is absent - and `request()` would launder that defect into a
-  // redacted "Origami service failure". The cwd resolves the SAME instance the
-  // session's turns run under, which is what makes this invalidation visible to
-  // them (the incident is written up on the `inInstance` helper itself).
+  // `inInstance` is not optional here: this runs on the bare fiber `acp/agent.ts` starts
+  // every request on, and both services reach their state through `InstanceState`, which
+  // DIES with "InstanceRef not provided" when the reference is absent. The cwd resolves
+  // the SAME instance the session's turns run under, which is what makes this
+  // invalidation visible to them.
   const providerRefresh = Effect.fn("ACP.providerRefresh")(function* (params: ProviderRefreshRequest) {
     const cwd = params.cwd ?? process.cwd()
+    if (params.hard) {
+      resetDiscoveryCache()
+      ProviderCatalogCache.clear()
+      // t-ty02bb: the Refresh press re-runs Gate B too (after `claude update`, say).
+      yield* Effect.promise(() => ClaudeSubscription.recheck())
+    }
     yield* request(
       () =>
         AppRuntime.runPromise(
           inInstance(
             cwd,
             Effect.gen(function* () {
-              // BOTH halves, and both are load-bearing - each on its own leaves
-              // the old credential on the wire, proved by mutation. Config
-              // alone re-reads the files but the provider list is a second
-              // InstanceState built from them and survives it; Provider alone
-              // rebuilds that list from a `config.get()` that is still cached.
+              // BOTH halves are load-bearing: Config alone re-reads the files but the
+              // provider list is a second InstanceState built from them and survives it;
+              // Provider alone rebuilds that list from a `config.get()` still cached.
               yield* Config.Service.use((config) => config.invalidateInstance())
               yield* Provider.Service.use((provider) => provider.invalidate())
             }),
@@ -1465,6 +2097,16 @@ export function make(input: {
       "config",
     )
     return { ok: true } as const
+  })
+
+  // t-tjt9wd. Reads the last Gate B answer, so the picker can poll it cheaply:
+  // `providerInfo()` (every provider-list build while the flag is on) and the
+  // hard `provider_refresh` keep it fresh. t-ty02bb: an engine that has not
+  // asked yet (the host engine builds no provider list) runs Gate B on this
+  // first read instead of answering "not been checked yet".
+  const claudeSubscriptionStatus = Effect.fn("ACP.claudeSubscriptionStatus")(function* () {
+    const answer = yield* Effect.promise(() => ClaudeSubscription.ensureChecked())
+    return ClaudeSubscription.readinessWireState(answer)
   })
 
   const collabAgents = Effect.fn("ACP.collabAgents")(function* (params: CollabAgentsRequest) {
@@ -1641,7 +2283,7 @@ export function make(input: {
         ),
       "session",
     )
-    const restored = restoreFromMessages(messages.map((item) => item.info))
+    const restored = ACPHistory.restoreFromMessages(messages.map((item) => item.info))
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: params.sessionId,
@@ -1712,12 +2354,12 @@ export function make(input: {
         ),
       "session",
     )
-    const messages = yield* request(
-      () =>
-        input.sdk.session.messages({ directory: params.cwd, sessionID: forked.id, limit: 20 }, { throwOnError: true }),
-      "session",
-    )
-    const restored = restoreFromMessages(messages.map((item) => item.info))
+    // The same bounded restore as `loadSession` (t-ucnjwp): the newest page, and
+    // `history_page` for the rest. A fork carries the parent's WHOLE transcript in its
+    // own rows, and the window's `hasMore` is what tells the client so - the old
+    // `limit: 20` without it drew a chat that seemed to start 20 messages ago.
+    const history = yield* restoreHistory(params.cwd, forked.id)
+    const restored = history.restored
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: forked.id,
@@ -1726,17 +2368,20 @@ export function make(input: {
       model,
       variant: restored.variant ?? selectVariant(snapshot, model),
       modeId: restored.modeId ?? (snapshot.availableModes.length > 0 ? snapshot.defaultModeID : undefined),
-      // Read off the FORK's own row, like the other restored fields. Session.fork
-      // does not copy the parent's ruleset today, so a fork opens on `default` -
-      // the same as before this line existed; it is here so the fork follows its
-      // row rather than a separate assumption if that ever changes.
+      // Read off the FORK's own row, like the other restored fields. `Session.fork` does
+      // not copy the parent's ruleset today, so a fork opens on `default`; this is here so
+      // the fork follows its row rather than an assumption if that ever changes.
       permissionMode: PermissionPresets.modeFor(forked.permission),
     })
     sessionSnapshots.set(state.id, snapshot)
 
     yield* registerMcpServers(input.sdk, registeredMcp, params.cwd, state.id, params.mcpServers ?? [])
     yield* pushAvailableCommands(state.id, params.cwd, snapshot) // origami_change
-    yield* replayMessages(events, messages)
+    // The fork ALREADY has a name (`Session.fork` derives one from the parent's) but
+    // nothing told the client, so a forked chat opened as an untitled tab. Same call and
+    // position as `loadSession`, so a fork's replay matches a reopen frame for frame.
+    yield* replayTitle(events, state.id, forked.title)
+    const window = yield* replayRestore(params.cwd, state.id, history)
     // The FORK's own rows, like the permission preset above - the replayed
     // transcript describes the parent's todowrite calls, not the fork's list.
     yield* replayTodos(params.cwd, state.id).pipe(Effect.ignore)
@@ -1750,23 +2395,18 @@ export function make(input: {
         // The FORK's own row, matching the seed above.
         permissionMode: PermissionPresets.modeFor(forked.permission),
       }),
+      _meta: { origami_history: window },
     }
   })
 
-  /**
-   * A configured model id, resolved fail-closed against the SESSION SNAPSHOT
-   * frozen at session start. If the shell just wrote a NEW model to origami.json
-   * (a fresh LM Studio model, or an OpenRouter model the user just picked), it
-   * isn't in that snapshot yet. Rather than force a window reload, self-heal:
-   * ask the engine to re-read config (config.refresh = invalidate the global
-   * config cache + dispose this directory's instance), refresh the directory
-   * snapshot, re-seed THIS session, and retry once. A second miss is a real
-   * InvalidModelError. Only the miss path pays the reload cost.
-   *
-   * Returns the (possibly refreshed) snapshot alongside the selection, because
-   * every caller answers with `configOptions` built from the same snapshot the
-   * model was validated against — a stale one would report the old catalog.
-   */
+  /** A configured model id, resolved fail-closed against the SESSION SNAPSHOT frozen at
+   *  session start. A model the shell wrote after that is not in the snapshot, so rather
+   *  than force a window reload, self-heal: re-read config, refresh the directory
+   *  snapshot, re-seed THIS session and retry once. A second miss is a real
+   *  InvalidModelError, and only the miss path pays the reload cost.
+   *  Returns the (possibly refreshed) snapshot alongside the selection, because every
+   *  caller answers with `configOptions` built from it - a stale one reports the old
+   *  catalog. */
   const resolveConfiguredModel = Effect.fn("ACP.resolveConfiguredModel")(function* (
     current: ACPSession.Info,
     snapshot: Directory.Snapshot,
@@ -1780,13 +2420,30 @@ export function make(input: {
     }
     let snap = snapshot
     if (!inSnapshot(snap)) {
+      const providerID = parseModelSelection(value, Object.values(snap.providers)).model.providerID
       yield* Effect.promise(() =>
         input.sdk.config.refresh({ directory: current.cwd }).then(
           () => {},
           () => {},
         ),
       )
-      snap = yield* directoryService.refresh(current.cwd)
+      // origami_change (t-wusuep): this rebuild lists EVERY provider, and a catalog
+      // provider does it over the network. Unbounded it held the shell's model lock open
+      // with no message; the client's own switch deadline is 30 s, so failing here FIRST
+      // is what lets the user read WHICH provider stalled.
+      snap = yield* directoryService.refresh(current.cwd).pipe(
+        Effect.timeoutOrElse({
+          duration: `${directoryRefreshTimeoutMs} millis`,
+          orElse: () =>
+            Effect.fail(
+              new ACPError.ServiceFailureError({
+                safeMessage: `switching to "${providerID}": the provider directory did not rebuild in ${Math.round(directoryRefreshTimeoutMs / 1000)}s - a model list is still refreshing`,
+                service: "directory",
+                errorName: "DirectoryRefreshTimeout",
+              }),
+            ),
+        }),
+      )
       sessionSnapshots.set(current.id, snap)
     }
     return { snap, selected: yield* parseSelectedModel(snap, value) }
@@ -1796,6 +2453,11 @@ export function make(input: {
     params: SetSessionConfigOptionRequest,
   ) {
     const current = yield* session.get(params.sessionId)
+    // origami_change (t-sb9tlk): the options that write the ENGINE's session row
+    // are refused on a session another desk writes. The others (model, effort,
+    // mode, temperature, topP) only set this connection's state for the next
+    // turn, which the prompt guard refuses anyway.
+    if (ROW_WRITING_CONFIG.has(params.configId)) yield* nests.guard(params.sessionId, params.configId)
     const snapshot = yield* configSnapshot(current)
     if (typeof params.value !== "string") {
       return yield* new ACPError.InvalidConfigOptionError({ configId: params.configId })
@@ -1818,24 +2480,16 @@ export function make(input: {
     }
 
     if (params.configId === "subagentModel") {
-      // Per-chat SUB-AGENT model override: every sub-agent this chat spawns runs
-      // on this model, ahead of the flock binding and the agent's own pin
-      // (tool/task.ts owns that precedence). Same validation as `model` — an
-      // override the provider registry cannot serve would fail at spawn time,
-      // inside a child session the user cannot see. "" / "default" CLEARS it.
+      // Per-chat SUB-AGENT model override: every sub-agent this chat spawns runs on this
+      // model, ahead of the flock binding and the agent's own pin (tool/task.ts owns that
+      // precedence). Same validation as `model`. "" / "default" CLEARS it.
       //
-      // The winner has to land on the ENGINE's session row, not just here: the
-      // task tool reads the parent session, and only the row survives an engine
-      // restart. Sent through the same session.update channel `title` uses, with
-      // the row's other metadata carried through by withSubagentModel.
+      // The winner has to land on the ENGINE's session row, not just here: the task tool
+      // reads the parent session, and only the row survives an engine restart.
       //
-      // t-lmqe0g: an optional trailing "@<positive integer>" is a CONTEXT-WINDOW
-      // override for the sub-agents' turns, stripped BEFORE model resolution so
-      // `resolveConfiguredModel`/`parseModelSelection` see a plain "provider/model"
-      // string exactly as before. It rides the same value string because the ACP
-      // config channel is one string per call (see the temperature/topP comment
-      // below) and this is one pick, not two settings. A malformed suffix (an "@"
-      // followed by anything but digits, or "@0") fails the whole call rather than
+      // An optional trailing "@<positive integer>" is a CONTEXT-WINDOW override for the
+      // sub-agents' turns, stripped BEFORE model resolution so `parseModelSelection` sees
+      // a plain "provider/model". A malformed suffix fails the whole call rather than
       // silently dropping the context half of what the user asked for.
       const trimmed = params.value.trim()
       const clearing = trimmed === "" || trimmed.toLowerCase() === "default"
@@ -1895,10 +2549,9 @@ export function make(input: {
     }
 
     if (params.configId === "mode") {
-      // Refreshes ONCE on a miss, exactly as the `model` branch above does. Same
-      // root cause: this validated against the snapshot FROZEN at session start,
-      // so a definition written since — every bot the Bots pane just scaffolded —
-      // was unreachable from the Folds board's per-session agent picker too.
+      // Refreshes ONCE on a miss, exactly as the `model` branch above does. Same root
+      // cause: this validated against the snapshot FROZEN at session start, so a
+      // definition written since was unreachable from the per-session agent picker.
       const snap = yield* resolveRequestedAgent(current.cwd, snapshot, params.value).pipe(
         Effect.catchTag("ACPRefusalError", () => new ACPError.InvalidModeError({ mode: params.value })),
       )
@@ -1915,17 +2568,13 @@ export function make(input: {
     }
 
     if (params.configId === "permission") {
-      // Scoped auto-approve preset for THIS chat, rides the same string config
-      // channel: "default" (ask normally), "auto" (auto-approve file edits),
-      // "bypass" (auto-approve everything).
+      // Scoped auto-approve preset for THIS chat, riding the same string config channel:
+      // "default" (ask normally), "auto" (auto-approve file edits), "bypass" (everything).
       //
-      // The winner has to land on the ENGINE's session row, not just here — same
-      // convention as `subagentModel` below, and for a sharper reason: the `tools`
-      // map only rides an ordinary USER prompt, so a preset pressed mid-turn, or
-      // before an auto-continue or a slash command, would otherwise never reach
-      // the ruleset at all. The tool gate re-reads that ruleset live per ask
-      // (session/tools.ts), so writing it here makes the preset bite on the very
-      // next ask of the turn that is already running.
+      // The winner has to land on the ENGINE's session row: the `tools` map only rides an
+      // ordinary USER prompt, so a preset pressed mid-turn, or before an auto-continue,
+      // would never reach the ruleset. The tool gate re-reads that ruleset live per ask,
+      // so writing it here makes the preset bite on the next ask of the running turn.
       const value = params.value.trim().toLowerCase()
       if (value !== "default" && value !== "auto" && value !== "bypass") {
         return yield* new ACPError.InvalidConfigOptionError({ configId: params.configId })
@@ -1954,19 +2603,15 @@ export function make(input: {
     }
 
     if (params.configId === "visionProfile") {
-      // Per-chat VISION PROFILE (t-kgtr6c): the slug of a vision-capable agent
-      // this chat may hand an image to when its own model cannot see one.
-      // "" / "off" CLEARS it, mirroring the `auto`/`default` clear-words the
-      // other string options use. The slug is NOT resolved against the agent
-      // registry here: agent defs are re-scanned per turn off the filesystem,
-      // so a profile saved a second before this call would fail a check made
-      // against the snapshot this session opened with. The prompt loop
-      // resolves it, and says so in the tool result when the slug is gone.
+      // Per-chat VISION PROFILE: the slug of a vision-capable agent this chat may hand an
+      // image to when its own model cannot see one. "" / "off" CLEARS it. The slug is NOT
+      // resolved against the agent registry here - agent defs are re-scanned per turn, so
+      // a profile saved a second before this call would fail a check made against this
+      // session's snapshot. The prompt loop resolves it, and says so in the tool result
+      // when the slug is gone.
       //
-      // The winner has to land on the ENGINE's session row, not just here —
-      // the prompt loop reads the row, and only the row survives an engine
-      // restart. Same session.update channel `subagentModel` uses, with the
-      // row's other metadata carried through by withVisionProfile.
+      // The winner has to land on the ENGINE's session row, which is what survives an
+      // engine restart.
       const trimmed = params.value.trim()
       const slug = trimmed === "" || trimmed.toLowerCase() === "off" ? undefined : trimmed
       if (slug && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(slug)) {
@@ -2000,12 +2645,11 @@ export function make(input: {
     }
 
     if (params.configId === "revert" || params.configId === "unrevert") {
-      // Deterministic rollback. Rides the same string config channel as `title`
-      // (both are actions, not real selects): "revert" restores the working tree
-      // to the snapshot taken before the given assistant message's turn and marks
-      // that turn (and everything after) for removal; "unrevert" undoes it (valid
-      // until the next prompt, which finalises the deletion). The engine does all
-      // the work — files, snapshots, message pruning — via sdk.session.revert.
+      // Deterministic rollback, riding the same string config channel as `title` (both
+      // are actions, not real selects): "revert" restores the working tree to the snapshot
+      // taken before the given assistant message's turn and marks that turn, and
+      // everything after, for removal; "unrevert" undoes it until the next prompt
+      // finalises the deletion.
       if (params.configId === "revert") {
         const messageID = params.value.trim()
         if (!messageID) {
@@ -2037,9 +2681,8 @@ export function make(input: {
     }
 
     if (params.configId === "title") {
-      // Rename the chat. Rides the same string config channel as the other options;
-      // the PATCH publishes session.updated, which the ACP layer echoes back as
-      // session_info_update - so no extra display plumbing is needed.
+      // Rename the chat. The PATCH publishes session.updated, which the ACP layer echoes
+      // back as session_info_update, so no extra display plumbing is needed.
       const trimmed = params.value.trim()
       if (trimmed) {
         yield* request(
@@ -2062,10 +2705,9 @@ export function make(input: {
     }
 
     if (params.configId === "temperature" || params.configId === "topP") {
-      // Per-session sampling override. The ACP protocol has no numeric option type,
-      // so the value rides as a string: "" / "auto" CLEARS the override; anything
-      // else is parsed as a float and clamped. Applied live per request via the
-      // llm.run merge (per-session > global > agent default) — no reload.
+      // Per-session sampling override. ACP has no numeric option type, so the value rides
+      // as a string: "" / "auto" CLEARS it, anything else is parsed as a float and clamped.
+      // Applied live per request via the llm.run merge (per-session > global > agent).
       const trimmed = params.value.trim()
       const isClear = trimmed === "" || trimmed.toLowerCase() === "auto"
       const parsed = Number(trimmed)
@@ -2088,15 +2730,11 @@ export function make(input: {
     }
 
     if (params.configId === "compactionThreshold") {
-      // Per-chat auto-compaction TRIGGER override (t-kgsdsw): the UAT report
-      // was DeepSeek overflowing well past the cfg-derived reserve, and the
-      // fix is a threshold the user sets ahead of time. Rides the session
-      // row's metadata, same as `subagentModel` above — a real column would
-      // need a schema migration for a value only the overflow check reads.
-      // "" / "auto" CLEARS it. A trailing "%" picks a fraction of the model's
-      // context window (re-resolved at check time, since a later model switch
-      // changes what the percentage means); a bare number is an absolute
-      // token count. `overflow.ts` reads whichever the row carries.
+      // Per-chat auto-compaction TRIGGER override, riding the session row's metadata like
+      // `subagentModel` (a real column would need a migration for a value only the
+      // overflow check reads). "" / "auto" CLEARS it. A trailing "%" picks a fraction of
+      // the model's context window, re-resolved at check time since a model switch
+      // changes what it means; a bare number is an absolute token count.
       const trimmed = params.value.trim()
       const clearing = trimmed === "" || trimmed.toLowerCase() === "auto"
       let override: CompactionThresholdOverride | undefined
@@ -2159,11 +2797,16 @@ export function make(input: {
           : undefined,
       )
       .pipe(Effect.andThen(session.setModel(params.sessionId, selected.model)))
+    // The new model's cache holds nothing of this chat yet, whatever the old
+    // one had (t-rylyhm). This is the ONE entry a chat changes model through.
+    SessionCacheState.modelChanged(params.sessionId)
     return {}
   })
 
   // origami_change: targeted background-shell stop, separate from turn cancel.
   const shellStop = Effect.fn("ACP.shellStop")(function* (params: ShellStopRequest) {
+    // origami_change (t-sb9tlk): stopping a job writes its tool part.
+    yield* nests.guard(params.sessionId, "shell stop")
     const current = yield* session.get(params.sessionId)
     const found = yield* request(
       () =>
@@ -2189,15 +2832,39 @@ export function make(input: {
     return { status: info?.status ?? found.status }
   })
 
+  /**
+   * origami_change (t-q910fo): the USER's stop for ONE sub-agent, addressed by
+   * the CHILD's session id. The rule — only that child and its descendants, the
+   * parent turn untouched — lives in `subagent-stop.ts` so a test can drive it
+   * against a real registry; this half is only the instance it runs in.
+   */
+  const subagentStop = Effect.fn("ACP.subagentStop")(function* (params: SubagentStopRequest) {
+    const cwd = params.cwd ?? process.cwd()
+    return yield* request(
+      () =>
+        AppRuntime.runPromise(
+          inInstance(cwd, BackgroundJob.Service.use((jobs) => SubagentStop.stopSubagentJob(jobs, params.sessionId))),
+        ),
+      "background job",
+    )
+  })
+
   // origami_change-start (interject): deliver a queued message into the turn
   // that is already running, instead of making the user cancel it to be heard.
   const interject = Effect.fn("ACP.interject")(function* (params: InterjectRequest) {
+    yield* nests.guard(params.sessionId, "interject") // origami_change (t-sb9tlk)
     const current = yield* session.get(params.sessionId)
     const text = params.text.trim()
-    if (!text) {
+    // The client's pictures, through the prompt path's own converter: an `image`
+    // block becomes the `data:` file part `SessionPrompt` writes.
+    const files = promptContentToParts(
+      (params.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+    ).filter((part): part is Extract<PromptPart, { type: "file" }> => part.type === "file")
+    // A picture with no words is a message; nothing at all is not.
+    if (!text && files.length === 0) {
       return yield* new ACPError.ServiceFailureError({
         service: "session",
-        safeMessage: "An interjection needs some text to deliver",
+        safeMessage: "An interjection needs some text or an attachment to deliver",
         errorName: "InterjectEmpty",
       })
     }
@@ -2207,7 +2874,7 @@ export function make(input: {
           inInstance(
             current.cwd,
             SessionPrompt.Service.use((prompts) =>
-              prompts.interject({ sessionID: SessionID.make(current.id), text }),
+              prompts.interject({ sessionID: SessionID.make(current.id), text, ...(files.length ? { files } : {}) }),
             ),
           ),
         ),
@@ -2226,12 +2893,23 @@ export function make(input: {
     resumeSession,
     closeSession,
     forkSession,
+    sessionDelete,
+    sessionAppendForeign, // origami_change
     runSteps,
     runStats,
     subagentTranscript,
+    subagentTodos, // origami_change (t-qd2riw)
+    subagentChanges, // origami_change (t-ru0by6)
+    historyPage, // origami_change (t-ucnjwp)
+    historySearch, // origami_change (t-ucnjwp)
+    subagentRoster, // origami_change (t-ucnjwp)
     listInstructions,
     promptCapture,
     cacheStats,
+    storageStats,
+    storagePrune,
+    storageCompact,
+    storageVacuum,
     listSkills,
     listTools,
     listAgentPlugins,
@@ -2245,11 +2923,36 @@ export function make(input: {
     mcpDisconnect,
     mcpAuthenticate,
     mcpAuthRemove,
+    flockState,
+    flockPending,
+    flockInvite,
+    flockAccept,
+    flockRevoke,
+    flockSetIdentity,
+    flockSetPolicy,
+    flockFrontDesk,
+    flockSetSpecialties,
+    flockMailbox,
+    flockDiagnose,
+    flockDecide,
+    flockSend,
+    flockPost,
+    flockMark,
+    flockDeliver,
+    artifactList,
+    artifactVersions,
+    artifactOpen,
+    artifactRestore,
+    artifactDiff,
+    artifactRename,
+    artifactDelete,
     providerAuthList,
     providerAuthAuthorize,
     providerAuthCallback,
     providerAuthUsage,
     providerRefresh,
+    claudeSubscriptionStatus,
+    secondOpinion,
     collabAgents,
     collabList,
     collabCreate,
@@ -2273,13 +2976,20 @@ export function make(input: {
     collabRename,
     collabAddParticipant,
     collabRemoveParticipant,
+    ...nests.methods, // origami_change (t-s9jgzh)
     shellStop,
+    subagentStop, // origami_change (t-q910fo)
     interject, // origami_change
     setSessionConfigOption,
     setSessionMode,
     setSessionModel,
     prompt: Effect.fn("ACP.prompt")(function* (params: PromptRequest) {
       const current = yield* session.get(params.sessionId)
+      // origami_change (t-s9jgzh, t-sb9tlk): a session another desk writes is
+      // read only here. This one guard covers a plain prompt, a slash command
+      // (`session.command`), `/compact` (`session.summarize`), and every tool a
+      // turn runs (todowrite, bash): none of them has its own ACP entry.
+      yield* nests.guard(params.sessionId, "prompt")
       const snapshot = yield* directorySnapshot(current.cwd)
       const selected = current.model ?? selectDefaultModel(snapshot)
       if (!current.model) {
@@ -2303,14 +3013,10 @@ export function make(input: {
                 ...(variant ? { variant } : {}),
                 parts,
                 ...(modeId ? { agent: modeId } : {}),
-                // Scoped auto-approve preset → a session permission ruleset. "auto"
-                // allows file edits, "bypass" allows everything, "default"/undefined
-                // yields an EMPTY map. ALWAYS sent: the engine now treats a present
-                // `tools` map (prompt.ts `input.tools !== undefined`) as an
-                // authoritative replace, so an empty map from "default" actively
-                // CLEARS an already-persisted auto/bypass ruleset back to ask - the
-                // reset a conditional send (or the old `permissions.length > 0`
-                // engine guard) could not express.
+                // Scoped auto-approve preset -> a session permission ruleset. "auto"
+                // allows file edits, "bypass" everything, "default"/undefined an EMPTY map.
+                // ALWAYS sent: the engine treats a present `tools` map as an authoritative
+                // replace, so an empty map CLEARS a persisted auto/bypass ruleset back to ask.
                 tools: PermissionPresets.tools(current.permissionMode),
                 // Per-chat sampling override for THIS session (set via the
                 // temperature/topP config options); undefined = provider/agent
@@ -2324,7 +3030,7 @@ export function make(input: {
           "session",
         )
         yield* sendUsageUpdate(usageService, input.connection, current.id, current.cwd)
-        return yield* promptResponse(response.info, params.messageId)
+        return yield* promptResponse(response.info, params.messageId, response.parts)
       }
 
       const known = snapshot.availableCommands.find((item) => item.name === command.name)
@@ -2346,7 +3052,7 @@ export function make(input: {
           "session",
         )
         yield* sendUsageUpdate(usageService, input.connection, current.id, current.cwd)
-        return yield* promptResponse(response.info, params.messageId)
+        return yield* promptResponse(response.info, params.messageId, response.parts)
       }
 
       if (command.name === "compact") {
@@ -2372,6 +3078,18 @@ export function make(input: {
   }
 }
 
+/** origami_change (t-sb9tlk): the `setSessionConfigOption` ids whose branch
+ *  writes the engine's session row (`session.update`, `revert`, `unrevert`). */
+const ROW_WRITING_CONFIG: ReadonlySet<string> = new Set([
+  "title",
+  "revert",
+  "unrevert",
+  "subagentModel",
+  "permission",
+  "visionProfile",
+  "compactionThreshold",
+])
+
 function makeSessionService() {
   return ManagedRuntime.make(AppNodeBuilder.build(ACPSession.node)).runSync(
     ACPSession.Service.use((service) => Effect.succeed(service)),
@@ -2387,9 +3105,7 @@ function makeInstructionsService(): Instructions.Interface {
   }
 }
 
-// Same rationale as makeInstructionsService: the ACP process already boots the
-// engine in-process, so this runs on the process-wide AppRuntime rather than a
-// private layer stack.
+// Same AppRuntime rationale as makeInstructionsService.
 function makeSkillsService(): Skills.Interface {
   return {
     list: (directory: string, options?: Skills.ListOptions) =>
@@ -2475,102 +3191,6 @@ function makeDirectoryService(sdk: OrigamiClient) {
   ).runSync(Directory.Service.use((service) => Effect.succeed(service)))
 }
 
-function makeUsageService(sdk: OrigamiClient) {
-  const limits = new Map<string, Promise<number | undefined>>()
-  const contextLimit: UsageService.Interface["contextLimit"] = Effect.fn("ACP.promptUsage.contextLimit")(
-    function* (params) {
-      const key = `${params.directory}\u0000${params.providerID}\u0000${params.modelID}`
-      const current = limits.get(key)
-      if (current) return yield* Effect.promise(() => current)
-
-      const next = sdk.config
-        .providers({ directory: params.directory }, { throwOnError: true })
-        .then((response) => {
-          const providers = Object.fromEntries(
-            (response.data?.providers ?? []).map((provider) => [provider.id, provider]),
-          ) as Record<ProviderV2.ID, Provider.Info>
-          return UsageService.findContextLimit(providers, params.providerID, params.modelID)
-        })
-        .catch(() => undefined)
-      limits.set(key, next)
-      return yield* Effect.promise(() => next)
-    },
-  )
-
-  const sendUpdate: UsageService.Interface["sendUpdate"] = Effect.fn("ACP.promptUsage.sendUpdate")(function* (params) {
-    const messages = yield* request(
-      () =>
-        sdk.session.messages(
-          {
-            sessionID: params.sessionID,
-            directory: params.directory,
-          },
-          { throwOnError: true },
-        ),
-      "session",
-    ).pipe(
-      Effect.map((messages) => messages as readonly UsageService.SessionMessage[]),
-      Effect.catch((error) =>
-        Effect.logError("failed to fetch messages for usage update", { error: error }).pipe(Effect.as(undefined)),
-      ),
-    )
-    if (!messages) return
-
-    const message = UsageService.latestAssistantMessage(messages)
-    if (!message?.providerID || !message.modelID) return
-
-    // Skip the /compact summariser turn. Its tokens describe reading the WHOLE
-    // pre-compaction history: input would spike the gauge, output alone
-    // under-reports (omits the preserved tail + the system/tools overhead every
-    // turn re-sends). Compaction reduction is lazy anyway, so hold the gauge and
-    // let the NEXT real turn's measured input report the true reduced footprint.
-    if ((message as { summary?: boolean }).summary === true) return
-
-    const size = yield* contextLimit({
-      directory: params.directory,
-      providerID: ProviderV2.ID.make(message.providerID),
-      modelID: ModelV2.ID.make(message.modelID),
-    })
-    if (!size) return
-
-    // Subagent rollup. roots:false keeps the task tool's child sessions in the
-    // listing; their rows already carry running cost/token totals, so no
-    // per-child message fetch is needed. A failed listing costs the rollup
-    // only — the gauge and the parent's own cost still go out.
-    const rows = yield* request(
-      () => sdk.session.list({ directory: params.directory, roots: false }, { throwOnError: true }),
-      "session",
-    ).pipe(
-      Effect.map((rows) => rows as readonly UsageService.SessionRow[]),
-      Effect.catch(() => Effect.succeed([] as readonly UsageService.SessionRow[])),
-    )
-
-    yield* Effect.promise(() =>
-      params.connection
-        .sessionUpdate({
-          sessionId: params.sessionID,
-          update: UsageService.buildUsageUpdate({
-            used: message.tokens.input + message.tokens.cache.read,
-            size,
-            cost: UsageService.totalSessionCost(messages),
-            subagents: UsageService.subagentTotals(rows, params.sessionID),
-            cacheReadTokens: message.tokens.cache.read,
-            cacheWriteTokens: message.tokens.cache.write,
-          }),
-        })
-        .catch(() => {}),
-    )
-  })
-
-  return UsageService.Service.of({
-    buildUsage: UsageService.buildUsage,
-    latestAssistantMessage: UsageService.latestAssistantMessage,
-    totalSessionCost: UsageService.totalSessionCost,
-    contextLimit,
-    sendUpdate,
-  })
-}
-
 /** A placeholder ("New session - <ISO>") is not a name - the client has its own
  *  fallback for that and would only have to filter this back out. */
 function replayTitle(subscription: ACPEvent.Subscription | undefined, sessionId: string, title: string | undefined) {
@@ -2578,11 +3198,15 @@ function replayTitle(subscription: ACPEvent.Subscription | undefined, sessionId:
   return Effect.promise(() => subscription.replayTitle(sessionId, title).catch(() => {}))
 }
 
-function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
+function replayMessages(
+  subscription: ACPEvent.Subscription | undefined,
+  messages: readonly SessionMessageResponse[],
+  options?: ACPEvent.ReplayOptions,
+) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {
     for (const message of messages) {
-      await subscription.replayMessage(message).catch(() => {})
+      await subscription.replayMessage(message, options).catch(() => {})
     }
   })
 }
@@ -2591,13 +3215,9 @@ type ConfigState = {
   readonly model: Directory.DefaultModel
   readonly variant?: string
   readonly modeId?: string
-  /**
-   * The chat's live auto-approve preset. Absent = `default`. Every session
-   * entry point derives this from the ENGINE ROW (the only durable copy), not
-   * from the ACP session's in-memory string, which is empty on a fresh
-   * connection - that gap is what let a client seed its approve control from
-   * its own memory and claim a mode the engine was not on.
-   */
+  /** The chat's live auto-approve preset. Absent = `default`. Every session entry point
+   *  derives this from the ENGINE ROW (the only durable copy), not from the ACP session's
+   *  in-memory string, which is empty on a fresh connection. */
   readonly permissionMode?: string
 }
 
@@ -2606,41 +3226,21 @@ type SdkResponse<T> = {
   readonly error?: unknown
 }
 
-type MessageInfo = {
-  readonly role?: Message["role"]
-  readonly model?: Extract<Message, { role: "user" }>["model"]
-  readonly providerID?: Extract<Message, { role: "assistant" }>["providerID"]
-  readonly modelID?: Extract<Message, { role: "assistant" }>["modelID"]
-  readonly variant?: Extract<Message, { role: "assistant" }>["variant"]
-  readonly mode?: Extract<Message, { role: "assistant" }>["mode"]
-  readonly agent?: Message["agent"]
-}
-
 type AssistantError = NonNullable<AssistantMessage["error"]>
 type AssistantInfo = (UsageService.AssistantTokenCost & Pick<AssistantMessage, "error">) | undefined
 
-/**
- * origami_change: run engine work on the process-wide AppRuntime WITH the
- * instance it belongs to.
- *
- * `acp/agent.ts` starts every request on a bare fiber (`Effect.runPromise`), so
- * nothing on it carries `InstanceRef`. Every engine service that keeps
- * per-project state reaches it through `InstanceState`, which `Effect.die`s
- * with "InstanceRef not provided" when it is absent (effect/instance-state.ts).
- * `request()` then maps that defect to `ServiceFailureError`, whose
- * `safeMessage` to the client stays a redacted "Origami service failure" -
- * but `mapRequestError` (by `fromUnknownError`, below) now logs the real
- * cause first, so a handler built without this helper still fails, but no
- * longer silently.
- *
- * `store.load` is memoised per directory, and the session prompt reaches the
- * engine as `directory: current.cwd` (server instance-context middleware loads
- * it the same way), so passing the session's cwd here resolves the SAME
- * instance the turn itself is running under - which is what makes a write from
- * this side visible to that turn.
- *
- * Same shape as `ACPProviderAuth.withInstance` and `CollabACP.inInstance`.
- */
+/** origami_change: `exactOptionalPropertyTypes` refuses an explicit
+ *  `lastUserID: undefined`, so the key is omitted rather than set to it. */
+function optionalLastUser(id: string | undefined) {
+  return id ? { lastUserID: id } : {}
+}
+
+/** origami_change: run engine work on the process-wide AppRuntime WITH the instance it
+ *  belongs to. `acp/agent.ts` starts every request on a bare fiber, so nothing on it
+ *  carries `InstanceRef`, and every service with per-project state `Effect.die`s with
+ *  "InstanceRef not provided" without one. Passing the session's cwd resolves the SAME
+ *  instance the turn runs under, which is what makes a write from this side visible to
+ *  that turn. Same shape as `ACPProviderAuth.withInstance` and `CollabACP.inInstance`. */
 function inInstance<A, E, R>(directory: string, body: Effect.Effect<A, E, R>) {
   return Effect.gen(function* () {
     const store = yield* InstanceStore.Service
@@ -2695,10 +3295,9 @@ async function loadDirectorySnapshot(sdk: OrigamiClient, directory: string) {
     const defaultModelStarted = performance.now()
     const defaultModel = defaultModelFromConfig(configResponse?.data?.model, providers)
     ACPProfile.duration("acp.directory.defaultModel.resolve", defaultModelStarted, { configured: !!defaultModel })
-    // Hidden NON-native definitions ride this list - every bot the Bots pane
-    // saves is one (Directory.modeOptionsFrom says why). The picker filters
-    // them back out; `resolveRequestedAgent` does not, because they are exactly
-    // the identities "Start session" on a bot asks for.
+    // Hidden NON-native definitions ride this list - every bot the Bots pane saves is
+    // one. The picker filters them back out; `resolveRequestedAgent` does not, because
+    // they are exactly the identities "Start session" on a bot asks for.
     const modes = Directory.modeOptionsFrom(agents)
     const commands = [
       ...commandsData,
@@ -2732,17 +3331,18 @@ export function defaultModelFromConfig(
   const configured = configuredModel ? Provider.parseModel(configuredModel) : undefined
   if (configured && providers[configured.providerID]?.models[configured.modelID]) return configured
 
-  // First-session ACP startup must not scan historical sessions just to infer
-  // a default. Configured model, OpenCode Zen provider, then sorted best model
-  // keep the protocol response deterministic without extra session/message reads.
-  // The id is `opencode` — the id the shipped models.dev catalog serves.
+  // First-session ACP startup must not scan historical sessions just to infer a default.
+  // Configured model, then the OpenCode Zen provider, then the sorted best model keeps
+  // the response deterministic. The id is `opencode`, as the shipped catalog serves it.
   const zenProvider = providers[ProviderV2.ID.make("opencode")]
   const zenModel = zenProvider ? Provider.sort(Object.values(zenProvider.models))[0] : undefined
   if (zenProvider && zenModel) return { providerID: zenProvider.id, modelID: zenModel.id }
 
   const best = Provider.sort(Object.values(providers).flatMap((provider) => Object.values(provider.models)))[0]
   if (best) return { providerID: best.providerID, modelID: best.id }
-  if (configured) return configured
+  // NOTHING resolves. A configured model no provider serves is not a fallback, it is a
+  // name for a connection that is gone, and returning it put an unreachable model in the
+  // picker. Undefined is the honest answer; the caller renders the empty state.
 }
 
 function selectDefaultModel(snapshot: Directory.Snapshot) {
@@ -2765,21 +3365,25 @@ function detectSlashCommand(parts: ReturnType<typeof promptContentToParts>) {
   return { name, args: rest.join(" ").trim() }
 }
 
+// `parts` is the turn's own parts when the caller has them: the usage is then
+// summed over its step-finish parts instead of read off the message, which
+// carries only the LAST step's context (see UsageService.sumStepFinishTokens).
 const promptResponse = Effect.fn("ACP.promptResponse")(function* (
   info: AssistantInfo,
   messageId: string | null | undefined,
+  parts?: readonly Part[],
 ) {
   if (!info?.error) {
     return {
       stopReason: "end_turn" as const,
-      ...(info ? { usage: UsageService.buildUsage(info) } : {}),
+      ...(info ? { usage: UsageService.buildUsage(info, parts) } : {}),
       ...(messageId ? { userMessageId: messageId } : {}),
       _meta: {},
     }
   }
 
   const base = {
-    usage: UsageService.buildUsage(info),
+    usage: UsageService.buildUsage(info, parts),
     ...(messageId ? { userMessageId: messageId } : {}),
     _meta: {},
   }
@@ -2845,12 +3449,10 @@ function selectVariant(snapshot: Directory.Snapshot, model: Directory.DefaultMod
 /**
  * The modes a PICKER may show.
  *
- * `availableModes` is "what may back a session", which since W8-L1 includes
- * every hidden definition the Bots pane saved. The picker is the narrower
- * question, and the two differ in one place only: a chat running AS a hidden
- * definition keeps its own agent on the list. A select whose `currentValue` is
- * absent from its options renders as nothing chosen, so without that a bot chat
- * would show a blank agent control over a chat that is answering as the bot.
+ * `availableModes` is "what may back a session", which includes every hidden definition
+ * the Bots pane saved. The two differ in one place only: a chat running AS a hidden
+ * definition keeps its own agent on the list, or the control would render as nothing
+ * chosen over a chat that is answering as the bot.
  */
 const pickerModes = (modes: readonly Directory.ModeOption[], currentModeId?: string) =>
   modes.filter((mode) => !mode.hidden || mode.id === currentModeId)
@@ -2891,16 +3493,13 @@ function parseSelectedModel(snapshot: Directory.Snapshot, modelId: string) {
 }
 
 /**
- * origami_change: the engine's COMPLETE command vocabulary for a directory —
- * builtin, config-file and skill commands PLUS the MCP prompts, waiting for
- * background discovery if it is still in flight.
+ * origami_change: the engine's COMPLETE command vocabulary for a directory - builtin,
+ * config-file and skill commands PLUS the MCP prompts, waiting for background discovery
+ * if it is still in flight.
  *
- * Runs against the process-wide AppRuntime, which already provides
- * `Command.Service` (`AppLayer` in `@/effect/app-runtime`) and shares its
- * instances with the in-process HTTP server through the module-wide `memoMap`.
- * That sharing is the whole point: this waits on the SAME discovery the
- * `command.list` route reads, rather than standing up a second engine and
- * connecting every MCP server twice. Same rule `Skills.list` follows.
+ * Runs against the process-wide AppRuntime, which shares its instances with the
+ * in-process HTTP server, so this waits on the SAME discovery the `command.list` route
+ * reads rather than connecting every MCP server twice. Same rule `Skills.list` follows.
  */
 export const settledCommands = (directory: string): Promise<readonly Command.Info[]> =>
   AppRuntime.runPromise(
@@ -3013,30 +3612,6 @@ function stableStringify(value: unknown): string {
     .join(",")}}`
 }
 
-function restoreFromMessages(messages: readonly MessageInfo[]) {
-  const user = messages.findLast(
-    (message) => message.role === "user" && message.model?.providerID && message.model.modelID,
-  )
-  if (user?.model?.providerID && user.model.modelID) {
-    return {
-      model: { providerID: user.model.providerID as ProviderV2.ID, modelID: user.model.modelID as ModelV2.ID },
-      variant: user.model.variant,
-      modeId: user.agent,
-    }
-  }
-
-  const assistant = messages.findLast((message) => message.providerID && message.modelID)
-  if (assistant?.providerID && assistant.modelID) {
-    return {
-      model: { providerID: assistant.providerID as ProviderV2.ID, modelID: assistant.modelID as ModelV2.ID },
-      variant: assistant.variant,
-      modeId: assistant.mode ?? assistant.agent,
-    }
-  }
-
-  return {}
-}
-
 function isSdkResponse<T>(value: T | SdkResponse<T>): value is SdkResponse<T> {
   return typeof value === "object" && value !== null && ("data" in value || "error" in value)
 }
@@ -3046,26 +3621,28 @@ function fromUnknownError(error: unknown, service?: string): Error {
   if (isAuthRequired(error)) {
     return new ACPError.AuthRequiredError({ providerId: findProviderID(error) })
   }
+  const owner = foreignOwner(error)
+  if (owner !== undefined) {
+    // origami_change (t-tjhmhw): the engine refused a write in its write
+    // transaction because another desk took the chat after the guard passed.
+    return new ACPError.RefusalError({
+      safeMessage: `This chat is read only on this desk: desk ${owner} writes it (write refused).`,
+      service: "nests",
+    })
+  }
   return new ACPError.ServiceFailureError({ safeMessage: "Origami service failure", service })
 }
 
-/**
- * origami_change: `fromUnknownError`'s generic branch is the one that
- * discards the raw cause behind `ServiceFailureError`'s redacted
- * `safeMessage` - see the comment on `inInstance` above for the incident this
- * caused (`InstanceRef not provided` invisible in the engine log for weeks).
- *
- * The log call lives here, in `request()`'s catch path, rather than inside
- * `fromUnknownError` itself: `fromUnknownError` is a plain synchronous
- * mapper with no Effect context to run `Effect.logError` through, and this is
- * its only caller. Auth-required and already-ACP errors take their existing
- * branches untouched and are not logged here, because `fromUnknownError`
- * does not discard anything for them - the client-visible shape for every
- * branch is unchanged.
- */
+/** origami_change: `fromUnknownError`'s generic branch discards the raw cause behind
+ *  `ServiceFailureError`'s redacted `safeMessage`, so the real cause is logged here
+ *  first - see the comment on `inInstance` for the incident that caused.
+ *  The log call lives in `request()`'s catch path rather than inside `fromUnknownError`,
+ *  which is a plain synchronous mapper with no Effect context and has only this caller.
+ *  Auth-required and already-ACP errors keep their existing branches, unlogged, because
+ *  nothing is discarded for them. */
 function mapRequestError(error: unknown, service?: string) {
   return Effect.gen(function* () {
-    if (!isACPError(error) && !isAuthRequired(error)) {
+    if (!isACPError(error) && !isAuthRequired(error) && foreignOwner(error) === undefined) {
       yield* Effect.logError("acp request failed with an unrecognized error", {
         service,
         error: error instanceof Error ? error.message : String(error),
@@ -3074,6 +3651,18 @@ function mapRequestError(error: unknown, service?: string) {
     }
     return yield* Effect.fail(fromUnknownError(error, service))
   })
+}
+
+/** origami_change (t-tjhmhw): the desk named by the engine's `EventV2.ForeignOwner`
+ *  response (server middleware/error.ts), or `undefined` for any other error. The
+ *  SDK wraps the response body in an `Error` and keeps it at `cause.body`. */
+function foreignOwner(value: unknown): string | undefined {
+  const body = value instanceof Error ? (value.cause as { body?: unknown } | undefined)?.body : undefined
+  if (typeof body !== "object" || body === null) return undefined
+  if (!("name" in body) || body.name !== "EventV2.ForeignOwner" || !("data" in body)) return undefined
+  const data = body.data
+  if (typeof data !== "object" || data === null || !("owner" in data)) return undefined
+  return typeof data.owner === "string" ? data.owner : undefined
 }
 
 function isACPError(error: unknown): error is Error {

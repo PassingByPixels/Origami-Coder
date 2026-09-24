@@ -207,7 +207,7 @@ describe("OpenAI Chat route", () => {
           { role: "user", content: "What is the weather?" },
           {
             role: "assistant",
-            content: null,
+            content: "",
             tool_calls: [
               {
                 id: "call_1",
@@ -270,7 +270,7 @@ describe("OpenAI Chat route", () => {
       expect(prepared.body.messages).toEqual([
         {
           role: "assistant",
-          content: null,
+          content: "",
           tool_calls: [
             {
               id: "call_image",
@@ -472,7 +472,7 @@ describe("OpenAI Chat route", () => {
         }),
       )
 
-      expect(prepared.body.messages).toEqual([{ role: "assistant", content: null, reasoning_content: "hidden" }])
+      expect(prepared.body.messages).toEqual([{ role: "assistant", content: "", reasoning_content: "hidden" }])
     }),
   )
 
@@ -523,6 +523,34 @@ describe("OpenAI Chat route", () => {
           usage,
         },
       ])
+    }),
+  )
+
+  // The owner's vLLM build (`vllm-0.29.0-tp2`, captured in
+  // packages/engine/test/fixtures/vllm-usage-capture.md) omits `prompt_tokens_details`
+  // entirely from the streamed usage chunk, although its own metrics report the
+  // prefix cache serving 78% of that very prompt. The usage still has to decode:
+  // a strict read of the missing key would drop the whole object and lose the
+  // input count with it.
+  it.effect("keeps usage when an OpenAI-compatible server omits prompt_tokens_details", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        deltaChunk({ role: "assistant", content: "OK" }),
+        deltaChunk({}, "stop"),
+        usageChunk({
+          prompt_tokens: 3260,
+          completion_tokens: 8,
+          total_tokens: 3268,
+          completion_tokens_details: { reasoning_tokens: 8 },
+        }),
+      )
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)))
+
+      expect(response.usage?.inputTokens).toBe(3260)
+      expect(response.usage?.reasoningTokens).toBe(8)
+      // No cached figure was reported, so none is invented.
+      expect(response.usage?.cacheReadInputTokens).toBeUndefined()
+      expect(response.usage?.nonCachedInputTokens).toBe(3260)
     }),
   )
 
@@ -588,8 +616,69 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
-  it.effect("does not finalize streamed tool calls without a finish reason", () =>
+  it.effect("degrades a truncated parallel tool call instead of failing the turn", () =>
     Effect.gen(function* () {
+      // Replay of a REAL failure, recorded 2026-09-03 from OpenRouter ->
+      // Novita -> inclusionai/ling-3.0-flash-fin:free. Four parallel
+      // webmcp_call calls; the upstream hit its own output cap partway through
+      // the fourth argument string, and OpenRouter still normalised the choice
+      // to `finish_reason: "tool_calls"` (its `native_finish_reason` was
+      // "length"), so the protocol cannot even see that it was truncated. The
+      // three complete calls, the finish reason and the usage must all survive.
+      const call = (index: number, id: string, tool: string) => [
+        deltaChunk({
+          role: "assistant",
+          tool_calls: [{ index, id, type: "function", function: { name: "webmcp_call", arguments: "" } }],
+        }),
+        deltaChunk({
+          tool_calls: [
+            { index, function: { arguments: `{"site": "https://origami.gratis/folio/", "tool": "${tool}"}` } },
+          ],
+        }),
+      ]
+      const truncated = '{"site": "https://origami.gratis/folio/", "tool": "search_docs", "args": {"query": "Origami'
+      const body = sseEvents(
+        ...call(0, "call_0", "list_themes"),
+        ...call(1, "call_1", "list_starters"),
+        ...call(2, "call_2", "list_chunks"),
+        deltaChunk({
+          role: "assistant",
+          tool_calls: [{ index: 3, id: "call_3", type: "function", function: { name: "webmcp_call", arguments: "" } }],
+        }),
+        deltaChunk({ tool_calls: [{ index: 3, function: { arguments: truncated } }] }),
+        deltaChunk({}, "tool_calls"),
+        usageChunk({ prompt_tokens: 409, completion_tokens: 520, total_tokens: 929 }),
+      )
+      const input = LLM.updateRequest(request, {
+        tools: [{ name: "webmcp_call", description: "Call a site tool", inputSchema: { type: "object" } }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(input).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter((event) => event.type === "tool-call")).toMatchObject([
+        { id: "call_0", name: "webmcp_call", input: { site: "https://origami.gratis/folio/", tool: "list_themes" } },
+        { id: "call_1", name: "webmcp_call", input: { site: "https://origami.gratis/folio/", tool: "list_starters" } },
+        { id: "call_2", name: "webmcp_call", input: { site: "https://origami.gratis/folio/", tool: "list_chunks" } },
+        {
+          id: "call_3",
+          name: "webmcp_call",
+          input: truncated,
+          invalid: true,
+          error: "Invalid JSON input for openai-chat tool call webmcp_call",
+        },
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "tool-calls" })
+      expect(events.filter((event) => event.type === "provider-error")).toEqual([])
+    }),
+  )
+
+  it.effect("finalizes a streamed tool call as soon as its arguments parse, finish reason or not", () =>
+    Effect.gen(function* () {
+      // The same timing as @ai-sdk/openai-compatible: a consumer that ran the
+      // announced call before the stream died must be able to tell, so the
+      // call cannot wait for a finish reason that never comes.
       const body = sseEvents(
         deltaChunk({
           role: "assistant",
@@ -603,16 +692,54 @@ describe("OpenAI Chat route", () => {
       const events = Array.from(
         yield* LLMClient.stream(input).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
       )
-      const error = yield* LLMClient.generate(input).pipe(Effect.provide(fixedResponse(body)), Effect.flip)
+      const response = yield* LLMClient.generate(input).pipe(Effect.provide(fixedResponse(body)))
 
-      expect(events).toEqual([
+      expect(events.slice(0, 6)).toEqual([
         { type: "step-start", index: 0 },
         { type: "tool-input-start", id: "call_1", name: "lookup", providerMetadata: undefined },
         { type: "tool-input-delta", id: "call_1", name: "lookup", text: '{"query"' },
         { type: "tool-input-delta", id: "call_1", name: "lookup", text: ':"weather"}' },
+        { type: "tool-input-end", id: "call_1", name: "lookup", providerMetadata: undefined },
+        {
+          type: "tool-call",
+          id: "call_1",
+          name: "lookup",
+          input: { query: "weather" },
+          providerExecuted: undefined,
+          providerMetadata: undefined,
+          invalid: undefined,
+          error: undefined,
+        },
       ])
+      // ...and the turn STILL ends. A body that stops without a `finish_reason`
+      // used to leave the stream with no terminal event at all, so the consumer's
+      // assistant message never completed. `@ai-sdk/openai-compatible` finishes
+      // every flush with reason "unknown", and the engine has a documented
+      // recovery for exactly that value (`session/processor.ts` does not mark an
+      // "unknown" finish terminal; `session/prompt.ts` continues the turn), which
+      // the native path could not reach while it emitted nothing.
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "unknown" })
+      expect(response.finishReason).toBe("unknown")
+    }),
+  )
+
+  it.effect("does not finalize a streamed tool call whose arguments are still incomplete", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        deltaChunk({
+          role: "assistant",
+          tool_calls: [{ index: 0, id: "call_1", function: { name: "lookup", arguments: '{"query"' } }],
+        }),
+        deltaChunk({ tool_calls: [{ index: 0, function: { arguments: ':"wea' } }] }),
+      )
+      const input = LLM.updateRequest(request, {
+        tools: [{ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }],
+      })
+      const events = Array.from(
+        yield* LLMClient.stream(input).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
       expect(events.filter(LLMEvent.is.toolCall)).toEqual([])
-      expect(error.message).toContain("Provider stream ended without a terminal finish event")
+      expect(events.filter(LLMEvent.is.toolInputDelta)).toHaveLength(2)
     }),
   )
 
@@ -622,6 +749,365 @@ describe("OpenAI Chat route", () => {
       const error = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)), Effect.flip)
 
       expect(error.message).toContain("Invalid openai/openai-chat stream event")
+    }),
+  )
+
+  // ---------------------------------------------------------------------------
+  // In-band provider errors and index-less tool deltas
+  //
+  // Both conditions are OpenAI-Chat-WIRE facts, not OpenAI-endpoint ones:
+  // OpenRouter reports every post-header failure inside the 200 body, and some
+  // OpenAI-compatible servers omit `tool_calls[].index`. The fixtures below
+  // quote the documented shapes; sources are in the lane report.
+  // ---------------------------------------------------------------------------
+
+  it.effect("reports a BARE in-band error frame instead of failing the stream", () =>
+    Effect.gen(function* () {
+      // OpenRouter, https://openrouter.ai/docs/api-reference/errors:
+      //   type ErrorResponse = { error: { code: number; message: string;
+      //                                   metadata?: Record<string, unknown> } }
+      // Rate limits, provider outages, moderation and credit exhaustion all
+      // arrive this way once the headers are out, with the status still 200.
+      const body = sseEvents(deltaChunk({ role: "assistant", content: "Thinking" }), {
+        error: {
+          code: 429,
+          message: "Rate limit exceeded: free-models-per-day",
+          metadata: { error_type: "rate_limit", provider_code: "novita" },
+        },
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      // The prose that DID arrive is kept, the provider's own sentence is
+      // reported, and the stream still names how it ended.
+      expect(events.filter(LLMEvent.is.textDelta).map((event) => event.text)).toEqual(["Thinking"])
+      expect(events.filter(LLMEvent.is.providerError)).toEqual([
+        {
+          type: "provider-error",
+          message: "Rate limit exceeded: free-models-per-day",
+          classification: undefined,
+          retryable: undefined,
+          providerMetadata: {
+            openai: {
+              code: 429,
+              message: "Rate limit exceeded: free-models-per-day",
+              metadata: { error_type: "rate_limit", provider_code: "novita" },
+            },
+          },
+        },
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "error" })
+    }),
+  )
+
+  it.effect("reports an in-band error frame that ALSO carries choices", () =>
+    Effect.gen(function* () {
+      // OpenRouter's documented mid-stream shape
+      // (https://openrouter.ai/docs/api-reference/streaming): the error sits at
+      // the TOP LEVEL beside the ordinary chunk fields, so a decoder that only
+      // looks at `choices` reads the frame as a normal empty delta and throws
+      // the failure away.
+      const body = sseEvents(deltaChunk({ role: "assistant", content: "half a th" }), {
+        id: "cmpl-abc123",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "openai/gpt-4o",
+        provider: "openai",
+        error: { code: "server_error", message: "Provider disconnected unexpectedly" },
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError).map((event) => event.message)).toEqual([
+        "Provider disconnected unexpectedly",
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "error" })
+    }),
+  )
+
+  it.effect("reports an in-band error whose payload is a BARE SENTENCE, not an object", () =>
+    Effect.gen(function* () {
+      // Several OpenAI-compatible servers, and proxies in front of them, send
+      // `{"error": "..."}` with a string rather than the documented object. The
+      // engine's own stream-drop classifier already reads that shape
+      // (`session/stream-drop.ts` `frameMessage`: `typeof error === "string"`),
+      // but the schema did not, so the frame lost the error member of the union.
+      // With `choices` beside it — as here — it then decoded as an ordinary
+      // empty delta and the failure was discarded in SILENCE, which is the
+      // dangerous half: with no `choices` it at least failed loudly.
+      const body = sseEvents(deltaChunk({ role: "assistant", content: "half a th" }), {
+        id: "cmpl-string-error",
+        object: "chat.completion.chunk",
+        error: "Upstream is overloaded, try again",
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError).map((event) => event.message)).toEqual([
+        "Upstream is overloaded, try again",
+      ])
+      // The prose that arrived before the failure is still delivered.
+      expect(
+        events
+          .filter(LLMEvent.is.textDelta)
+          .map((event) => event.text)
+          .join(""),
+      ).toBe("half a th")
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "error" })
+    }),
+  )
+
+  it.effect("keeps the whole payload when the provider's sentence is the word ERROR (t-h8s3xg)", () =>
+    Effect.gen(function* () {
+      // What `openrouter / stealth/union-alpha` recorded on three sessions:
+      // the provider's whole report, about 45 s into a stream, was the word
+      // ERROR. No cassette under test/fixtures/recordings has one - this is a
+      // synthetic frame in the documented shape, and union-alpha is a paid
+      // lane that is not worth a recording run.
+      //
+      // The PROTOCOL's job here is only to keep it whole: the sentence stays
+      // bare (the engine's stream-drop classifier reads these words) and the
+      // payload rides on `providerMetadata`, which is what
+      // `session/provider-error-frame.ts` then has to work with.
+      const body = sseEvents(deltaChunk({ role: "assistant", content: "working" }), {
+        id: "cmpl-union-alpha",
+        object: "chat.completion.chunk",
+        error: { message: "ERROR", type: "ERROR", code: 500 },
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError)).toEqual([
+        {
+          type: "provider-error",
+          message: "ERROR",
+          classification: undefined,
+          retryable: undefined,
+          providerMetadata: { openai: { message: "ERROR", type: "ERROR", code: 500 } },
+        },
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "error" })
+    }),
+  )
+
+  it.effect("an error frame with NO message at all still carries its type (t-h8s3xg)", () =>
+    Effect.gen(function* () {
+      // The same fault, one field thinner: the provider named a type and wrote
+      // no sentence. `providerErrorMessage` falls back to the type, so the
+      // engine reads `ERROR` again - and the payload is still whole.
+      const body = sseEvents({
+        id: "cmpl-union-alpha-2",
+        object: "chat.completion.chunk",
+        error: { type: "ERROR" },
+        choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError).map((event) => event.message)).toEqual(["ERROR"])
+      expect(events.filter(LLMEvent.is.providerError).map((event) => event.providerMetadata)).toEqual([
+        { openai: { type: "ERROR" } },
+      ])
+    }),
+  )
+
+  it.effect("a chunk carrying `error: null` is an ordinary chunk, not a failure", () =>
+    Effect.gen(function* () {
+      // The false-positive guard on the tolerance above. Providers that include
+      // the key on EVERY chunk are common; reading those as failures would turn
+      // every turn into an error card.
+      const body = sseEvents(
+        { error: null, choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] },
+        { error: null, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      )
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError)).toEqual([])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "stop" })
+    }),
+  )
+
+  it.effect('a chunk carrying `error: ""` is an ordinary chunk, not a failure', () =>
+    Effect.gen(function* () {
+      // The same guard for the string member: an empty sentence names nothing,
+      // so there is no report to make.
+      const body = sseEvents(
+        { error: "", choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }] },
+        { error: "", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      )
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError)).toEqual([])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "stop" })
+    }),
+  )
+
+  it.effect('a body that never sends a finish_reason still ends the turn, with reason "unknown"', () =>
+    Effect.gen(function* () {
+      // A gateway that cuts at the response boundary, or a server that omits the
+      // final choice, ends the body cleanly with no `finish_reason` anywhere.
+      // The stream used to end with NO terminal event and NO `text-end`, so the
+      // consumer's block never closed. `@ai-sdk/openai-compatible` finishes at
+      // its flush with "unknown", and the engine has a documented recovery for
+      // that exact value (`session/processor.ts` does not mark it terminal).
+      const body = sseEvents(deltaChunk({ role: "assistant", content: "half an ans" }))
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.map((event) => event.type)).toEqual([
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "step-finish",
+        "finish",
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "unknown" })
+    }),
+  )
+
+  it.effect("a multi-byte rune split across two transport chunks arrives whole", () =>
+    Effect.gen(function* () {
+      // The SSE body is sliced every 7 bytes, which lands inside the 2-, 3- and
+      // 4-byte sequences below. A per-chunk (non-streaming) UTF-8 decode would
+      // turn each cut rune into U+FFFD and corrupt the answer silently.
+      const text = "héllo 🌍 日本語 — ok"
+      const bytes = new TextEncoder().encode(sseEvents(deltaChunk({ content: text }), deltaChunk({}, "stop")))
+      const chunked = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.slice(i, i + 7))
+          controller.close()
+        },
+      })
+
+      const response = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(chunked)))
+
+      expect(response.text).toBe(text)
+      expect(response.text).not.toContain("�")
+    }),
+  )
+
+  it.effect("classifies an in-band context-length error as context-overflow", () =>
+    Effect.gen(function* () {
+      const body = sseEvents({
+        error: { code: 400, message: "This model's maximum context length is 128000 tokens." },
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.providerError)).toMatchObject([{ classification: "context-overflow" }])
+    }),
+  )
+
+  it.effect("still fails the stream for a chunk that is neither a choice chunk nor an error", () =>
+    Effect.gen(function* () {
+      // The BOUNDARY of the tolerance above: only an `error` frame is read as a
+      // report. Any other chunk that fails the event schema still kills the
+      // stream, because an unreadable chunk may have carried content and
+      // skipping it would lose that without saying so.
+      const body = sseEvents({ id: "chatcmpl_fixture", object: "chat.completion.chunk" })
+      const error = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)), Effect.flip)
+
+      expect(error.message).toContain("Invalid openai/openai-chat stream event")
+    }),
+  )
+
+  it.effect("still fails the stream for a chunk whose choices are malformed", () =>
+    Effect.gen(function* () {
+      const body = sseEvents({ id: "chatcmpl_fixture", choices: "not-an-array" })
+      const error = yield* LLMClient.generate(request).pipe(Effect.provide(fixedResponse(body)), Effect.flip)
+
+      expect(error.message).toContain("Invalid openai/openai-chat stream event")
+    }),
+  )
+
+  it.effect("starts a FRESH call for a tool delta that carries no index", () =>
+    Effect.gen(function* () {
+      // `@ai-sdk/openai-compatible` types the field `z.number().nullish()` with
+      // the comment "google does not send index", and resolves it as
+      // `toolCallDelta.index ?? toolCalls.length`. Two index-less calls must
+      // therefore land on two DIFFERENT slots instead of merging into one.
+      const call = (id: string, query: string) => ({
+        id: "chatcmpl_fixture",
+        choices: [
+          {
+            delta: {
+              role: "assistant",
+              tool_calls: [{ id, function: { name: "lookup", arguments: JSON.stringify({ query }) } }],
+            },
+            finish_reason: null,
+          },
+        ],
+      })
+      const body = sseEvents(call("call_a", "weather"), call("call_b", "tides"), deltaChunk({}, "tool_calls"))
+      const input = LLM.updateRequest(request, {
+        tools: [{ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(input).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.toolCall)).toMatchObject([
+        { id: "call_a", name: "lookup", input: { query: "weather" } },
+        { id: "call_b", name: "lookup", input: { query: "tides" } },
+      ])
+      expect(events.at(-1)).toMatchObject({ type: "finish", reason: "tool-calls" })
+    }),
+  )
+
+  it.effect("keeps two calls apart when the provider DOES send indexes", () =>
+    Effect.gen(function* () {
+      // The guard on that fallback: a provided index always wins, so the second
+      // call's argument deltas can never be appended onto the first.
+      const body = sseEvents(
+        deltaChunk({
+          role: "assistant",
+          tool_calls: [{ index: 0, id: "call_a", function: { name: "lookup", arguments: '{"query"' } }],
+        }),
+        deltaChunk({
+          role: "assistant",
+          tool_calls: [{ index: 1, id: "call_b", function: { name: "lookup", arguments: '{"query"' } }],
+        }),
+        deltaChunk({ tool_calls: [{ index: 0, function: { arguments: ':"weather"}' } }] }),
+        deltaChunk({ tool_calls: [{ index: 1, function: { arguments: ':"tides"}' } }] }),
+        deltaChunk({}, "tool_calls"),
+      )
+      const input = LLM.updateRequest(request, {
+        tools: [{ name: "lookup", description: "Lookup data", inputSchema: { type: "object" } }],
+      })
+
+      const events = Array.from(
+        yield* LLMClient.stream(input).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+
+      expect(events.filter(LLMEvent.is.toolCall)).toMatchObject([
+        { id: "call_a", name: "lookup", input: { query: "weather" } },
+        { id: "call_b", name: "lookup", input: { query: "tides" } },
+      ])
     }),
   )
 

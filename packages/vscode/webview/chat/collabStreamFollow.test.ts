@@ -179,6 +179,57 @@ describe('collabStreamFollow — coming back re-arms it', () => {
     expect(el.scrollTop).toBe(100);
   });
 
+  it('re-arms on a scroll back to the bottom the user SAW, even after growth beat the event', () => {
+    // THE GROWTH RACE. `scroll` is queued to the next rendering opportunity, so
+    // a message can land between the drag and its event. Measured against the
+    // new bottom the user reads as 400px up; against the one they were looking
+    // at, they are exactly on it.
+    const follow = makeStreamFollow(now);
+    follow.bind(el);
+    follow.onScroll();          // at the bottom, 1000/400 — what they SAW
+
+    el.scrollTop = 100;
+    follow.onScroll();          // reading back: the follow is off
+
+    el.scrollTop = 600;         // back on the bottom as it was DRAWN
+    grow(el, 1400);             // a message lands before the queued event runs
+    follow.onScroll();
+
+    grow(el, 1800);
+    follow.follow();
+    expect(el.scrollTop).toBe(1800);
+  });
+
+  it('an upward wheel on a stream too short to scroll never freezes the follow', () => {
+    // THE DEAD WHEEL LATCH. Nothing to scroll means no `scroll` event to re-arm
+    // on, so the latch would stay off for the rest of the room's life — the
+    // moment the transcript outgrows the pane is the moment it stops following.
+    const follow = makeStreamFollow(now);
+    const short = scroller(300, 400, 0);
+    follow.bind(short);
+
+    follow.onWheel(-20);
+
+    grow(short, 1400);
+    follow.follow();
+    expect(short.scrollTop).toBe(1400);
+  });
+
+  it('a reader parked above the bottom they last saw stays parked as it grows', () => {
+    // The other edge of the re-arm: NEAR the seen bottom is not ON it.
+    const follow = makeStreamFollow(now);
+    follow.bind(el);
+    follow.onScroll();
+    el.scrollTop = 400;         // 200px above the bottom they saw
+    follow.onScroll();
+
+    for (const h of [1400, 1600, 1800]) {
+      grow(el, h);
+      follow.follow();
+      expect(el.scrollTop).toBe(400);
+    }
+  });
+
   it('an AGENT message never re-arms a follow the user turned off', () => {
     const follow = makeStreamFollow(now);
     follow.bind(el);
@@ -188,5 +239,46 @@ describe('collabStreamFollow — coming back re-arms it', () => {
     grow(el, 1400);
     follow.follow(9, false);
     expect(el.scrollTop).toBe(100);
+  });
+});
+
+// t-v47ytt. The chat's stale-record defect, on this surface: the record of what the reader SAW was
+// written only by scroll events, so our own follow's event, landing a frame late after the next
+// message grew the stream, read as the reader leaving. The scroller below clamps like a browser.
+describe('collabStreamFollow — our own follow is never read as the reader leaving (t-v47ytt)', () => {
+  function clamped(height: number, client: number, top: number): HTMLDivElement {
+    const node = document.createElement('div');
+    let h = height, t = top;
+    Object.defineProperty(node, 'clientHeight', { get: () => client, configurable: true });
+    Object.defineProperty(node, 'scrollHeight', { get: () => h, set: (v: number) => { h = v; }, configurable: true });
+    Object.defineProperty(node, 'scrollTop', { get: () => t, set: (v: number) => { t = Math.max(0, Math.min(v, h - client)); }, configurable: true });
+    return node;
+  }
+  const rise = (node: HTMLDivElement, h: number) => { (node as unknown as { scrollHeight: number }).scrollHeight = h; };
+
+  it('the scroll event for our own move, landing after the next message, keeps the follow', () => {
+    const follow = makeStreamFollow(now);
+    const box = clamped(1000, 400, 0);   // a fresh room: no scroll event seen yet
+    follow.bind(box);
+    follow.follow();                     // our move: 0 -> 600
+    rise(box, 1200);                     // the next message lands before that move's event
+    follow.onScroll();                   // the event for OUR move
+    rise(box, 1400);
+    follow.follow();
+    expect(box.scrollTop).toBe(1000);
+  });
+
+  it('an upward wheel that scrolls a box inside the stream does not release the follow', () => {
+    const follow = makeStreamFollow(now);
+    const box = clamped(1000, 400, 600);
+    const inner = document.createElement('pre');
+    box.appendChild(inner);
+    follow.bind(box);
+    follow.onScroll();
+    inner.scrollTop = 300;               // the inner box can still scroll up, so it takes the wheel
+    follow.onWheel(-100, inner);
+    rise(box, 1200);
+    follow.follow();
+    expect(box.scrollTop).toBe(800);
   });
 });

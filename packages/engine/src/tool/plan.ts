@@ -13,10 +13,10 @@ import EXIT_DESCRIPTION from "./plan-exit.txt"
 export const Parameters = Schema.Struct({})
 
 /**
- * The two planning agents this tool ends a turn for. `plan` delivers ONE file
- * and approval means "now build it"; `deep-plan` delivers a FOLDER and approval
- * means "handed over" - the user approved a piece of research, not a start
- * order. Everything below that differs between them differs for that reason.
+ * The two planning agents this tool ends a turn for. `plan` delivers one file
+ * and approval means "now build it"; `deep-plan` delivers a folder and approval
+ * means "handed over" — the user approved research, not a start order.
+ * Everything that differs between them differs for that reason.
  */
 const PLANNING_AGENTS = ["plan", "deep-plan"] as const
 
@@ -36,10 +36,9 @@ export const PlanExitTool = Tool.define(
       parameters: Parameters,
       execute: (_params: {}, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          // plan_exit only means something in a planning mode. If the model
-          // calls it from another agent (e.g. build, out of habit after a
-          // plan→build switch), there's no plan to exit — return a gentle note
-          // instead of asking a confusing "switch to build?" question or erroring.
+          // plan_exit only means something in a planning mode. Called from
+          // another agent there is no plan to exit, so return a note instead of
+          // asking a confusing "switch to build?" question or erroring.
           if (!planningAgent(ctx.agent)) {
             return {
               title: "Not in plan mode",
@@ -112,14 +111,11 @@ export const PlanExitTool = Tool.define(
             agent: "build",
             model,
           }
-          // The synthetic build message below only lands in the LEGACY message
+          // The synthetic build message below only lands in the legacy message
           // table, while the permission ruleset resolves from the session's
-          // persisted agent (SessionTable.agent) — which plan_exit never moved,
-          // so after approval the plan agent's edit:deny ruleset stayed active
-          // for the rest of the turn (edits denied, toggle stuck on plan).
-          // setAgentModel is THE single durable agent/model write path (same one
-          // createUserMessage uses on a normal mode switch): flip to build so the
-          // next step runs with build permissions.
+          // persisted agent (SessionTable.agent). Without this the plan agent's
+          // edit:deny ruleset stays active for the rest of the turn.
+          // setAgentModel is the single durable agent/model write path.
           yield* session.setAgentModel({
             sessionID: ctx.sessionID,
             agent: "build",
@@ -131,11 +127,9 @@ export const PlanExitTool = Tool.define(
             time: Date.now(),
           })
           yield* session.updateMessage(msg)
-          // THE ONE LINE THAT MAKES DEEP PLAN A DIFFERENT PRODUCT. Plan mode's
-          // approval is a start order; deep plan's is a HANDOVER. The user
-          // approved a researched, critiqued plan as a deliverable, and reading
-          // that as "begin" would start a large piece of work nobody asked for
-          // — which is precisely the outcome deep plan exists to prevent.
+          // Plan mode's approval is a start order; deep plan's is a handover.
+          // The user approved a researched plan as a deliverable, and reading
+          // that as "begin" would start work nobody asked for.
           yield* session.updatePart({
             id: PartID.ascending(),
             messageID: msg.id,

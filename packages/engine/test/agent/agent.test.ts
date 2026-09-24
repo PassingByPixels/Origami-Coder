@@ -178,13 +178,40 @@ it.instance(
   },
 )
 
-it.instance("general agent denies todo tools", () =>
+// t-f39xs2. `allow`, not silence: subagent-permissions.ts denies todowrite to
+// any child whose own ruleset does not NAME the tool, so an archetype that
+// merely dropped the old deny would still spawn without a todo list.
+it.instance("general agent owns todowrite so a spawned child keeps it", () =>
   Effect.gen(function* () {
     const general = yield* load((svc) => svc.get("general"))
     expect(general).toBeDefined()
     expect(general?.mode).toBe("subagent")
     expect(general?.hidden).toBeUndefined()
-    expect(evalPerm(general, "todowrite")).toBe("deny")
+    expect(evalPerm(general, "todowrite")).toBe("allow")
+  }),
+)
+
+// The archetypes' OWN deferral defaults, so the Sub-agents ledger is right with
+// no config file anywhere. Asserted as the exact lists, because the extension
+// half mirrors them in the archetype frontmatter.
+it.instance("native subagents carry their default deferred lists", () =>
+  Effect.gen(function* () {
+    const general = yield* load((svc) => svc.get("general"))
+    expect(general?.tool_search?.defer).toEqual([
+      "webfetch",
+      "websearch",
+      "session_search",
+      "browser",
+      "board_*",
+      "webmcp_*",
+      "screenshot",
+    ])
+    expect(general?.tool_search?.always).toBeUndefined()
+    const explore = yield* load((svc) => svc.get("explore"))
+    expect(explore?.tool_search?.defer).toEqual(["skill", "webfetch", "websearch", "session_search", "screenshot"])
+    // An archetype that ships no list still reads as "nothing of its own".
+    const build = yield* load((svc) => svc.get("build"))
+    expect(build?.tool_search).toBeUndefined()
   }),
 )
 

@@ -38,7 +38,9 @@ async function mountWithRunningSubagent(container: () => HTMLElement) {
   await tick();
   const head = container().querySelector('.sa-head') as HTMLElement | null;
   expect(head, 'the drawer must render for a sub-agent that is still out').not.toBeNull();
-  await fireEvent.click(head!);
+  // t-ru13hb item 3: a running row unfolds the list on its own, so clicking
+  // regardless would fold it away again.
+  if (!container().querySelector('.sa-groups')) await fireEvent.click(head!);
   await tick();
 }
 
@@ -89,5 +91,32 @@ describe('sub-agent drawer — the age is live, not a snapshot', () => {
     // no age left to age, and an interval per historical fan-out is a leak.
     expect(c().querySelector('.sa-head'), 'the drawer stays for the Complete group').not.toBeNull();
     expect(clearSpy).toHaveBeenCalled();
+  });
+  // t-h8gv8w, REVERSING t-fiszlv R8's idle sweep. The owner's call: "it's good
+  // to have a history of sub-agents that ran, and they are hidden in collapsed
+  // COMPLETE anyway." A finished row is a record, and the only thing allowed to
+  // remove it is the owner's own × on that row.
+  it('KEEPS a long-settled row in an idle chat, however far past the old retire age', async () => {
+    vi.useFakeTimers();
+    const { container } = render(ChatPane, { props: {} });
+    const c = () => container as HTMLElement;
+    await mountWithRunningSubagent(c);
+
+    // The ceiling the old sweep read, and a child that comes home timed — the
+    // exact pair that used to retire the row one slow tick later.
+    post({ type: 'subagentLimitData', hours: 1 });
+    post({ type: 'subagentDone', sessionId: SESSION, taskSessionId: CHILD, state: 'completed', endedAt: Date.now() });
+    await tick();
+    expect(c().querySelector('.sa-head'), 'the settled row keeps the drawer up').not.toBeNull();
+
+    // Well past the old retire age, plus the old 60 s sweep tick on top.
+    vi.advanceTimersByTime(3_600_000 * 4 + 60_000);
+    await tick();
+    expect(c().querySelector('.sa-head'), 'the drawer still holds its history').not.toBeNull();
+    // And the row itself is still listed under COMPLETE, not merely the panel.
+    // The list is already open (the mount helper opened it); the COMPLETE band
+    // ships shut inside it, so open that.
+    await fireEvent.click(c().querySelector('.sa-group-fold') as HTMLElement);
+    expect(c().querySelectorAll('.sa-row')).toHaveLength(1);
   });
 });

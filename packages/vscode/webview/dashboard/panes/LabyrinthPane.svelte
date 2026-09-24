@@ -1,15 +1,10 @@
 <script lang="ts">
-  // Labyrinth — review any PAST run as a map of its steps. Three panels: the
-  // run index (reusing the SAME requestHistory/historyList wire the chat
-  // history dropdown uses — there is deliberately no second session lister),
-  // the map in one of three layouts, and an inspector for the picked step.
+  // Labyrinth: review a past run as a map of its steps. Three panels: run
+  // index, map (one of three layouts), and inspector for the picked step.
   //
-  // Honesty rules this pane exists to keep:
-  //  - `run_steps` CAPS the list (MAX_STEPS = 500). A truncated run says so;
-  //    drawing a prefix as if it were the whole run is the worst thing this
-  //    view could do.
-  //  - no-run-selected / empty-run / failed-to-load are three DIFFERENT
-  //    states, never one spinner that quietly never resolves.
+  // `run_steps` caps the list (MAX_STEPS = 500); a truncated run says so.
+  // No-run-selected, empty-run and failed-to-load are three different
+  // states, never one spinner that never resolves.
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import LabyrinthMapCanvas from '../components/LabyrinthMapCanvas.svelte';
   import LabyrinthMapToolbar from '../components/LabyrinthMapToolbar.svelte';
@@ -22,64 +17,68 @@
   import { modelsUsed, type PriceTable } from '../components/labyrinthCost';
   import type { RunStatRow } from '../components/labyrinthHealth';
   import { mapNotice } from '../components/labyrinthNotice';
-  import type { CollabRow } from '../components/labyrinthCollabIndex';
   import { runCwd, stepsRequest, type NavPoint } from '../components/labyrinthNav';
   import type { HighlightTarget } from '../components/labyrinthHighlight';
   import LabyrinthDivider from '../components/LabyrinthDivider.svelte';
   import { MIN_INDEX_WIDTH, DEFAULT_INDEX_WIDTH } from '../components/labyrinthColumns';
+  import LabyrinthGlidepathSection from '../components/LabyrinthGlidepathSection.svelte';
+  import { applyLabyrinthMessage } from '../components/labyrinthPaneMessages';
+  import { claudeRunStats, engineStatIds, isClaudeRunId, visibleRunRows, type ClaudeIndexRow } from '../components/labyrinthClaudeRuns';
+  import { claudeShownIn, withClaudeShown } from '../../chat/historyKinds';
 
   const vscode = getVsCodeApi();
 
-  // `CollabRow` IS the `historyList` row DashboardPanel posts — one declaration,
-  // shared with the index that renders it. `cwd` is the run's own full directory
-  // (`folder` is only its basename): a listed run need not belong to the active
-  // workspace, so it must be sent back with the step request.
-  let runs: CollabRow[] = $state([]);
+  let mapHidden = $state(false);
+
+  // `ClaudeIndexRow` is DashboardPanel's `historyList` row. `cwd` is the
+  // run's full directory (`folder` is only its basename); it must be sent
+  // back with the step request since a listed run may not be the active workspace.
+  let runs: ClaudeIndexRow[] = $state([]);
+  // Claude Code's own transcripts are listed here too, behind the History popup's own switch.
+  let showClaude = $state(claudeShownIn(vscode.getState()));
   let runsLoaded = $state(false);
-  // Per-run counts for the LISTED page, keyed by session id. Asked for once per
-  // index load, never per row: each id costs the engine a whole message read.
+  // Per-run counts for the listed page, asked once per index load, not per row.
   let stats: Record<string, RunStatRow> = $state({});
   let selectedRun: string | null = $state(null);
   let mode: MapMode = $state('thread');
-  // The mockup's thresholdsOnly filter (50-surfaces.js:389). This engine emits
-  // no permission/redaction step, so a "threshold" here is exactly a failure —
-  // see isThreshold in labyrinthLanes.ts.
+  // No permission/redaction step exists in this engine, so a "threshold"
+  // here is exactly a failure — see isThreshold in labyrinthLanes.ts.
   let thresholdsOnly = $state(false);
 
   let steps: LayoutStep[] = $state([]);
   let truncated = $state(false);
   let total = $state(0);
   let stepsError: string | null = $state(null);
+  let deleteError: string | null = $state(null); // why the last delete did not happen; stepsError is the MAP's, this is the index's
   let stepsLoading = $state(false);
   let selectedStep: LayoutStep | null = $state(null);
   let members: string[] = $state([]); // agent slugs in lane order; collab maps ONLY
 
-  // The canvas MEASURES itself (LabyrinthMapCanvas.svelte); the element is bound
-  // back here only because the export reads the rendered SVG out of it.
+  // The canvas measures itself; bound here only so export can read its rendered SVG.
   let canvasEl: HTMLElement | undefined = $state();
   let fit = $state(false);
 
-  // t-q41pe0 — the two column dividers. null = default CSS width (nothing
-  // dragged yet, or the host has nothing persisted); host round-trip mirrors
-  // the sidebar's collabsHeight (t-kgserq).
+  // The two column dividers. null = default width; the host persists it like the sidebar's width.
   let indexWidth: number | null = $state(null);
   let inspectWidth: number | null = $state(null);
   // Collapsed is its OWN flag, never a width of 0 — the host coerces a
   // non-positive width away, so 0 would ERASE the width dragged to (see there).
   let inspectCollapsed = $state(false);
-  // The user's OWN $/Mtok table, host-persisted like the column widths above.
-  // Empty until they type something — there is no bundled price list.
+  // The user's own $/Mtok table, host-persisted like the column widths above.
   let prices: PriceTable = $state({});
   let pricesOpen = $state(false);
   let paneEl: HTMLDivElement | undefined = $state();
-  // The trail back out of a click-through (empty on a run picked from the index
-  // — nowhere to go back to), the step to re-open when a rung of it is walked,
-  // and which spend chip the pointer is on.
+  // The trail back out of a click-through, the reopen step from a rung walk, and the hovered chip.
   let nav: NavPoint[] = $state([]);
   let restoreOrdinal: number | null = null;
   let highlight: HighlightTarget | null = $state(null);
   function commitColumn(patch: Record<string, unknown>): void { vscode.postMessage({ type: 'resizeLabyrinthColumn', ...patch }); }
 
+  let indexRuns = $derived(visibleRunRows(runs, showClaude));
+  // The FLIGHT view's cache panel reads this to pick its loss text: a Claude
+  // Code transcript never carries an engine cause, so it is never the legacy guess.
+  let claudeRun = $derived(isClaudeRunId(selectedRun));
+  let indexStats = $derived({ ...claudeRunStats(runs), ...stats }); // a Claude row's counts come off the row the scan already measured — the engine has never heard of the session
   let visible = $derived(thresholdsOnly ? steps.filter(isThreshold) : steps);
   // Thread and flight both position by clock. When the run's clock cannot carry
   // that, the map SAYS so rather than implying a timing it does not have.
@@ -97,9 +96,8 @@
 
   function refreshRuns(): void { runsLoaded = false; vscode.postMessage({ type: 'requestHistory' }); }
 
-  /** `cwdOverride` is for a run the INDEX does not list — a delegated child
-   *  session, opened from a spend chip. Without its parent's directory the
-   *  engine resolves the id against its own process cwd and returns nothing. */
+  /** `cwdOverride` is for a run the index does not list (a delegated child
+   *  session opened from a spend chip); without it the engine can't resolve the id. */
   function selectRun(id: string, cwdOverride?: string): void {
     selectedRun = id;
     selectedStep = null; highlight = null;
@@ -111,10 +109,9 @@
     vscode.postMessage(stepsRequest(id, cwdOverride ?? runCwd(runs, id)));
   }
 
-  /** Open a DELEGATED run: it is a sub-agent's own session, so it is not in the
-   *  index and inherits the directory of whatever is open — a run, or a COLLAB,
-   *  whose members are the only rows carrying one. The run being LEFT goes on
-   *  the trail, with the step that was open in it, so Back restores the view. */
+  /** Opens a delegated run: a sub-agent's own session, not in the index, so
+   *  it inherits the open run's (or collab's) directory. The run being left
+   *  goes on the trail with its open step, so Back restores the view. */
   function openDelegated(id: string): void {
     const cwd = runCwd(runs, selectedRun ?? '');
     nav = [...nav, { sessionId: selectedRun ?? '', cwd, ordinal: selectedStep?.ordinal ?? null }];
@@ -132,38 +129,22 @@
 
   function savePrices(next: PriceTable): void { prices = next; vscode.postMessage({ type: 'saveLabyrinthPrices', prices: next }); }
 
-  window.addEventListener('message', (event: MessageEvent) => {
-    const msg = event.data || {};
-    if (msg.type === 'historyList') {
-      runs = Array.isArray(msg.sessions) ? msg.sessions : [];
-      runsLoaded = true;
-      // No cwd: the engine resolves against its own process directory, which is
-      // this workspace. A listed run from ANOTHER workspace then reads as
-      // unmeasurable — a blank cell, which is the honest answer for it.
-      vscode.postMessage({ type: 'requestRunStats', sessionIds: runs.map((r) => r.sessionId) });
-    } else if (msg.type === 'runStatsData') {
-      const rows: RunStatRow[] = Array.isArray(msg.stats) ? msg.stats : [];
-      stats = Object.fromEntries(rows.filter((r) => r?.sessionId).map((r) => [r.sessionId, r]));
-    } else if (msg.type === 'runStepsData') {
-      // Ignore a reply for a run the user has already navigated away from.
-      if (msg.sessionId && msg.sessionId !== selectedRun) return;
-      steps = Array.isArray(msg.steps) ? msg.steps : [];
-      members = Array.isArray(msg.members) ? msg.members : [];
-      truncated = msg.truncated === true;
-      total = typeof msg.total === 'number' ? msg.total : steps.length;
-      stepsError = typeof msg.error === 'string' ? msg.error : null;
-      stepsLoading = false;
+  window.addEventListener('message', (event: MessageEvent) => applyLabyrinthMessage(event.data || {}, {
+    selectedRun: () => selectedRun,
+    // No cwd on the stats request: the engine resolves against its own process directory.
+    runs: (rows) => { runs = rows; runsLoaded = true; vscode.postMessage({ type: 'requestRunStats', sessionIds: engineStatIds(rows) }); },
+    stats: (byId) => (stats = byId),
+    steps: (p) => {
+      steps = p.steps; members = p.members; truncated = p.truncated; total = p.total; stepsError = p.error; stepsLoading = false;
       // Re-open the step the BACK journey came back for; a fresh pick opens none.
-      selectedStep = restoreOrdinal === null ? null : steps.find((s) => s.ordinal === restoreOrdinal) ?? null;
+      selectedStep = restoreOrdinal === null ? null : p.steps.find((x) => x.ordinal === restoreOrdinal) ?? null;
       restoreOrdinal = null;
-    } else if (msg.type === 'labyrinthColumns') {
-      indexWidth = typeof msg.indexWidthPx === 'number' ? msg.indexWidthPx : null;
-      inspectWidth = typeof msg.inspectWidthPx === 'number' ? msg.inspectWidthPx : null;
-      inspectCollapsed = msg.inspectCollapsed === true;
-    } else if (msg.type === 'labyrinthPrices') {
-      prices = msg.prices && typeof msg.prices === 'object' ? msg.prices : {};
-    }
-  });
+    },
+    columns: (p) => { indexWidth = p.indexWidthPx; inspectWidth = p.inspectWidthPx; inspectCollapsed = p.inspectCollapsed; },
+    prices: (table) => (prices = table),
+    // A deleted run is cleared off the MAP too: its steps are gone from the store, so drawing them would show a run that no longer exists.
+    deleted: (p) => { deleteError = p.error; if (p.ok) { if (selectedRun === p.sessionId) { selectedRun = null; selectedStep = null; steps = []; } refreshRuns(); } },
+  }));
 
   // Load the run index on mount, and recall any dragged column widths + prices.
   refreshRuns();
@@ -171,9 +152,11 @@
   vscode.postMessage({ type: 'requestLabyrinthPrices' });
 </script>
 
-<div class="lab-pane" bind:this={paneEl}>
+<div class="lab-shell">
+  <LabyrinthGlidepathSection onView={(v) => (mapHidden = v !== 'labyrinth')} />
+<div class="lab-pane" class:lab-off={mapHidden} bind:this={paneEl}>
   <!-- A run picked from the INDEX spends the trail — a fresh journey, not a step back along the one that led into a delegated run. -->
-  <LabyrinthRunIndex {runs} loaded={runsLoaded} selected={selectedRun} onRefresh={refreshRuns} onSelect={(id) => { nav = []; restoreOrdinal = null; selectRun(id); }} width={indexWidth ?? undefined} {stats} models={modelsUsed(visible)} {prices} {pricesOpen} onPrices={() => (pricesOpen = !pricesOpen)} onSavePrices={savePrices} />
+  <LabyrinthRunIndex runs={indexRuns} loaded={runsLoaded} selected={selectedRun} onRefresh={refreshRuns} onSelect={(id) => { nav = []; restoreOrdinal = null; selectRun(id); }} onDelete={(id) => { deleteError = null; vscode.postMessage({ type: 'labDeleteSession', sessionId: id, cwd: runCwd(runs, id) }); }} {deleteError} width={indexWidth ?? undefined} stats={indexStats} {showClaude} onShowClaude={(on) => { showClaude = on; vscode.setState(withClaudeShown(vscode.getState(), on)); }} models={modelsUsed(visible)} {prices} {pricesOpen} onPrices={() => (pricesOpen = !pricesOpen)} onSavePrices={savePrices} />
   <LabyrinthDivider edge="left" containerEl={paneEl} value={indexWidth} min={MIN_INDEX_WIDTH} defaultPx={DEFAULT_INDEX_WIDTH} label="Resize the run index" onChange={(w) => (indexWidth = w)} onCommit={(w) => commitColumn({ column: 'index', widthPx: w })} />
 
   <div class="lab-map">
@@ -194,7 +177,7 @@
     {:else}
       <LabyrinthNotices {truncated} loaded={steps.length} {total} {notice} />
       <LabyrinthUsageStrip steps={visible} {truncated} {prices} onOpenSession={openDelegated} onHighlight={(t) => (highlight = t)} />
-      <LabyrinthMapCanvas bind:canvasEl steps={visible} {mode} {members} {fit} {highlight} selected={selectedStep?.ordinal ?? null} onSelect={(s) => (selectedStep = s)} />
+      <LabyrinthMapCanvas bind:canvasEl steps={visible} {mode} {members} {fit} {highlight} {claudeRun} selected={selectedStep?.ordinal ?? null} onSelect={(s) => (selectedStep = s)} onHighlight={(t) => (highlight = t)} />
     {/if}
   </div>
 
@@ -203,9 +186,13 @@
       onChange={(w) => (inspectWidth = w)} onCommit={(w) => commitColumn({ column: 'inspect', widthPx: w })} />
   {/if}
 </div>
+</div>
 
 <style>
-  .lab-pane { display: flex; height: 100%; min-height: 0; color: var(--og-text); }
+  .lab-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .lab-pane { display: flex; flex: 1; min-height: 0; color: var(--og-text); }
+  /* HIDDEN, not unmounted — see the template. */
+  .lab-off { display: none; }
   .lab-map { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .lab-empty { color: var(--og-text-muted); font-style: italic; font-size: 12px; padding: 24px 16px; text-align: center; line-height: 1.6; }
   .lab-error { color: var(--og-error); font-size: 12px; padding: 20px 16px; line-height: 1.5; }

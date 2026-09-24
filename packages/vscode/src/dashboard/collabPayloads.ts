@@ -1,12 +1,7 @@
-// The SHAPES a collab host leaf answers a webview in — extracted out of
-// collabData.ts, which sat exactly on its 250-line cap with the `notice` field
-// still to add. Types only: nothing here runs, nothing here imports `vscode`,
-// and collabData.ts re-exports every name so no importer had to move.
-//
-// The rule every payload below follows, and the reason they are worth naming
-// together: a refusal arrives as an `error` FIELD, never as a rejected promise.
-// A caller that forgot to catch would otherwise turn a dead engine into an
-// unhandled rejection somewhere far from the collab that caused it.
+// The shapes a collab host leaf answers a webview in, extracted out of collabData.ts once it
+// reached its line cap. Types only — nothing runs, nothing imports vscode.
+// Rule: a refusal arrives as an `error` FIELD, never a rejected promise, so a caller that forgot to
+// catch does not turn a dead engine into an unhandled rejection.
 import type {
   CollabAgentInfo,
   CollabAgentStatus,
@@ -48,33 +43,23 @@ export interface CollabPostPayload {
 // The M4 board fields ride the SAME reply — optional, absent wholesale on an older engine, so they come off CollabStateResult rather than being re-declared.
 export interface CollabStatePayload extends Pick<CollabStateResult, 'lead' | 'objective' | 'tasks' | 'costTotals' | 'hopState'> {
   collabId: string;
-  /** Echoed back so a webview can tell a FULL snapshot (0) from an increment.
-   *  The host is stateless — it cannot remember what it last sent whom — and
-   *  `post` fans every reply out to EVERY view, so without this echo a pane
-   *  cannot know whether an arriving `messages` array replaces its stream or
-   *  appends to it. */
+  /** Echoed back so a webview can tell a full snapshot (0) from an increment — the host is
+   *  stateless and `post` fans out to every view, so without this a pane can't tell whether
+   *  `messages` replaces its stream or appends. */
   sinceSeq: number;
   collab: CollabSummary | null;
   participants: CollabParticipant[];
   messages: CollabMessage[];
-  /** Wave 1's per-agent retained `activity` rides HERE, on the status itself
-   *  (acpExtTypes: CollabAgentStatus) — collabData passes the array through
-   *  whole rather than mapping it field by field, so a new optional field needs
-   *  no second declaration on this payload. Checked, not assumed. */
+  /** Wave 1's per-agent retained `activity` rides HERE, on the status itself — collabData passes
+   *  the array through whole, so a new optional field needs no second declaration. */
   agents: CollabAgentStatus[];
   suspended: boolean;
   /**
-   * W3-L1: does this room need the USER right now — collabAttention.ts's
-   * `collabNeedsUser` verdict, carried rather than left to each surface.
-   *
-   * It rides the payload because the Collabs overview pane is a WEBVIEW module
-   * and tsconfig.webview.json pins rootDir to `webview/`, so it cannot import a
-   * `src/` leaf. The alternative was a second copy of the rule webview-side, and
-   * two copies of "is this room stuck" is exactly how the tab badge and the
-   * overview row start disagreeing in front of the user.
-   *
-   * Always a boolean, never absent: a refusal answers `false`, so no surface can
-   * read a dead engine as a summons.
+   * W3-L1: does this room need the user right now — collabAttention.ts's `collabNeedsUser` verdict,
+   *  carried on the payload because the Collabs overview pane is a webview module that cannot
+   *  import a src/ leaf.
+   * Always a boolean, never absent: a refusal answers false, so no surface reads a dead engine as a
+   *  summons.
    */
   needsUser: boolean;
   error?: string;

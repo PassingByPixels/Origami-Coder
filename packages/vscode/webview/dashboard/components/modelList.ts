@@ -17,13 +17,23 @@ export const MODEL_CAP = 60;
 export interface ModelRow {
   value: string;
   name: string;
+  /** Whether this model reads images, and who said so — the host's per-row
+   *  answer (`auto-on` | `auto-off` | `on` | `off`). Carried through rather than
+   *  looked up again in the component: this function REBUILDS its rows, so a
+   *  field it does not name is a field the picker silently loses. Absent for
+   *  OpenRouter rows, which come from a live catalogue the host sends no vision
+   *  state for — those draw no chip, which is honest rather than wrong. */
+  visionState?: string;
 }
 
 export interface ModelListInput {
   /** The concrete provider whose models to list ('' = none selected). */
   providerId: string;
-  /** The configured catalogue, `<provider>/<id>` values. */
-  modelOptions: ReadonlyArray<{ value: string; name: string }>;
+  /** The configured catalogue, `<provider>/<id>` values. `selectable: false`
+   *  (claudeSubscription/models.ts's not-ready marker row) keeps a row out of
+   *  this list while still letting offeredProviders.ts build a tab from it —
+   *  the tab exists, but nothing on it can be picked. */
+  modelOptions: ReadonlyArray<{ value: string; name: string; visionState?: string; selectable?: boolean }>;
   /** OpenRouter's live catalogue (bare ids — it is fetched, not configured). */
   openRouterModels: ReadonlyArray<{ id: string; name: string }>;
   filter: string;
@@ -44,8 +54,8 @@ export function visibleModels(input: ModelListInput): ModelRow[] {
     input.providerId === 'openrouter'
       ? input.openRouterModels.map((m) => ({ value: `openrouter/${m.id}`, name: m.name || m.id }))
       : input.modelOptions
-          .filter((o) => o.value.startsWith(input.providerId + '/'))
-          .map((o) => ({ value: o.value, name: o.name }));
+          .filter((o) => o.value.startsWith(input.providerId + '/') && o.selectable !== false)
+          .map((o) => ({ value: o.value, name: o.name, visionState: o.visionState }));
   const q = input.filter.trim().toLowerCase();
   if (q) list = list.filter((m) => m.name.toLowerCase().includes(q) || m.value.toLowerCase().includes(q));
   return promoteLoaded(list, input.loadedValue);

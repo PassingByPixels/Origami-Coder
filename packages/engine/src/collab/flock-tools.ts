@@ -9,17 +9,14 @@ import { CollabSystem } from "./collab-system"
 /**
  * The flock tools: the protocol a collab agent speaks to the rest of the room.
  *
- * They exist ONLY inside a collab turn. `session/prompt.ts` injects them when
- * `CollabSystem.Turn` is present on the fiber and never otherwise, so an
- * ordinary chat sees no new tool, no registry entry and no schema lookup.
- * Everything they need - the room, the board, the child sessions, the hop
- * budget - arrives on that same turn context as plain closures, which is why
- * this file imports neither the runner nor the prompt loop that injects it.
+ * They exist ONLY inside a collab turn - `session/prompt.ts` injects them when
+ * `CollabSystem.Turn` is present on the fiber and never otherwise. Everything
+ * they need arrives on that turn context as plain closures, which is why this
+ * file imports neither the runner nor the prompt loop that injects it.
  *
- * A refusal is a plain-text tool RESULT, never a room message. The room is the
- * record of what the agents said to each other; "you cannot ask yourself" is a
- * note to one model, and posting it would make every mis-step a message the
- * whole roster then reads and reacts to.
+ * A refusal is a plain-text tool RESULT, never a room message: the room is the
+ * record of what the agents said to each other, and posting a refusal would
+ * make every mis-step something the whole roster reads and reacts to.
  */
 
 /** How deep a chain of asks may go before an agent must answer with what it has. */
@@ -45,11 +42,9 @@ const boundTitle = (text: string) => (text.length > 80 ? text.slice(0, 79).trimE
 
 const opsOf = (ctx: Tool.Context) => ctx.extra?.["promptOps"] as TaskPromptOps | undefined
 
-/**
- * Resolve `to` against the ACTIVE roster. Slug first, then display name: the
- * roster block gives agents both, and a model that copies the label out of it
- * has addressed a real participant.
- */
+/** Resolve `to` against the ACTIVE roster. Slug first, then display name: the
+ *  roster block gives agents both, and a model that copies the label out of it
+ *  has addressed a real participant. */
 export function resolveTarget(
   roster: readonly CollabSystem.RosterEntry[],
   to: string,
@@ -77,9 +72,8 @@ export function directedText(input: { task: string; context?: string; expect?: s
   ].join("\n")
 }
 
-/** Said on `task` and `context` of both directed tools, because both were
- *  arriving one line long: a target sees the brief and the room, never the
- *  sender's head, and there is no length limit on either field. */
+/** Said on `task` and `context` of both directed tools: a target sees the brief
+ *  and the room, never the sender's head, and neither field has a length cap. */
 const SELF_CONTAINED =
   "This is not truncated - write as much as the work needs, pages if that is what it takes. The target sees this brief and recent room messages, NEVER your head or your session: a spec you did not write down does not exist. If it runs longer than a page, write it to a file in the workspace and give the path here."
 
@@ -156,10 +150,8 @@ const DONE_DESCRIPTION = [
  * `ask`. The one BLOCKING tool, and the only one that runs another agent's turn
  * inside this one.
  *
- * The order of the checks is the contract's and is load-bearing. Cycle before
- * depth and busy, because an ancestor in the chain is ALWAYS busy - it is
- * sitting in this very tool call - and reporting that as "they are busy" would
- * tell the model to retry the one thing that can never succeed.
+ * The order of the checks is load-bearing: cycle before depth and busy, because
+ * an ancestor in the chain is ALWAYS busy - it is sitting in this tool call.
  */
 const askTool = (memo: Map<string, Result>) =>
   Tool.define(
@@ -169,9 +161,8 @@ const askTool = (memo: Map<string, Result>) =>
       parameters: AskParameters,
       execute: (args: Schema.Schema.Type<typeof AskParameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          // A provider retry can re-drive a finished stream and re-execute a
-          // tool call that already ran. Without this the target would take a
-          // second turn, and the room would carry two asks for one question.
+          // A provider retry can re-drive a finished stream and re-execute a tool
+          // call that already ran; the target would then take a second turn.
           const memoized = ctx.callID ? memo.get(ctx.callID) : undefined
           if (memoized) return memoized
 
@@ -197,9 +188,8 @@ const run = Effect.fnUntraced(function* (
   const target = resolveTarget(turn.roster, args.to)
   if (!target) return refuse("ask", `There is no "${args.to}" in this collab - ${rosterHint(turn.roster)}.`)
 
-  // (2) the cycle. Before depth and busy: an agent already waiting on this
-  // chain is busy BECAUSE it is waiting, and "busy, try later" is the one
-  // answer that can never come true.
+  // (2) the cycle. Before depth and busy: an agent already waiting on this chain
+  // is busy BECAUSE it is waiting, so "busy, try later" can never come true.
   if (target.sessionId !== null && turn.askChain.includes(target.sessionId)) {
     return refuse(
       "ask",
@@ -221,9 +211,8 @@ const run = Effect.fnUntraced(function* (
     return refuse("ask", "The room is out of hops for this message. Answer with what you have and wait for the human.")
   }
 
-  // (5) busy. LOAD-BEARING: a prompt to a session that is already running joins
-  // the run in flight and DISCARDS this work, so the answer would be whatever
-  // the other caller asked for.
+  // (5) busy. LOAD-BEARING: a prompt to a session already running joins the run
+  // in flight and DISCARDS this work, so the answer would be another caller's.
   if (target.sessionId !== null && (yield* ops.busy(SessionID.make(target.sessionId)))) {
     return refuse("ask", `@${target.agentSlug} is busy with another turn right now. Carry on without them.`)
   }
@@ -409,13 +398,10 @@ const COUNCIL_ASK_DESCRIPTION = [
  * The synthesizer's follow-up: a NEW blind round, opened mechanically.
  *
  * A tool rather than a phrase the runner looks for in the synthesis text,
- * because routing in this room reads a message's KIND and never its prose - a
- * synthesis that happened to end in a question mark must not summon the council.
- *
- * Refused outside a SYNTHESIS turn, which is narrower than "in a council": a
- * question asked from inside a blind opinion would open a round nested in the
- * round still being answered, and the member asking it would be the only one
- * who had seen anything.
+ * because routing here reads a message's KIND and never its prose. Refused
+ * outside a SYNTHESIS turn, which is narrower than "in a council": a question
+ * asked from inside a blind opinion would nest a round in the one being
+ * answered.
  */
 const councilAskTool = Tool.define(
   "council_ask",
@@ -444,8 +430,7 @@ const councilAskTool = Tool.define(
           )
         }
         // Addressed to nobody in particular ON PURPOSE: the wake rules send a
-        // `council_question` to every active member except its author, so
-        // naming them here would be a second, quieter roster to keep in step.
+        // `council_question` to every active member except its author.
         yield* turn.ops
           .append({
             collabId: turn.collabId,
@@ -472,13 +457,9 @@ const BOARD: Record<"add" | CollabStore.TaskAction, { kind: CollabStore.MessageK
 }
 
 /**
- * The row one board move leaves in the room.
- *
- * The row carries the NOTE when the move has one - the same text
- * `ACPCollab.applyTaskMove` writes for the human's own reject, and for the same
- * reason: the agent this wakes otherwise reads "reopened task: X" and learns
- * only that somebody was unhappy, not what has to change. Only `reopen` carries
- * one today, and a move without one is byte-identical to before.
+ * The row one board move leaves in the room. It carries the NOTE when the move
+ * has one - the agent this wakes otherwise reads "reopened task: X" and learns
+ * only that somebody was unhappy, not what has to change. Only `reopen` has one.
  */
 const record = Effect.fnUntraced(function* (
   turn: CollabSystem.TurnContext,
@@ -648,11 +629,9 @@ const taskReopenTool = Tool.define(
 )
 
 /**
- * The nine tools, built fresh for the step that will run them.
- *
- * Fresh matters for one reason: the `ask` memo is keyed by tool call id and is
- * only there to survive a PROVIDER RETRY of the step it belongs to. Held any
- * longer it would be a cache of answers across turns.
+ * The nine tools, built fresh for the step that will run them: the `ask` memo is
+ * keyed by tool call id and only exists to survive a PROVIDER RETRY of that
+ * step. Held any longer it would be a cache of answers across turns.
  */
 export const defs = Effect.gen(function* () {
   const memo = new Map<string, Result>()

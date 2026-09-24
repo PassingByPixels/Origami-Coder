@@ -14,28 +14,15 @@ import { CollabRunner } from "./runner"
 import { CollabStore } from "./store"
 
 /**
- * The Collab ext methods (`collab_agents`, `collab_list`, `collab_create`,
- * `collab_post`, `collab_preview`, `collab_state`, `collab_set_cap`,
- * `collab_set_concurrency`, `collab_set_lead`, `collab_set_objective`, `collab_task_add`,
- * `collab_task_update`, `collab_review`, `collab_ledger`, `collab_stop`,
- * `collab_stop_agent`, `collab_redirect`, `collab_archive`,
- * `collab_unarchive`, `collab_rename`, `collab_add_participant`,
- * `collab_remove_participant`).
- *
- * `collab_state` is deliberately the ONLY read a shell needs after any write:
- * message log, roster, per-agent turn status and the loop-breaker verdict all
- * arrive together, so a UI can never render a roster from one moment against a
+ * The Collab ext methods. `collab_state` is deliberately the ONLY read a shell needs
+ * after any write: message log, roster, per-agent turn status and the loop-breaker
+ * verdict arrive together, so a UI can never render a roster from one moment against a
  * log from another.
  *
- * There is deliberately NO method for creating or editing an agent DEFINITION.
- * Definitions are files and the extension edits them directly on the global
- * agent directory.
- *
- * The methods that READ the roster of definitions - `collab_agents`,
- * `collab_create` and `collab_add_participant` - re-scan that directory first
- * (`Agent.rescan`), so a definition written a moment ago is usable NOW rather
- * than on the next engine start. `Agent.rescan` documents the narrow cases that
- * still need a restart, the main one being a DELETED definition file.
+ * There is deliberately NO method for creating or editing an agent DEFINITION - those are
+ * files the extension edits directly. The methods that READ the roster of definitions
+ * re-scan that directory first (`Agent.rescan`), so a definition written a moment ago is
+ * usable NOW; a DELETED definition file still needs a restart.
  */
 
 export type AgentEntry = {
@@ -43,14 +30,9 @@ export type AgentEntry = {
   readonly displayName: string
   /** The definition's pinned `provider/model`, or null when it pins nothing. */
   readonly model: string | null
-  /**
-   * THE BOT CONTRACT, as declared. Every field below is OMITTED when the
-   * definition said nothing, so a shell can tell "the author chose this" from
-   * "the author left the default" - which is the difference between rendering a
-   * selected tier and rendering an empty control. Omission is the default, not
-   * a value: adding a field with its default here would make every definition
-   * look configured.
-   */
+  /** THE BOT CONTRACT, as declared. Every field below is OMITTED when the definition said
+   *  nothing, so a shell can tell "the author chose this" from "the author left the
+   *  default"; a field carrying its default would make every definition look configured. */
   readonly permissions?: AgentBot.PermissionTier
   /** A `permissions:` value this build does not know. Present = show the typo. */
   readonly unknownPermissions?: string
@@ -70,20 +52,12 @@ export type CollabEntry = {
   /** Who an unaddressed human message reaches. null = nobody. */
   readonly lead: string | null
   readonly objective: string | null
-  /**
-   * How many participant turns this room dispatches at once. null = never
-   * configured, which is SERIAL - the shape every room shipped with. Sent as
-   * null rather than 1 so a shell can tell "left alone" from "set to one".
-   */
+  /** How many participant turns this room dispatches at once. null = never configured,
+   *  which is SERIAL - sent as null rather than 1 so a shell can tell it from "set to one". */
   readonly concurrency: number | null
-  /**
-   * What KIND of room this is, RESOLVED - never the raw stored value.
-   *
-   * Unlike `concurrency` there is no "never configured" state worth telling a
-   * shell about: an unset flavor and `discuss` are the same room, and the rule
-   * that resolves anything unrecognised to `discuss` is a safety rule
-   * (`CollabCouncil.flavorOf`) that no shell should have to re-implement.
-   */
+  /** What KIND of room this is, RESOLVED - never the raw stored value. Unlike `concurrency`
+   *  there is no "never configured" state worth telling a shell about, and resolving
+   *  anything unrecognised to `discuss` is a safety rule no shell should re-implement. */
   readonly flavor: CollabCouncil.Flavor
 }
 
@@ -91,10 +65,8 @@ export type ParticipantEntry = {
   readonly agentSlug: string
   readonly displayName: string
   readonly model: string | null
-  /**
-   * The agent's own child session, once it has taken a turn. Omitted - never
-   * null - while it has not, so a shell can test presence rather than value.
-   */
+  /** The agent's own child session, once it has taken a turn. Omitted - never null - while
+   *  it has not, so a shell can test presence rather than value. */
   readonly sessionId?: string
   readonly removedAt?: string
 }
@@ -111,13 +83,9 @@ export type MessageEntry = {
   readonly mentions: readonly string[]
   readonly taskId: string | null
   readonly trace: readonly CollabStore.TraceEntry[] | null
-  /**
-   * The images the human posted with this message, as `data:` URLs. OMITTED
-   * when there are none, so a shell tests presence rather than length - the
-   * ordinary message carries no key at all.
-   */
+  /** The images the human posted with this message, as `data:` URLs. OMITTED when there
+   *  are none, so a shell tests presence rather than length. */
   readonly images?: readonly string[]
-  /** ISO string on the wire - the package convention for *At fields. */
   readonly createdAt: string
 }
 
@@ -130,7 +98,6 @@ export type TaskEntry = {
   readonly result: string | null
   readonly note: string | null
   readonly originSeq: number | null
-  /** ISO strings on the wire - the package convention for *At fields. */
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -143,7 +110,6 @@ export type LedgerEntry = {
   readonly tokensOutput: number
   readonly cost: number
   readonly askedBy: string | null
-  /** ISO string on the wire - the package convention for *At fields. */
   readonly createdAt: string
 }
 
@@ -163,23 +129,13 @@ export type AgentStatusEntry = {
   readonly lastError?: string
   /** Present only while this agent's turn is RUNNING. Absent, never stale. */
   readonly liveActivity?: CollabRunner.LiveActivity
-  /**
-   * The whole reasoning of the turn in flight, for a shell that renders it as
-   * an expanding block. Present on the same terms as `liveActivity` - only
-   * while the turn runs, absent rather than stale - and bounded server-side at
-   * {@link CollabRunner.LIVE_THOUGHT_MAX_CHARS}, so a shell never has to guess
-   * how much of it is safe to hold.
-   */
+  /** The whole reasoning of the turn in flight, for a shell that renders it as an expanding
+   *  block. Present only while the turn runs, absent rather than stale, and bounded at
+   *  {@link CollabRunner.LIVE_THOUGHT_MAX_CHARS}. */
   readonly liveThought?: string
-  /**
-   * The last few things this agent did or thought, oldest first, kept ACROSS
-   * turns - see {@link CollabRunner.Interface.activityLog}. Omitted, never
-   * empty, so a shell tests presence.
-   *
-   * Present for an idle agent too, which is the point: `liveActivity` answers
-   * "what is it doing", and a room whose agents are between turns answers that
-   * with nothing at all.
-   */
+  /** The last few things this agent did or thought, oldest first, kept ACROSS turns - see
+   *  {@link CollabRunner.Interface.activityLog}. Omitted, never empty. Present for an idle
+   *  agent too, which is the point: a room between turns has no `liveActivity` at all. */
   readonly activity?: readonly CollabActivity.ActivityEntry[]
 }
 
@@ -203,21 +159,16 @@ export type PostResult = {
   readonly notice?: "no-lead"
 }
 
-/**
- * What `collab_preview` answers with: who a draft WOULD wake, before it is
- * sent. Token-free - the wake rules read a message's kind and its address list,
- * never its prose, which is exactly why this can be evaluated live.
- */
+/** What `collab_preview` answers with: who a draft WOULD wake, before it is sent.
+ *  Token-free - the wake rules read a message's kind and its address list, never its prose. */
 export type PreviewResult = {
   /** The slugs that would take a turn, in roster order. */
   readonly wake: readonly string[]
   /** Same meaning as on {@link PostResult}: the draft would reach nobody. */
   readonly notice?: "no-lead"
-  /**
-   * Addresses that are not on the active roster. Omitted when there are none.
-   * `collab_post` REFUSES such a draft, so answering a bare empty wake set
-   * would be describing a message that never gets sent.
-   */
+  /** Addresses that are not on the active roster. Omitted when there are none, and
+   *  `collab_post` REFUSES such a draft, so a bare empty wake set would describe a message
+   *  that never gets sent. */
   readonly unknown?: readonly string[]
 }
 
@@ -351,10 +302,8 @@ export function collabEntry(collab: CollabStore.Collab): CollabEntry {
   }
 }
 
-/**
- * One roster row for the wire. `info` is undefined when no definition backs the
- * slug any more - the row still ships, because the log still has its messages.
- */
+/** One roster row for the wire. `info` is undefined when no definition backs the slug any
+ *  more - the row still ships, because the log still has its messages. */
 export function participantEntry(entry: CollabStore.Participant, info: Agent.Info | undefined): ParticipantEntry {
   return {
     agentSlug: entry.agentSlug,
@@ -413,12 +362,9 @@ export function ledgerEntry(entry: CollabStore.LedgerEntry): LedgerEntry {
 /** How much of the board one `collab_state` carries. */
 export const TASK_BOARD_LIMIT = 50
 
-/**
- * Board order: everything still in play first, accepted work last, and only
- * the first {@link TASK_BOARD_LIMIT}. The sort is stable, so inside each group
- * the store's creation order survives - a board that reshuffled itself between
- * two polls would be unreadable.
- */
+/** Board order: everything still in play first, accepted work last, and only the first
+ *  {@link TASK_BOARD_LIMIT}. The sort is stable, so the store's creation order survives
+ *  inside each group - a board that reshuffled between two polls would be unreadable. */
 export function taskBoard(tasks: readonly CollabStore.Task[]): TaskEntry[] {
   return tasks
     .toSorted((left, right) => Number(left.state === "accepted") - Number(right.state === "accepted"))
@@ -426,10 +372,8 @@ export function taskBoard(tasks: readonly CollabStore.Task[]): TaskEntry[] {
     .map(taskEntry)
 }
 
-/**
- * Whether the room is waiting on a human: the hop budget this message bought
- * is spent, so nothing autonomous is scheduled until the next human post.
- */
+/** Whether the room is waiting on a human: the hop budget this message bought is spent, so
+ *  nothing autonomous is scheduled until the next human post. */
 export function suspended(hops: HopState): boolean {
   return hops.remaining !== null && hops.remaining <= 0
 }
@@ -443,25 +387,15 @@ const TASK_MESSAGE: Record<CollabStore.TaskAction | "add", { kind: CollabStore.M
   reopen: { kind: "task_reopen", verb: "reopened" },
 }
 
-/**
- * Every "no" this module gives.
- *
- * A REFUSAL, never a service failure. Each message below is a finished sentence
- * written for the person at the controls - which slug is not in the room, which
- * flavors exist, what a cap may be - and `ACPServiceFailureError` maps onto the
- * JSON-RPC INTERNAL error, so the client rendered `Internal error: ` in front of
- * every one of them. Nothing in the engine is broken when a room declines a
- * setting, and telling the user otherwise sent them looking for a bug.
- */
+/** Every "no" this module gives: a REFUSAL, never a service failure. Each message is a
+ *  finished sentence written for the person at the controls, and `ACPServiceFailureError`
+ *  maps onto the JSON-RPC INTERNAL error - so a client rendered `Internal error: ` in
+ *  front of every one of them and sent the user looking for a bug. */
 const failed = (message: string) => new ACPError.RefusalError({ safeMessage: message, service: "collab" })
 
-/**
- * Why one slug cannot join. Always called AFTER a rescan, so "no definition
- * file" means exactly that rather than "the engine started before you wrote
- * it". Naming the FILE is the point: the two failures a human can actually fix
- * are a missing `collab: true` and frontmatter that does not parse, and neither
- * is findable from the slug alone.
- */
+/** Why one slug cannot join. Always called AFTER a rescan, so "no definition file" means
+ *  exactly that. Naming the FILE is the point: the fixable failures are a missing
+ *  `collab: true` and frontmatter that does not parse, neither findable from the slug. */
 const rejection = Effect.fnUntraced(function* (slug: string) {
   const file = yield* (yield* Agent.Service).definitionFile(slug)
   return file
@@ -469,12 +403,9 @@ const rejection = Effect.fnUntraced(function* (slug: string) {
     : `${slug} is not a collab-capable agent: no definition file for it in any config directory`
 })
 
-/**
- * Runs against the process-wide AppRuntime, which already provides the store,
- * the agent registry and the session services. Building a private layer stack
- * would stand up a SECOND Database/Config instance and deadlock against the
- * live one - the same rule `Flock.state` and `Skills.list` follow.
- */
+/** Runs against the process-wide AppRuntime, which already provides the store, the agent
+ *  registry and the session services. A private layer stack would stand up a SECOND
+ *  Database/Config instance and deadlock against the live one. */
 const inInstance = <A, E, R>(directory: string, self: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const store = yield* InstanceStore.Service
@@ -499,11 +430,8 @@ const activeRoster = Effect.fnUntraced(function* (collabId: string) {
   return roster.filter((entry) => entry.removedAt === undefined).map((entry) => entry.agentSlug)
 })
 
-/**
- * The slug must still be in the room. Every PER-AGENT method refuses the same
- * way and names the roster, because a shell cannot fix an address it is not
- * told the alternatives to.
- */
+/** The slug must still be in the room. Every PER-AGENT method refuses the same way and
+ *  names the roster, because a shell cannot fix an address it is not told alternatives to. */
 const requireMember = Effect.fnUntraced(function* (collabId: string, agentSlug: string) {
   const active = yield* activeRoster(collabId)
   if (!active.includes(agentSlug)) {
@@ -518,15 +446,10 @@ const loadTask = Effect.fnUntraced(function* (collabId: string, taskId: string) 
   return task
 })
 
-/**
- * One board move plus the room row that reports it: the single place a task
- * transition is written, so a human's verdict and an ordinary board call can
- * never drift apart.
- *
- * The row carries the NOTE when the move has one. Without it the agent this
- * wakes reads "reopened task: X" and learns only that somebody was unhappy,
- * not what has to change.
- */
+/** One board move plus the room row that reports it: the single place a task transition is
+ *  written, so a human's verdict and an ordinary board call cannot drift apart. The row
+ *  carries the NOTE when the move has one, or the agent it wakes learns only that somebody
+ *  was unhappy. */
 const applyTaskMove = Effect.fnUntraced(function* (
   collab: CollabStore.Collab,
   input: {
@@ -558,9 +481,8 @@ export const agents = Effect.fn("ACPCollab.agents")(function* (directory: string
     directory,
     Effect.gen(function* () {
       const registry = yield* Agent.Service
-      // EVERY call, not once: the extension writes a definition file and lists
-      // straight afterwards, and a list that could not show what was just
-      // written would be telling the user to restart the engine.
+      // EVERY call, not once: the extension writes a definition file and lists straight
+      // afterwards, and a list that could not show it would be telling the user to restart.
       yield* registry.rescan()
       const all = yield* registry.list()
       return {
@@ -595,9 +517,8 @@ export const create = Effect.fn("ACPCollab.create")(function* (
       // invited. Without it the only cure is an engine restart.
       yield* registry.rescan()
       const capable = new Set((yield* registry.list()).filter(collabCapable).map((info) => info.name))
-      // Fail-closed on a slug that is unknown even after the re-scan: a roster
-      // entry no definition backs can never take a turn, and a collab that
-      // silently drops a member reads as that member ignoring everyone.
+      // Fail-closed on a slug unknown even after the re-scan: a roster entry no definition
+      // backs can never take a turn, and a silently dropped member reads as being ignored.
       const unknown = input.agentSlugs.filter((slug) => !capable.has(slug))
       if (unknown.length > 0) {
         return yield* failed((yield* Effect.forEach(unknown, rejection)).join("; "))
@@ -626,18 +547,16 @@ export const post = Effect.fn("ACPCollab.post")(function* (
       const collab = yield* loadCollab(input.collabId)
       if (collab.archivedAt !== undefined) return yield* failed(`collab is archived: ${input.collabId}`)
 
-      // Images are checked BEFORE anything is written, for the same reason
-      // addressing is: half a post is worse than none. The refusal names the
-      // limit, so the human can shrink or drop one and post again.
+      // Images are checked BEFORE anything is written, for the same reason addressing is:
+      // half a post is worse than none. The refusal names the limit.
       const images = input.images ?? []
       if (images.length > 0) {
         const refusal = CollabStore.imageRefusal(images)
         if (refusal) return yield* failed(refusal)
       }
 
-      // Addressing is checked BEFORE anything is written: a post addressed to a
-      // slug that is not in the room would otherwise be recorded and then reach
-      // nobody, which reads as every agent ignoring it.
+      // Addressing is checked BEFORE anything is written: a post addressed to a slug not in
+      // the room would be recorded and reach nobody, which reads as every agent ignoring it.
       const mentions = input.mentions ?? []
       if (mentions.length > 0) {
         const active = yield* activeRoster(collab.id)
@@ -648,40 +567,29 @@ export const post = Effect.fn("ACPCollab.post")(function* (
       }
 
       yield* bindContext(collab.id)
-      // Returns as soon as the post is DURABLE. The turns it triggers run
-      // detached: a shell that had to wait for every agent to answer could not
-      // show the message it just sent.
-      //
-      // The validated `mentions` ride the row: routing reads that list and
-      // never the prose, so "@crane" written inside a sentence is a reference
-      // to a colleague rather than a summons.
+      // Returns as soon as the post is DURABLE; the turns it triggers run detached, because
+      // a shell waiting for every agent could not show the message it just sent. The
+      // validated `mentions` ride the row - routing reads that list and never the prose, so
+      // "@crane" inside a sentence is a reference to a colleague rather than a summons.
       const message = yield* (yield* CollabRunner.Service).post({
         collabId: collab.id,
         text: input.text,
         ...(mentions.length > 0 ? { mentions } : {}),
         ...(images.length > 0 ? { images } : {}),
       })
-      // An unaddressed post with no lead reaches no one. The post still stands
-      // - it is the record of what was asked - but the shell is told, rather
-      // than left watching a room that will never answer.
+      // An unaddressed post with no lead reaches no one. The post still stands - it is the
+      // record of what was asked - but the shell is told rather than left waiting.
       const notice = mentions.length === 0 && collab.lead === null ? { notice: "no-lead" as const } : {}
       return { seq: message.seq, ...notice }
     }),
   )
 })
 
-/**
- * Who a draft WOULD wake - the C14 composer preview, evaluated live while the
- * human is still typing.
- *
- * Reads only. Nothing is bound, nothing is appended, no session is created and
- * no turn is scheduled: this must be safe to call on every keystroke, and a
- * preview that cost what sending costs would be worse than no preview.
- *
- * There is deliberately no `text` parameter. Routing is mechanical - the rules
- * read a message's kind and its address list and never its prose - so a draft's
- * words cannot change the answer, and accepting them here would imply they can.
- */
+/** Who a draft WOULD wake - the composer preview, evaluated live while the human types.
+ *  Reads only: nothing is bound, appended or scheduled, because this must be safe to call
+ *  on every keystroke. There is deliberately no `text` parameter - routing reads a
+ *  message's kind and its address list and never its prose, so accepting the words here
+ *  would imply they can change the answer. */
 export const preview = Effect.fn("ACPCollab.preview")(function* (
   directory: string,
   input: { collabId: string; mentions?: readonly string[] },
@@ -693,24 +601,22 @@ export const preview = Effect.fn("ACPCollab.preview")(function* (
       const active = yield* activeRoster(collab.id)
       const mentions = input.mentions ?? []
       const unknown = mentions.filter((slug) => !active.includes(slug))
-      // The slug stands in for the display name: no rule reads one, and
-      // resolving every definition first would put a directory scan on a
-      // keystroke path.
+      // The slug stands in for the display name: no rule reads one, and resolving every
+      // definition first would put a directory scan on a keystroke path.
       const wake = CollabRules.wakeSet({
         roster: active.map((agentSlug) => ({ agentSlug, displayName: agentSlug })),
         lead: collab.lead,
         mentions,
-        // The preview runs the SAME stack the room fans out on, flavor
-        // included: in a council an unaddressed draft wakes everybody, and a
-        // preview that named the lead would teach a rule the room does not have.
+        // The preview runs the SAME stack the room fans out on, flavor included: in a
+        // council an unaddressed draft wakes everybody, and naming the lead would teach a
+        // rule the room does not have.
         flavor: CollabCouncil.flavorOf(collab.flavor),
       })
       return {
         wake,
-        // Read off the ANSWER rather than off the lead seat. A leadless COUNCIL
-        // still wakes its whole roster, and telling that user "nobody would
-        // answer" would be flatly wrong. In a discuss room an empty wake set is
-        // exactly the old condition, so nothing there changes.
+        // Read off the ANSWER rather than off the lead seat: a leadless COUNCIL still wakes
+        // its whole roster, so "nobody would answer" would be flatly wrong. In a discuss
+        // room an empty wake set is exactly the old condition.
         ...(wake.length === 0 && mentions.length === 0 && collab.lead === null
           ? { notice: "no-lead" as const }
           : {}),
@@ -734,9 +640,8 @@ export const state = Effect.fn("ACPCollab.state")(function* (
       const roster = yield* store.participants(collab.id)
       const statuses = yield* runner.statuses(collab.id)
       const activity = yield* runner.liveActivity(collab.id)
-      // AFTER `liveActivity`, never before: that call is the read that fills the
-      // retained log, so taking it first would answer with the poll before this
-      // one and leave the chip a whole cycle ahead of the history beside it.
+      // AFTER `liveActivity`, never before: that call is the read that fills the retained
+      // log, so taking it first would leave the chip a whole cycle ahead of the history.
       const kept = yield* runner.activityLog(collab.id)
 
       const participants: ParticipantEntry[] = []
@@ -801,17 +706,11 @@ export const setCap = Effect.fn("ACPCollab.setCap")(function* (
 /**
  * How many participant turns this room may dispatch at once.
  *
- * THE GATE. Raising the width is the one room setting that can change what the
- * members are able to DO to the workspace, so it is refused unless every active
- * member's effective ruleset - its tier, its own `permission:` block and the
- * room seal composed exactly as `createSession` composes them - denies every
- * file-writing door. The reason is in `CollabParallel`'s header: worktree
- * isolation lives extension-side and cannot be composed into a room, so a
- * parallel room deliberates rather than builds.
- *
- * LOWERING IS NEVER GATED. The gate exists to stop parallel writers, not to
- * trap a room at a width it can no longer justify - a roster change that makes
- * a wide room unsafe must still be narrowable without editing definitions.
+ * THE GATE. Raising the width is the one room setting that can change what the members
+ * are able to DO to the workspace, so it is refused unless every active member's effective
+ * ruleset - tier, own `permission:` block and the room seal - denies every file-writing
+ * door. Worktree isolation lives extension-side, so a parallel room deliberates.
+ * LOWERING IS NEVER GATED: the gate stops parallel writers, it does not trap a room.
  */
 export const setConcurrency = Effect.fn("ACPCollab.setConcurrency")(function* (
   directory: string,
@@ -838,37 +737,27 @@ export const setConcurrency = Effect.fn("ACPCollab.setConcurrency")(function* (
 /**
  * Why this room may NOT run turns side by side, or undefined when it may.
  *
- * The gate on an EXPLICIT concurrency raise, and on that alone. A raised width
- * is a room asking to run its ordinary turns in parallel, and an ordinary turn
- * is where a member is meant to build - so the only honest answers are "prove
- * every member is read-only" or "corrupt a file", and this is the first.
- *
- * The `council` flavor used to answer to the same gate and no longer does. A
- * council does not need its members to be read-only BOTS; it needs its round
- * turns to be read-only TURNS, and that is enforced where the turn runs
- * (`CollabSeal.COUNCIL_SEAL`) rather than by refusing the setting. Refusing it
- * put a paragraph about permission rulesets in front of a person who had only
- * asked three bots a question.
+ * The gate on an EXPLICIT concurrency raise, and on that alone: a raised width is a room
+ * asking to run its ordinary turns in parallel, and an ordinary turn is where a member is
+ * meant to build. The `council` flavor answers to no such gate - a council needs its ROUND
+ * turns read-only, which is enforced where the turn runs (`CollabSeal.COUNCIL_SEAL`).
  */
 const parallelRefusal = Effect.fnUntraced(function* (collabId: string) {
   const registry = yield* Agent.Service
-  // The definitions as they are on disk NOW, for the same reason
-  // `createSession` rescans: the answer must be about the files the next turn
-  // will actually run, not the ones the engine booted on.
+  // The definitions as they are on disk NOW, for the same reason `createSession` rescans:
+  // the answer must be about the files the next turn will run, not the boot-time ones.
   yield* registry.rescan()
   const members: CollabParallel.Member[] = []
   for (const agentSlug of yield* activeRoster(collabId)) {
     const info = yield* registry.get(agentSlug).pipe(Effect.exit)
-    // A slug with no definition left is not provably anything. It cannot take a
-    // turn either, but a room that widened around a missing member would
-    // silently widen again the moment the file came back.
+    // A slug with no definition left is not provably anything. A room that widened around
+    // a missing member would silently widen again the moment the file came back.
     if (!Exit.isSuccess(info) || !info.value) {
       return `no agent definition for ${agentSlug} — it cannot be checked for parallel safety`
     }
-    // The ruleset the child session ACTUALLY runs under: the definition's own,
-    // then the session's, in the order session/tools.ts merges them
-    // (`Permission.merge(agent.permission, live.permission)`). Checking either
-    // half alone would answer about a session that never runs.
+    // The ruleset the child session ACTUALLY runs under: the definition's own, then the
+    // session's, in the order session/tools.ts merges them. Checking either half alone
+    // would answer about a session that never runs.
     members.push({
       agentSlug,
       permission: [
@@ -887,19 +776,13 @@ const parallelRefusal = Effect.fnUntraced(function* (collabId: string) {
 })
 
 /**
- * What KIND of room this is: `discuss` (the chain every room has always run) or
- * `council` (one question to every member at once, blind, then a synthesis).
+ * What KIND of room this is: `discuss` (the chain every room has always run) or `council`
+ * (one question to every member at once, blind, then a synthesis).
  *
- * NEVER GATED ON PERMISSIONS, in either direction. The only thing refused here
- * is a flavor this build does not have.
- *
- * It WAS gated, on the same write-safety rule a raised width answers to, and the
- * owner's verdict on that is the reason this method is now three lines: a person
- * who has built two bots and wants them to answer one question together should
- * turn council on and have it work. The hazard the gate named is real, and it is
- * answered on the turn instead of on the setting - every council ROUND turn runs
- * under `CollabSeal.COUNCIL_SEAL`, which shuts every file-writing door for the
- * length of that turn and gives it back for the room's discuss turns.
+ * NEVER GATED ON PERMISSIONS, in either direction - the only thing refused here is a
+ * flavor this build does not have. The write hazard is answered on the turn instead:
+ * every council ROUND turn runs under `CollabSeal.COUNCIL_SEAL`, which shuts every
+ * file-writing door for the length of that turn.
  */
 export const setFlavor = Effect.fn("ACPCollab.setFlavor")(function* (
   directory: string,
@@ -918,11 +801,9 @@ export const setFlavor = Effect.fn("ACPCollab.setFlavor")(function* (
   )
 })
 
-/**
- * Name the agent an unaddressed human message goes to, or clear it with null.
- * Only an ACTIVE participant may hold the seat: a lead nobody can wake is the
- * same as no lead, but reads as a room that is simply ignoring you.
- */
+/** Name the agent an unaddressed human message goes to, or clear it with null. Only an
+ *  ACTIVE participant may hold the seat: a lead nobody can wake is the same as no lead,
+ *  but reads as a room that is simply ignoring you. */
 export const setLead = Effect.fn("ACPCollab.setLead")(function* (
   directory: string,
   input: { collabId: string; agentSlug: string | null },
@@ -958,15 +839,10 @@ export const setObjective = Effect.fn("ACPCollab.setObjective")(function* (
   )
 })
 
-/**
- * Put one task on the board by hand.
- *
- * The matching room message goes through the RUNNER, so the wake rules see it.
- * They wake nobody for an opened task - that is bookkeeping, and a fan-out per
- * checkbox would spend a turn from every agent on news none of them has to act
- * on - but the SAME path has to carry a human completing or reopening an
- * agent's task, which does have exactly one agent to reach.
- */
+/** Put one task on the board by hand. The matching room message goes through the RUNNER,
+ *  so the wake rules see it. They wake nobody for an opened task - a fan-out per checkbox
+ *  would spend a turn from every agent - but the SAME path carries a human completing or
+ *  reopening an agent's task, which does have exactly one agent to reach. */
 export const taskAdd = Effect.fn("ACPCollab.taskAdd")(function* (
   directory: string,
   input: { collabId: string; title: string },
@@ -994,10 +870,8 @@ export const taskAdd = Effect.fn("ACPCollab.taskAdd")(function* (
   )
 })
 
-/**
- * Move one task along the board. The legal moves are the store's table, read
- * here first so a refusal reaches the human as a message rather than a crash.
- */
+/** Move one task along the board. The legal moves are the store's table, read here first
+ *  so a refusal reaches the human as a message rather than a crash. */
 export const taskUpdate = Effect.fn("ACPCollab.taskUpdate")(function* (
   directory: string,
   input: {
@@ -1020,16 +894,12 @@ export const taskUpdate = Effect.fn("ACPCollab.taskUpdate")(function* (
 })
 
 /**
- * The human's verdict on a task an agent completed: accept the work, or send it
- * back with the reason it is not done.
+ * The human's verdict on a task an agent completed: accept the work, or send it back with
+ * the reason it is not done.
  *
- * NOT a second board vocabulary - it runs the SAME two transitions
- * `collab_task_update` runs, through the same helper. What it adds is a shape a
- * supervision surface can bind two buttons to without knowing that "reject" is
- * spelt `reopen`, and the note requirement that makes a rejection actionable.
- *
- * The legality gate is the board's own table rather than a rule invented here:
- * only a COMPLETED task can be accepted or reopened, so a verdict on anything
+ * NOT a second board vocabulary - it runs the SAME two transitions `collab_task_update`
+ * runs, through the same helper, and adds a shape two buttons can bind to without knowing
+ * that "reject" is spelt `reopen`. Only a COMPLETED task can take a verdict; anything
  * else is refused with the reason and the board is not touched.
  */
 export const review = Effect.fn("ACPCollab.review")(function* (
@@ -1074,15 +944,10 @@ export const ledger = Effect.fn("ACPCollab.ledger")(function* (
   )
 })
 
-/**
- * Stop a running collab NOW.
- *
- * The turn in flight is interrupted, everything queued behind it is dropped and
- * the rest of the hop budget is spent, which is what holds an agent that was
- * queued a moment before the button was pressed. Nothing is archived and
- * nothing is deleted: the next human post buys a new budget and the room picks
- * up from what is already in the log.
- */
+/** Stop a running collab NOW. The turn in flight is interrupted, everything queued behind
+ *  it is dropped and the rest of the hop budget is spent, which holds an agent queued a
+ *  moment before the button. Nothing is archived or deleted: the next human post buys a
+ *  new budget and the room picks up from the log. */
 export const stop = Effect.fn("ACPCollab.stop")(function* (directory: string, input: { collabId: string }) {
   return yield* inInstance(
     directory,
@@ -1094,19 +959,11 @@ export const stop = Effect.fn("ACPCollab.stop")(function* (directory: string, in
   )
 })
 
-/**
- * Stop ONE agent and leave the room running.
- *
- * The whole-room `collab_stop` above is the sledgehammer: it interrupts the
- * drain, drops everyone still queued and spends the budget. This ends one
- * agent's turn and takes one slug out of the queue; every other member keeps
- * its place and the budget is untouched, because the human stopped an agent,
- * not the work.
- *
- * Answers what it actually did rather than a bare ok - "stopped" means
- * something different for a running agent than for one that was only waiting,
- * and a shell that cannot tell them apart cannot say so either.
- */
+/** Stop ONE agent and leave the room running. The whole-room `collab_stop` is the
+ *  sledgehammer; this ends one agent's turn and takes one slug out of the queue, leaving
+ *  every other member's place and the budget untouched - the human stopped an agent, not
+ *  the work. Answers what it actually did rather than a bare ok, because "stopped" means
+ *  something different for a running agent than for one that was only waiting. */
 export const stopAgent = Effect.fn("ACPCollab.stopAgent")(function* (
   directory: string,
   input: { collabId: string; agentSlug: string },
@@ -1121,15 +978,10 @@ export const stopAgent = Effect.fn("ACPCollab.stopAgent")(function* (
   )
 })
 
-/**
- * Correct ONE agent: a human message addressed to it alone, whose turn is moved
- * to the front of the queue so the correction lands before the work it is
- * correcting carries on.
- *
- * A message, not a control, so it goes into the log as an ordinary addressed
- * post and buys a fresh hop budget exactly as `collab_post` does - which is
- * what lets a suspended room be steered rather than only released.
- */
+/** Correct ONE agent: a human message addressed to it alone, whose turn is moved to the
+ *  front of the queue so the correction lands before the work it corrects carries on. A
+ *  message, not a control, so it buys a fresh hop budget exactly as `collab_post` does -
+ *  which is what lets a suspended room be steered rather than only released. */
 export const redirect = Effect.fn("ACPCollab.redirect")(function* (
   directory: string,
   input: { collabId: string; agentSlug: string; text: string },
@@ -1151,11 +1003,8 @@ export const redirect = Effect.fn("ACPCollab.redirect")(function* (
   )
 })
 
-/**
- * Archive a collab. The row stays and `collab_list` keeps returning it: an
- * archived stream is a READ-ONLY stream, not a deleted one, and its log is
- * usually the reason anyone archived it rather than throwing it away.
- */
+/** Archive a collab. The row stays and `collab_list` keeps returning it: an archived
+ *  stream is READ-ONLY, not deleted, and its log is usually why anyone archived it. */
 export const archive = Effect.fn("ACPCollab.archive")(function* (directory: string, input: { collabId: string }) {
   return yield* inInstance(
     directory,
@@ -1167,13 +1016,9 @@ export const archive = Effect.fn("ACPCollab.archive")(function* (directory: stri
   )
 })
 
-/**
- * Reopen an archived collab: the room takes turns again from the next post.
- * Nothing is rewound - every member keeps its session and its last-seen marker,
- * so the first post after this gives each agent what it missed rather than the
- * whole log. `loadCollab` still refuses an id nobody has, and a room that was
- * never archived answers ok, because "make this room live" is the ask.
- */
+/** Reopen an archived collab: the room takes turns again from the next post. Nothing is
+ *  rewound - every member keeps its session and last-seen marker, so the first post gives
+ *  each agent what it missed. A room that was never archived answers ok. */
 export const unarchive = Effect.fn("ACPCollab.unarchive")(function* (directory: string, input: { collabId: string }) {
   return yield* inInstance(
     directory,
@@ -1212,9 +1057,8 @@ export const addParticipant = Effect.fn("ACPCollab.addParticipant")(function* (
     Effect.gen(function* () {
       const collab = yield* loadCollab(input.collabId)
       const registry = yield* Agent.Service
-      // Re-scan first and fail-closed after, exactly as `create` does: a roster
-      // entry no definition backs can never take a turn, and reads as that
-      // member ignoring everyone.
+      // Re-scan first and fail-closed after, exactly as `create` does: a roster entry no
+      // definition backs can never take a turn, and reads as that member ignoring everyone.
       yield* registry.rescan()
       const capable = (yield* registry.list()).filter(collabCapable).some((info) => info.name === input.agentSlug)
       if (!capable) return yield* failed(yield* rejection(input.agentSlug))
@@ -1224,11 +1068,8 @@ export const addParticipant = Effect.fn("ACPCollab.addParticipant")(function* (
   )
 })
 
-/**
- * Take an agent off the roster. A SOFT delete: its session is left alone and
- * its messages stay in the log, because the log is the record of what was said
- * and removing a member cannot rewrite it.
- */
+/** Take an agent off the roster. A SOFT delete: its session is left alone and its messages
+ *  stay in the log, because the log is the record of what was said. */
 export const removeParticipant = Effect.fn("ACPCollab.removeParticipant")(function* (
   directory: string,
   input: { collabId: string; agentSlug: string },

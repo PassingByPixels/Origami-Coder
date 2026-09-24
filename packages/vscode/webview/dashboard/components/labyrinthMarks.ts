@@ -26,7 +26,7 @@ import type { LaneStep } from './labyrinthLanes';
  * for at 9 units. An UNKNOWN kind gets no mark at all rather than a wrong one.
  */
 const MARKS: Record<string, string> = {
-  prompt: 'P', reply: 'R', tool: 'T', thinking: '?', subagent: 'S', error: '!',
+  prompt: 'P', reply: 'R', tool: 'T', thinking: '?', subagent: 'S', compaction: 'C', error: '!',
 };
 
 export function kindMark(kind: LaneStep['kind'] | string): string {

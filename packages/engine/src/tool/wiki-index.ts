@@ -4,23 +4,14 @@ import { FSUtil } from "@origami/core/fs-util"
 import { MemoryLayout } from "./memory-layout"
 
 /**
- * THE WORKSPACE KNOWLEDGE INDEX — metadata only, on purpose.
+ * The workspace knowledge index over `wiki/` and `.origami/memory/` — metadata
+ * only, on purpose. It parses each page's front matter, title, headings and
+ * `[[links]]` and nothing else, so a search round costs a few hundred tokens
+ * rather than a few hundred thousand. Page bodies are never searched and never
+ * returned; the agent follows a hit up with the ordinary `read` tool.
  *
- * A workspace keeps its depth in two places: hand-written wiki pages under
- * `wiki/` and the agent's own memory under `.origami/memory/`. Both were
- * effectively unreachable, because the only way in was `grep`, and grep needs
- * the phrasing the author happened to use. A page tagged `deploy` is invisible
- * to a search for "release ritual".
- *
- * This module builds the cheap half of a TWO-STAGE retrieval: it parses every
- * page's FRONT MATTER, title, headings and `[[links]]` and nothing else, so a
- * search round costs a few hundred tokens rather than a few hundred thousand.
- * PAGE BODIES ARE NEVER SEARCHED AND NEVER RETURNED. The agent follows a hit up
- * with the ordinary `read` tool on the one or two pages worth the tokens.
- *
- * Everything here is deterministic and lexical — token overlap, substring, and
- * a bounded edit distance for the "did you mean" recovery path. No embeddings,
- * no model calls, no network.
+ * Everything here is deterministic and lexical — token overlap, substring, and a
+ * bounded edit distance. No embeddings, no model calls, no network.
  */
 export namespace WikiIndex {
   /** Knowledge roots, relative to the workspace directory, in scan order. */
@@ -46,7 +37,6 @@ export namespace WikiIndex {
     readonly description: string
     /** `##`-and-deeper headings, in file order. */
     readonly headings: readonly string[]
-    /** `[[link-target]]` occurrences in the body, de-duplicated, in file order. */
     readonly links: readonly string[]
   }
 
@@ -54,25 +44,19 @@ export namespace WikiIndex {
     readonly pages: readonly Page[]
     /** Roots that exist on disk. */
     readonly roots: readonly string[]
-    /** Roots that were looked for and are not there. */
     readonly missing: readonly string[]
   }
 
   export interface Hit {
     readonly page: Page
     readonly score: number
-    /** Short labels naming WHICH field matched — the model's audit trail. */
+    /** Short labels naming which field matched — the model's audit trail. */
     readonly reasons: readonly string[]
   }
 
-  /**
-   * Parsed pages keyed by absolute path, invalidated on mtime+size.
-   *
-   * Module-level rather than instance-scoped: the key is an absolute path, so
-   * two workspaces cannot collide, and a stale entry is impossible because the
-   * key carries the file's own mtime and size. Re-stating a few hundred files
-   * per call is far cheaper than re-parsing them.
-   */
+  /** Parsed pages keyed by absolute path, invalidated on mtime+size.
+   *  Module-level is safe because the path key cannot collide across
+   *  workspaces and carries the file's own mtime and size. */
   const CACHE = new Map<string, { key: string; page: Page }>()
 
   const listMarkdown = (fs: FSUtil.Interface, dir: string, depth: number): Effect.Effect<string[]> =>
@@ -84,8 +68,8 @@ export namespace WikiIndex {
       const out: string[] = []
       for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
         if (out.length >= MAX_FILES) break
-        // Symlinks are skipped rather than followed, which is also what makes
-        // this walk cycle-free without a visited set.
+        // Symlinks are skipped rather than followed, which is what keeps this
+        // walk cycle-free without a visited set.
         if (entry.type === "directory") {
           if (entry.name.startsWith(".")) continue
           out.push(...(yield* listMarkdown(fs, path.join(dir, entry.name), depth + 1)))
@@ -99,8 +83,8 @@ export namespace WikiIndex {
     })
 
   /** Build (or refresh) the index for a workspace directory. Never fails: an
-   *  unreadable file or directory is skipped, and an absent root is reported in
-   *  `missing` so the caller can say so out loud instead of returning nothing. */
+   *  unreadable file is skipped, and an absent root is reported in `missing` so
+   *  the caller can say so instead of returning nothing. */
   export const load = Effect.fn("WikiIndex.load")(function* (fs: FSUtil.Interface, directory: string) {
     const pages: Page[] = []
     const roots: string[] = []
@@ -132,7 +116,7 @@ export namespace WikiIndex {
   })
 
   /** Workspace-relative, POSIX, `.md` stripped — the string the model gets back
-   *  and the string it appends `.md` to when it decides to read the page. */
+   *  and appends `.md` to when it reads the page. */
   export function pageID(directory: string, file: string): string {
     return path
       .relative(directory, file)
@@ -235,16 +219,9 @@ export namespace WikiIndex {
 
   export const normalize = (value: string) => value.toLowerCase().trim()
 
-  /**
-   * Function and question words, dropped from every token list.
-   *
-   * NOT decoration. The tools are advertised for "why did we choose X" style
-   * questions, and without this a question ranks by its grammar: on a 269-page
-   * corpus, "why did we choose the deploy ritual" put an unrelated weather page
-   * first, because `the`/`we`/`did` appear in almost every title and
-   * description. Only closed-class words are listed — no domain word, however
-   * common it looks, because the corpus decides what is common, not this file.
-   */
+  /** Function and question words, dropped from every token list, or a "why did
+   *  we choose X" question ranks by its grammar. Only closed-class words belong
+   *  here — never a domain word, however common it looks. */
   const STOP_WORDS = new Set(
     ("about after again all am an and any are as at be because been before being between both but by can cannot " +
       "could did do does doing done down during each few for from further had has have having he her here hers him " +
@@ -264,12 +241,10 @@ export namespace WikiIndex {
     )
   }
 
-  /**
-   * How well ONE metadata field answers the query: the query tokens it carries,
-   * scored as their count plus a bonus when the whole query appears verbatim.
-   * Score zero means "did not match", which is what keeps a field out of the
-   * match reasons; `matched` feeds the coverage bonus in {@link search}.
-   */
+  /** How well one metadata field answers the query: the query tokens it carries,
+   *  plus a bonus when the whole query appears verbatim. Score zero keeps the
+   *  field out of the match reasons; `matched` feeds {@link search}'s coverage
+   *  bonus. */
   function fieldMatch(text: string, tokens: readonly string[], phrase: string): { score: number; matched: string[] } {
     const hay = normalize(text)
     if (!hay) return { score: 0, matched: [] }
@@ -280,17 +255,11 @@ export namespace WikiIndex {
   }
 
   /**
-   * Rank pages against a query and/or a tag filter.
-   *
-   * The weights encode the retrieval contract: a TAG is the strongest signal
-   * (it is what the author deliberately filed the page under), then the title,
-   * then the page id, then headings, and the description last — it is the
-   * loosest of the five. On top of the per-field weights sits a COVERAGE bonus
-   * for how many DISTINCT query words the page accounts for, so a page that
-   * answers most of the question beats one that answers a single common word
-   * very loudly. The tag filter is a SOFT AND: every requested tag that a page
-   * carries adds score, and a page that carries none is dropped only when there
-   * is no query to keep it in on other evidence.
+   * Rank pages against a query and/or a tag filter. The weights encode the
+   * retrieval contract: a tag is the strongest signal, then title, page id,
+   * headings, description last, plus a coverage bonus for how many distinct
+   * query words the page accounts for. The tag filter is a soft AND — a page
+   * carrying none is dropped only when no query keeps it in on other evidence.
    */
   export function search(
     pages: readonly Page[],
@@ -322,11 +291,9 @@ export namespace WikiIndex {
       if (wanted.length > 0 && tagFilterScore === 0 && tokens.length === 0) continue
 
       if (tokens.length > 0 || phrase) {
-        // Which of the query's words this page accounts for ANYWHERE in its
-        // metadata. A page that answers two of three words beats one that
-        // answers a single word very loudly - without it, one page carrying a
-        // common word as a literal tag (`model`) outranks the page whose title
-        // and description carry the distinctive words as well.
+        // Which of the query's words this page accounts for anywhere. Without
+        // it, a page carrying a common word as a literal tag outranks one whose
+        // title and description carry the distinctive words too.
         const covered = new Set<string>()
 
         for (const tag of page.tags) {
@@ -379,8 +346,8 @@ export namespace WikiIndex {
     return counts
   }
 
-  /** Tags that co-occur inside a HIT SET, most common first, excluding the ones
-   *  already asked for. This is the "narrow it from here" move. */
+  /** Tags that co-occur inside a hit set, most common first, excluding the ones
+   *  already asked for — the "narrow it from here" move. */
   export function relatedTags(
     hits: readonly Hit[],
     exclude: readonly string[],
@@ -399,11 +366,9 @@ export namespace WikiIndex {
       .slice(0, limit)
   }
 
-  /**
-   * The RECOVERY move, and the reason a miss is not a dead end: the tags in the
-   * vocabulary closest to what was asked for, by substring or an edit distance
-   * of at most 2, each with the number of pages under it.
-   */
+  /** The recovery move that keeps a miss from being a dead end: the vocabulary
+   *  tags closest to what was asked for, by substring or an edit distance of at
+   *  most 2, each with the number of pages under it. */
   export function nearestTags(
     pages: readonly Page[],
     probes: readonly string[],
@@ -485,8 +450,8 @@ export namespace WikiIndex {
     return { page: undefined, nearest }
   }
 
-  /** Pages whose body links to `page` — the question grep cannot answer cheaply,
-   *  because a link is written as a bare name and the page id is a path. */
+  /** Pages whose body links to `page` — grep cannot answer this cheaply, because
+   *  a link is written as a bare name and the page id is a path. */
   export function inbound(pages: readonly Page[], page: Page): Page[] {
     return pages.filter(
       (other) => other.id !== page.id && other.links.some((link) => resolveLink(pages, link)?.id === page.id),

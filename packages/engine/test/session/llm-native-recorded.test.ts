@@ -20,6 +20,7 @@ import { LLM } from "../../src/session/llm"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { redactRecordedBody } from "./llm-parity/redact"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
 import { AppNodeBuilder } from "@origami/core/effect/app-node-builder"
@@ -231,12 +232,6 @@ const recordError = (scenario: RecordedScenario) =>
     ? "Set ORIGAMI_RECORD_OPENAI_AUTH to an OAuth auth JSON object in the recording environment."
     : `Missing recording credentials for ${scenario.name}.`
 
-const redactRecordedBody = (body: string) =>
-  body
-    .replace(/wrk_[A-Z0-9]+/g, "wrk_redacted")
-    .replace(/"safety_identifier"\s*:\s*"user-[^"]+"/g, '"safety_identifier":"user_redacted"')
-    .replace(/"(access|access_token|refresh|refresh_token|accountId|account_id)"\s*:\s*"[^"]+"/g, '"$1":"redacted"')
-
 function authLayer(scenario: RecordedScenario) {
   const replayAuth = shouldRecord ? scenario.recordAuth?.() : scenario.replayAuth
   if (!replayAuth) return undefined
@@ -279,7 +274,18 @@ function recordedNativeLLMLayer(scenario: RecordedScenario) {
         metadata,
         redactor: HttpRecorderInternal.Redactor.make(redact),
       })
-    : HttpRecorder.http(scenario.cassette, { directory: FIXTURES_DIR, metadata, redact })
+    : // These cassettes were recorded by the native runtime of May 2026. The
+      // request body it builds today differs on purpose (developer role,
+      // tool_choice, eager streaming, cache breakpoints — every one mirrored
+      // from the AI SDK and pinned byte-for-byte by the parity harness in
+      // llm-parity.test.ts), so replay matches on method + URL and this test
+      // asserts what it is for: decoding the recorded STREAM into events.
+      HttpRecorder.http(scenario.cassette, {
+        directory: FIXTURES_DIR,
+        metadata,
+        redact,
+        match: (incoming, recorded) => incoming.method === recorded.method && incoming.url === recorded.url,
+      })
   return AppNodeBuilder.build(LayerNode.group([Provider.node, LLM.node]), [
     [LayerNodePlatform.requestExecutor, RequestExecutor.layer.pipe(Layer.provide(recordedHttp))],
     [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: true })],

@@ -29,12 +29,13 @@ import {
   splitModel,
   visionPinKey,
   visionStateFor,
+  visionStatesFor,
   visionWrites,
   writeVisionPin,
   type PinStore,
   type VisionPinHost,
 } from '../../../src/dashboard/visionPin';
-import { VISION_MODES } from '../components/visionPinState';
+import { TRIAD_CHOICES } from '../components/visionTriad';
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -155,6 +156,57 @@ describe('what the control shows — pin beats config, and "detected" is a diffe
     const readVision = vi.fn(() => true);
     expect(visionStateFor(storeOf(), { providerId: '', modelId: '' }, readVision)).toBe('auto-off');
     expect(readVision).not.toHaveBeenCalled();
+  });
+});
+
+// The LIST form, for the model picker's per-row chips. Same rule, applied
+// across a whole catalogue — which is where two things can go wrong that the
+// single-model version cannot: a row can be given the WRONG provider's answer,
+// and a row's other fields can be lost on the way through.
+describe('the same answer for a whole picker list', () => {
+  const store = storeOf({ [visionPinKey('lmstudio', 'qwen3-vl')]: 'on' });
+  const readVision = (_p: string, m: string) => m === 'llava';
+
+  it('answers per row, with the pin beating the config on the row that has one', () => {
+    const rows = visionStatesFor(store, [
+      { value: 'lmstudio/qwen3-vl' },
+      { value: 'lmstudio/llava' },
+      { value: 'lmstudio/text-only' },
+    ], 'lmstudio', readVision);
+    expect(rows.map((r) => r.visionState)).toEqual(['on', 'auto-on', 'auto-off']);
+  });
+
+  it('keeps two providers serving the SAME model id apart', () => {
+    // A pin on the local copy of `qwen3-vl` must not speak for the Spark's — a
+    // different quant with a different projector. The single-model version keys
+    // on the provider; a list version that split on the wrong slash would not.
+    const rows = visionStatesFor(store, [
+      { value: 'lmstudio/qwen3-vl' },
+      { value: 'spark/qwen3-vl' },
+    ], 'lmstudio', () => false);
+    expect(rows.map((r) => r.visionState)).toEqual(['on', 'auto-off']);
+  });
+
+  it('splits on the FIRST slash only — model ids carry their own', () => {
+    const rows = visionStatesFor(storeOf({ [visionPinKey('lmstudio', 'qwen/qwen3-vl')]: 'on' }),
+      [{ value: 'lmstudio/qwen/qwen3-vl' }], 'lmstudio', () => false);
+    expect(rows[0].visionState).toBe('on');
+  });
+
+  it('a bare id belongs to the local provider', () => {
+    const rows = visionStatesFor(store, [{ value: 'qwen3-vl' }], 'lmstudio', () => false);
+    expect(rows[0].visionState).toBe('on');
+  });
+
+  it('carries every other field through untouched — it is a FILL, not a projection', () => {
+    // The picker's rows also hold `name` and `configured`, and the row component
+    // draws both. A rebuild here would blank the model names in the menu.
+    const rows = visionStatesFor(store, [{ value: 'lmstudio/llava', name: 'LLaVA', configured: true }], 'lmstudio', readVision);
+    expect(rows[0]).toEqual({ value: 'lmstudio/llava', name: 'LLaVA', configured: true, visionState: 'auto-on' });
+  });
+
+  it('an empty catalogue is an empty list, not a throw', () => {
+    expect(visionStatesFor(store, [], 'lmstudio', readVision)).toEqual([]);
   });
 });
 
@@ -332,9 +384,18 @@ describe('applying a click on Auto / On / Off', () => {
   });
 
   it('every mode the UI can send is one this understands', () => {
-    // The drift guard between the button table and the handler: a fourth button,
+    // The drift guard between the choice table and the handler: a fourth choice,
     // or a renamed wire value, would land here as an unintended Auto.
-    expect(VISION_MODES.map((m) => m.wire).sort()).toEqual(['', 'off', 'on']);
+    //
+    // 'off' is DELIBERATELY absent from what the UI can send and DELIBERATELY
+    // still understood below. The Off button is retired — nothing offers to pin
+    // a model as blind any more — but pins already in globalState are still
+    // obeyed, and a handler that had forgotten the word would quietly turn every
+    // one of them into an Auto the next time its owner touched the control.
+    // ...and the "Off: the same, mirrored" case above is what proves the second
+    // half: the handler still writes a stored 'off' correctly.
+    const wires = TRIAD_CHOICES.map((c) => c.wire).filter((w) => w !== undefined);
+    expect(wires.sort()).toEqual(['', 'on']);
   });
 
   it('a chat with no model selected explains itself and writes nothing', async () => {
@@ -374,11 +435,11 @@ describe('the wiring in DashboardPanel.ts', () => {
     expect(reconcileBody).toMatch(/pinned:\s*\(\w+\)\s*=>\s*readVisionPin\(this\.context\.globalState/);
   });
 
-  it('the reconcile pass has no second, un-pinned path to writeModelVision', () => {
+  it('the reconcile pass has no second, un-pinned path to the vision writer', () => {
     // A raw `seen.get(id)` loop beside the plan is how the skip would come back
     // out: both loops would write, and the pinned one would lose.
     expect(reconcileBody).not.toContain('seen.get(');
-    expect(reconcileBody.match(/writeModelVision\(/g)).toHaveLength(1);
+    expect(reconcileBody.match(/this\.writeVision\(/g)).toHaveLength(1);
   });
 
   it('the pin is read out of GLOBAL state, not the workspace one', () => {
@@ -390,17 +451,79 @@ describe('the wiring in DashboardPanel.ts', () => {
 
   it('the composer\'s click reaches applyVisionPin', () => {
     const handler = panel.slice(panel.indexOf("case 'setVisionPin'"));
-    expect(handler.slice(0, 800)).toContain('applyVisionPin({');
-    // The message the row actually posts (VisionPinRow.svelte) — a rename on
+    expect(handler.slice(0, 1400)).toContain('applyVisionPin({');
+    // The message the control actually posts (VisionPinRow.svelte) — a rename on
     // either side leaves a control that silently does nothing.
     const row = readFileSync(path.join(pkgRoot, 'webview/dashboard/components/VisionPinRow.svelte'), 'utf8');
     expect(row).toContain("type: 'setVisionPin'");
   });
 
+  // THE LIVE PIN. Both vision writes go through the SAME refreshing seam the API
+  // key and the context window already use, so `provider_refresh` fires and the
+  // engine rebuilds `capabilities.input.image` for the next message. Before
+  // this, a pin only reached origami.json and the running engine went on
+  // swapping every attached image for the "cannot read images" text part until
+  // the window was reloaded.
+  //
+  // Read from the source because the panel needs an extension host to exist. The
+  // BEHAVIOUR of the seam is proven in providerRefresh.test.ts (extension side)
+  // and packages/engine/test/acp/provider-refresh-vision.test.ts (engine side);
+  // what is checked here is that this panel actually uses it — which is the half
+  // that was missing.
+  describe('the pin applies without a reload', () => {
+    it('wires writeModelVision through refreshingWriter, like its two siblings', () => {
+      expect(panel).toMatch(
+        /writeVision\s*=\s*refreshingWriter\(writeModelVision,\s*\(\)\s*=>\s*this\.engineRefreshTargets\(\)\)/,
+      );
+    });
+
+    it('no vision write bypasses that seam', () => {
+      // The raw import may be named exactly once — at the wrapper. A second bare
+      // `writeModelVision(` anywhere is a write the engines are never told about,
+      // which is the defect in its original form.
+      expect(panel.match(/(?<!\.)\bwriteModelVision\(/g)).toBeNull();
+      expect(panel.match(/\bthis\.writeVision\(/g)).toHaveLength(1);
+      expect(panel).toContain('writeVision: this.writeVision');
+    });
+
+    it('nothing in the pin path still asks the user to reload the window', () => {
+      const pin = readFileSync(path.join(pkgRoot, 'src/dashboard/visionPin.ts'), 'utf8');
+      const row = readFileSync(path.join(pkgRoot, 'webview/dashboard/components/VisionPinRow.svelte'), 'utf8');
+      // visionPin.ts's header explains the OLD behaviour by name, so the check is
+      // on what the user is told, not on the word appearing in prose.
+      expect(row.toLowerCase()).not.toContain('reload');
+      expect(pin).toContain('provider_refresh');
+    });
+  });
+
+  // THE PICKER'S ROW CHIP. Its click means "this row's model", not "this chat's
+  // model" — the user may be pointing at a model they have no intention of
+  // switching to, and pinning the active one instead would be silently wrong.
+  describe('the model picker chip', () => {
+    it('the handler prefers an explicit modelId over the session\'s own model', () => {
+      const handler = panel.slice(panel.indexOf("case 'setVisionPin'"), panel.indexOf("case 'setVisionPin'") + 1600);
+      expect(handler).toMatch(/current:\s*String\(m\.modelId \?\? ''\) \|\|/);
+      // ...and still falls back, because the composer's control sends none.
+      expect(handler).toContain('getModelOption()?.current');
+    });
+
+    it('a pin write repaints the PICKER as well as the composer', () => {
+      // Two surfaces read the same fact from two different broadcasts. Repainting
+      // only one leaves them disagreeing until the next poll.
+      const handler = panel.slice(panel.indexOf("case 'setVisionPin'"), panel.indexOf("case 'setVisionPin'") + 1600);
+      expect(handler).toMatch(/refresh:[^\n]*broadcastModelStatus\(\)[^\n]*broadcastModelOptions\(\)/);
+    });
+
+    it('the picker sends the row\'s model with the pin', () => {
+      const picker = readFileSync(path.join(pkgRoot, 'webview/dashboard/components/ModelPicker.svelte'), 'utf8');
+      expect(picker).toMatch(/type: 'setVisionPin',[^\n]*modelId: value/);
+    });
+  });
+
   it('going back to Auto re-arms the once-per-panel reconcile guard', () => {
     // Without the reset, `reconcileVisionCapabilities` returns at its first line
     // and the detected answer does not come back until the panel is reopened.
-    const handler = panel.slice(panel.indexOf("case 'setVisionPin'"), panel.indexOf("case 'setVisionPin'") + 1200);
+    const handler = panel.slice(panel.indexOf("case 'setVisionPin'"), panel.indexOf("case 'setVisionPin'") + 1600);
     expect(handler).toMatch(/reconcile:[^\n]*this\.visionReconciled = false/);
     expect(handler).toContain('this.reconcileVisionCapabilities(');
   });

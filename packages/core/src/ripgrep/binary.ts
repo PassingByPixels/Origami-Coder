@@ -6,6 +6,7 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { CrossSpawnSpawner } from "../cross-spawn-spawner"
 import { makeGlobalNode } from "../effect/app-node"
 import { httpClient } from "../effect/app-node-platform"
+import { cachedInvalidateForever } from "../effect/cached"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
 import { which } from "../util/which"
@@ -88,10 +89,9 @@ export namespace RipgrepBinary {
         if (process.platform !== "win32") yield* fs.chmod(target, 0o755)
       }, Effect.scoped)
 
-      return Service.of({
-        filepath: yield* Effect.cached(
-          Effect.gen(function* () {
-            const exeName = process.platform === "win32" ? "rg.exe" : "rg"
+      const [filepath] = yield* cachedInvalidateForever(
+        Effect.gen(function* () {
+          const exeName = process.platform === "win32" ? "rg.exe" : "rg"
 
             // Rung 0: an explicitly provided binary. The VS Code extension sets
             // this to the rg it ships beside the bundled engine, so a merged
@@ -146,9 +146,10 @@ export namespace RipgrepBinary {
             yield* extract(archive, config, target)
             yield* fs.remove(archive, { force: true }).pipe(Effect.ignore)
             return target
-          }),
-        ),
-      })
+        }),
+      )
+
+      return Service.of({ filepath })
     }),
   )
 

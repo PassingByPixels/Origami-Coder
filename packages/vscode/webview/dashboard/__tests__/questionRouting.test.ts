@@ -116,7 +116,7 @@ describe('DashboardPanel S7.1 wiring — source guards for the untestable glue',
   );
 
   it('stores respond BEFORE the buffer decision (a reorder would leave the buffered question with no respond to resolve)', () => {
-    expect(src).toMatch(/pendingPermissions\.set\(toolCallId, respond\);[\s\S]*?shouldBufferQuestion\(session\.kind, mounted, options\)/);
+    expect(src).toMatch(/pendingPermissions\.set\(toolCallId, \{ respond, options \}\);[\s\S]*?shouldBufferQuestion\(session\.kind, mounted, options\)/);
   });
 
   it('the buffer guard runs BEFORE the S6e auto-decision and early-RETURNS (a dropped return lets a question be auto-answered too)', () => {

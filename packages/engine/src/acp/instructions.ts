@@ -12,21 +12,14 @@ import type * as ACPError from "./error"
 
 /**
  * Read-only inventory of everything that feeds the system prompt, for the
- * `list_instructions` ext method. Sizes only for the FILES — the shell opens
- * those itself, so their contents never cross the wire.
- *
- * The exceptions are the OVERRIDE rows, and none of them is a file: the shipped
- * prompt text is compiled into this binary, so a shell that wants to show it —
- * or seed the override file with it — has nowhere else to read it from.
+ * `list_instructions` ext method. Sizes only for the FILES - the shell opens those
+ * itself, so their contents never cross the wire. The OVERRIDE rows are the
+ * exception: the shipped prompt text is compiled in, with no file to read it from.
  */
 
 /**
- * The two built-in prompts a user can replace with a file of their own. Each
- * gets a row carrying its EFFECTIVE text and the path that overrides it.
- *
- * The collab room manual used to be a third. It is gone: one base prompt now
- * states the room's rules, and what is left below the persona is live turn
- * state with no file behind it and nothing for a user to edit.
+ * The two built-in prompts a user can replace with a file of their own. Each gets a
+ * row carrying its EFFECTIVE text and the path that overrides it.
  */
 export type OverrideSource = "base-prompt" | "collab-agent-base"
 
@@ -38,23 +31,17 @@ export type InstructionEntry = {
   readonly chars: number
   readonly bytes: number
   readonly tokensApprox: number
-  /**
-   * Only on an OVERRIDE entry: true when the user's own file supplies the
-   * prompt, false when the shipped built-in does. Absent everywhere else — an
-   * ordinary instruction file either feeds the prompt or is not listed, so it
-   * has nothing to be overridden by.
-   */
+  /** Only on an OVERRIDE entry: true when the user's own file supplies the prompt,
+   *  false when the shipped built-in does. Absent everywhere else - an ordinary
+   *  instruction file either feeds the prompt or is not listed. */
   readonly overridden?: boolean
 }
 
 /**
  * The EFFECTIVE text of one overridable prompt, plus the path a user edits to
- * change it.
- *
- * Carries TEXT, unlike the rest of this inventory, and deliberately: a shell
- * has to SEED the override file with what the model is really being told today,
- * and the built-in is compiled into the binary — there is no file for the shell
- * to read it out of instead.
+ * change it. Carries TEXT, unlike the rest of this inventory: a shell has to SEED
+ * the override file with what the model is really being told, and the built-in is
+ * compiled into the binary.
  */
 export type BasePrompt = {
   readonly path: string
@@ -67,10 +54,8 @@ export type InstructionSet = {
   readonly totalChars: number
   readonly totalBytes: number
   readonly totalTokensApprox: number
-  /**
-   * Names the estimator so a caller never mistakes it for a measurement.
-   * These counts are NOT tokenised — they are a chars/4 heuristic.
-   */
+  /** Names the estimator so a caller never mistakes it for a measurement: these
+   *  counts are a chars/4 heuristic, not a tokenisation. */
   readonly tokensApproxMethod: "chars/4"
   /** Absent only from a caller that built a set without resolving one. */
   readonly basePrompt?: BasePrompt
@@ -89,13 +74,10 @@ export function estimateTokens(chars: number): number {
 }
 
 /**
- * Label a resolved instruction path. `Instruction.systemPaths()` returns a flat
- * Set with no provenance, so classification is done by matching against the
- * exact paths its resolver can produce.
- *
- * KNOWN LIMIT: a `config.instructions` glob that happens to resolve to an
- * AGENTS.md/CLAUDE.md/CONTEXT.md inside the worktree is reported as `project`.
- * The file is still listed with correct sizes; only its label is ambiguous.
+ * Label a resolved instruction path. `Instruction.systemPaths()` returns a flat Set
+ * with no provenance, so classification matches against the exact paths its
+ * resolver can produce. KNOWN LIMIT: a `config.instructions` glob that resolves to
+ * an AGENTS.md/CLAUDE.md/CONTEXT.md inside the worktree is reported as `project`.
  */
 export function classify(input: {
   readonly filepath: string
@@ -115,14 +97,9 @@ export function classify(input: {
 
 /**
  * One override row and the object that lets a shell seed the override file.
- *
- * `override` is the user's file content when it exists and is non-empty, and
- * undefined otherwise; the sizes are always the EFFECTIVE prompt's, so the row
- * measures what the model is really sent either way.
- *
- * The path is the override path in BOTH cases. When nothing overrides it that
- * file does not exist yet, and `overridden: false` says so — but naming the
- * place a user would edit is the entire reason this row is on screen.
+ * `override` is the user's file content when it exists and is non-empty; the sizes
+ * are always the EFFECTIVE prompt's. The path is the override path in BOTH cases -
+ * naming the place a user would edit is the entire reason this row is on screen.
  */
 export function overrideRow(input: {
   readonly source: OverrideSource
@@ -156,19 +133,16 @@ export function totals(entries: readonly InstructionEntry[], basePrompt?: BasePr
   }
 }
 
-/**
- * Runs against the process-wide AppRuntime, which already provides every
- * service used here. Building a private layer stack instead would stand up a
- * SECOND Database/Config/Plugin instance and deadlock against the live one.
- */
+/** Runs against the process-wide AppRuntime, which already provides every
+ *  service used here. Building a private layer stack instead would stand up a
+ *  SECOND Database/Config/Plugin instance and deadlock against the live one. */
 export const list = Effect.fn("ACPInstructions.list")(function* (directory: string) {
   const store = yield* InstanceStore.Service
   const instruction = yield* Instruction.Service
   const cfg = yield* Config.Service
   const fs = yield* FSUtil.Service
-  // `Global.make()` is exactly what Global's own layer wraps (`Service.of(make())`),
-  // so these match the resolver's values without needing the service — which
-  // AppRuntime does not expose at the top level.
+  // `Global.make()` is exactly what Global's own layer wraps, so these match the
+  // resolver's values without needing the service, which AppRuntime does not expose.
   const global = Global.make()
 
   const globalPaths = [path.join(global.config, "AGENTS.md"), path.join(global.home, ".claude", "CLAUDE.md")]
@@ -199,20 +173,15 @@ export const list = Effect.fn("ACPInstructions.list")(function* (directory: stri
       { concurrency: 8 },
     )
 
-    // Remote instructions are declared in config, never in systemPaths().
-    // Listed with zero sizes: measuring them would mean fetching them, and
-    // this method must stay a cheap read-only inventory.
+    // Remote instructions are declared in config, never in systemPaths(). Listed
+    // with zero sizes: measuring them would mean fetching them.
     const urls = (config.instructions ?? [])
       .filter((item) => item.startsWith("https://") || item.startsWith("http://"))
       .map((item): InstructionEntry => ({ path: item, source: "url", chars: 0, bytes: 0, tokensApprox: 0 }))
 
-    // FIRST, always. Every other row is a file the user added on top; these are
-    // the prompts they never chose and, until now, could not see — so they lead
-    // the inventory rather than sorting in among the files by size.
-    //
-    // The collab row reaches only COLLAB turns, not every prompt. It is listed
-    // here anyway because it is the same kind of thing — shipped prompt text,
-    // editable at a named path — and a user who cannot see it cannot change it.
+    // FIRST, always. Every other row is a file the user added on top; these are the
+    // prompts they never chose. The collab row reaches only COLLAB turns but is
+    // listed here too - a user who cannot see it cannot change it.
     const base = overrideRow({
       source: "base-prompt",
       builtIn: SystemPrompt.BASE_PROMPT_BUILTIN,

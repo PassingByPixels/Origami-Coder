@@ -4,6 +4,8 @@ import { SessionV1 } from "@origami/core/v1/session"
 import { Runner } from "@/effect/runner"
 import { BackgroundJob } from "@/background/job"
 import { Effect, Latch, Layer, Scope, Context } from "effect"
+import { Database } from "@origami/core/database/database"
+import { StorageNestsHandover } from "@/storage/nests-handover"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
@@ -31,6 +33,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const background = yield* BackgroundJob.Service
     const status = yield* SessionStatus.Service
+    const database = yield* Database.Service
 
     const state = yield* InstanceState.make(
       Effect.fn("SessionRunState.state")(function* () {
@@ -63,9 +66,8 @@ const layer = Layer.effect(
         }),
         onBusy: status.set(sessionID, { type: "busy" }),
         // A prompt that lands mid-turn is joined onto the running turn and its
-        // own work discarded (see Runner.ensureRunning). Nothing surfaced that,
-        // so the user's second message just vanished until the step ended.
-        // Count it on the session status instead.
+        // own work discarded (see Runner.ensureRunning). Counted on the session
+        // status, or the user's second message appears to vanish until the step ends.
         onJoin: status.bumpQueued(sessionID).pipe(Effect.asVoid),
         onInterrupt,
       })
@@ -80,7 +82,12 @@ const layer = Layer.effect(
     })
 
     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID, spareDetached = false) {
-      yield* cancelBackgroundJobs(background, sessionID, spareDetached)
+      // The transitive walk is owned by the registry (t-dcl8fe), so the
+      // max-duration watchdog stops a subtree exactly the way a turn stop does.
+      // The reason travels with the cascade: a child stopped here was stopped
+      // because THIS session's turn was, which is not the parent deciding
+      // anything (tool/task.ts renders the difference).
+      yield* BackgroundJob.cancelTree(background, sessionID, { spareDetached, reason: "parent_turn_stopped" })
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (!existing) {
@@ -90,12 +97,19 @@ const layer = Layer.effect(
       yield* existing.cancel
     })
 
+    // t-tc2b6c: other engines on this store see the turn, and a Nests release
+    // in any of them stops it with the same stop as the session abort route.
+    const leased = (sessionID: SessionID, work: Effect.Effect<SessionV1.WithParts>) =>
+      StorageNestsHandover.withRunLease(sessionID, work, cancel(sessionID, true)).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+
     const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(leased(sessionID, work))
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -105,7 +119,7 @@ const layer = Layer.effect(
       ready?: Latch.Latch,
     ) {
       return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(work, ready)
+        .startShell(leased(sessionID, work), ready)
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
@@ -113,50 +127,14 @@ const layer = Layer.effect(
   }),
 )
 
-const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(function* (
-  background: BackgroundJob.Interface,
-  sessionID: SessionID,
-  spareDetached = false,
-) {
-  const jobs = yield* background.list()
-  const pending = new Set<string>([sessionID])
-  const cancelled = new Set<string>()
-  const matches = (job: BackgroundJob.Info) => {
-    if (job.status !== "running") return false
-    if (cancelled.has(job.id)) return false
-    // A parent turn-stop (spareDetached) must leave detached background sub-agents
-    // running - they outlive the turn and notify on completion. The direct cancel
-    // target is still killable via its own id, so removal / a direct abort still work.
-    if (spareDetached && job.metadata?.background === true && job.id !== sessionID && job.metadata?.sessionId !== sessionID)
-      return false
-    if (pending.has(job.id)) return true
-    if (typeof job.metadata?.sessionId === "string" && pending.has(job.metadata.sessionId)) return true
-    return typeof job.metadata?.parentSessionId === "string" && pending.has(job.metadata.parentSessionId)
-  }
-  let batch = jobs.filter(matches)
-  while (batch.length > 0) {
-    yield* Effect.forEach(
-      batch,
-      (job) =>
-        background.cancel(job.id).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              cancelled.add(job.id)
-              pending.add(job.id)
-              if (typeof job.metadata?.sessionId === "string") pending.add(job.metadata.sessionId)
-            }),
-          ),
-        ),
-      { concurrency: "unbounded", discard: true },
-    )
-    batch = jobs.filter(matches)
-  }
-})
-
 function busyError(sessionID: SessionID) {
   return new Session.BusyError({ sessionID })
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [BackgroundJob.node, SessionStatus.node] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [BackgroundJob.node, SessionStatus.node, Database.node],
+})
 
 export * as SessionRunState from "./run-state"

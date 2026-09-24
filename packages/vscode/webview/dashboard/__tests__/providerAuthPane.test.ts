@@ -113,13 +113,22 @@ describe('oauthMethods — the API-key entry never shows up as a sign-in button'
 });
 
 describe('providerAuthRequest', () => {
-  it('reports only the two OAuth connections, with the API-key methods stripped', async () => {
+  it('reports every OAuth connection in the catalog, with the API-key methods stripped', async () => {
+    // Keyed on OAUTH_PROVIDERS rather than a spelled-out pair: the engine lists
+    // EVERY plugin with an auth hook, and the pane reports only the ones the
+    // catalog knows how to write a config block for. Adding a fourth connection
+    // must not need this line edited — but a provider silently DROPPED from the
+    // payload still has to fail here, which is why the key set is compared.
     const h = harness({ provider_auth_list: BROWSER_AND_HEADLESS });
     await handleProviderAuthMessage(h.host, { type: 'providerAuthRequest' });
     const data = h.posted[0] as { type: string; methods: Record<string, unknown[]> };
     expect(data.type).toBe('providerAuthData');
-    expect(Object.keys(data.methods).sort()).toEqual(['openai', 'xai']);
+    expect(Object.keys(data.methods).sort()).toEqual(Object.keys(OAUTH_PROVIDERS).sort());
     expect(data.methods['openai']).toHaveLength(2);
+    // A catalog provider the engine did not mention gets an empty list, never a
+    // missing key — the form reads `oauthMethods[target]` and would render its
+    // fallback button against `undefined` otherwise.
+    expect(data.methods['github-copilot']).toEqual([]);
   });
 
   it('an api-only credential is NOT reported as signed in', async () => {
@@ -132,6 +141,29 @@ describe('providerAuthRequest', () => {
     await handleProviderAuthMessage(h.host, { type: 'providerAuthRequest' });
     const data = h.posted[0] as { connected: Record<string, unknown> };
     expect(data.connected).toEqual({ xai: { type: 'oauth', expires: 123 } });
+  });
+
+  it('a GitHub Copilot OAuth credential is reported connected — the model bar\'s usage pill gates on this, not a second capable-ids list', () => {
+    // ModelPicker.svelte's `canReadUsage` is `oauthConnected[id] ||
+    // usageCapable.includes(id)`. `usageCapable` (usageCapable.ts,
+    // KEY_USAGE_PROVIDERS) is deliberately the OPPOSITE set — providers bought
+    // with an API KEY (opencode-go) — so GitHub Copilot's usage pill can only
+    // light up through THIS path: `github-copilot` sitting in OAUTH_PROVIDERS
+    // (asserted below) so `connected['github-copilot']` gets populated the same
+    // way it already does for openai/xai.
+    expect(Object.keys(OAUTH_PROVIDERS)).toContain('github-copilot');
+  });
+
+  it('a GitHub Copilot OAuth credential flows through `connected`, end to end', async () => {
+    const h = harness({
+      provider_auth_list: {
+        ...BROWSER_AND_HEADLESS,
+        connected: { 'github-copilot': { type: 'oauth', expires: 0 } },
+      },
+    });
+    await handleProviderAuthMessage(h.host, { type: 'providerAuthRequest' });
+    const data = h.posted[0] as { connected: Record<string, unknown> };
+    expect(data.connected).toEqual({ 'github-copilot': { type: 'oauth', expires: 0 } });
   });
 
   it('with no engine session it says so instead of showing an empty, silent form', async () => {

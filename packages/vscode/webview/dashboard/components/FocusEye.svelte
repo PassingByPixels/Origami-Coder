@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from '../../shared/warmTip';
   // The composer's FOCUS toggle — the eye at the right-hand end of the changes
   // row, level with Send. Pressed, the transcript above it drops to the
   // conversation alone: no tool cards, no reasoning, no turn bookkeeping. It is
@@ -27,7 +28,7 @@
   class:on={focused}
   aria-pressed={focused}
   aria-label="Focus view"
-  title={focused
+  use:tip={focused
     ? 'Exit focus — show everything (reasoning, tool activity, turn verdicts)'
     : 'Focus — show only the conversation (hide reasoning and tool activity)'}
   onclick={onToggle}

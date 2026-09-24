@@ -2,50 +2,34 @@ import { SessionV1 } from "@origami/core/v1/session"
 import type { Err } from "./retry"
 
 /**
- * Knob rejection: an endpoint refusing ONE request field rather than failing.
+ * Knob rejection: an endpoint refusing one request field rather than failing.
  *
- * The engine derives some request fields from the model NAME (provider/transform.ts
- * picks reasoning tiers by regex on the model id). That holds for hosted vendor
- * APIs, where the vendor owns both the name and the published tiers. It does not
- * hold for a self-hosted endpoint, where the id is whatever `--served-model-name`
- * was given and the accepted vocabulary lives inside the container.
- *
- * When the guess is wrong the endpoint answers with a status and a message that
- * NAMES the field — the highest-quality capability signal available. Retrying the
- * identical request cannot make that message change, so the retry loop turns a
- * one-line problem into a silent hang. Instead: drop the field, retry once, and
- * remember the rejection for the rest of the session.
- *
- * The store is process-local and session-scoped by design. A capability cache
- * that survives a restart has to be keyed on something that moves when the
- * server changes (vLLM returns `system_fingerprint` for exactly this), and that
- * is a separate piece of work — see the capability-discovery arc.
+ * The engine derives some request fields from the model name, which holds for
+ * hosted vendor APIs but not for a self-hosted endpoint. When the guess is wrong
+ * the endpoint names the field, and retrying the identical request cannot change
+ * that — so drop the field, retry once, and remember it for the session. The
+ * store is process-local: a cache surviving a restart would have to be keyed on
+ * something that moves when the server does (vLLM's `system_fingerprint`).
  */
 
 export type Knob = {
   /**
-   * Every spelling this knob can carry in the flat request-options record that
-   * `LLMRequestPrep.prepare` assembles. camelCase is what `ProviderTransform`
-   * writes and what the AI SDK renames on the wire (`@ai-sdk/openai-compatible`
-   * maps `reasoningEffort` -> `reasoning_effort`); the snake_case spelling
-   * exists because a variant body can carry the wire name directly, and unknown
-   * keys are spread into the body verbatim.
+   * Every spelling this knob can carry in the flat request-options record.
+   * `ProviderTransform` writes camelCase; snake_case exists because a variant
+   * body can carry the wire name directly and unknown keys are spread verbatim.
    */
   readonly keys: readonly string[]
   /** What the user is told was dropped. */
   readonly label: string
-  /** Matches an error message that names THIS knob. */
+  /** Matches an error message that names this knob. */
   readonly names: RegExp
 }
 
 /**
- * Only knobs the engine SYNTHESISES on the user's behalf and can drop on its
- * own are listed. Each is a standalone scalar with no interlock: dropping it
- * leaves a valid request that the endpoint answers with its own default.
- *
- * `reasoningSummary`/`include` are deliberately absent — they are set and
- * cleared together (see the Azure branch in session/llm/request.ts), so
- * dropping one of them alone would leave an inconsistent request.
+ * Only knobs the engine synthesises on the user's behalf and can drop on its own.
+ * Each is a standalone scalar with no interlock, so dropping it leaves a valid
+ * request. `reasoningSummary`/`include` are deliberately absent — they are set
+ * and cleared together, so dropping one alone would be inconsistent.
  */
 export const KNOBS: readonly Knob[] = [
   {
@@ -58,13 +42,19 @@ export const KNOBS: readonly Knob[] = [
     label: "text verbosity",
     names: /\b(?:text[\s_-]?)?verbosity\b/i,
   },
+  {
+    // Derived from the model FAMILY (transform.ts promptCacheRetention), so a
+    // sibling model in a listed family that does not take extended retention
+    // refuses it; dropping it leaves an ordinary in-memory cached prefix.
+    keys: ["promptCacheRetention", "prompt_cache_retention"],
+    label: "prompt cache retention",
+    names: /prompt[\s_-]?cache[\s_-]?retention/i,
+  },
 ]
 
 /**
- * A message has to READ as a rejection before any knob name in it counts. A
- * server can mention a field in prose ("reasoning effort budget exhausted")
- * without refusing it, and misreading that as a knob rejection would drop a
- * field the endpoint was happy with.
+ * A message has to read as a rejection before any knob name in it counts: a
+ * server can mention a field in prose without refusing it.
  */
 const REJECTION = /\b(?:invalid|unsupported|unrecognized|unrecognised|unknown|unexpected|not supported|not allowed|must be one of|is not one of)\b/i
 
@@ -81,18 +71,13 @@ export function isAuth(error: Err): boolean {
 function scan(text: string | undefined): Knob | undefined {
   if (!text || !REJECTION.test(text)) return undefined
   const hits = KNOBS.filter((knob) => knob.names.test(text))
-  // Exactly one. A message naming two knobs does not say which one was
-  // refused, and guessing would drop a field for no evidence.
+  // Exactly one: a message naming two knobs does not say which was refused.
   return hits.length === 1 ? hits[0] : undefined
 }
 
 /**
- * The knob this error rejects, or undefined when the error is anything else.
- *
- * Conservative on purpose: no HTTP status means no rejection to read, and an
- * error this cannot parse falls through to the ordinary retry path — the
- * classifier must never invent a new failure mode for errors it does not
- * understand.
+ * The knob this error rejects, or undefined for anything else. No HTTP status
+ * means no rejection to read; an unparseable error takes the ordinary retry path.
  */
 export function detect(error: Err): Knob | undefined {
   const data = apiError(error)?.data
@@ -101,9 +86,8 @@ export function detect(error: Err): Knob | undefined {
 }
 
 /**
- * How many sessions keep a rejection set. Each holds a couple of short strings,
- * but a long-lived server opens a session per sub-agent, so the map is bounded
- * rather than left to grow with the process. Oldest write is evicted first.
+ * How many sessions keep a rejection set. A long-lived server opens a session per
+ * sub-agent, so the map is bounded; oldest write is evicted first.
  */
 export const LIMIT = 128
 
@@ -129,8 +113,8 @@ export function isRecorded(sessionID: string, knob: Knob): boolean {
 
 /**
  * The request options with every knob this session has had refused removed.
- * Called where the options record is assembled, so the DROP survives a fresh
- * `prepare` on the retry and on every later turn of the same session.
+ * Called where the options record is assembled, so the drop survives a fresh
+ * `prepare` on the retry and on every later turn of the session.
  */
 export function strip(sessionID: string, options: Record<string, any>): Record<string, any> {
   const labels = rejected.get(sessionID)

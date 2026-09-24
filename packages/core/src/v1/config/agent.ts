@@ -44,6 +44,21 @@ const AgentSchema = Schema.StructWithRest(
     }),
     maxSteps: Schema.optional(PositiveInt).annotate({ description: "@deprecated Use 'steps' field instead." }),
     permission: Schema.optional(ConfigPermissionV1.Info),
+    /**
+     * Per-agent deferral, in the SAME vocabulary as the global
+     * `experimental.tool_search`: `always` = send this tool's full schema,
+     * `defer` = one `tool_search` catalog line. The engine overlays these onto
+     * the global lists for this agent only (session/tools.ts), agent entries
+     * winning. Whether a tool exists at all for the agent stays `permission`
+     * (allow / deny) - presentation and existence are different questions, the
+     * same split the global keys make.
+     */
+    tool_search: Schema.optional(
+      Schema.Struct({
+        defer: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+        always: Schema.optional(Schema.mutable(Schema.Array(Schema.String))),
+      }),
+    ).annotate({ description: "Per-agent deferred-tool lists, overlaying experimental.tool_search" }),
   }),
   [Schema.Record(Schema.String, Schema.Any)],
 )
@@ -66,6 +81,7 @@ const KNOWN_KEYS = new Set([
   "permission",
   "disable",
   "tools",
+  "tool_search",
 ])
 
 const normalize = (agent: Schema.Schema.Type<typeof AgentSchema>): Schema.Schema.Type<typeof AgentSchema> => {

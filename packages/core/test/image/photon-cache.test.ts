@@ -1,0 +1,46 @@
+import { describe, expect, mock } from "bun:test"
+import { Effect, Fiber } from "effect"
+import { cachedInvalidateForever } from "@origami/core/effect/cached"
+import { ResizerUnavailableError } from "@origami/core/image"
+import { it } from "../lib/effect"
+
+/**
+ * t-ru0by6 item 2. `core/src/image/photon.ts:14` used to load the
+ * `@silvia-odwyer/photon-node` adapter with a bare `Effect.cached`, which
+ * memoises an INTERRUPT exit forever (the t-qbpgu3 root cause pinned in
+ * `core/test/effect/cached.test.ts`). The site now wraps the identical
+ * import/catch shape in `cachedInvalidateForever`. This drives that exact
+ * shape through a controllable dynamic import so a first caller can be
+ * interrupted mid-load, then proves the second caller still gets a real
+ * answer instead of the interrupt.
+ */
+
+let release: (() => void) | undefined
+const gate = new Promise<void>((resolve) => {
+  release = resolve
+})
+
+void mock.module("@silvia-odwyer/photon-node", () => gate.then(() => ({ marker: "photon-node" })))
+
+describe("Image.Photon adapter cache", () => {
+  it.live("an interrupted first loader does not poison the second caller", () =>
+    Effect.gen(function* () {
+      const [loadPhoton] = yield* cachedInvalidateForever(
+        Effect.tryPromise({
+          try: () => import("@silvia-odwyer/photon-node"),
+          catch: () => new ResizerUnavailableError(),
+        }),
+      )
+
+      const cancelled = yield* Effect.forkChild(loadPhoton)
+      // The mocked import stays pending on `gate` until released below, so
+      // this sleep only proves the fiber has started, not that it finished.
+      yield* Effect.sleep("5 millis")
+      yield* Fiber.interrupt(cancelled)
+
+      release?.()
+      const result = yield* loadPhoton
+      expect(result).toMatchObject({ marker: "photon-node" })
+    }),
+  )
+})

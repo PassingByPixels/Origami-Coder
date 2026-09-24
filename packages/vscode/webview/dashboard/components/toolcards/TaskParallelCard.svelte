@@ -7,8 +7,16 @@
   // (e.g. `── child N: <agent> ──`) or just blank lines.
   //
   // We try to split on the delimiter; if absent the whole result
-  // shows as one tab. Each tab uses the same MessageRow markdown
+  // shows as one section. Each section uses the same MessageRow markdown
   // pipeline as TaskCard so multi-line code blocks render properly.
+  //
+  // t-q910fo. NO HEADER OF ITS OWN. The card used to print a tab strip above
+  // the child rows — a second heading over a card the frame has already named
+  // (ToolCard.svelte draws the title, the sub-agent badge and the status), and
+  // one that no `task` card has. It also hid every child but one behind a click.
+  // The children are now stacked as ROWS, each labelled by MessageRow's own
+  // label the way every other transcript row is, so the card matches a task
+  // card and nothing is one interaction away.
 
   import MessageRow from '../MessageRow.svelte';
 
@@ -53,26 +61,17 @@
   }
 
   let children = $derived(parseChildren(result));
-  let activeIdx = $state(0);
 </script>
 
 <div class="parallel-card">
-  {#if children.length > 1}
-    <div class="parallel-tabs">
-      {#each children as c, i (i)}
-        <button
-          class="parallel-tab"
-          class:active={activeIdx === i}
-          onclick={() => activeIdx = i}
-        >
-          {c.label}
-        </button>
-      {/each}
+  <!-- One row per child, in order. A child is named only when there is more than
+       one to tell apart: an unsplit result is the whole answer, and labelling it
+       'Sub-agent output' would put back the very heading this card lost. -->
+  {#each children as c, i (i)}
+    <div class="parallel-body">
+      <MessageRow kind="agent" label={children.length > 1 ? c.label : ''} text={c.body} />
     </div>
-  {/if}
-  <div class="parallel-body">
-    <MessageRow kind="agent" label="" text={children[activeIdx]?.body ?? ''} />
-  </div>
+  {/each}
 </div>
 
 <style>
@@ -81,35 +80,13 @@
     font-size: 11px;
   }
 
-  .parallel-tabs {
-    display: flex;
-    gap: 2px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid var(--og-border);
-  }
-
-  .parallel-tab {
-    background: none;
-    border: none;
-    padding: 4px 8px;
-    color: var(--og-text-muted);
-    font-family: inherit;
-    font-size: 11px;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-  }
-  .parallel-tab:hover {
-    color: var(--og-text);
-  }
-  .parallel-tab.active {
-    color: var(--og-accent, #89b4fa);
-    border-bottom-color: var(--og-accent, #89b4fa);
-    font-weight: 600;
-  }
-
+  /* One stacked child. The accent rule is the only chrome left — the same
+     quoting bar TaskCard's own body uses. */
   .parallel-body {
     padding-left: 8px;
     border-left: 2px solid var(--og-accent-soft, rgba(137, 180, 250, 0.3));
+  }
+  .parallel-body + .parallel-body {
+    margin-top: 6px;
   }
 </style>

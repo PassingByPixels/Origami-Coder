@@ -1,16 +1,9 @@
-// Plugins pane — host side (t-kgtolm round 3: the management UI the loader/
-// config/parser work deferred). Routed out of DashboardPanel.ts the same way
-// tools/skills are, so the monolith carries only the one-line dispatch.
+// Plugins pane, host side — routed out of DashboardPanel.ts like tools/skills, so the monolith
+// carries only the one-line dispatch.
 //
-// Three jobs, all through the active session's generic `extMethod` — same
-// seam `listSkills` uses inline in DashboardPanel.ts, because the ENGINE, not
-// this process, owns the loader state, the config file resolution and the
-// manifest parser "add from folder" validates against: read the plugin list
-// (`list_agent_plugins`), flip one plugin's enabled state
-// (`agent_plugin_set_enabled`), and validate + append a new folder
-// (`agent_plugin_add`). Every write re-reads and re-posts the list afterward,
-// success or failure, so the pane never goes stale — same shape
-// `toolsPane.ts`'s `setDefer` uses.
+// Three jobs through the active session's extMethod, since the ENGINE owns the loader state, config
+// resolution and manifest parsing: read the plugin list, flip a plugin's enabled state, validate +
+// append a new folder. Every write re-reads and re-posts the list afterward, success or failure.
 
 import * as vscode from 'vscode';
 import type {
@@ -66,13 +59,10 @@ async function setEnabled(host: PluginsPaneHost, spec: unknown, enabled: unknown
       vscode.window.showErrorMessage(e instanceof Error ? e.message : String(e));
     }
   }
-  // agent_plugin_set_enabled writes the config file, but the ENGINE's own
-  // AgentPlugins loader answers from a per-instance cache with no file
-  // watcher (same shape as the Tools pane's tool_search config) — the
-  // immediate re-read below still reflects the PRE-write state, so a
-  // confirmed write is patched onto it here, or the switch would silently
-  // look like it did nothing. A failed write patches nothing (the re-read
-  // already carries the untouched, correct state).
+  // agent_plugin_set_enabled writes the config, but the engine's own loader answers from a
+  // per-instance cache with no file watcher — the immediate re-read still reflects the pre-write
+  // state, so a confirmed write is patched onto it here or the switch would silently look like it
+  // did nothing.
   const payload = await listPayload(host);
   if (wrote && Array.isArray(payload['plugins'])) {
     payload['plugins'] = (payload['plugins'] as Array<Record<string, unknown>>).map((p) =>

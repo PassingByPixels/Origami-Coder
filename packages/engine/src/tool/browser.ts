@@ -10,6 +10,9 @@ import * as Tool from "./tool"
 const actions = [
   "open",
   "navigate",
+  "back",
+  "forward",
+  "reload",
   "screenshot",
   "read",
   "click",
@@ -24,7 +27,9 @@ export const Parameters = Schema.Struct({
   action: Schema.Literals(actions).annotate({
     description:
       "open: show a page in the VS Code browser. navigate: move the open browser to a url. " +
-      "screenshot: capture the page, or one element, as an image. read: return the page text. " +
+      "back, forward, reload: move the open page through its own history, or load it again - no url needed. " +
+      "screenshot: capture the page, or one element, as an image. " +
+      "read: return the page text, with recent console errors and failed requests. " +
       "click: click a CSS selector. type: type text or press a key. hover: hover a selector. " +
       "drag: drag one selector onto another. dialog: accept or dismiss an alert/confirm/prompt. " +
       "raw: run a Playwright snippet when no other action fits.",
@@ -32,11 +37,10 @@ export const Parameters = Schema.Struct({
   url: Schema.optional(Schema.String).annotate({
     description: "For open and navigate: an http(s) address, or an absolute path to a local HTML file.",
   }),
-  // A bare `text=` selector is what the live UAT failed on: `text=Entrypoint`
-  // matched a nav link, a heading and a table cell, and Playwright refuses an
-  // ambiguous locator rather than guessing, so the click did nothing. The bridge
-  // now retries such a call against the first match and says which one it took,
-  // but a unique selector is still the only way the model gets what it meant.
+  // A bare `text=` selector is easily ambiguous, and Playwright refuses an
+  // ambiguous locator rather than guessing. The bridge retries such a call
+  // against the first match and says which one it took, but a unique selector
+  // is still the only way the model gets what it meant.
   selector: Schema.optional(Schema.String).annotate({
     description:
       "For click, type, hover and drag (the element dragged FROM): a selector matching EXACTLY ONE " +
@@ -68,9 +72,12 @@ export const Parameters = Schema.Struct({
 
 const DESCRIPTION = [
   "Open a url or a local HTML file in the user's VS Code integrated browser and drive it:",
-  "open, navigate, screenshot the page or one element, read the page text, click, type or press a key,",
+  "open, navigate, go back or forward, reload, screenshot the page or one element, read the page text,",
+  "click, type or press a key,",
   "hover, drag, answer a dialog, or run a Playwright snippet with raw.",
   "A screenshot comes back as an image you can look at; read comes back as text.",
+  "A local file:// page reloads itself when the file changes on disk (VS Code default),",
+  "so after an edit just read or screenshot again.",
   "It works only when the session runs in the Origami VS Code client - any other client returns an explanation.",
   "The VS Code view is deliberately simple, not the model's only option: for real Chrome/Firefox rendering,",
   "extensions, devtools, or a page that refuses the embedded view, drive an actual browser through the shell",
@@ -79,11 +86,10 @@ const DESCRIPTION = [
 ].join(" ")
 
 /**
- * `ok` is the ONE status the client may trust. The engine COMPLETES a browser
+ * `ok` is the one status the client may trust. The engine completes a browser
  * call whatever happened - a refusal, an unreachable client and a loaded page
  * all come back as a completed tool result - so the ACP status cannot tell them
- * apart and the title is prose. A card that has to read prose to know whether
- * the page loaded will eventually paint a failure green.
+ * apart and the title is prose.
  */
 type BrowserMetadata = {
   ok: boolean
@@ -110,13 +116,11 @@ export function permissionTarget(raw: string): string {
 }
 
 /**
- * A permission answer is stored as a GLOB (permission/index.ts), and `*` and
- * `?` are the only two characters the matcher treats as wildcards
- * (core/util/wildcard.ts escapes the rest). The url is model-chosen, so a
- * target keeping either character would widen the rule past the page the user
- * was shown - `https://*` derives the target `*`, and one Always answer would
- * allow every url. No real hostname holds either character, so a target that
- * does is refused rather than narrowed.
+ * A permission answer is stored as a glob (permission/index.ts), where `*` and
+ * `?` are the only wildcard characters. The url is model-chosen, so a target
+ * keeping either would widen the rule past the page the user was shown —
+ * `https://*` derives the target `*`, and one Always answer would allow every
+ * url. No real hostname holds either character, so such a target is refused.
  */
 function hasWildcard(target: string): boolean {
   return target.includes("*") || target.includes("?")
@@ -126,9 +130,9 @@ function hasWildcard(target: string): boolean {
  * Only things the integrated browser renders as pages are openable: http(s),
  * file urls, and bare local paths (a Windows path parses as a one-letter
  * "drive" protocol; a relative path fails to parse). Anything else -
- * javascript:, data:, about: and friends - is refused BEFORE the ask, because
- * a hostless scheme would fall through permissionTarget to the raw string and
- * a user cannot meaningfully consent to a scheme that is not a page.
+ * javascript:, data:, about: - is refused BEFORE the ask, because a hostless
+ * scheme falls through permissionTarget to the raw string and a user cannot
+ * meaningfully consent to a scheme that is not a page.
  */
 function allowedScheme(raw: string): boolean {
   try {
@@ -163,16 +167,15 @@ export const BrowserTool = Tool.define(
         if (params.action === "drag" && !toSelector) {
           return refused(params.action, "drag needs toSelector: the CSS selector of the element to drop onto.")
         }
-        // A key with no selector goes to whatever the PAGE focused, which is the
-        // only way to answer a widget no selector names - so a selector is owed
-        // by typing, not by pressing.
+        // A key with no selector goes to whatever the page focused, the only way
+        // to answer a widget no selector names - so a selector is owed by
+        // typing, not by pressing.
         if (params.action === "type" && !selector && !key) {
           return refused(params.action, "type needs a selector: the CSS selector of the element to type into.")
         }
-        // An empty string is a real instruction to this tool, so only a MISSING
+        // An empty string is a real instruction to this tool, so only a missing
         // text is refused here. Whether a client can serve it is the client's
-        // answer to give: VS Code's type tool refuses empty text outright, and
-        // says so in its own words rather than through a guess made here.
+        // answer to give.
         if (params.action === "type" && typeof text !== "string" && !key) {
           return refused(params.action, "type needs text or key: the characters to enter, or the key to press.")
         }
@@ -208,10 +211,9 @@ export const BrowserTool = Tool.define(
           })
         } else if (params.action === "raw" && code) {
           // `raw` is arbitrary code, not one more page gesture, so it gates on
-          // its OWN target: an Always answer to "page" covers reading and
-          // clicking a page the user is signed in to, and it must not silently
-          // become permission to run javascript in that session. The code is in
-          // the metadata because the code IS what is being approved.
+          // its own target: an Always answer to "page" must not silently become
+          // permission to run javascript in a signed-in session. The code is in
+          // the metadata because the code is what is being approved.
           yield* ctx.ask({
             permission: "browser",
             patterns: [RAW_PATTERN],
@@ -220,10 +222,9 @@ export const BrowserTool = Tool.define(
           })
         } else {
           // read/screenshot/click/type/hover/drag/dialog name no target, but they
-          // REACH INTO the page the user already has open - which may be
+          // reach into the page the user already has open - which may be
           // authenticated. One gate, so an "always" answer covers page
-          // interaction as a class without also granting every site an
-          // open/navigate could reach.
+          // interaction as a class without granting every site open could reach.
           yield* ctx.ask({
             permission: "browser",
             patterns: [PAGE_PATTERN],
@@ -270,10 +271,15 @@ export const BrowserTool = Tool.define(
             }
           }
           const mime = response.imageMime ?? "image/png"
+          // The client's note is APPENDED rather than dropped: the size a capture
+          // was taken at is not readable from the capture, and the client says
+          // whether it got the configured page viewport or the tab's own size.
+          const shotNote = response.pageText?.trim()
+          const caption = `Screenshot of ${where ?? "the open page"}.`
           return {
             title,
             metadata,
-            output: `Screenshot of ${where ?? "the open page"}.`,
+            output: shotNote ? `${caption}\n${shotNote}` : caption,
             attachments: [
               {
                 type: "file" as const,
@@ -284,9 +290,8 @@ export const BrowserTool = Tool.define(
           }
         }
 
-        // `raw` joins read: what the snippet RETURNED is the whole answer, and
-        // burying it under a confirmation sentence is how a returned value gets
-        // read as boilerplate.
+        // `raw` joins read: what the snippet returned is the whole answer, and
+        // burying it under a confirmation sentence makes it read as boilerplate.
         if (params.action === "read" || params.action === "raw") {
           const pageText = response.pageText ?? ""
           if (pageText.trim()) return { title, metadata, output: pageText }
@@ -297,9 +302,9 @@ export const BrowserTool = Tool.define(
           return { title, metadata, output: empty }
         }
 
-        // The client's own note, when it made one, is APPENDED rather than
-        // dropped: an open that succeeded but left the page unreadable says so
-        // here, and that sentence is the only warning before the read fails.
+        // The client's own note is appended rather than dropped: an open that
+        // succeeded but left the page unreadable says so here, and that sentence
+        // is the only warning before the read fails.
         const note = response.pageText?.trim()
         const said = confirmation(params, where)
         return { title, metadata, output: note ? `${said}\n${note}` : said }
@@ -310,7 +315,7 @@ export const BrowserTool = Tool.define(
 /** The single "browser page interaction" target every non-navigating action gates on. */
 const PAGE_PATTERN = "page"
 
-/** `raw`'s own target, kept apart from PAGE_PATTERN so one Always answer to a
+/** `raw`'s own target, kept apart from PAGE_PATTERN so an Always answer to a
  *  click never becomes standing permission to run code in that page. */
 const RAW_PATTERN = "playwright code"
 
@@ -329,6 +334,12 @@ function confirmation(params: Schema.Schema.Type<typeof Parameters>, where: stri
       return `Opened ${page} in the VS Code browser.`
     case "navigate":
       return `The VS Code browser is now at ${page}.`
+    case "back":
+      return `Went back to ${page}.`
+    case "forward":
+      return `Went forward to ${page}.`
+    case "reload":
+      return `Reloaded ${page}.`
     case "click":
       return `Clicked ${params.selector} on ${page}.`
     case "hover":

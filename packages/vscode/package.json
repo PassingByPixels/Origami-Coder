@@ -2,7 +2,7 @@
   "name": "origamicoder",
   "displayName": "Origami Code",
   "description": "Origami Code - Model Agnostic AI Coding Harness focused on VS Code",
-  "version": "0.4.65",
+  "version": "0.4.175",
   "publisher": "OrigamiLabs",
   "icon": "media/icon.png",
   "license": "Origami-Proprietary",
@@ -34,6 +34,14 @@
       {
         "command": "origami.toggleSidebar",
         "title": "Origami: Toggle Sidebar"
+      },
+      {
+        "command": "origami.claudeCodeDiagnostics",
+        "title": "Origami: Claude Code - copy diagnostics"
+      },
+      {
+        "command": "origami.previewWhatsNew",
+        "title": "Origami: Preview What's New"
       },
       {
         "command": "origami.newSession",
@@ -76,6 +84,14 @@
       {
         "command": "origami.openAgentProfile",
         "title": "Origami: View Agent Profile"
+      },
+      {
+        "command": "origami.remotePair",
+        "title": "Origami: Pair a phone"
+      },
+      {
+        "command": "origami.remoteRevoke",
+        "title": "Origami: Revoke remote devices"
       },
       {
         "command": "origami.init",
@@ -172,6 +188,14 @@
         },
         {
           "command": "origami.openAgentProfile"
+        },
+        {
+          "command": "origami.remotePair",
+          "when": "origamicoder.remoteEnabled"
+        },
+        {
+          "command": "origami.remoteRevoke",
+          "when": "origamicoder.remoteEnabled"
         }
       ]
     },
@@ -210,6 +234,78 @@
           "default": "http://localhost:1234/v1",
           "description": "Inference engine endpoint (OpenAI-compatible /v1 base URL) the origami-acp bridge connects to. When set, this overrides the ORIGAMI_API_BASE environment variable. Leave at the default for a local LM Studio on this machine; point it elsewhere (e.g. http://192.0.2.10:1234/v1) to use a remote engine."
         },
+        "origamicoder.notifications.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast notifications for the moments Origami Code is waiting on you: a question, a permission, a finished turn, a Flock message, a paired phone. Turn off to silence every kind at once; each kind also has its own setting below."
+        },
+        "origamicoder.notifications.onlyWhenUnfocused": {
+          "type": "boolean",
+          "default": true,
+          "description": "Only show a native OS toast while the VS Code window is NOT focused. With this on (the default), a toast never interrupts you while you are already looking at the window."
+        },
+        "origamicoder.notifications.question": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast when a background agent has a question and needs you to open its chat to answer."
+        },
+        "origamicoder.notifications.permission": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast when an agent is waiting on a permission decision."
+        },
+        "origamicoder.notifications.turnDone": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast when a chat's turn finishes while its window is not focused."
+        },
+        "origamicoder.notifications.flock": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast when a Flock question or reply arrives in your mailbox."
+        },
+        "origamicoder.notifications.remote": {
+          "type": "boolean",
+          "default": true,
+          "description": "Native OS toast when a phone finishes pairing with Origami Remote."
+        },
+        "origamicoder.subagents.transcriptPageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "description": "Sub-agent transcripts. How many steps (stored messages) are read when a transcript is opened. Older blocks are fetched on demand by the 'Load earlier steps' control or by scrolling to the top. 0 reads the whole transcript in one go, which is slow on a long run."
+        },
+        "origamicoder.chat.backdrop": {
+          "type": "boolean",
+          "default": true,
+          "description": "A quiet, static dot-grid behind the chat pane. Off automatically when the OS is set to reduce motion, regardless of this setting."
+        },
+        "origamicoder.nests.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Nests. Join your desks through the relay so a chat started on one continues on another. Nothing dials the relay until this is on: OFF means no group socket is opened and no desk is invited or joined."
+        },
+        "origamicoder.remote.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Origami Remote. Allow a paired phone to mirror this window's chat over the relay. OFF means no socket is ever opened and no pairing material is read — the feature costs nothing until you turn it on."
+        },
+        "origamicoder.remote.relayUrl": {
+          "type": "string",
+          "default": "wss://relay.origamilabs.nl",
+          "description": "Origami Remote. WebSocket URL of the relay that forwards sealed frames between this window and the phone. The relay sees only an opaque pairing id and opaque bytes; it can decrypt nothing."
+        },
+        "origamicoder.remote.capability": {
+          "type": "string",
+          "enum": ["watch", "ask", "full"],
+          "enumDescriptions": [
+            "The phone may read this session and cancel a turn. It cannot send, cannot approve, and cannot change the mode.",
+            "The phone may drive the session and approve a permission with its enrolled key, but may not switch a chat into YOLO.",
+            "The phone may also ask for YOLO on one chat, which takes Face ID on the phone and a signature the relay cannot mint."
+          ],
+          "default": "full",
+          "description": "Origami Remote. How far this desk lets a paired phone go. Every message the phone sends is checked against an allowlist first, whatever this says; this bounds what that allowlist admits."
+        },
         "origami.devEngineSource": {
           "type": "string",
           "default": "",
@@ -225,6 +321,56 @@
           "default": false,
           "description": "EXPERIMENTAL. Replace the individual MCP tools with one `execute` tool that runs a confined JavaScript program: the model writes a short script that calls several MCP tools, including in parallel, and returns a structured result. It changes how the model reaches MCP tools, so it is off until you have tried it. Takes effect when the engine next starts — reload the window after changing it."
         },
+        "origami.subagentTimeLimitHours": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0.5,
+          "description": "Wall-clock ceiling on ONE sub-agent, in hours. A sub-agent that is still running after this long is stopped, so a fan-out cannot leave an agent working unnoticed overnight. Read by the engine when it STARTS — reload the window after changing it. Below 0.5 is ignored and the engine's own 4-hour default is used."
+        },
+        "origami.experimentalSideQuests": {
+          "type": "boolean",
+          "default": true,
+          "description": "ON by default. Lets the model raise a side quest — a suggested follow-up task it did not do — into the Side quests drawer instead of only proposing it in prose. Turn this off to remove the `side_quest` tool and the drawer entirely. The drawer, folder watcher and popup pick up a change to this setting immediately; the engine's own `side_quest` tool needs a NEW chat, because the engine reads it only at spawn."
+        },
+        "origami.experimentalClaudeSubscription": {
+          "type": "boolean",
+          "default": false,
+          "description": "EXPERIMENTAL, OFF by default. Runs an Origami chat on your Claude subscription instead of an API key, through the Claude Code program's engine, at the Agent SDK rate against your plan's allowance. Turning this on shows a one-time disclosure you must confirm — declining turns the setting back off. Adds a separate 'Claude (subscription, experimental)' group to the model picker. Takes effect when the engine next starts — reload the window after changing it."
+        },
+        "origami.browser.viewportWidth": {
+          "type": "number",
+          "default": 1920,
+          "minimum": 50,
+          "maximum": 9999,
+          "description": "Width, in CSS pixels, of the page viewport the agent's browser screenshots are taken at. The embedded browser tab can be any size you like: the page is put at this viewport before each capture, so a narrowed tab still produces a full-size picture. Setting it needs \"chat.tools.global.autoApprove\" (the composer's Browser: Bypass control) — VS Code publishes no other way to size the embedded page, and every screenshot says which size it actually got."
+        },
+        "origami.browser.viewportHeight": {
+          "type": "number",
+          "default": 1080,
+          "minimum": 50,
+          "maximum": 9999,
+          "description": "Height, in CSS pixels, of the page viewport the agent's browser screenshots are taken at. See origami.browser.viewportWidth."
+        },
+        "origami.browser.openBeside": {
+          "type": "boolean",
+          "default": true,
+          "description": "ON by default. Opens the agent's browser page in a group BESIDE the chat rather than over it, by setting VS Code's own \"workbench.browser.newTabPlacement\" to \"sideGroup\". Only ever written when you have not set that setting yourself — your own choice always wins."
+        },
+        "origami.browser.reveal": {
+          "type": "string",
+          "enum": [
+            "never",
+            "first",
+            "always"
+          ],
+          "enumDescriptions": [
+            "Never bring the agent's browser tab to the front. A page it opens still appears once, because VS Code's own open tool creates and shows the editor and takes no option to stop it; nothing after that moves the tab.",
+            "Bring a page to the front the first time it is opened, and never again for that page. Navigations, screenshots, clicks and typing update the tab where it sits, even behind another tab.",
+            "Bring the tab to the front before every verb that finds it hidden. The old behaviour."
+          ],
+          "default": "first",
+          "description": "When the agent's browser tab may be brought to the front. Keyboard focus is preserved in every case; this decides whether the editor you are looking at is replaced. Pair it with \"origami.browser.openBeside\" to keep the page out of the group you are reading in."
+        },
         "origami.syncVsCodeTheme": {
           "type": "string",
           "enum": [
@@ -239,6 +385,28 @@
             "Never switch VS Code's theme"
           ],
           "description": "When you change the Origami dashboard theme, should VS Code's colour theme switch to match?"
+        },
+        "origamicoder.usage.windowLength": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "markdownDescription": "Glide path only. States the quota cadence for a connection whose provider does not, keyed by provider id — for example `{ \"xai\": \"weekly\" }`. Accepts `weekly`, `monthly`, or a number of days. It is read AFTER anything the provider itself states (a window length or a period start) and after the window label, and BEFORE the length this extension would otherwise measure between two observed resets, so setting it never overrides a fact and only fills a gap. A connection with no stated, configured or measured period is kept off the shared axis and shown as \"period unknown\" rather than drawn against a guess."
+        },
+        "origamicoder.claudeCode.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to the `claude` executable for Claude Code passthrough. Leave empty to auto-detect (PATH, npm global, the native installer, the Claude Code VS Code extension's bundled binary, a machine-wide install). Set it when detection fails — run **Origami: Claude Code - copy diagnostics** to see every location that was probed. Machine-scoped on purpose: a repository cannot set this, so opening a folder can never redirect the executable Origami spawns."
+        },
+        "origami.claudeCode.slashSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "On a Claude Code passthrough chat, offer that session's own slash commands and skills in the composer's / palette. The Claude Code CLI executes them itself when the line is sent. Turn this off to keep / showing only Origami's own commands."
         },
         "origami.workflow.enable_briefing": {
           "type": "boolean",
@@ -301,6 +469,16 @@
           "type": "boolean",
           "default": false,
           "description": "Ask the model for a task shape when the heuristic returns empty. Requires enable_task_shape."
+        },
+        "origamicoder.flock.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Flock: ask a contact's Origami a question, and answer theirs. OFF by default: no relay connection is opened for Flock, no owner lease is taken, the Flock view and the sidebar Front Desk are not shown, and questions from contacts are not received. Turn this on to open a relay connection for Flock, take an owner lease, and start receiving your contacts' questions. Takes effect when the window reloads."
+        },
+        "origamicoder.cacheWarming.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "ON by default. Keeps a long session's prompt cache alive: while a chat sits idle, the engine re-reads the same cached prefix at about 80% of the cache lifetime, so the next message is a cheap cache read instead of a full cold one. Each re-read costs a few input tokens and nothing else - it never appears in the transcript or the token totals. Turn this off to send no re-reads at all. Read by the engine when it STARTS - reload the window after changing it."
         }
       }
     }
@@ -320,7 +498,9 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "0.21.0",
     "highlight.js": "^11.11.1",
-    "marked": "^18.0.1"
+    "jpeg-js": "0.4.4",
+    "marked": "^18.0.1",
+    "pngjs": "7.0.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
@@ -328,13 +508,16 @@
     "@testing-library/svelte": "^5.2.0",
     "@types/marked": "^5.0.2",
     "@types/node": "^20.0.0",
+    "@types/pngjs": "6.0.5",
     "@types/vscode": "^1.85.0",
     "@vitest/ui": "^2.1.0",
     "@vscode/vsce": "^2.22.0",
     "esbuild": "^0.24.0",
     "esbuild-svelte": "^0.8.0",
     "jsdom": "^25.0.0",
+    "jsqr": "1.4.0",
     "knip": "5",
+    "simple-icons": "16.31.0",
     "svelte": "^5.0.0",
     "typescript": "^5.3.0",
     "vite": "^5.4.0",

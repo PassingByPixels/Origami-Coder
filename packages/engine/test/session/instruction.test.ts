@@ -246,6 +246,90 @@ describe("Instruction.system", () => {
       )
     }),
   )
+
+  it.live("caps an oversized AGENTS.md end-to-end through system()", () =>
+    withFiles({ "AGENTS.md": `${"a".repeat(99)}\n`.repeat(205) }, (dir) =>
+      Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const rules = yield* svc.system()
+
+        expect(rules).toHaveLength(1)
+        const [rule] = rules
+        expect(rule).toStartWith(`Instructions from: ${path.join(dir, "AGENTS.md")}\n`)
+        expect(rule).toContain("truncated at 16 KB; 4200 bytes omitted — read the file for the rest]")
+        // The served body (after the PREFIX line) is at or under the cap.
+        const body = rule.slice(rule.indexOf("\n") + 1)
+        const beforeNotice = body.slice(0, body.indexOf("["))
+        expect(Buffer.byteLength(beforeNotice, "utf8")).toBeLessThanOrEqual(16 * 1024)
+      }),
+    ),
+  )
+})
+
+describe("Instruction.truncate", () => {
+  // token_burn_plan §2.3: instruction.ts used to read AGENTS.md/CLAUDE.md
+  // unbounded. Fixture math is computed independently below (100-byte lines:
+  // 99 "a"s + "\n"), not by re-deriving the algorithm under test.
+  const LINE = `${"a".repeat(99)}\n` // 100 bytes/chars, ASCII only
+  const REPEATS = 205 // 205 * 100 = 20,500 bytes > INSTRUCTION_CAP_BYTES (16,384)
+  const big = LINE.repeat(REPEATS)
+
+  test("content at or under the cap is served unchanged", () => {
+    const under = LINE.repeat(153) // 15,300 bytes < 16,384
+    expect(Instruction.truncate("/repo/AGENTS.md", under)).toBe(under)
+    // Exactly at the cap: still unchanged (cap is inclusive).
+    const exact = "a".repeat(16 * 1024)
+    expect(Instruction.truncate("/repo/AGENTS.md", exact)).toBe(exact)
+  })
+
+  test("a 20 KB file is capped at 16 KB, cut on a line break, with a one-line notice", () => {
+    const out = Instruction.truncate("/repo/AGENTS.md", big)
+
+    // 163 full lines (indices 0..162) = 16,300 bytes is the last newline
+    // inside the first 16,384 bytes: line k's "\n" sits at offset 100k+99,
+    // and 100*162+99 = 16,299 is the largest such offset under 16,384.
+    const expectedKept = LINE.repeat(163)
+    const notice = "[AGENTS.md truncated at 16 KB; 4200 bytes omitted — read the file for the rest]"
+
+    expect(Buffer.byteLength(expectedKept, "utf8")).toBe(16300)
+    expect(out).toBe(expectedKept + notice)
+    expect(Buffer.byteLength(big, "utf8") - 16300).toBe(4200)
+    // The cut lands on a line break: everything before the notice is whole lines.
+    expect(expectedKept.endsWith("\n")).toBe(true)
+    expect(Buffer.byteLength(expectedKept, "utf8")).toBeLessThanOrEqual(Instruction.INSTRUCTION_CAP_BYTES)
+  })
+
+  test("multi-byte UTF-8 characters survive the cut intact", () => {
+    // Each line is one multi-byte char repeated + newline; well over the cap.
+    const unicodeLine = `${"café-日本語-".repeat(20)}\n`
+    const content = unicodeLine.repeat(200) // >> 16 KB
+    const out = Instruction.truncate("/repo/AGENTS.md", content)
+
+    expect(out).toContain("truncated at 16 KB")
+    // No U+FFFD replacement character: a byte-unsafe cut would introduce one.
+    expect(out).not.toContain("�")
+    const beforeNotice = out.slice(0, out.indexOf("["))
+    expect(beforeNotice.endsWith("\n")).toBe(true)
+    expect(content.startsWith(beforeNotice)).toBe(true)
+  })
+
+  test("a single line with no break inside the cap window still cuts UTF-8-safely", () => {
+    // One giant line, no "\n" until far past the cap - exercises the
+    // lastNewline === -1 fallback.
+    const content = `${"日".repeat(9000)}\n` // each char is 3 bytes -> 27,000 bytes before the newline
+    const out = Instruction.truncate("/repo/AGENTS.md", content)
+
+    expect(out).toContain("truncated at 16 KB")
+    expect(out).not.toContain("�")
+    const beforeNotice = out.slice(0, out.indexOf("["))
+    expect(Buffer.byteLength(beforeNotice, "utf8")).toBeLessThanOrEqual(Instruction.INSTRUCTION_CAP_BYTES)
+    // No line break existed inside the window, so truncate() injects one "\n"
+    // separator before the notice; strip it before checking the kept text is
+    // an exact, character-aligned prefix of the original.
+    const kept = beforeNotice.endsWith("\n") ? beforeNotice.slice(0, -1) : beforeNotice
+    expect(content.startsWith(kept)).toBe(true)
+    expect(Buffer.byteLength(kept, "utf8") % 3).toBe(0) // whole multi-byte characters only
+  })
 })
 
 describe("Instruction memory store", () => {
@@ -298,7 +382,7 @@ describe("Instruction memory store", () => {
           expect(served).toContain("- [gitea](gitea.md) - the git host")
           expect(served).not.toContain("port 3000, creds in the vault")
           // ...and the model is told the hook is a pointer, plus where to read from.
-          expect(served).toContain("Read the topic file with the read tool for detail before acting on a hook.")
+          expect(served).toContain("The detail behind each hook is in that topic's own file, which the read tool loads on demand.")
           expect(served).toContain(memdir)
         }),
     ),
@@ -317,7 +401,7 @@ describe("Instruction memory store", () => {
         const served = rules.find((rule) => rule.includes("an un-migrated fact"))
         expect(served).toBeDefined()
         // The footer belongs to the index only; a flat file has no topic files.
-        expect(served).not.toContain("Read the topic file with the read tool")
+        expect(served).not.toContain("which the read tool loads on demand")
       }),
     ),
   )
@@ -356,7 +440,7 @@ describe("Instruction memory store", () => {
 
   test("serve() only decorates the memory index, never other instruction files", () => {
     const index = path.join("/home/me/.origami/memory", "MEMORY.md")
-    expect(Instruction.serve(index, "# Memory Index\n")).toContain("Read the topic file with the read tool")
+    expect(Instruction.serve(index, "# Memory Index\n")).toContain("which the read tool loads on demand")
     expect(Instruction.serve("/repo/AGENTS.md", "# Rules\n")).toBe("# Rules\n")
   })
 })
@@ -373,5 +457,61 @@ describe("Instruction.systemPaths global config", () => {
         expect(paths.has(path.join(globalTmp, "AGENTS.md"))).toBe(true)
       }).pipe(provideInstance(projectTmp), provideInstruction({ home: globalTmp, config: globalTmp }))
     }),
+  )
+})
+
+// t-qcx1cb — the repo/branch picker gives a chat a cwd in an arbitrary repo. Two
+// instruction paths then have to hold at once, and they answer different questions:
+// `config.instructions` is an ABSOLUTE list resolved against nothing, so the hub's
+// AGENTS.md travels with the agent; `resolve`'s walk-up is bounded by
+// InstanceState.directory, so the repo's own files stay local. The risk being tested
+// is DOUBLE delivery — a file already in systemPaths must not be attached a second
+// time by the walk (the `sys.has(found)` gate).
+describe("config.instructions with a cwd outside the instructions' own tree", () => {
+  it.live("delivers the out-of-tree AGENTS.md exactly once, and still walks the repo's own", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const hubDir = yield* tmpWithFiles({ "AGENTS.md": "# Hub rules that travel with the agent" })
+        const hub = path.join(hubDir, "AGENTS.md")
+        yield* writeFiles(dir, {
+          "AGENTS.md": "# This repo's own rules",
+          "src/nested/AGENTS.md": "# Nested rules",
+          "src/nested/file.ts": "const x = 1",
+        })
+
+        return yield* Effect.gen(function* () {
+          const svc = yield* Instruction.Service
+
+          const paths = yield* svc.systemPaths()
+          expect(paths.has(path.resolve(hub))).toBe(true)
+          expect(paths.has(path.join(dir, "AGENTS.md"))).toBe(true)
+
+          const served = yield* svc.system()
+          expect(served.filter((item) => item.includes(hub))).toHaveLength(1)
+          expect(served.some((item) => item.includes("Hub rules that travel with the agent"))).toBe(true)
+          expect(served.some((item) => item.includes("This repo's own rules"))).toBe(true)
+
+          // The walk-up from a file deep in the repo attaches the SUBDIRECTORY file and
+          // neither of the two already served - no duplicate, in either direction.
+          const nearby = yield* svc.resolve(
+            [],
+            path.join(dir, "src", "nested", "file.ts"),
+            MessageID.make("msg_message-hub-1"),
+          )
+          expect(nearby.map((item) => item.filepath)).toEqual([path.join(dir, "src", "nested", "AGENTS.md")])
+        }).pipe(
+          Effect.provide(
+            AppNodeBuilder.build(Instruction.node, [
+              [
+                Config.node,
+                Layer.succeed(Config.Service, TestConfig.make({ get: () => Effect.succeed({ instructions: [hub] }) })),
+              ],
+              [Global.node, Global.layerWith({ home: dir, config: dir })],
+              [RuntimeFlags.node, RuntimeFlags.layer({})],
+            ]),
+          ),
+        )
+      }),
+    ),
   )
 })

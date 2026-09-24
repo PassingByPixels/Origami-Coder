@@ -1,27 +1,12 @@
-// Origami ACP client — wraps the canonical TypeScript SDK and
-// spawns the `origami-acp` bridge binary as a child process.
+// Origami ACP client — wraps the ACP TypeScript SDK and spawns the `origami-acp`
+// bridge as a child process; line-delimited JSON-RPC 2.0 over its stdin/stdout.
+// The extension is a pure frontend: all agent execution happens in origami-acp.
 //
-// Communication is line-delimited JSON-RPC 2.0 over the child's
-// stdin/stdout, framed by the SDK's `ndJsonStream` helper.
-//
-// Architecture:
-//   VS Code Extension Host
-//     └─ AcpClient (this file)
-//          └─ child_process.spawn → origami-acp(.exe)
-//               └─ core_loop::tool_loop
-//
-// The extension is a pure frontend. All agent execution happens
-// inside origami-acp. We just render events and relay permissions.
-//
-// Wire contract (docs/WIRE-CONTRACT.md):
-//   - Ext-methods travel `_`-prefixed (the JS SDK does NOT add the
-//     `_`; this client does — `extMethod`). SCAR UI-S4.
-//   - Domain events are FIRST-CLASS `origami/*` notifications, NOT
-//     `_meta.lilinyx_kind` riders on a synthetic `Plan` (the donor's
-//     deleted smuggling). The ONE legitimate `_meta` use the contract
-//     keeps byte-for-byte is `_meta.lilinyx_tool_name` decorating a
-//     REAL `ToolCall` (plain ACP clients ignore it).
-//   - `SessionUpdate::Plan` is consumed ONLY for real plans.
+// Wire contract (docs/WIRE-CONTRACT.md): ext-methods travel `_`-prefixed (this
+// client adds the `_`, the JS SDK does not); domain events are FIRST-CLASS
+// `origami/*` notifications, not `_meta` riders on a synthetic `Plan`; the one
+// kept `_meta` use is `_meta.lilinyx_tool_name` on a REAL `ToolCall`; and
+// `SessionUpdate::Plan` is consumed ONLY for real plans.
 
 import * as vscode from 'vscode';
 import * as acp from '@agentclientprotocol/sdk';
@@ -32,80 +17,120 @@ import * as path from 'node:path';
 import type { EngineSpawn } from './dashboard/engineStale';
 import * as fs from 'node:fs';
 
-import type { RunStepsResult, RunStatsResult, InstructionSet, SubagentTranscriptResult, ToolCatalog } from './acpExtTypes';
+import type { RunStepsResult, RunStatsResult, InstructionSet, SubagentTranscriptResult, SubagentTodosResult, SubagentChangesResult, ToolCatalog } from './acpExtTypes';
 import { engineSpawnEnv, codeModeEnabled } from './engineEnv';
+import { subagentLimitHours } from './subagentLimit'; // the sub-agent cap is read at SPAWN, like every other value in the overlay
 import { agentNameSetting } from './peerName';
 import { shutdownEngine } from './engineShutdown';
 import { peerFromMeta, type PeerOrigin } from './acpPeerMeta';
 import { modelOnlyContent } from './acpAudience';
 import { todosFromUpdate } from './acpTodoWrite';
 import { decodeToolContent } from './acpToolContent';
-import { taskDone, taskRiders, type TaskDone, type TaskRiders } from './acpTaskMeta';
+import { taskDone, taskPart, taskRiders, type TaskDone, type TaskRiders, type TaskTokens } from './acpTaskMeta';
+import { streamDropNotice, type StreamDropNotice } from './acpStreamDrop';
 import { toolNameRider } from './acpToolMeta';
-import { handleBrowserExtMethod, isBrowserMethod } from './browserBridge';
+import { handleBrowserExtMethod, isBrowserMethod, type BrowserSnapshot } from './browserBridge';
 import { questionsFromMeta, replyMeta, type QuestionAsk, type QuestionAnswer } from './questionBatch';
-import { planCandidatesFrom, taskShapeFrom, todoSnapshotFrom, arbiterDecisionFrom, type PlanCandidates, type TaskShape, type TodoSnapshot, type ArbiterDecision } from './acpNotify';
+import { planCandidatesFrom, taskShapeFrom, todoSnapshotFrom, arbiterDecisionFrom, flockMailboxFrom, cacheStateFrom, type PlanCandidates, type TaskShape, type TodoSnapshot, type ArbiterDecision, type FlockMailboxPush, type CacheStatePush } from './acpNotify';
+import { artifactsChangedFrom, type ArtifactDiffResult, type ArtifactListResult, type ArtifactOpenResult, type ArtifactRestoreResult, type ArtifactVersionsResult, type ArtifactsChangedPush } from './dashboard/artifactAcp';
 import { pageSessions } from './sessionPaging';
+import { establishSession, type SessionConnection } from './acpFork';
+import { historyPageReplyFrom, historySearchReplyFrom, historyWindowFrom, pageTag, subagentRosterFrom, type HistoryPageReply, type HistorySearchReply, type HistoryWindow, type SubagentRoster } from './acpHistory';
 
 export type { RunStep, RunStepsResult, InstructionEntry, InstructionSet } from './acpExtTypes';
 
+/**
+ * The engine's split of one prompt's tokens, off `usage_update._meta.composition`.
+ * The three parts sum to `used`; `estimated` is always true, because the provider
+ * reports the total alone and the split is attributed from the engine's capture.
+ *
+ * MIRRORED in `webview/dashboard/components/contextComposition.ts` — a webview
+ * `.ts` file cannot import from `src/` (tsconfig.webview rootDir). The drift test in
+ * `webview/dashboard/__tests__/contextComposition.test.ts` reads both files.
+ */
+export type ContextComposition = {
+  systemPrompt: number;
+  tools: number;
+  conversation: number;
+  estimated: true;
+  method: string;
+};
+
+/** Parse `_meta.composition`. Every part must be a finite, non-negative number, or the
+ *  whole object is dropped: a half-read breakdown would draw a bar that lies. */
+export function parseComposition(raw: unknown): ContextComposition | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Record<string, unknown>;
+  const part = (key: string): number | undefined => {
+    const value = c[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  };
+  const systemPrompt = part('systemPrompt');
+  const tools = part('tools');
+  const conversation = part('conversation');
+  if (systemPrompt === undefined || tools === undefined || conversation === undefined) return undefined;
+  return {
+    systemPrompt, tools, conversation,
+    estimated: true,
+    method: typeof c['method'] === 'string' ? c['method'] : '',
+  };
+}
+
 export interface AcpEventHandlers {
-  /** `messageId` is the engine's assistant-message id (present live + on
-   *  replay) — the anchor a "rewind to here" control reverts to. */
+  /** `messageId` is the engine's assistant-message id (live + on replay) — the anchor a "rewind to
+   *  here" reverts to. */
   onAgentMessageChunk(text: string, messageId?: string): void;
   onAgentImageChunk(data: string, mimeType: string): void;
-  /**
-   * Replayed/streamed USER turn text (`user_message_chunk`). The engine
-   * emits it on history replay (`loadSession`); the donor had no case so
-   * resumed transcripts silently lost every user turn. Optional — a
-   * fresh-only client may ignore it.
-   */
+  /** Replayed/streamed USER turn text (`user_message_chunk`), emitted by the
+   *  engine on history replay (`loadSession`). Optional. */
   onUserMessageChunk?(text: string): void;
-  /** A handoff from ANOTHER agent session, not this window's human — see
-   *  acpPeerMeta.ts. Split off from `onUserMessageChunk` so it can never be
-   *  rendered as the user speaking. Optional. */
+  /** A handoff from ANOTHER agent session, not this window's human (acpPeerMeta.ts).
+   *  Split off from `onUserMessageChunk` so it can never render as the user. */
   onPeerMessage?(args: PeerOrigin & { text: string }): void;
-  /**
-   * Streamed reasoning/thinking text (`agent_thought_chunk`). Optional —
-   * the dashboard renders it as a dim "thinking" stream, or drops it.
-   */
+  /** A dropped provider stream, as DATA (acpStreamDrop.ts) — retrying, or the
+   *  ladder spent. Its own handler because it is the SYSTEM speaking: routed to
+   *  `onAgentMessageChunk` it would wear the agent's name, which is the whole
+   *  defect this replaced. Optional. */
+  onStreamDrop?(notice: StreamDropNotice): void;
+  /** Streamed reasoning text (`agent_thought_chunk`). Optional — rendered dim, or
+   *  dropped. */
   onAgentThoughtChunk?(text: string): void;
-  /**
-   * Streamed /compact summary text, tagged by the engine with
-   * `_meta.origami_compaction`. Rendered as a collapsed "Compaction Completed"
-   * marker (expand to see what was carried forward) rather than a live assistant
-   * turn. Optional — a client may drop it.
-   */
+  /** Streamed /compact summary text, tagged `_meta.origami_compaction`. Rendered
+   *  as a collapsed "Compaction Completed" marker, not a live assistant turn. */
   onCompactionChunk?(text: string): void;
-  /**
-   * A SUB-AGENT's live output, forwarded by the engine under this (the
-   * registered ancestor) session and tagged `_meta.origami_child_session`. The
-   * child's own session id is never one the client opened, so without this the
-   * only sign a sub-agent existed was its task card and, minutes later, the
-   * final result. `childSessionId` matches the `taskSessionId` on the task tool
-   * call that spawned it, which is how the UI parks the stream under that card.
-   * Optional — a client may drop it.
-   */
+  /** A SUB-AGENT's live output, forwarded by the engine under this (ancestor)
+   *  session and tagged `_meta.origami_child_session`. `childSessionId` matches
+   *  the `taskSessionId` on the spawning task tool call, which is how the UI parks
+   *  the stream under that card. Optional. */
   onSubagentChunk?(args: { childSessionId: string; text: string }): void;
+  /** A SUB-AGENT's live REASONING, on the same channel as its output but marked
+   *  `_meta.origami_task_part: 'reasoning'` (t-gvz8t0). Its own handler because
+   *  it is thought, not the child's reply: a thinking model can spend two
+   *  minutes and 7k tokens here before its first tool call, and with nothing on
+   *  the row that reads as a stalled agent. Optional. */
+  onSubagentThought?(args: { childSessionId: string; text: string }): void;
   /** A BACKGROUND sub-agent FINISHED — the launcher card completed at SPAWN, so
-   *  only this says the child itself is done (acpTaskMeta.ts). Optional. */
-  onSubagentDone?(args: TaskDone): void;
+   *  only this says the child itself is done (acpTaskMeta.ts). `tokens` is the
+   *  FINAL total, riding the same settling chunk: the marker is the only frame
+   *  the host logs, so without it a reloaded card comes back with no spend at
+   *  all (t-fdvr2a). Absent against an engine that rides no counters. Optional. */
+  onSubagentDone?(args: TaskDone & { tokens?: TaskTokens }): void;
+  /** A running sub-agent's TOKEN COUNTERS, re-sent per child step on the same
+   *  side channel as its output (t-dkkd2o). They cannot ride the launcher's
+   *  tool call: a background task's call completes at SPAWN and the engine can
+   *  no longer write its metadata. Latest wins. Optional. */
+  onSubagentTokens?(args: { childSessionId: string; tokens: TaskTokens }): void;
   onToolCallStart(args: TaskRiders & {
     toolCallId: string;
     title: string;
     kind: string;
     status: string;
-    /**
-     * Actual tool name surfaced via `_meta.origami_tool_name` on a
-     * REAL `ToolCall` variant (a legitimate decoration the WIRE
-     * CONTRACT keeps). Dashboard uses this to dispatch to per-tool
-     * specialised cards (grep, bash, read_file, etc.) even though the
-     * broad ACP `kind` collapses many tools into one bucket. Empty
-     * string when the bridge didn't set it (plain ACP servers).
-     */
+    /** Actual tool name via `_meta.origami_tool_name` on a REAL `ToolCall` — a
+     *  decoration the wire contract keeps. Lets the dashboard dispatch per-tool
+     *  cards even though ACP `kind` collapses many tools into one bucket. Empty
+     *  string when the bridge did not set it (plain ACP servers). */
     toolName: string;
-    /** First file path from the ACP ToolCall `locations` (read/write/edit set
-     *  it from the tool's filePath) — so the card can show WHERE it wrote. */
+    /** First file path from the ACP ToolCall `locations`, so the card can show WHERE it wrote. */
     path?: string;
     /** Tool arguments off the wire (bash: command/cwd/timeout) — shaped web-side. */
     rawInput?: unknown;
@@ -118,19 +143,14 @@ export interface AcpEventHandlers {
     /** Self-heals card identity on a replayed/unmatched update (acpToolMeta.ts). */
     toolName?: string;
     /** The tool's resolved title + file path, which only arrive on the
-     *  running/completed update — the initial `tool_call` fires before the
-     *  engine has them (write's pending title is literally "write", no
-     *  locations). Forward them so the card can show WHERE it wrote. */
+     *  running/completed update — the initial `tool_call` fires before the engine
+     *  has them (write's pending title is literally "write", no locations). */
     title?: string;
     path?: string;
     rawInput?: unknown;
-    /**
-     * Structured diff carried on an edit-kind `tool_call_update` as an
-     * ACP `{ type: 'diff', path, oldText, newText }` content block (the
-     * engine's `acp/tool.ts:diffContent`). Present only for edit tools
-     * that supplied an `oldString`; the dashboard renders a real
-     * before/after diff from it instead of a `<pre>` of the summary.
-     */
+    /** Structured diff on an edit-kind `tool_call_update`, as an ACP
+     *  `{ type:'diff', path, oldText, newText }` block. Present only for edit tools
+     *  that supplied an `oldString`. */
     diff?: { path: string; oldText: string; newText: string };
     /** Image blocks off the same content array as data: URIs — the `browser`
      *  tool's screenshots. Absent for every other tool. */
@@ -142,74 +162,75 @@ export interface AcpEventHandlers {
     toolCallId: string;
     title: string;
     kind: string;
-    /** The tool's raw metadata ({ filepath, parentDir } for an external-directory
-     *  prompt, or the tool arguments) — ground-truth context the permission bar
-     *  surfaces so the user isn't approving blind. */
+    /** The tool's raw metadata ({ filepath, parentDir } for an external-directory prompt,
+     *  or the arguments) — the context the permission bar shows so nobody approves blind. */
     rawInput?: unknown;
     /** ACP file locations attached to the call (read/write/edit set `path`). */
     locations?: ReadonlyArray<{ path?: string; line?: number }>;
     options: ReadonlyArray<{ optionId: string; name: string; kind: string }>;
-    /** Every question this ONE ask carries; absent = fall back to title+options,
-     *  which always describe the first question (questionBatch.ts). */
+    /** Every question this ONE ask carries; absent = fall back to title+options, which always
+     *  describe the first (questionBatch.ts). */
     questions?: ReadonlyArray<QuestionAsk>;
-    /** `answerText` = free text from a question's "Other" option, on `_meta`.
-     *  `answers` = one per question when a BATCH was answered (questionBatch.ts). */
+    /** `answerText` = free text from a question's "Other" option, on `_meta`; `answers` = one per
+     *  question in a BATCH. */
     respond: (optionId: string | null, answerText?: string, answers?: ReadonlyArray<QuestionAnswer>) => void;
   }): void;
   onAvailableCommands(commands: Array<{ name: string; description: string }>): void;
-  /** `usage_update` — the engine's per-turn token/context accounting.
-   *  `used` = input + cache-read; `size` = context limit; `cost` = running
-   *  session total. Omitted when no context limit resolves. */
+  /** `usage_update` — the per-turn token/context accounting. `used` = input +
+   *  cache-read, `size` = context limit, `cost` = session total; omitted with no limit. */
   onUsageUpdate?(args: {
     used: number;
     size: number;
+    /** What `used` is made of, from the engine's own prompt capture. Absent on an
+     *  engine that does not report it and on a session that has sent no turn — the
+     *  gauge then keeps its plain title rather than drawing an invented card. */
+    composition?: ContextComposition;
     cost?: { amount: number; currency: string };
     subagents?: { cost: number; tokensInput: number; tokensOutput: number };
-    /** This turn's raw usage breakdown: prefill = prompt/input tokens,
-     *  read = cache-read, write = generated/output. Absent without usage. */
+    /** This turn's raw usage: prefill = prompt/input, read = cache-read, write = generated. Absent
+     *  without usage. */
     promptTokens?: number;
     cacheReadTokens?: number;
     outputTokens?: number;
     /** Cache-WRITE tokens — distinct from generated `outputTokens` above. */
     cacheWriteTokens?: number;
   }): void;
-  /**
-   * Last-turn generation throughput: this turn's real OUTPUT tokens (from the
-   * prompt-response usage) over the turn's wall-clock. The prompt-response
-   * usage (and `onUsageUpdate` above) is the ONLY source of real token
-   * accounting — the engine implements no ext-methods at all, so the panel's
-   * context gauge is driven purely by these frames plus a local turn count
-   * until the first frame lands. Fired once per turn; the sessionId is
-   * supplied by the host's handler closure.
-   */
-  onTurnStats?(args: { tokensPerSec: number }): void;
-  /**
-   * `session_info_update` — the engine pushes the session's generated title
-   * the instant it's set (replaces the racy listSessions re-query). Each
-   * AcpClient is bound to one session, so the title applies to this client's
-   * session; the sessionId is supplied by the host's handler closure.
-   */
+  /** `session_info_update` — the engine pushes this session's generated title the
+   *  instant it is set. Each AcpClient is bound to one session. */
   onSessionTitle?(args: { title: string }): void;
-  /**
-   * ACP `current_mode_update` — the engine switched this session's agent on
-   * its own (e.g. plan_exit approving a plan writes a synthetic `agent:build`
-   * message, so the next turn runs as build). Mirror it into the selector +
-   * status bar so the UI matches the engine's real mode; without this the
-   * panel would still read "plan" after the user approved.
-   */
+  /** ACP `current_mode_update` — the engine switched this session's agent on its
+   *  own (approving a plan runs the next turn as build). Mirror it into the
+   *  selector + status bar so the UI matches the engine's real mode. */
   onModeChanged?(args: { modeId: string }): void;
   onPlanStatus(args: { planId: string; status: string; revisionCount: number; message?: string }): void;
-  /**
-   * First-class `origami/turnEnd` — the loop reached a terminal for THIS
-   * ACP turn. `stopReason` is the real taxonomy label carried verbatim
-   * on the wire (`success` | `asked_user` | `error_max_turns` |
-   * `error_max_budget` | `error_no_progress` | `error_during_execution`
-   * | `park_infra`). The dashboard renders an honest per-turn verdict
-   * from it (verified-done vs incomplete:<reason> vs parked) — the F4
-   * fix for the discarded-stop_reason blind instrument. Distinct from
-   * `onPlanStatus(turn_end)`, which only clears the plan banner.
-   */
+  /** First-class `origami/turnEnd` — the loop reached a terminal for THIS ACP
+   *  turn. `stopReason` is the wire taxonomy label verbatim (`success` |
+   *  `asked_user` | `error_max_turns` | `error_max_budget` | `error_no_progress` |
+   *  `error_during_execution` | `park_infra`). Distinct from
+   *  `onPlanStatus(turn_end)`, which only clears the plan banner. */
   onTurnEnd?(args: { stopReason: string }): void;
+  /** First-class `origami/sessionStatus` — is the ENGINE running a turn for this
+   *  session right now. `status` is the SessionStatus label (`idle` | `busy` |
+   *  `retry`, plus later additions); the reading rule lives in
+   *  webview/shared/engineStatus.ts. It covers turns the engine starts by itself,
+   *  which have no ACP `prompt()` in flight to settle; an engine that does not send
+   *  it falls back to `echoUser` / `turnDone`. */
+  onSessionStatus?(args: { sessionId: string; status: string }): void;
+  /** First-class `origami/flockMailbox` — `flock.json` moved on disk, in ANY engine
+   *  here. The same object `flock_mailbox` returns; the poll stays as fallback. */
+  onFlockMailbox?(args: FlockMailboxPush): void;
+  /** `origami/artifactsChanged` (also accepted as `origami/artifacts`) — an
+   *  artifact was published, pulled or restored on some device in the group.
+   *  The host re-reads the list rather than patching a row: the list is the
+   *  only copy that can be complete. The decoded change is passed anyway, and
+   *  is OPTIONAL to receive — a handler that only refreshes takes no argument,
+   *  and a later caller (a toast naming the artifact) needs one. */
+  onArtifactsChanged?(args?: ArtifactsChangedPush): void;
+  /** First-class `origami/cacheState` — the engine measured whether this session's
+   *  prompt prefix is still cached. Pushed on a real step, a successful warm, a
+   *  compaction, a model change, and when the provider's window runs out. The badge
+   *  NEVER derives this itself: only the engine sees the cache-read token count. */
+  onCacheState?(args: CacheStatePush): void;
   onPlanReady(args: {
     planId: string;
     title: string;
@@ -217,77 +238,51 @@ export interface AcpEventHandlers {
     status: string;
     revisionCount: number;
   }): void;
-  /**
-   * First-class `origami/planCandidates` — best-of-N critic round
-   * complete. Client renders the alternatives carousel with scores +
-   * winner star. `fallback=true` means the critic response was
-   * unparseable and candidate 0 was defaulted to.
-   */
+  /** First-class `origami/planCandidates` — best-of-N critic round complete.
+   *  `fallback=true` means the critic response was unparseable and candidate 0 was
+   *  defaulted to. */
   onBestOfNComplete(args: PlanCandidates): void;
-  /**
-   * First-class `origami/taskShape` — task decomposition landed.
-   * Client renders the TodoWrite-style checklist with per-sub-task
-   * status. `source` distinguishes heuristic / model-declared /
-   * merged origins.
-   */
+  /** First-class `origami/taskShape` — task decomposition landed. `source`
+   *  distinguishes heuristic / model-declared / merged origins. */
   onTaskShape(args: TaskShape): void;
-  /**
-   * First-class `origami/todoSnapshot` — live todo snapshot mirroring
-   * the harness-owned TODO tracker (SPEC §7.2). `source` distinguishes
-   * model-driven writes from harness auto-seed and session-restore.
-   * The webview renders a sticky strip at the top of the chat pane.
-   */
+  /** First-class `origami/todoSnapshot` — live todo snapshot mirroring the
+   *  harness-owned TODO tracker. `source` distinguishes model-driven writes from
+   *  harness auto-seed and session-restore. */
   onTodoUpdate(args: TodoSnapshot): void;
-  /**
-   * First-class `origami/arbiterDecision` (NEW) — the single per-turn
-   * arbiter verdict (`Done | Continue | AskUser`). The dashboard
-   * renders ONE coherent decision per turn — the opposite of the
-   * donor's "10 gates firing into one turn" (F3). Additive callback;
-   * existing handlers are unaffected.
-   */
+  /** A page the agent just looked at, as a picture. Fired off the answered
+   *  `origami/browser` ext request (the engine emits no notification for the
+   *  browser), so the sessionId is the host handler's. Optional. */
+  onBrowserSnapshot?(args: BrowserSnapshot): void;
+  /** First-class `origami/arbiterDecision` — the single per-turn arbiter verdict
+   *  (`Done | Continue | AskUser`). */
   onArbiterDecision?(args: ArbiterDecision): void;
-  /**
-   * First-class `origami/assessmentUpdate` (donor's assessment-update
-   * notification, renamed for the new brand) — the dashboard's open
-   * permission modal should refresh its title in place to show the
-   * resolved assessment that arrived after `requestPermission` was sent.
-   *
-   * Ignored if no modal is open with the matching `toolCallId` (stale
-   * — the user already approved/denied and moved on).
-   */
+  /** First-class `origami/assessmentUpdate` — the open permission modal should
+   *  refresh its title in place with the assessment that arrived after
+   *  `requestPermission` was sent. Ignored when no modal matches `toolCallId`. */
   onAssessmentUpdate?(args: { toolCallId: string; text: string }): void;
-  /**
-   * First-class `origami/feedMessage` (donor's custodian-message feed,
-   * renamed for the new brand) — cron + ambient observability. The
-   * bridge forwards every `BusMessage` here. The dashboard renders these in a
-   * plain (unbranded) activity feed so Passing can see autonomous
-   * activity (cron job ticks, model load/unload events).
-   *
-   * Implementations should narrow on `busKind` and ignore unknown
-   * variants.
-   */
+  /** First-class `origami/feedMessage` — cron + ambient observability; the bridge
+   *  forwards every `BusMessage` here. Narrow on `busKind` and ignore unknown
+   *  variants. */
   onFeedMessage?(args: { busKind: string; payload: Record<string, unknown> }): void;
-  /** `origami/mcpAuthUrl` — the sign-in page for an MCP server, pushed the
-   *  moment the flow produces it. The `mcp_authenticate` REQUEST cannot carry
-   *  it: that answer only arrives after the user has finished with the URL. */
+  /** `origami/mcpAuthUrl` — an MCP server's sign-in page, pushed the moment the flow
+   *  produces it. The `mcp_authenticate` REQUEST answers only after the user is done. */
   onMcpAuthUrl?(args: { name: string; url: string }): void;
+  /** `origami/historyWindow` (t-ucnp7t, wire_contract.md 1.3): the restore replayed only this page. */
+  onHistoryWindow?(win: HistoryWindow): void;
+  /** `origami/subagentRoster` (wire_contract.md 4): every descendant, from session rows. */
+  onSubagentRoster?(roster: SubagentRoster): void;
   onClose(reason: string): void;
   onError(message: string): void;
 }
 
-/**
- * Resolve the path to the user-facing `origami` CLI binary using the
- * same search order as `resolveOrigamiAcpBinary`. Used to spawn the
- * engine, and by the Crons view to bake an absolute `origami run …`
- * path into each scheduled task (a task runs with no inherited PATH
- * assumptions, so the bare name would not do).
- */
+/** Resolve the user-facing `origami` CLI binary, same search order as
+ *  `resolveOrigamiAcpBinary`. Used to spawn the engine, and by the Crons view to
+ *  bake an absolute path into each scheduled task (no inherited PATH). */
 export function resolveOrigamiBinary(): string {
   const exeName = os.platform() === 'win32' ? 'origami.exe' : 'origami';
 
-  // The `origami` CLI lives next to `origami-acp` in every install
-  // layout. When the user pins the ACP bridge via ORIGAMI_ACP_PATH
-  // (the common dev setup), derive `origami` from the SAME directory.
+  // The `origami` CLI lives next to `origami-acp` in every install layout, so when the
+  // bridge is pinned via ORIGAMI_ACP_PATH, derive `origami` from that same directory.
   const acpEnv = process.env.ORIGAMI_ACP_PATH;
   if (acpEnv) {
     const sibling = path.join(path.dirname(acpEnv), exeName);
@@ -314,28 +309,19 @@ export function resolveOrigamiBinary(): string {
   return exeName;
 }
 
-/**
- * The MERGED-VSIX engine: a binary packaged INSIDE the extension at
- * `<packageRoot>/engine/`. Present only in a merged build (scripts/
- * package-merged.ps1 stages it there; the dev VSIX never carries one), so on
- * a dev install this candidate simply misses and resolution falls through to
- * resolveOrigamiBinary's stable order.
- *
- * `__dirname` is `out/` at runtime and `src/` under vitest — `..` lands on
- * the package root either way, which is exactly where the packaging step
- * stages the binary.
- */
+/** The MERGED-VSIX engine: a binary packaged INSIDE the extension at
+ *  `<packageRoot>/engine/`. Present only in a merged build, so a dev install
+ *  misses this candidate and falls through to resolveOrigamiBinary's order.
+ *  `__dirname` is `out/` at runtime and `src/` under vitest — `..` lands on the
+ *  package root either way. */
 export function bundledEngineCandidate(): string {
   const exeName = os.platform() === 'win32' ? 'origami.exe' : 'origami';
   return path.resolve(__dirname, '..', 'engine', exeName);
 }
 
 /** The ripgrep the merged VSIX stages beside the engine binary. The engine's
- *  grep/skill tooling hard-requires rg and the fork keeps its auto-download
- *  gated off (zero-network), so a fresh machine with no rg on PATH bricked the
- *  skill tool — first hit on the macOS new-user UAT. When this file exists the
- *  spawn env points the engine straight at it (ORIGAMI_RG_PATH); when it does
- *  not (dev unmerged install), the engine's PATH/cache rungs behave as before. */
+ *  grep/skill tooling hard-requires rg and auto-download is off, so when this
+ *  file exists the spawn env points the engine at it (ORIGAMI_RG_PATH). */
 export function bundledRgCandidate(): string | undefined {
   const rgName = os.platform() === 'win32' ? 'rg.exe' : 'rg';
   const candidate = path.resolve(__dirname, '..', 'engine', rgName);
@@ -347,22 +333,15 @@ export function bundledRgCandidate(): string | undefined {
   return candidate;
 }
 
-/**
- * What the ENGINE SPAWN runs — and only the spawn. Cron baking stays on
- * resolveOrigamiBinary: this path lives inside a VERSIONED extension folder
- * that changes on every update, while a scheduled task must keep working
- * across updates, so tasks bake the stable ~/.origami/bin path instead.
- *
- * Bundled-first is the merged product's contract: the extension runs the
- * engine it shipped with, whatever else this machine has installed.
- */
+/** What the ENGINE SPAWN runs, and only the spawn. Cron baking stays on
+ *  resolveOrigamiBinary: this path lives in a VERSIONED extension folder, while
+ *  a scheduled task must keep working across updates. Bundled-first is the
+ *  merged product's contract. */
 export function resolveEngineBinary(): string {
   const bundled = bundledEngineCandidate();
   if (fs.existsSync(bundled)) {
-    // A VSIX is a zip and unzipping loses the execute bit, so on POSIX the
-    // bundled binary arrives mode 644 and the spawn would fail EACCES. Chmod
-    // on every resolve (idempotent); a failure here falls through to the
-    // spawn's own error surface, which names the path.
+    // A VSIX is a zip and unzipping loses the execute bit, so on POSIX the bundled
+    // binary arrives mode 644 and the spawn would fail EACCES. Chmod is idempotent.
     if (os.platform() !== 'win32') {
       try {
         fs.chmodSync(bundled, 0o755);
@@ -375,29 +354,18 @@ export function resolveEngineBinary(): string {
   return resolveOrigamiBinary();
 }
 
-/**
- * Where a `bun` executable can live, most likely first. PURE (platform + home in,
- * paths out) so the per-OS rule is asserted without a filesystem.
- *
- * Windows has one install route, so one candidate. On macOS/Linux the official
- * installer uses `~/.bun/bin`, but Homebrew — the common mac route — uses
- * `/opt/homebrew/bin` (Apple Silicon) or `/usr/local/bin` (Intel). Naming them
- * explicitly matters because the bare-name fallback below is NOT equivalent: a
- * VS Code launched from the Dock inherits a minimal PATH with no Homebrew in it,
- * so `bun` would simply not be found and dev mode would fail with no clue why.
- */
+/** Where a `bun` executable can live, most likely first. PURE (platform + home
+ *  in, paths out). macOS/Linux name Homebrew's prefixes explicitly because a VS
+ *  Code launched from the Dock inherits a minimal PATH, so the bare-name fallback
+ *  would simply not find `bun`. */
 export function bunCandidates(platform: string, home: string): string[] {
   if (platform === 'win32') return [path.join(home, '.bun', 'bin', 'bun.exe')];
   return [path.join(home, '.bun', 'bin', 'bun'), '/opt/homebrew/bin/bun', '/usr/local/bin/bun'];
 }
 
-/**
- * Live-source dev mode. When the `origami.devEngineSource` setting points at a
- * checked-out `packages/engine`, run the engine straight from source via Bun
- * (`bun run --conditions=browser <src>/src/index.ts acp …`) so engine edits take
- * effect on a window reload — no 165 MB binary rebuild. Returns the Bun
- * executable + the arg prefix, or null to fall back to the compiled binary.
- */
+/** Live-source dev mode: when `origami.devEngineSource` points at a checked-out
+ *  `packages/engine`, run the engine from source via Bun so edits take effect on
+ *  a window reload. Returns the Bun executable + arg prefix, or null. */
 export function resolveDevEngine(): { bun: string; argPrefix: string[]; entry: string } | null {
   let src: string | undefined;
   try {
@@ -412,15 +380,8 @@ export function resolveDevEngine(): { bun: string; argPrefix: string[]; entry: s
   return { bun, argPrefix: ['run', '--conditions=browser', entry], entry };
 }
 
-/**
- * Locate the `origami-acp` bridge binary.
- *
- * Resolution order:
- *   1. ORIGAMI_ACP_PATH env var (explicit override for dev)
- *   2. ~/.origami/bin/ (user install)
- *   3. Sibling origami repo target/release/ (dev layout)
- *   4. Plain `origami-acp` (PATH lookup)
- */
+/** Locate the `origami-acp` bridge binary. Order: ORIGAMI_ACP_PATH env var,
+ *  ~/.origami/bin/, sibling origami repo target/release/, then PATH. */
 export function resolveOrigamiAcpBinary(): string {
   const explicit = process.env.ORIGAMI_ACP_PATH;
   if (explicit && fs.existsSync(explicit)) {
@@ -429,13 +390,11 @@ export function resolveOrigamiAcpBinary(): string {
 
   const exeName = os.platform() === 'win32' ? 'origami-acp.exe' : 'origami-acp';
 
-  // ~/.origami/bin/
   const userBin = path.join(os.homedir(), '.origami', 'bin', exeName);
   if (fs.existsSync(userBin)) {
     return userBin;
   }
 
-  // Sibling repo (dev layout: Desktop/origami/target/release/)
   const devCandidates = [
     path.resolve(__dirname, '..', '..', 'origami', 'target', 'release', exeName),
     path.resolve(__dirname, '..', '..', 'origami', 'target', 'debug', exeName),
@@ -446,7 +405,6 @@ export function resolveOrigamiAcpBinary(): string {
     }
   }
 
-  // PATH lookup fallback
   return exeName;
 }
 
@@ -460,35 +418,33 @@ export class AcpClient {
   private connection: acp.ClientSideConnection | null = null;
   private sessionId: string | null = null;
   private pendingPermissions: PendingPermission[] = [];
-  /** Path + mtime of the origami-acp binary this client actually
-   * spawned. Used to detect a rebuild-while-running: if the on-disk
-   * binary is newer, the window is running stale code and must reload. */
+  /** Path + mtime of the origami-acp binary this client spawned, so a
+   *  rebuild-while-running (a newer binary on disk) can prompt a reload. */
   private spawnedBinary: string | null = null;
   private spawnedBinaryMtimeMs = 0;
-  /** `agentInfo.version` from THIS session's ACP handshake. Without it a
-   * stale-engine warning is a claim the user cannot check. Empty when the
-   * agent sent no agentInfo. */
+  /** `agentInfo.version` from THIS session's ACP handshake — without it a
+   *  stale-engine warning is a claim the user cannot check. Empty when none sent. */
   private engineVersionReported = ''; private peerAgentName = ''; // agentInfo._meta.peerName: send_message/list_agents `to` address.
-  /** Working directory this session was started against. Needed for the
-   *  session-scoped ACP calls (listSessions / loadSession) which resolve
-   *  config + history relative to it. */
+  /** Working directory this session was started against. The session-scoped ACP calls
+   *  (listSessions / loadSession) resolve config + history relative to it. */
   private cwd = '';
-  /** The `configOptions` (model / effort / mode selects) returned by the
-   *  last newSession / loadSession / setSessionConfigOption. Source of
-   *  truth for the model picker — replaces the dead `list_models`
-   *  ext-method. */
+  /** The `configOptions` (model / effort / mode selects) from the last newSession
+   *  / loadSession / setSessionConfigOption. Source of truth for the picker. */
   private configOptions: Array<Record<string, unknown>> = [];
-  /** toolCallIds recognised as `todowrite`, so EVERY later frame for that
-   *  call (incl. the completed frame whose title is the tool's own summary
-   *  like "3 todos", and status-only frames that omit title) is routed to
-   *  the todo strip and never leaks a generic card. */
+  /** toolCallIds recognised as `todowrite`, so EVERY later frame for that call
+   *  (including the completed frame, whose title is the tool's own summary, and
+   *  status-only frames) routes to the todo strip and never leaks a card. */
   private readonly todoToolCallIds = new Set<string>();
+  /** t-ucnp7t: the handler set each in-flight `history_page` collects its frames into, by pageId.
+   *  A tagged frame goes ONLY here: old history never reaches the live handlers (contract 2.4). */
+  private readonly pageSinks = new Map<string, AcpEventHandlers>();
+  /** The load/fork response's `_meta.origami_history`; null on an old engine or a new session. */
+  public restoredHistory: HistoryWindow | null = null;
 
   constructor(private readonly handlers: AcpEventHandlers) {}
 
-  /** Which build this session's engine came from. The stat-now and the
-   * verdict live in dashboard/engineStale.ts — a sibling module, not more
-   * surface here, because this file sits within a few lines of its cap. */
+  /** Which build this session's engine came from; the verdict lives in
+   *  dashboard/engineStale.ts. */
   public engineSpawn(): EngineSpawn {
     return {
       binary: this.spawnedBinary,
@@ -496,38 +452,40 @@ export class AcpClient {
       runningVersion: this.engineVersionReported || undefined,
     };
   }
-  get peerName(): string | undefined { return this.peerAgentName || undefined; } // peerAgentName, or undefined if unregistered.
-  /**
-   * Start the bridge.
-   *
-   * `engineUrl` (optional) is the resolved inference endpoint. When
-   * provided it is passed to the spawned `origami-acp` as the
-   * `ORIGAMI_API_BASE` env var — the SAME boundary the Rust bridge
-   * already reads at startup, so no Rust change is needed. The env is
-   * read once at spawn, which is why changing the endpoint requires a
-   * respawn (dispose + new AcpClient) rather than a live mutation.
-   *
-   * When `engineUrl` is undefined the child simply inherits the parent
-   * env unchanged — preserving the existing behaviour (an
-   * ORIGAMI_API_BASE set via `setx` keeps working, else the bridge's own
-   * localhost default applies).
-   */
-  async start(cwd: string, engineUrl?: string, loadSessionId?: string, headless?: boolean, agent?: string): Promise<string> {
+  get peerName(): string | undefined { return this.peerAgentName || undefined; } get pid(): number | undefined { return this.child?.pid; } // peerAgentName / this session's spawned engine's OS pid, or undefined either way if unregistered/not running.
+  /** Start the bridge. `engineUrl` is retained on the signature but unused — the
+   *  endpoint comes from config (origami.json). The child otherwise inherits the
+   *  parent env unchanged. */
+  async start(cwd: string, engineUrl?: string, loadSessionId?: string, headless?: boolean, agent?: string, forkFromSessionId?: string): Promise<string> {
     if (this.sessionId !== null) {
       return this.sessionId;
     }
+    void engineUrl;
+    await this.connect(cwd, headless);
+    // Fork / recall / fresh — the branch itself lives in acpFork.ts.
+    const established = await establishSession(this.connection as unknown as SessionConnection, { cwd, loadSessionId, forkFromSessionId, agent });
+    this.sessionId = established.sessionId;
+    this.configOptions = established.configOptions;
+    this.restoredHistory = established.history ?? null;
+    console.log(`[origami] ACP session ${established.how}: ${this.sessionId}`);
+    return this.sessionId;
+  }
+
+  /** Spawn the engine and run the ACP handshake, with NO session. A chat's start()
+   *  runs this first; the window's host connection (hostEngine.ts, t-sh7cog) runs
+   *  only this, so it writes no stored session and builds no model catalog. */
+  async connect(cwd: string, headless?: boolean): Promise<void> {
+    if (this.connection) return;
     this.cwd = cwd;
 
-    // Live-source dev mode (opt-in via origami.devEngineSource) runs the engine
-    // from source via Bun so edits deploy on reload; otherwise the compiled
-    // binary. The arg prefix is empty for the binary, or `bun run … src/index.ts`
-    // for dev.
+    // Live-source dev mode (opt-in via origami.devEngineSource) runs the engine from
+    // source via Bun; otherwise the compiled binary.
     const dev = resolveDevEngine();
     const exec = dev ? dev.bun : resolveEngineBinary();
     const argPrefix = dev ? dev.argPrefix : [];
     console.log(`[origami] engine: ${dev ? `LIVE SOURCE via ${dev.entry}` : `binary ${exec}`}`);
-    // Snapshot the mtime of what we spawned (binary, or the src entry in dev
-    // mode) so a rebuild/edit can later prompt a reload.
+    // Snapshot the mtime of what we spawned (binary, or the src entry in dev mode) so a rebuild can
+    // prompt a reload.
     this.spawnedBinary = dev ? dev.entry : exec;
     try {
       this.spawnedBinaryMtimeMs = fs.statSync(this.spawnedBinary).mtimeMs;
@@ -536,22 +494,18 @@ export class AcpClient {
     }
     let child: ChildProcess;
     try {
-      // Pipe stderr (forward to the extension's output channel) and pin
-      // windowsHide so the spawned bridge never gets a visible console
-      // window even if a future Node toolchain regresses the default.
-      // The engine endpoint comes from config (origami.json), NOT from
-      // ORIGAMI_API_BASE. `engineUrl` is retained on the signature but unused.
-      void engineUrl;
+      // Pipe stderr to the output channel and pin windowsHide so the bridge never gets
+      // a visible console window. The engine endpoint comes from config (origami.json),
+      // NOT from ORIGAMI_API_BASE; start()'s `engineUrl` is unused.
       child = spawn(exec, [...argPrefix, 'acp', '--cwd', cwd], {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd,
         windowsHide: true,
         // Which engine flags this shell turns on, and why, lives in engineEnv.ts.
-        // ORIGAMI_RG_PATH: see bundledRgCandidate — only set when the merged
-        // install actually shipped an rg, so dev spawns are byte-identical.
+        // ORIGAMI_RG_PATH is set only when the merged install shipped an rg.
         env: {
           ...process.env,
-          ...engineSpawnEnv({ codeMode: codeModeEnabled(), agentName: agentNameSetting(), headless }),
+          ...engineSpawnEnv({ codeMode: codeModeEnabled(), agentName: agentNameSetting(), headless, subagentLimitHours: subagentLimitHours() }),
           ...(() => { const rg = bundledRgCandidate(); return rg ? { ORIGAMI_RG_PATH: rg } : {}; })(),
         },
       });
@@ -572,9 +526,8 @@ export class AcpClient {
     child.on('error', (err) => {
       this.handlers.onError(`origami-acp child error: ${err.message}`);
     });
-    // Forward piped stderr to the extension host log so the bridge
-    // doesn't go silent. Per-line so multi-line panics don't get
-    // truncated.
+    // Forward piped stderr to the extension host log, per line so multi-line panics
+    // are not truncated.
     if (child.stderr) {
       child.stderr.setEncoding('utf8');
       let buf = '';
@@ -620,44 +573,12 @@ export class AcpClient {
         },
       },
     });
-    // The engine already tells us what it is; nothing read it. This is the
-    // session's own answer to "which build am I talking to" — the question a
-    // deploy that left old processes alive makes unanswerable.
+    // The session's own answer to "which build am I talking to".
     const agentInfo = (initResp as { agentInfo?: { version?: unknown; _meta?: { peerName?: unknown } } }).agentInfo;
     this.engineVersionReported = typeof agentInfo?.version === 'string' ? agentInfo.version : ''; this.peerAgentName = typeof agentInfo?._meta?.peerName === 'string' ? agentInfo._meta.peerName : '';
     console.log(
       `[origami] ACP initialized (protocolVersion=${initResp.protocolVersion}, engine=${this.engineVersionReported || 'unreported'})`,
     );
-
-    if (loadSessionId) {
-      // History recall: load an existing engine session. The server
-      // restores context AND replays the full transcript back as
-      // `sessionUpdate` events (agent/user message chunks, tool calls),
-      // which land in the normal handlers below → the webview re-renders
-      // the conversation. The user can then continue it with full context.
-      const loadResp = await this.connection.loadSession({
-        sessionId: loadSessionId,
-        cwd,
-        mcpServers: [],
-      });
-      this.sessionId = loadSessionId;
-      this.configOptions = ((loadResp as { configOptions?: unknown[] }).configOptions ?? []) as Array<
-        Record<string, unknown>
-      >;
-      console.log(`[origami] ACP session loaded: ${this.sessionId}`);
-      return this.sessionId;
-    }
-
-    // `_meta.agent` = the agent this session is created AS (engine acp/service.ts
-    // `requestedAgent`): it seeds the engine session row AND `modeId`, so the FIRST
-    // turn speaks as that def — pointing `mode` at it afterwards was one turn late.
-    const sessionResp = await this.connection.newSession({ cwd, mcpServers: [], ...(agent ? { _meta: { agent } } : {}) });
-    this.sessionId = sessionResp.sessionId;
-    this.configOptions = ((sessionResp as { configOptions?: unknown[] }).configOptions ?? []) as Array<
-      Record<string, unknown>
-    >;
-    console.log(`[origami] ACP session created: ${this.sessionId}`);
-    return this.sessionId;
   }
 
   async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<acp.StopReason> {
@@ -672,20 +593,14 @@ export class AcpClient {
         prompt.push({ type: 'image', data: img.data, mimeType: img.mimeType });
       }
     }
-    const t0 = Date.now();
     const resp = await this.connection.prompt({
       sessionId: this.sessionId,
       prompt: prompt as any,
     });
-    const elapsedSec = (Date.now() - t0) / 1000;
-    // The prompt response carries token usage (the engine's promptResponse
-    // attaches `usage`). LM Studio reports token counts even when it exposes
-    // no context *limit* — so the engine's separate usage_update never fires
-    // for local models. Surface it here so the per-chat context gauge has real
-    // data. `used` = tokens sitting in context (input + cached-read), matching
-    // usage_update's `used`; `size` is left 0 (no limit) — the shell falls back
-    // to the probed context window as the gauge denominator. `outputTokens` is
-    // this turn's real generated count → last-turn tokens/sec over the wall-clock.
+    // The prompt response carries token usage. LM Studio reports token counts with no
+    // context *limit*, so the engine's usage_update never fires for local models —
+    // surface it here. `used` = input + cached-read; `size` stays 0 (no limit) so the
+    // shell falls back to the probed context window as the gauge denominator.
     const usage = (resp as {
       usage?: { inputTokens?: number; cachedReadTokens?: number; cachedWriteTokens?: number; outputTokens?: number };
     }).usage;
@@ -699,9 +614,6 @@ export class AcpClient {
         outputTokens: usage.outputTokens ?? 0,
       });
     }
-    if (usage && typeof usage.outputTokens === 'number' && usage.outputTokens > 0 && elapsedSec >= 0.3) {
-      this.handlers.onTurnStats?.({ tokensPerSec: Math.round(usage.outputTokens / elapsedSec) });
-    }
     return resp.stopReason;
   }
 
@@ -712,28 +624,20 @@ export class AcpClient {
     await this.connection.cancel({ sessionId: this.sessionId });
   }
 
-  /** Call an ACP ext_method (e.g. get_vram_state, list_skills).
-   *  The Rust ACP SDK requires a leading `_` prefix on the wire for
-   *  extension methods; the JS SDK does not add it automatically.
-   *  (SCAR UI-S4 — drop this and every ext-method `method_not_found`s.) */
+  /** Call an ACP ext_method (e.g. get_vram_state, list_skills). The Rust ACP SDK
+   *  requires a leading `_` on the wire for extension methods and the JS SDK does
+   *  not add it; drop it and every ext-method `method_not_found`s. */
   async extMethod(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     if (!this.connection) {
       throw new Error('AcpClient.extMethod called before start()');
     }
-    // ACP protocol: extension methods use a `_` prefix on the wire.
-    // The Rust SDK strips it before delivering to the Agent::ext_method handler.
     const wireMethod = method.startsWith('_') ? method : `_${method}`;
     return this.connection.extMethod(wireMethod, params);
   }
 
-  /**
-   * `run_steps` — an ordered, read-only projection of a PAST run's steps.
-   * Safe for a session that is not open in this connection: the engine only
-   * reads stored messages, it never loads or resumes the session.
-   *
-   * The engine caps the list; check `truncated`/`total` before claiming the
-   * view is complete.
-   */
+  /** `run_steps` — an ordered, read-only projection of a PAST run's steps. Safe
+   *  for a session not open in this connection: the engine only reads stored
+   *  messages. The list is capped; check `truncated`/`total`. */
   async getRunSteps(sessionId: string, cwd?: string): Promise<RunStepsResult> {
     const result = await this.extMethod('run_steps', {
       sessionId,
@@ -742,34 +646,83 @@ export class AcpClient {
     return result as unknown as RunStepsResult;
   }
 
-  /** `run_stats` — per-run counts for a PAGE of the run index, in one call.
-   *  Each id costs the engine a `session.messages` read, so the engine caps the
-   *  batch and says so; never call this per row. */
+  /** `run_stats` — per-run counts for a PAGE of the run index, in one call. Each id
+   *  costs the engine a `session.messages` read, so it caps the batch; never per row. */
   async getRunStats(sessionIds: string[], cwd?: string): Promise<RunStatsResult> {
     const result = await this.extMethod('run_stats', { sessionIds, ...(cwd ? { cwd } : {}) });
     return result as unknown as RunStatsResult;
   }
 
-  /**
-   * `subagent_transcript` — ONE sub-agent's stored session as chat rows. Same
-   * read-only guarantee as `getRunSteps` above, and the same tolerance for a
-   * child that is gone: an unknown id comes back `found: false`, never a
-   * throw, because the caller is a panel that must still draw something.
-   */
-  async getSubagentTranscript(sessionId: string, cwd?: string): Promise<SubagentTranscriptResult> {
+  /** `session_delete` — remove ONE stored session permanently: the engine cascades and
+   *  THROWS when the store refuses, so a resolved promise means the row is gone. */
+  async deleteSession(sessionId: string, cwd?: string): Promise<void> {
+    await this.extMethod('session_delete', { sessionId, ...(cwd ? { cwd } : {}) });
+  }
+
+  /** `subagent_transcript` — ONE sub-agent's stored session as chat rows.
+   *  Read-only, and tolerant of a child that is gone: an unknown id comes back
+   *  `found: false`, never a throw. */
+  async getSubagentTranscript(
+    sessionId: string,
+    cwd?: string,
+    /** t-krxap7. `limit` asks for the newest N stored messages instead of the whole
+     *  run; `before` walks back from a previous answer's `cursor`. The engine
+     *  REFUSES a `before` with no `limit`, so the two travel together or not at all. */
+    page?: { limit?: number; before?: string },
+  ): Promise<SubagentTranscriptResult> {
+    const limit = typeof page?.limit === 'number' && page.limit > 0 ? Math.floor(page.limit) : 0;
     const result = await this.extMethod('subagent_transcript', {
       sessionId,
       ...(cwd ? { cwd } : {}),
+      ...(limit > 0 ? { limit } : {}),
+      ...(limit > 0 && page?.before ? { before: page.before } : {}),
     });
     return result as unknown as SubagentTranscriptResult;
   }
 
-  /**
-   * `list_instructions` — every file/URL feeding the system prompt, with
-   * sizes. Paths only; contents are never sent, so open the file to read it.
-   * `tokensApproxMethod` names the estimator — the token counts are a
-   * heuristic, not a tokenisation.
-   */
+  /** `subagent_todos` (t-qd2riw) — the child's latest todowrite call, found by a
+   *  bounded backward walk over its stored session on the engine side, instead
+   *  of the whole-transcript read `subagent_transcript` still makes for the
+   *  drawer's ↗. Read-only, tolerant of a gone child the same way. */
+  async getSubagentTodos(sessionId: string, cwd?: string): Promise<SubagentTodosResult> {
+    const result = await this.extMethod('subagent_todos', { sessionId, ...(cwd ? { cwd } : {}) });
+    return result as unknown as SubagentTodosResult;
+  }
+
+  /** `subagent_changes` (t-ru0by6, same family as `subagent_todos`) — the
+   *  child's diff-bearing tool parts, found by a bounded backward walk over
+   *  its stored session on the engine side, instead of the whole-transcript
+   *  read the changed-files pill used to make for the same job. */
+  async getSubagentChanges(sessionId: string, cwd?: string): Promise<SubagentChangesResult> {
+    const result = await this.extMethod('subagent_changes', { sessionId, ...(cwd ? { cwd } : {}) });
+    return result as unknown as SubagentChangesResult;
+  }
+
+  /** `history_page` (t-ucnp7t, contract 2): one OLDER page. Its frames arrive before the reply on
+   *  the one ordered stream, each tagged `_meta.origami_page = pageId`; they are routed to `sink`
+   *  alone, so the reply is also the page's end marker. The sink is dropped either way. */
+  async historyPage(params: { sessionId: string; before?: string; pageId: string; limit?: number }, sink: AcpEventHandlers): Promise<HistoryPageReply> {
+    this.pageSinks.set(params.pageId, sink);
+    try {
+      return historyPageReplyFrom(await this.extMethod('history_page', { ...params, ...(this.cwd ? { cwd: this.cwd } : {}) }), params.pageId);
+    } finally {
+      this.pageSinks.delete(params.pageId);
+    }
+  }
+
+  /** `history_search` (contract 5): engine-side find over the WHOLE stored chat. */
+  async historySearch(params: { sessionId: string; query: string; cursor?: string; limit?: number }): Promise<HistorySearchReply> {
+    return historySearchReplyFrom(await this.extMethod('history_search', { ...params, ...(this.cwd ? { cwd: this.cwd } : {}) }));
+  }
+
+  /** `subagent_roster` (contract 4.1): the same rows the restore notification carries. */
+  async subagentRoster(sessionId: string): Promise<SubagentRoster | null> {
+    return subagentRosterFrom(await this.extMethod('subagent_roster', { sessionId, ...(this.cwd ? { cwd: this.cwd } : {}) }));
+  }
+
+  /** `list_instructions` — every file/URL feeding the system prompt, with sizes.
+   *  Paths only; contents are never sent. `tokensApproxMethod` names the estimator
+   *  — the counts are a heuristic, not a tokenisation. */
   async listInstructions(cwd?: string): Promise<InstructionSet> {
     const result = await this.extMethod('list_instructions', {
       ...(cwd ? { cwd } : {}),
@@ -777,19 +730,55 @@ export class AcpClient {
     return result as unknown as InstructionSet;
   }
 
-  /** `list_tools` — the base tool list plus which of them the deferred-tool
-   *  catalog hides from the model. Read-only. */
+  /** `artifact_list` — the artifacts pane's rows. GLOBAL, not per project:
+   *  `projectPath` narrows it to one repo, and `all` ignores that narrowing. */
+  async listArtifacts(options: { all?: boolean; projectPath?: string } = {}): Promise<ArtifactListResult> {
+    const result = await this.extMethod('artifact_list', {
+      ...(options.all ? { all: true } : {}),
+      ...(options.projectPath ? { projectPath: options.projectPath } : {}),
+    });
+    return result as unknown as ArtifactListResult;
+  }
+
+  /** `artifact_versions` — v1..vN of one artifact, newest first. */
+  async listArtifactVersions(artifactId: string): Promise<ArtifactVersionsResult> {
+    const result = await this.extMethod('artifact_versions', { artifactId });
+    return result as unknown as ArtifactVersionsResult;
+  }
+
+  /** `artifact_open` — the loopback url of a version's entry file. No `version`
+   *  means the latest, which is what the Open button sends. The url is the
+   *  ENGINE's to build: only it knows the port its server listened on. */
+  async openArtifact(artifactId: string, version?: number): Promise<ArtifactOpenResult> {
+    const result = await this.extMethod('artifact_open', {
+      artifactId,
+      ...(typeof version === 'number' ? { version } : {}),
+    });
+    return result as unknown as ArtifactOpenResult;
+  }
+
+  /** `artifact_restore` — copy an old version FORWARD as a new one. The only
+   *  write in this group; it answers with the version number it minted. */
+  async restoreArtifact(artifactId: string, version: number): Promise<ArtifactRestoreResult> {
+    const result = await this.extMethod('artifact_restore', { artifactId, version });
+    return result as unknown as ArtifactRestoreResult;
+  }
+
+  /** `artifact_diff` — which files changed between two versions, as paths. */
+  async diffArtifact(artifactId: string, from: number, to: number): Promise<ArtifactDiffResult> {
+    const result = await this.extMethod('artifact_diff', { artifactId, from, to });
+    return result as unknown as ArtifactDiffResult;
+  }
+
+  /** `list_tools` — the base tool list plus which of them the deferred-tool catalog hides.
+   *  Read-only. */
   async listTools(cwd?: string): Promise<ToolCatalog> {
     return (await this.extMethod('list_tools', { ...(cwd ? { cwd } : {}) })) as unknown as ToolCatalog;
   }
 
-  /**
-   * The model picker source — derived from the ACP `configOptions` the
-   * server returned at session start (the `model` select). Replaces the
-   * dead `list_models` ext-method: the switchable models are exactly the
-   * providers/models configured in `origami.json`, and `current` is what
-   * the session resolved to. Returns null if no model option was sent.
-   */
+  /** The model picker source — the ACP `configOptions` `model` select returned at
+   *  session start. The switchable models are the providers/models configured in
+   *  `origami.json`; `current` is what the session resolved to. Null if absent. */
   getModelOption(): { current: string; options: Array<{ value: string; name: string }> } | null {
     const opt = this.configOptions.find((o) => o['id'] === 'model' && o['type'] === 'select');
     if (!opt) return null;
@@ -802,10 +791,9 @@ export class AcpClient {
     };
   }
 
-  /** Shared reader for a `select` config-option (mode / effort). Mirrors
-   *  getModelOption but generic — returns null when the engine didn't send
-   *  that option (e.g. effort is omitted for a model with no variants, so the
-   *  selector hides instead of showing an empty menu). */
+  /** Shared reader for a `select` config-option (mode / effort). Null when the
+   *  engine did not send that option — effort is omitted for a model with no
+   *  variants, so the selector hides instead of showing an empty menu. */
   private getSelectOption(
     id: string,
   ): { current: string; options: Array<{ value: string; name: string; description?: string }> } | null {
@@ -824,33 +812,25 @@ export class AcpClient {
     };
   }
 
-  /** The session-mode picker source — the ACP `configOptions` `mode` select
-   *  (build / plan / any custom primary agents). `current` is the live
-   *  `session.modeId`, so the selector reflects the engine's real state (no
-   *  fire-and-forget). Switch via `setConfigOption('mode', id)` — picking
-   *  `plan` enters the read-only plan agent. */
+  /** The session-mode picker source — the `mode` select (build / plan / custom
+   *  primary agents). `current` is the live `session.modeId`. Switch via
+   *  `setConfigOption('mode', id)`; `plan` enters the read-only plan agent. */
   getModeOption() {
     return this.getSelectOption('mode');
   }
 
-  /** The effort picker source — the ACP `configOptions` `effort` select (the
-   *  model's REAL reasoning variants, named by the model). Null when the model
-   *  declares none. The shell drives its reasoning control from this instead of
-   *  hardcoded think/quick, which produced "effort not found: think". */
+  /** The effort picker source — the `effort` select, the model's REAL reasoning
+   *  variants named by the model. Null when it declares none; hardcoded
+   *  think/quick produced "effort not found: think". */
   getEffortOption() {
     return this.getSelectOption('effort');
   }
   /** Live approve-mode off configOptions' scalar `permission` entry (yolo-permissions; not a `select`, so getSelectOption doesn't fit) — null on an older engine. */
   getPermissionOption(): string | null { const o = this.configOptions.find((x) => x['id'] === 'permission'); const v = o?.['currentValue'] ?? o?.['value']; return typeof v === 'string' ? v : null; }
 
-  /**
-   * Switch the session model via the ACP config-option surface
-   * (`setSessionConfigOption configId='model'`). The server validates the
-   * id against the configured providers and returns the full refreshed
-   * `configOptions`, which we cache so `getModelOption()` reflects the new
-   * current value. Returns the resolved current model id. Throws on an
-   * invalid model (the honest failure — never a silent no-op).
-   */
+  /** Switch the session model (`setSessionConfigOption configId='model'`). The
+   *  server validates the id and returns the refreshed `configOptions`, which is
+   *  cached. Returns the resolved model id; throws on an invalid model. */
   async setModel(modelId: string): Promise<string> {
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.setModel called before start()');
@@ -866,13 +846,9 @@ export class AcpClient {
     return this.getModelOption()?.current ?? modelId;
   }
 
-  /**
-   * Set any session config option (`model` / `effort` / `mode`) via the ACP
-   * config-option surface. The server validates the value against the
-   * session's snapshot and throws an honest error (e.g. InvalidEffortError)
-   * when the value isn't valid for the current model — never a silent no-op.
-   * Caches the refreshed `configOptions` so `getModelOption()` stays current.
-   */
+  /** Set any session config option (`model` / `effort` / `mode`). The server
+   *  validates the value against the session's snapshot and throws an honest error
+   *  when it is not valid for the current model — never a silent no-op. */
   async setConfigOption(configId: string, value: string): Promise<void> {
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.setConfigOption called before start()');
@@ -887,13 +863,9 @@ export class AcpClient {
     >;
   }
 
-  /**
-   * Deterministic rollback. `revert(messageID)` restores the working tree to the
-   * snapshot from before that assistant message's turn and marks that turn (and
-   * everything after) for removal; `unrevert()` undoes it — valid until the next
-   * prompt finalises the deletion. Both ride the string config channel (mirroring
-   * the `title` action); the engine does the file + snapshot + message work.
-   */
+  /** Deterministic rollback. `revert(messageID)` restores the working tree to the
+   *  snapshot from before that message's turn and marks it (and everything after)
+   *  for removal; `unrevert()` undoes it until the next prompt finalises it. */
   async revert(messageID: string): Promise<void> {
     await this.setConfigOption('revert', messageID);
   }
@@ -901,11 +873,8 @@ export class AcpClient {
     await this.setConfigOption('unrevert', '');
   }
 
-  /**
-   * List prior sessions for the current workspace (standard ACP
-   * `listSessions`) — the ONE real recall surface. Recall one by passing
-   * its id to `start(cwd, _, sessionId)`.
-   */
+  /** List prior sessions for the current workspace (ACP `listSessions`) — the one
+   *  recall surface. Recall one by passing its id to `start(cwd, _, sessionId)`. */
   async listSessions(): Promise<Array<{ sessionId: string; cwd: string; title: string; updatedAt: string }>> {
     if (!this.connection) {
       throw new Error('AcpClient.listSessions called before start()');
@@ -914,15 +883,11 @@ export class AcpClient {
     const pageAll = (params: { cwd?: string }) =>
       pageSessions((p) => this.connection!.listSessions(p), params);
 
-    // Primary: scope to this workspace's cwd.
     let sessions = await pageAll(this.cwd ? { cwd: this.cwd } : {});
 
-    // Fallback: fire when the cwd-scoped query surfaced no chats OTHER than
-    // the CURRENT session — i.e. a fresh/just-created session in this
-    // workspace (returns exactly 1 row: itself) or a cwd-key mismatch (loose
-    // files / C:\ vs C:/). The old `=== 0` test missed the common
-    // one-row-is-the-current-session case, so a brand-new workspace showed
-    // "no past chats" even though history exists under other cwds. Retry
+    // Fallback: fire when the cwd-scoped query surfaced no chats OTHER than the
+    // CURRENT session — a fresh session in this workspace returns exactly 1 row
+    // (itself), and a cwd-key mismatch (loose files, C:\ vs C:/) returns none. Retry
     // unfiltered and adopt it only if it actually surfaces past chats.
     const others = (rows: Array<Record<string, unknown>>) =>
       rows.filter(s => String(s['sessionId'] ?? '') !== (this.sessionId ?? ''));
@@ -957,9 +922,8 @@ export class AcpClient {
   }
 
   dispose(): void {
-    // Not a kill: the engine has a heartbeat file to remove before it goes, and
-    // only its own finalizer can do that. Why, and what the grace buys, is in
-    // engineShutdown.ts.
+    // Not a kill: the engine has a heartbeat file to remove before it goes, and only
+    // its own finalizer can do that (engineShutdown.ts).
     if (this.child) shutdownEngine(this.child);
     this.child = null;
     this.connection = null;
@@ -971,22 +935,12 @@ export class AcpClient {
     }
   }
 
-  /**
-   * If `u` is a `todowrite` tool_call / tool_call_update, decode its todo
-   * list and dispatch `onTodoUpdate` (feeding the live strip), returning
-   * true so the caller suppresses the generic tool card. Returns false for
-   * any other tool.
-   *
-   * Source of truth (in priority order): the structured `rawInput.todos`
-   * (present on pending + running + completed updates — needed for live
-   * ticking), then a JSON-parse of the completed update's text content
-   * (the engine emits `JSON.stringify(todos)` there). The wire item shape
-   * is `{content, status, priority}` (no `activeForm`), so activeForm is
-   * reused from content. Discriminated by `title === 'todowrite'` (the
-   * engine's toolTitle fallback) — the only reliable signal, since the
-   * tool name is not carried on the wire.
-   */
-  private tryHandleTodoWrite(u: unknown): boolean {
+  /** If `u` is a `todowrite` tool_call / tool_call_update, decode its todo list,
+   *  dispatch `onTodoUpdate` and return true so the caller suppresses the generic
+   *  tool card. Sources in priority order: the structured `rawInput.todos`, then a
+   *  JSON-parse of the completed update's text content. The wire item shape is
+   *  `{content, status, priority}` — no `activeForm`, so it reuses `content`. */
+  private tryHandleTodoWrite(u: unknown, h: AcpEventHandlers = this.handlers, old = false): boolean {
     const upd = u as {
       toolCallId?: unknown;
       title?: unknown;
@@ -996,112 +950,142 @@ export class AcpClient {
     const id = typeof upd.toolCallId === 'string' ? upd.toolCallId : '';
     const title = typeof upd.title === 'string' ? upd.title.toLowerCase() : '';
     const hasTodos = !!(upd.rawInput && Array.isArray(upd.rawInput.todos));
-    // Recognise todowrite by ANY of: the title 'todowrite' (pending /
-    // running / error frames); a structured rawInput.todos payload (the
-    // COMPLETED frame's title is the tool's own summary, e.g. "3 todos",
-    // NOT 'todowrite'); or a remembered toolCallId (a status-only frame
-    // may carry neither title nor payload). Title-only gating was the bug:
-    // it leaked the completed frame as a generic JSON card AND starved the
-    // strip of the final snapshot.
+    // Recognise todowrite by ANY of: the title 'todowrite' (pending / running / error
+    // frames); a structured rawInput.todos payload (the COMPLETED frame's title is
+    // the tool's own summary, e.g. "3 todos"); or a remembered toolCallId, since a
+    // status-only frame carries neither.
     const recognised =
       title === 'todowrite' || hasTodos || (id !== '' && this.todoToolCallIds.has(id));
     if (!recognised) return false;
-    if (id) this.todoToolCallIds.add(id);
+    if (id && !old) this.todoToolCallIds.add(id); // a page frame leaves live state alone
 
-    // The list this frame carries — structured rawInput.todos preferred, else
-    // the completed frame's JSON text content. Shaping rules: acpTodoWrite.ts.
+    // The list this frame carries — structured rawInput.todos preferred, else the completed frame's
+    // JSON text (acpTodoWrite.ts).
     const todos = todosFromUpdate(upd);
-    if (todos) this.handlers.onTodoUpdate({ source: 'model_write', todos });
-    // Always suppress the generic card once recognised — even a status-only
-    // frame with no todos payload must not leak a card.
+    if (todos) h.onTodoUpdate({ source: 'model_write', todos });
+    // Always suppress the generic card once recognised — even a status-only frame with no payload
+    // must not leak one.
     return true;
   }
 
   private buildClientImpl(): acp.Client {
     return {
       sessionUpdate: async (params) => {
-        // Every session's stream flows over this one connection, each tagged
-        // with its owning sessionId. This client represents ONE session; a
-        // background sub-agent runs in a CHILD session and its inner stream
-        // (a different sessionId) must NOT render here — otherwise two
-        // sub-agents streaming at once interleave and garble the parent
-        // transcript. Drop anything that isn't ours. (The sub-agent's RESULT
-        // is injected back onto the parent session, so it still arrives with
-        // our sessionId and renders normally.)
+        // Every session's stream flows over this one connection, tagged with its owning
+        // sessionId, and this client represents ONE session. A background sub-agent runs
+        // in a CHILD session whose stream must NOT render here, or two sub-agents
+        // streaming at once garble the parent transcript. The sub-agent's RESULT is
+        // injected onto the parent session and still arrives with our sessionId.
         const updSessionId = (params as { sessionId?: string }).sessionId;
         if (updSessionId && this.sessionId && updSessionId !== this.sessionId) return;
         const u = params.update;
+        // t-ucnp7t: a frame tagged `_meta.origami_page` is OLD history for the page that asked
+        // for it, decoded by the same switch but into that page's own handlers. A tag nobody
+        // asked for is dropped, never shown live (wire_contract.md 2.4).
+        const page = pageTag(u);
+        const h = page === undefined ? this.handlers : this.pageSinks.get(page);
+        if (!h) return;
         switch (u.sessionUpdate) {
           case 'agent_message_chunk': {
-            // The engine tags the /compact summary turn with
-            // `_meta.origami_compaction` so we collapse it into a "Compaction
-            // Completed" marker instead of dumping the summary + scratchpad into
-            // the transcript. Plain ACP servers never set it -> normal render.
+            // The engine tags the /compact summary turn with `_meta.origami_compaction` so it
+            // collapses into a marker instead of dumping the scratchpad into the transcript.
+            // Plain ACP servers never set it -> normal render.
             const cmeta = (u as { _meta?: { origami_compaction?: unknown; origami_child_session?: unknown } })._meta;
             if (u.content.type === 'text' && cmeta?.origami_compaction === true) {
-              this.handlers.onCompactionChunk?.(u.content.text);
+              h.onCompactionChunk?.(u.content.text);
               break;
             }
-            // A BACKGROUND sub-agent settled — an empty chunk carrying only the
-            // marker, since the launcher card completed back at spawn time.
+            // A sub-agent's running total, on an empty chunk tagged with the child's id
+            // (t-dkkd2o). Read BEFORE the terminal marker, because the settling chunk
+            // carries both and the final figure is the one the row must keep.
+            const spend = taskRiders(u);
+            if (spend.taskSessionId && spend.taskTokens) {
+              h.onSubagentTokens?.({
+                childSessionId: spend.taskSessionId,
+                tokens: spend.taskTokens,
+              });
+            }
+            // A dropped stream, as a structured rider on an EMPTY chunk. Read
+            // BEFORE anything that renders text: there IS none, and falling
+            // through would append a nameless agent bubble.
+            const dropped = streamDropNotice(u);
+            if (dropped) {
+              h.onStreamDrop?.(dropped);
+              break;
+            }
+            // A BACKGROUND sub-agent settled — an empty chunk carrying only the marker, since the
+            // launcher card completed at spawn.
             const done = taskDone(u);
             if (done) {
-              this.handlers.onSubagentDone?.(done);
+              // The settling chunk's OWN counters ride the marker: the marker is
+              // the only sub-agent frame the host writes to the message log, so a
+              // total left on the live channel alone dies with the window (t-fdvr2a).
+              h.onSubagentDone?.({ ...done, ...(spend.taskTokens ? { tokens: spend.taskTokens } : {}) });
               break;
             }
-            // A SUB-AGENT's output, forwarded under this session by the engine
-            // (the child's own session is never registered here). Route it to the
-            // task card that spawned it — appending it to the parent's transcript
-            // would interleave ten fan-out children into one garbled turn.
+            // A counters-only chunk has no text to render; without this it would append
+            // an empty assistant bubble to the parent transcript.
+            if (spend.taskSessionId && spend.taskTokens && u.content.type === 'text' && !u.content.text) break;
+            // A SUB-AGENT's output, forwarded under this session. Route it to the task card
+            // that spawned it; appending to the parent transcript would interleave children.
             if (u.content.type === 'text' && typeof cmeta?.origami_child_session === 'string') {
-              this.handlers.onSubagentChunk?.({
+              // t-gvz8t0. The SAME channel carries the child's thought, marked
+              // `origami_task_part: reasoning`. Routed to its own handler so it
+              // can never reach `taskStream` — that string is the row's activity
+              // tail and the transcript card's reply text, and thought in it is
+              // thought presented as the child's answer.
+              if (taskPart(u) === 'reasoning') {
+                h.onSubagentThought?.({
+                  childSessionId: cmeta.origami_child_session,
+                  text: u.content.text,
+                });
+                break;
+              }
+              h.onSubagentChunk?.({
                 childSessionId: cmeta.origami_child_session,
                 text: u.content.text,
               });
               break;
             }
-            // Same replay filter as the user slot: a synthetic assistant part (a sub-agent's
-            // `<task_result>` blob, compaction scratch) is for the model, not the reader.
+            // Same replay filter as the user slot: a synthetic assistant part (a `<task_result>`
+            // blob, compaction scratch) is model-only.
             if (u.content.type === 'text' && !modelOnlyContent(u.content)) {
-              this.handlers.onAgentMessageChunk(u.content.text, (u as { messageId?: string }).messageId);
+              h.onAgentMessageChunk(u.content.text, (u as { messageId?: string }).messageId);
             } else if (u.content.type === 'image') {
               const img = u.content as { data?: string; mimeType?: string };
               if (img.data && img.mimeType) {
-                this.handlers.onAgentImageChunk(img.data, img.mimeType);
+                h.onAgentImageChunk(img.data, img.mimeType);
               }
             }
             break;
           }
           case 'user_message_chunk': {
-            // Emitted on history replay (loadSession) — without this case the donor lost every user turn from a
-            // resumed transcript. Replay carries the model-only parts the live stream drops, so filter them here
-            // or the interject envelope renders under the human's name (acpAudience.ts).
+            // Emitted on history replay (loadSession), which carries the model-only parts the live
+            // stream drops — filter them or the interject envelope renders as the human
+            // (acpAudience.ts).
             if (u.content.type !== 'text' || modelOnlyContent(u.content)) break;
-            // A PEER agent's handoff arrives in this same slot but nobody here
-            // typed it, so it is routed away from the human's row (acpPeerMeta.ts).
+            // A PEER agent's handoff arrives in this same slot but nobody here typed it
+            // (acpPeerMeta.ts).
             const peer = peerFromMeta(u);
-            if (peer) this.handlers.onPeerMessage?.({ ...peer, text: u.content.text });
-            else this.handlers.onUserMessageChunk?.(u.content.text);
+            if (peer) h.onPeerMessage?.({ ...peer, text: u.content.text });
+            else h.onUserMessageChunk?.(u.content.text);
             break;
           }
           case 'agent_thought_chunk':
-            // Streamed reasoning. Optional surface — rendered dim or dropped.
             if (u.content.type === 'text') {
-              this.handlers.onAgentThoughtChunk?.(u.content.text);
+              h.onAgentThoughtChunk?.(u.content.text);
             }
             break;
           case 'tool_call': {
-            // `todowrite` is the live task list: route it to the todo strip
-            // (onTodoUpdate) and DON'T render a generic tool card. The
-            // model calls it many times per turn — stacking JSON cards is
-            // noise; the strip shows the same data, evolving in place.
-            if (this.tryHandleTodoWrite(u)) break;
-            // The engine stamps this on every tool event (acpToolMeta.ts);
-            // absent/plain-ACP reads as '' → GenericCard.
+            // `todowrite` is the live task list: route it to the strip (onTodoUpdate) and do
+            // not render a generic card — the model calls it many times per turn.
+            if (this.tryHandleTodoWrite(u, h, page !== undefined)) break;
+            // The engine stamps this on every tool event (acpToolMeta.ts); absent/plain-ACP reads
+            // as '' -> GenericCard.
             const toolName = toolNameRider(u);
             const locs = (u as { locations?: Array<{ path?: unknown }> }).locations;
             const path = Array.isArray(locs) && typeof locs[0]?.path === 'string' ? locs[0].path : undefined;
-            this.handlers.onToolCallStart({
+            h.onToolCallStart({
               toolCallId: u.toolCallId,
               title: u.title ?? '',
               kind: u.kind ?? 'other',
@@ -1109,22 +1093,18 @@ export class AcpClient {
               toolName,
               path,
               rawInput: (u as { rawInput?: unknown }).rawInput,
-              // Sibling decorations of origami_tool_name — for a `task` call: its
-              // child session, whether it detached, its model (acpTaskMeta.ts).
+              // Sibling decorations of origami_tool_name — for a `task` call: its child session,
+              // whether it detached, its model.
               ...taskRiders(u),
             });
             break;
           }
           case 'tool_call_update': {
-            // todowrite updates also feed the strip, not a card (see above).
-            if (this.tryHandleTodoWrite(u)) break;
-            // The whole content ARRAY is scanned (text + diff + image blocks)
-            // by acpToolContent.ts, extracted when this file hit its cap.
+            if (this.tryHandleTodoWrite(u, h, page !== undefined)) break;
+            // The whole content ARRAY is scanned (text + diff + image blocks) by acpToolContent.ts.
             const { contentText, diff, images } = decodeToolContent(u.content);
-            // The resolved title (write's is the relative file path) and the
-            // ACP `locations` path only land on the update, not the initial
-            // pending tool_call — extract them here so the card can show the
-            // file it wrote instead of a bare "write".
+            // The resolved title (write's is the relative file path) and the ACP `locations`
+            // path only land on the update, not the pending tool_call.
             const uTitle = typeof (u as { title?: unknown }).title === 'string'
               ? (u as { title: string }).title
               : undefined;
@@ -1132,17 +1112,14 @@ export class AcpClient {
             const uPath = Array.isArray(uLocs) && typeof uLocs[0]?.path === 'string'
               ? uLocs[0].path
               : undefined;
-            // Same rider, same reader (replay-toolcards: heals a card whose
-            // initial tool_call never matched).
+            // Same rider, same reader — it heals a card whose initial tool_call never matched.
             const uToolName = toolNameRider(u);
-            this.handlers.onToolCallUpdate({
+            h.onToolCallUpdate({
               toolCallId: u.toolCallId,
               ...taskRiders(u),
-              // The engine always sets an explicit status
-              // (in_progress/completed/failed). Pass it through verbatim —
-              // the webview renders `failed` as a red card. The `??` is a
-              // defensive last resort only; it must NOT mask a real
-              // `failed` as green.
+              // The engine always sets an explicit status (in_progress/completed/failed); pass
+              // it through verbatim — the webview renders `failed` as a red card. The `??` is a
+              // defensive last resort and must NOT mask a real `failed` as green.
               status: (u.status as string | undefined) ?? 'completed',
               contentText,
               diff,
@@ -1158,42 +1135,43 @@ export class AcpClient {
           case 'available_commands_update': {
             const cmds = (u as any).availableCommands;
             if (Array.isArray(cmds)) {
-              this.handlers.onAvailableCommands(
+              h.onAvailableCommands(
                 cmds.map((c: any) => ({ name: String(c.name || ''), description: String(c.description || '') }))
               );
             }
             break;
           }
           case 'session_info_update': {
-            // The engine pushes the generated session title here. Forward it
-            // so the tab/history rename the moment the title lands.
+            // The engine pushes the generated session title here; forward it so the tab/history
+            // rename at once.
             const si = u as { title?: string | null };
             const title = typeof si.title === 'string' ? si.title.trim() : '';
-            if (title) this.handlers.onSessionTitle?.({ title });
+            if (title) h.onSessionTitle?.({ title });
             break;
           }
           case 'current_mode_update': {
-            // Engine-driven mode switch (e.g. plan_exit -> build). Reflect it in
-            // the selector/status bar; the next turn already runs as this mode.
+            // Engine-driven mode switch (e.g. plan_exit -> build). The next turn already runs as
+            // this mode.
             const cm = u as { currentModeId?: string };
             const modeId = typeof cm.currentModeId === 'string' ? cm.currentModeId : '';
             if (modeId) {
-              // Keep the cached `mode` select in sync so getModeOption() (and the
-              // broadcastConfigSelectors re-read) reflect the new mode rather than
-              // the stale pre-switch currentValue.
+              // Keep the cached `mode` select in sync so getModeOption() reflects the new mode
+              // rather than the stale pre-switch currentValue.
               const opt = this.configOptions.find((o) => o['id'] === 'mode' && o['type'] === 'select');
               if (opt) opt['currentValue'] = modeId;
-              this.handlers.onModeChanged?.({ modeId });
+              h.onModeChanged?.({ modeId });
             }
             break;
           }
           case 'usage_update': {
-            // Subagent rollup rides `_meta.subagents` (ACP's extension bag —
-            // a top-level field fails the SDK check); absent = no children ran.
+            // Subagent rollup rides `_meta.subagents` (ACP's extension bag — a top-level field
+            // fails the SDK check).
             const uu = u as { used?: number; size?: number; cost?: { amount?: number; currency?: string };
-              _meta?: { subagents?: { cost?: number; tokensInput?: number; tokensOutput?: number } } };
+              _meta?: { subagents?: { cost?: number; tokensInput?: number; tokensOutput?: number }; composition?: unknown } };
             const sub = uu._meta?.subagents;
-            this.handlers.onUsageUpdate?.({
+            // The context breakdown rides the same extension bag as the rollup.
+            const composition = parseComposition(uu._meta?.composition);
+            h.onUsageUpdate?.({
               used: Number(uu.used ?? 0),
               size: Number(uu.size ?? 0),
               cost: uu.cost && typeof uu.cost.amount === 'number'
@@ -1202,20 +1180,17 @@ export class AcpClient {
               ...(sub && typeof sub.cost === 'number'
                 ? { subagents: { cost: sub.cost, tokensInput: Number(sub.tokensInput ?? 0), tokensOutput: Number(sub.tokensOutput ?? 0) } }
                 : {}),
+              ...(composition ? { composition } : {}),
             });
             break;
           }
           case 'plan': {
-            // REAL plans only. The synthetic uses of `Plan` (turn_end,
-            // todo, task_shape, best_of_n, question) are GONE — they
-            // arrive as first-class `origami/*` notifications via
-            // `extNotification` below. No `_meta.lilinyx_kind` sniffer,
-            // no `turn_end`-defaults-to-`self_review` fall-through, so
-            // no phantom "Self-reviewing plan…" banner.
+            // REAL plans only. The synthetic uses of `Plan` (turn_end, todo, task_shape,
+            // best_of_n, question) arrive as first-class `origami/*` notifications instead.
             const meta = (u as any)._meta ?? {};
             const status = (meta.status as string) ?? '';
             if (status === 'awaiting_user') {
-              this.handlers.onPlanReady({
+              h.onPlanReady({
                 planId: meta.planId ?? '',
                 title: meta.title ?? '',
                 filePath: meta.filePath ?? '',
@@ -1223,7 +1198,7 @@ export class AcpClient {
                 revisionCount: meta.revisionCount ?? 0,
               });
             } else if (status) {
-              this.handlers.onPlanStatus({
+              h.onPlanStatus({
                 planId: meta.planId ?? '',
                 status,
                 revisionCount: meta.revisionCount ?? 0,
@@ -1232,9 +1207,8 @@ export class AcpClient {
             break;
           }
           default:
-            // Surface anything the engine emits that we don't handle — a
-            // silent drop here is exactly how usage_update + thought chunks
-            // went missing. A warn keeps future additions from slipping by.
+            // Surface anything the engine emits that we don't handle — a silent drop is how
+            // usage_update + thought chunks went missing.
             console.warn(`[origami] unhandled sessionUpdate: ${String((u as { sessionUpdate?: unknown }).sessionUpdate ?? '(unknown)')}`);
             break;
         }
@@ -1259,11 +1233,11 @@ export class AcpClient {
             respond: (optionId: string | null, answerText?: string, answers?: ReadonlyArray<QuestionAnswer>) => {
               const idx = this.pendingPermissions.indexOf(pending);
               if (idx >= 0) this.pendingPermissions.splice(idx, 1);
-              // Cancelled RESOLVES the call rather than dropping it, so the
-              // engine stops waiting for an answer and the turn continues.
+              // Cancelled RESOLVES the call rather than dropping it, so the engine stops waiting
+              // and the turn continues.
               if (optionId === null) { resolve({ outcome: { outcome: 'cancelled' } }); return; }
-              // M4.4 — free text and batch answers ride the SELECTED outcome's
-              // `_meta` (ACP reserves it); omitted when there are none.
+              // Free text and batch answers ride the SELECTED outcome's `_meta` (ACP reserves it);
+              // omitted when there are none.
               const meta = replyMeta(answerText, answers);
               resolve({ outcome: meta ? { outcome: 'selected', optionId, _meta: meta } : { outcome: 'selected', optionId } });
             },
@@ -1272,23 +1246,22 @@ export class AcpClient {
       },
 
       // Ext REQUESTS from the engine. Only `origami/browser` is answered here
-      // (browserBridge.ts owns every VS Code call it makes); anything else is
-      // a method this client does not implement and must say so rather than
-      // return a shape the caller would read as a half-success.
+      // (browserBridge.ts owns every VS Code call it makes); anything else must say it
+      // is not implemented rather than return a shape read as a half-success.
       extMethod: async (method, params) => {
-        if (isBrowserMethod(method)) return await handleBrowserExtMethod(params);
-        // Same rejection the SDK gave before this member existed, so adding it
-        // did not turn "not implemented" into a different failure for callers.
+        const snapshot = this.handlers.onBrowserSnapshot;
+        if (isBrowserMethod(method)) {
+          return await handleBrowserExtMethod(params, snapshot ? (s) => snapshot.call(this.handlers, s) : undefined);
+        }
+        // Same rejection the SDK gave before this member existed, so adding it changed nothing for
+        // callers.
         throw acp.RequestError.methodNotFound(method);
       },
 
-      // First-class `origami/*` notifications. The Rust SDK prefixes
-      // ext_method names with `_` on the wire, so a server emit of
-      // `origami/todoSnapshot` arrives here as `_origami/todoSnapshot`.
-      // Strip the prefix and dispatch by bare method name. Unknown
-      // methods are silently ignored — forward-compatible with the
-      // reserved-but-stubbed notifications (origami/steerAccepted,
-      // origami/inputQueued).
+      // First-class `origami/*` notifications. The Rust SDK prefixes ext_method names
+      // with `_` on the wire, so `origami/todoSnapshot` arrives as
+      // `_origami/todoSnapshot` — strip the prefix and dispatch by bare name. Unknown
+      // methods are ignored, for forward compatibility.
       extNotification: async (method, params) => {
         const bare = method.startsWith('_') ? method.slice(1) : method;
         const p = (params ?? {}) as Record<string, unknown>;
@@ -1304,14 +1277,9 @@ export class AcpClient {
             this.handlers.onTodoUpdate(todoSnapshotFrom(p));
             break;
           case 'origami/turnEnd': {
-            // The bridge's end-of-turn signal carrying the real
-            // `stop_reason`. Two consumers, both honest:
-            //   1) clear any in-progress plan banner (NEVER `self_review`).
-            //   2) forward the real `stop_reason` so the dashboard can
-            //      render the per-turn TERMINAL verdict (verified-done /
-            //      incomplete:<reason> / parked). Previously the payload
-            //      was discarded here (the F4 blind-instrument bug): a
-            //      budget-walled FAILURE looked like healthy progress.
+            // The bridge's end-of-turn signal carrying the real `stop_reason`. Two consumers:
+            // clear any in-progress plan banner, and forward the stop_reason so the dashboard
+            // can render the per-turn terminal verdict.
             this.handlers.onPlanStatus({
               planId: '',
               status: 'turn_end',
@@ -1322,19 +1290,38 @@ export class AcpClient {
             });
             break;
           }
+          case 'origami/sessionStatus': {
+            // Carries its own session id (unlike `turnEnd`, which relies on the host's
+            // closure): the engine sends it for every session this connection registered.
+            if (typeof p.sessionId === 'string' && typeof p.status === 'string') {
+              this.handlers.onSessionStatus?.({ sessionId: p.sessionId, status: p.status });
+            }
+            break;
+          }
+          case 'origami/cacheState': {
+            // Carries its own session id, like `sessionStatus`: a fan-out's children
+            // are measured too, and only the id says which composer is being told.
+            const push = cacheStateFrom(p);
+            if (push.sessionId) this.handlers.onCacheState?.(push);
+            break;
+          }
           case 'origami/arbiterDecision':
             this.handlers.onArbiterDecision?.(arbiterDecisionFrom(p));
             break;
+          case 'origami/flockMailbox':
+            this.handlers.onFlockMailbox?.(flockMailboxFrom(p));
+            break;
+          // Both spellings of the artifacts event: the ticket body wrote one,
+          // the lane brief the other, and a stale pane is the cost of picking
+          // wrong. See src/dashboard/artifactAcp.ts for the contract. The
+          // engine sends `origami/artifactsChanged` (acp/artifacts.ts).
+          case 'origami/artifactsChanged':
+          case 'origami/artifacts':
+            this.handlers.onArtifactsChanged?.(artifactsChangedFrom(p));
+            break;
           case 'origami/assessmentUpdate': {
-            if (
-              typeof p.toolCallId === 'string' &&
-              typeof p.text === 'string' &&
-              this.handlers.onAssessmentUpdate
-            ) {
-              this.handlers.onAssessmentUpdate({
-                toolCallId: p.toolCallId,
-                text: p.text,
-              });
+            if (typeof p.toolCallId === 'string' && typeof p.text === 'string') {
+              this.handlers.onAssessmentUpdate?.({ toolCallId: p.toolCallId, text: p.text });
             }
             break;
           }
@@ -1344,9 +1331,19 @@ export class AcpClient {
             }
             break;
           }
+          case 'origami/historyWindow': {
+            const win = historyWindowFrom(p);
+            if (win) this.handlers.onHistoryWindow?.(win);
+            break;
+          }
+          case 'origami/subagentRoster': {
+            const roster = subagentRosterFrom(p);
+            if (roster) this.handlers.onSubagentRoster?.(roster);
+            break;
+          }
           case 'origami/feedMessage': {
-            // Cron + ambient bus messages forwarded by the bridge.
-            // Shape: { bus_kind: "...", <variant-specific fields> }.
+            // Cron + ambient bus messages forwarded by the bridge. Shape: { bus_kind, <variant
+            // fields> }.
             const busKind = typeof p['bus_kind'] === 'string'
               ? (p['bus_kind'] as string)
               : 'unknown';

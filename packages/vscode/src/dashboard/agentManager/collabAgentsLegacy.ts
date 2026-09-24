@@ -1,25 +1,9 @@
-// Collabs M4 - collabAgentsLegacy.ts: the FROZEN prior-generation seed collab
-// agents, exactly as earlier generations shipped them. Same job as
-// archetypesLegacy.ts and the same standing rule: DO NOT EDIT. Editing a
-// payload here would make an untouched install read as user-edited, and the
-// pane would stop offering the reseed note that is this file's whole reason
-// to exist.
-//
-// ensureCollabAgents is write-if-absent and stays that way, so an old install
-// keeps its old crane forever with nothing to say so. Comparing the file on
-// disk against these bytes is how the pane can tell "the shipped template
-// moved on" apart from "the user wrote this deliberately". New generations
-// append a new frozen const; they never rewrite an old one.
-//
-// V4 LIVES NEXT DOOR (collabAgentsLegacyV4.ts) and is re-exported below, so a
-// caller keeps ONE import; its own file because this one stood at 204 of 210.
-//
-// V2 WAS NEVER FROZEN HERE. The marker moved v1 -> v2 -> v3 (see
-// DashboardPanel.ts's `origami.collab.agents.v3` — the key outlived the
-// comment that named the generation it shipped) without a snapshot landing in
-// this file, so `isLegacySeed` cannot name a v2 install. V3 (below) is the
-// pinned Worker/Observer generation the v3 marker actually shipped, and the
-// one every machine running today is most likely to still have on disk.
+// FROZEN prior-generation seed collab agents, exactly as shipped. Same rule as
+// archetypesLegacy.ts: DO NOT EDIT — editing a payload here would make an untouched install
+// read as user-edited and the pane would stop offering the reseed note. Comparing on-disk
+// bytes against these is how the pane tells "the template moved on" apart from "the user
+// edited this". V2 was never frozen (no snapshot landed before V3 shipped), so
+// `isLegacySeed` cannot recognise a V2 install; V4 lives in its own file, re-exported here.
 
 import { COLLAB_AGENTS_V4 } from './collabAgentsLegacyV4';
 export { COLLAB_AGENTS_V4 };
@@ -98,9 +82,8 @@ ${V1_DISCIPLINE}
   },
 ];
 
-/** The V3 permission blocks, copied (not imported) from collabPresets.ts as it
- *  read when the v3 marker shipped, so this snapshot cannot drift if those
- *  presets change later. */
+/** V3 permission blocks, copied (not imported) from collabPresets.ts as it read when the v3
+ *  marker shipped, so later preset changes can't drift this snapshot. */
 const V3_WORKER_PERMISSION_BLOCK = `permission:
   "*": deny
   read: allow
@@ -135,12 +118,8 @@ A message whose only content is agreement, acknowledgement, or thanks is FORBIDD
 
 Keep every reply short and concrete. Say the thing; do not narrate that you are about to say the thing.`;
 
-/** The v3 marker generation: Worker-crane / Observer-heron, each PINNED to a
- *  provider (a local LM Studio model, a free OpenRouter one). Superseded by
- *  the unpinned v4 generation in collabAgents.ts - see that file's header for
- *  why. This is what `isLegacySeed` needs to recognise an install that has
- *  not been touched since v3, so the pane can offer the same reseed note a v1
- *  install already gets. */
+/** V3 marker generation: Worker/Observer, each pinned to a provider. Superseded by the
+ *  unpinned V4+ generation; needed so isLegacySeed recognises an untouched V3 install. */
 export const COLLAB_AGENTS_V3: Array<{ file: string; content: string }> = [
   {
     file: 'collab-crane.md',
@@ -192,15 +171,8 @@ ${V3_DISCIPLINE}
   },
 ];
 
-/**
- * Whether a def file on disk is a PRIOR shipped generation, untouched.
- *
- * Line endings are normalised first: VS Code saves the file back CRLF on
- * Windows, and a def nobody has meaningfully changed must not read as edited
- * just because it was opened. Anything else - including a def the user wrote
- * that happens to be named collab-crane - is not a legacy seed, and the pane
- * says nothing about it.
- */
+/** Whether a def on disk is an untouched prior shipped generation. Line endings are
+ *  normalised first so a CRLF-saved (Windows) file doesn't read as edited. */
 export function isLegacySeed(slug: string, text: string): boolean {
   const lf = (value: string) => value.replace(/\r\n/g, '\n');
   return [...COLLAB_AGENTS_V1, ...COLLAB_AGENTS_V3, ...COLLAB_AGENTS_V4].some(

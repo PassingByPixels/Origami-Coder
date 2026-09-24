@@ -18,12 +18,62 @@
   // default `from 'highlight.js'` ballooned the dashboard from
   // ~820 kB to 2.5 MB.
   import hljs from 'highlight.js/lib/core';
+  import { getVsCodeApi } from '../../../shared/vscodeApi';
+  import { fitToPane } from './readImageFit';
+  import type { ToolReadImage } from '../../panes/chatToolMsg';
+
+  const vscode = getVsCodeApi();
 
   interface Props {
     result: string;
+    /** Set when the model read an IMAGE file. `src` is this surface's own
+     *  resource URI for that file, never the model's base64 copy; `thumb` is
+     *  the phone's capped JPEG in its place. The size-and-path line shows
+     *  when neither could be made. */
+    readImage?: ToolReadImage;
+    /** t-l1sovi/t-mdjavm — clicking the PICTURE lighthouses it (opens the
+     *  shared lightbox); the PATH text is a separate link that opens the
+     *  file in the editor. Absent means no lightbox is wired up (the card
+     *  falls back to the old open-in-editor click, so it is never dead). */
+    onImageClick?: (src: string, alt: string) => void;
   }
 
-  let { result }: Props = $props();
+  let { result, readImage, onImageClick }: Props = $props();
+
+  // Whole KB, so a 3 KB icon does not read as "0 KB".
+  let sizeKb = $derived(Math.max(1, Math.round((readImage?.bytes ?? 0) / 1024)));
+  // `src` (desktop, a real resource URI) wins over `thumb` (the phone's
+  // capped JPEG) when a surface somehow has both; neither means the
+  // size-and-path placeholder.
+  let pictureSrc = $derived(readImage?.src ?? readImage?.thumb);
+  let picture = $derived(pictureSrc ? readImage : undefined);
+  // The picture IS the card's body: it shows whenever the card is expanded and
+  // hides with it. t-fh57s9 removed the card's own Show/Hide image toggle —
+  // ToolCard's header pill is the single control.
+  //
+  // CHANGES.md change 46 — the PATH reveals the file in the OS explorer rather
+  // than opening an editor tab on it. A path is the answer to "where is this?",
+  // and for a picture the answer the owner wants is the folder it is in.
+  function revealImage() {
+    if (readImage?.path) vscode.postMessage({ type: 'revealInExplorer', path: readImage.path });
+  }
+
+  // t-l1sovi — the picture itself now lighthouses (enlarges + enhances in the
+  // shared lightbox) instead of opening the file. Falls back to the old
+  // open-in-editor click if no lightbox handler was wired up, so a caller
+  // that forgets the prop still gets a working click rather than a dead one.
+  function clickImage() {
+    if (onImageClick && pictureSrc) onImageClick(pictureSrc, `Image read by the agent: ${readImage?.path ?? ''}`);
+    else revealImage();
+  }
+
+  // t-mdjavm — the path text is the control. Desktop only: `src` is a real
+  // webview resource URI for a local file, which is what proves this surface
+  // has a real filesystem behind it. The phone/remote surface never gets a
+  // `src` (see toolImageCard.ts) — only `thumb` — so its path renders as plain
+  // text, and `revealInExplorer` is refused for it on the wire besides
+  // (remoteRefusalsTable.ts): there is no explorer in a pocket.
+  let canReveal = $derived(!!readImage?.src);
 
   // Language inference: look for a path on the first preamble-ish
   // line (e.g. `Read <bytes> from path/to/file.rs`) or fall back to
@@ -90,6 +140,48 @@
 </script>
 
 <div class="readfile-card">
+  {#if readImage}
+    {#if picture}
+      <!-- Click enlarges + enhances the picture (the lightbox) — see
+           clickImage() above. Opening the real file is the path link below. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- `use:fitToPane` keeps --readimg-cap equal to the transcript's own
+           height, so the picture draws at its natural size up to the PANE and
+           re-bounds on a resize. See readImageFit.ts. -->
+      <img
+        class="readfile-image"
+        use:fitToPane
+        src={pictureSrc}
+        alt={`Image read by the agent: ${picture.path}`}
+        title="Enlarge"
+        onclick={clickImage}
+      />
+      {#if canReveal}
+        <button class="readfile-path-link" onclick={revealImage} title={`Reveal ${picture.path} in the file explorer`}>
+          {picture.path}
+        </button>
+        <!-- The control spelled out: on this card the header's path is small
+             and a long way from the picture it belongs to. -->
+        <button class="readfile-reveal" onclick={revealImage} title={`Reveal ${picture.path} in the file explorer`}>
+          {'◱'} Reveal in explorer
+        </button>
+      {:else}
+        <div class="readfile-path-text">{picture.path}</div>
+      {/if}
+    {:else}
+      <!-- No src, no thumb: the host could not make either one (t-fdw2j2 —
+           an unreadable file, or a format the thumbnail encoder cannot
+           decode above the cap). Say which picture it is and let the whole
+           line open it, rather than showing a broken image or naming a
+           surface ("the desktop") that may not even be this one. -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="readfile-header readfile-header--open" onclick={revealImage} title={`Reveal ${readImage?.path}`}>
+        image ({sizeKb} KB) — click to reveal
+      </div>
+    {/if}
+  {/if}
   {#if split_.header}
     <div class="readfile-header">{split_.header}</div>
   {/if}
@@ -131,6 +223,75 @@
   }
   .readfile-toggle:hover {
     text-decoration: underline;
+  }
+
+  .readfile-header--open {
+    cursor: pointer;
+  }
+  .readfile-header--open:hover {
+    text-decoration: underline;
+  }
+
+  /* CHANGES.md change 45 — the picture draws at its OWN size, and the pane is
+     the only cap. `--readimg-cap` is written by fitToPane off the live
+     transcript height; the 60vh fallback is for a card with no scrolling
+     ancestor to measure, never for one inside the pane. */
+  .readfile-image {
+    display: block;
+    max-width: 100%;
+    max-height: var(--readimg-cap, 60vh);
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    margin: 4px 0 0 0;
+    border: 1px solid var(--og-border);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  /* The reveal control, spelled out under the picture. */
+  .readfile-reveal {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 4px 0 0 0;
+    padding: 2px 8px;
+    border: 1px solid var(--og-border);
+    border-radius: 5px;
+    background: var(--og-btn-bg);
+    color: var(--og-text-secondary);
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .readfile-reveal:hover {
+    color: var(--og-text);
+    border-color: color-mix(in srgb, var(--og-border) 40%, var(--og-chat));
+  }
+
+  /* t-mdjavm — the path under a read image, separate from the click-to-
+     enlarge picture above it. */
+  .readfile-path-link {
+    display: block;
+    margin: 3px 0 0 0;
+    padding: 0;
+    background: none;
+    border: none;
+    font: inherit;
+    font-size: 10.5px;
+    color: var(--og-accent, #89b4fa);
+    cursor: pointer;
+    text-align: left;
+    word-break: break-all;
+  }
+  .readfile-path-link:hover {
+    text-decoration: underline;
+  }
+  .readfile-path-text {
+    margin: 3px 0 0 0;
+    font-size: 10.5px;
+    color: var(--og-text-muted);
+    word-break: break-all;
   }
 
   .readfile-body {

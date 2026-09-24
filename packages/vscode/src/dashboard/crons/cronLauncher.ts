@@ -1,39 +1,10 @@
-// cronLauncher.ts — the per-cron launcher script, and the tiny `/TR` value that
-// points at it.
-//
-// WHY A SCRIPT AND NOT A COMMAND LINE. `schtasks` refuses any `/TR` longer than
-// 261 characters:
-//     ERROR: Value for '/TR' option cannot be more than 261 character(s).
-// A self-auditing inline command repeats the log path four times and runs to
-// ~1500 characters, so it can never be registered on any realistic workspace
-// path. The task therefore stores only the launcher's path, and everything else
-// lives in the script — where there is no length limit at all.
-//
-// ---------------------------------------------------------------------------
-// BATCH-FILE RULES ARE NOT COMMAND-LINE RULES. Every point below was re-derived
-// by execution in this context; do not port reasoning from a `cmd /c` line.
-//
-// 1. `%` MUST be doubled. On a command line `%%` prints literally as `%%`; in a
-//    batch file `%%` is the escape that yields one literal `%`. This is the
-//    exact reverse of the inline form. Because of it, `%VAR%` in a prompt is
-//    now SAFE — it reaches origami as literal text — so promptHazard no longer
-//    refuses it.
-// 2. Do NOT prefix the invocation with `call`. `call` performs a SECOND
-//    percent-expansion pass, which undoes (1) and leaks the environment in:
-//    a prompt reading `summarise %USERPROFILE% please` arrived as
-//    `summarise C:\Users\dev please`. `call` is only needed when the child is
-//    itself a batch file (without it the launcher transfers control and never
-//    returns, losing the `[end]` record) — and resolveOrigamiBinary always
-//    yields `origami.exe`, which returns normally. Correct percent handling
-//    wins over a robustness case that cannot occur.
-// 3. `%ERRORLEVEL%` must be followed by a SPACE before `>>`. Written closed up,
-//    `exit=%ERRORLEVEL%>> "log"` expands to `exit=0>> "log"`, and `0>>` parses
-//    as a redirect of handle 0 — the line silently vanishes and the audit trail
-//    loses its outcome. Plain `%ERRORLEVEL%` is correct here; the command-line
-//    form needed `call echo %^ERRORLEVEL%`, which does NOT apply in a script.
-// 4. Quote doubling for embedded quotes still holds, and the `cmd /c`
-//    first/last-quote stripping trap is GONE — there is no `cmd /c` wrapper.
-// ---------------------------------------------------------------------------
+// cronLauncher.ts — the per-cron launcher script, and the tiny `/TR` value that points at it.
+// `schtasks` refuses any `/TR` longer than 261 characters, and a self-auditing inline command runs
+// to ~1500 — so the task stores only the launcher's path, and everything else lives in the script.
+// Batch-file rules are NOT command-line rules, re-derived by execution: `%` must be doubled (the
+// reverse of the inline form); the invocation must not be prefixed with `call` (a second
+// percent-expansion pass would leak the environment in); `%ERRORLEVEL%` needs a space before `>>`,
+// or `0>>` parses as a handle redirect and the line silently vanishes.
 
 import { cmdQuote, batchBareText, batchPercent, runInvocation, type RunCommandSpec } from './cronCommand';
 import { buildLauncherScriptPosix } from './cronPosix';
@@ -50,11 +21,9 @@ export function taskCommand(scriptPath: string, platform: string = process.platf
 }
 
 /**
- * Why this launcher path cannot be registered, or null if it can. A workspace
- * nested deeply enough to blow the limit must be REFUSED with a clear reason —
- * registering a truncated command would produce a task that silently does the
- * wrong thing, which is the failure this whole module exists to prevent.
- * schtasks-only: launchd's argv has no such cap, so darwin never refuses.
+ * Why this launcher path cannot be registered, or null if it can. A workspace nested deep enough to
+ *  blow the 261-char limit must be refused with a clear reason, rather than silently registering a
+ *  truncated command. schtasks-only — launchd's argv has no such cap.
  */
 export function trLengthError(scriptPath: string, platform: string = process.platform): string | null {
   if (platform === 'darwin') return null;
@@ -64,17 +33,11 @@ export function trLengthError(scriptPath: string, platform: string = process.pla
 }
 
 /**
- * The launcher script. Four lines, chained by nothing but file order, so the
- * `[end]` record is written whatever the run's exit code — the audit trail an
- * unattended 3am run leaves behind.
- *
- * A run KILLED outright cannot write its own end line; that is why `[start]`
- * comes first, so a start with no end is the visible signature of a killed or
- * still-running job rather than silence.
- *
- * The `[cmd]` line is byte-identical to the line beneath it that actually runs
- * — same string, emitted twice — so the audit record can never drift from the
- * command it claims to describe.
+ * The launcher script. Four lines chained by file order, so the `[end]` record is written whatever
+ *  the run's exit code. `[start]` comes first, so a killed run leaves a start with no end — the
+ *  visible signature of a killed or still-running job. `[cmd]` is byte-identical to the line
+ *  beneath it that actually runs, so the audit record can never drift from the command it
+ *  describes.
  */
 export function buildLauncherScript(spec: RunCommandSpec, platform: string = process.platform): string {
   if (platform === 'darwin') return buildLauncherScriptPosix(spec);

@@ -1,19 +1,8 @@
-// SHELF PACKING for the isometric floor plan — how a bag of square footprints is
-// arranged into the tightest rectangle, and nothing else. Pure numbers in, pure
-// numbers out; it never sees a node, a colour or a pillar.
-//
-// Split out of isoLayout.ts on arrival rather than grown inside it: the packer is
-// a search (it tries many orderings and many wrap widths and keeps the best), and
-// a search wants its own tests — "does it actually find a smaller box than the
-// naive order" is a question about THIS module, not about where flows go.
-//
-// WHY W+D IS THE SCORE, and not area or aspect. An iso rectangle of W x D cells
-// projects to a screen box of exactly (W + D) * HX wide by (W + D) * HY tall —
-// the diamond's two half-diagonals both run on the sum. So W + D IS the picture's
-// size in pixels, and minimising it is literally minimising the drawing. `ratio`
-// then biases the SHAPE of the cell rectangle: ratio > 1 prefers a wide slab
-// (what the pillar districts want, so they sit under the streets), ratio = 1 a
-// square one.
+// Shelf packing for the isometric floor plan: how a bag of square footprints packs into the
+// tightest rectangle. Pure numbers in, numbers out. W+D is the score because an iso
+// rectangle of W x D cells projects to a screen box of exactly (W+D)*HX by (W+D)*HY —
+// minimising W+D IS minimising the drawing's size; `ratio` biases the cell rectangle's shape
+// (>1 = wide slab for pillar districts, =1 = square).
 
 /** One item to place: a `w` x `d` cell rectangle carrying whatever the caller
  *  needs back out of `placed`. */
@@ -35,12 +24,9 @@ export interface PackResult<T> {
   d: number;
 }
 
-/**
- * Lay items left to right, wrapping to a new shelf when the next one would pass
- * `targetW`. The FIRST item on a shelf is always placed, even when it is wider
- * than the target — otherwise an item wider than the wrap width would loop
- * forever or be dropped, and one very wide section is a completely ordinary map.
- */
+/** Lay items left to right, wrapping when the next one would pass `targetW`. The first item
+ *  on a shelf is always placed even if wider than the target, so one very wide section never
+ *  loops forever or gets dropped. */
 export function shelfPack<T extends PackItem>(items: readonly T[], targetW: number, gap: number): PackResult<T> {
   const placed: Placed<T>[] = [];
   let x = 0;
@@ -73,11 +59,9 @@ function permutations<T>(list: readonly T[]): T[][] {
   return out;
 }
 
-/** Shelf packing is order-sensitive, so the ORDER is searched too: exhaustively
- *  while that is cheap, and by a spread of size heuristics beyond it. Sorting is
- *  stable and every comparator is total on the keys it reads, so the candidate
- *  list is the same on every run — which is what keeps the whole layout a pure
- *  function of the map. */
+/** Shelf packing is order-sensitive, so the order is searched too: exhaustively up to 6
+ *  items, by size heuristics beyond that. Deterministic — same map always yields the same
+ *  candidate list. */
 export function orderings<T extends PackItem>(items: readonly T[]): T[][] {
   if (items.length <= 6) return permutations(items);
   const by = (cmp: (a: T, b: T) => number): T[] => [...items].sort(cmp);
@@ -91,15 +75,10 @@ export function orderings<T extends PackItem>(items: readonly T[]): T[][] {
   ];
 }
 
-/**
- * The tightest packing this search can find: sweep the wrap width from "one item
- * per shelf" up to "everything on one shelf", over every candidate ordering, and
- * keep the smallest W + D (nudged toward `ratio` by a light shape term).
- *
- * An EMPTY bag returns an empty packing of zero extent rather than a degenerate
- * one — a pillar every flow already covers has nothing left to dock, and that is
- * an ordinary map, not an error.
- */
+/** The tightest packing found: sweep the wrap width from one-item-per-shelf to
+ *  everything-on-one-shelf, over every candidate ordering, keeping the smallest W+D. An empty
+ *  bag returns a zero-extent packing — a pillar every flow already covers has nothing left to
+ *  dock, which is ordinary, not an error. */
 export function bestPack<T extends PackItem>(items: readonly T[], gap: number, ratio = 1): PackResult<T> {
   if (items.length === 0) return { placed: [], w: 0, d: 0 };
   let best: PackResult<T> | null = null;

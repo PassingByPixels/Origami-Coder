@@ -15,6 +15,7 @@
   // indicator and carries the rotating ThinkingGlyph itself. Passing a `mark`
   // snippet keeps both without this leaf knowing which surface it is on.
   import type { Snippet } from 'svelte';
+  import ThoughtLine from './ThoughtLine.svelte';
 
   interface Props {
     /** The body. Empty renders an empty block, never a fabricated line. */
@@ -51,7 +52,8 @@
   ontoggle={(e) => onToggle?.((e.currentTarget as HTMLDetailsElement).open)}>
   <summary class="thought-summary">
     {#if mark}{@render mark()}{:else}<span class="thought-brain" aria-hidden="true">🧠</span>{/if}
-    <span class="thought-label" class:mono>{label}</span>
+    <!-- INSIDE the summary: a closed <details> hides every sibling after it. -->
+    <ThoughtLine {label} {mono} working={live} />
   </summary>
   <pre class="thought-text">{text}</pre>
 </details>
@@ -68,7 +70,12 @@
     opacity: 0.75;
     font-size: 11px;
   }
+  /* A flex row so the travelling line takes the slack after the label without
+     the summary changing height. The label's own rules left WITH
+     ThoughtLine.svelte: a rule kept here would silently stop matching. */
   .thought-summary {
+    display: flex;
+    align-items: center;
     cursor: pointer;
     padding: 4px 8px;
     color: var(--og-text-muted);
@@ -77,14 +84,19 @@
     list-style: none;
   }
   .thought-summary::-webkit-details-marker { display: none; }
-  .thought-summary::before {
-    content: '\25B8'; /* right-pointing triangle, rotates when open */
+  /* NO CHEVRON (t-ocnxue): a triangle AND a brain were two marks for one
+     control. The brain says what the row is, so the brain is the affordance —
+     open reads as the brain at full strength, not a second glyph rotating. */
+  .thought-brain {
     display: inline-block;
     margin-right: 6px;
-    transition: transform 0.12s ease;
+    opacity: 0.7;
+    transition: opacity 0.12s ease, transform 0.12s ease;
   }
-  .thought-block[open] .thought-summary::before { transform: rotate(90deg); }
+  .thought-summary:hover .thought-brain { opacity: 1; transform: scale(1.1); }
+  .thought-block[open] .thought-brain { opacity: 1; }
   .thought-block[open] { opacity: 0.9; }
+  @media (prefers-reduced-motion: reduce) { .thought-brain { transition: none; transform: none; } }
   .thought-text {
     margin: 0;
     padding: 2px 12px 8px 20px;
@@ -93,12 +105,6 @@
     font-family: var(--vscode-editor-font-family, monospace);
     color: var(--og-text-muted);
     line-height: 1.5;
-  }
-  /* A TOOL line is code, not prose — a tool name set in italic serif reads as
-     commentary about a tool rather than as the call that ran. */
-  .thought-label.mono {
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-style: normal;
   }
   /* The still-streaming thought reads as LIVE: full opacity, a brand contrast
      rail + summary, and slightly larger contrast-tinted reasoning text. Reverts

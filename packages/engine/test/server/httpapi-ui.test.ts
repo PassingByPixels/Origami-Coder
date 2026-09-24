@@ -183,8 +183,16 @@ function responseText(response: Response) {
   return Effect.promise(() => response.text())
 }
 
+// FORK STRIP: the embedded-web-UI live-proxy fallback is gone
+// (src/server/shared/ui.ts:65). packages/app is not shipped in this fork, so
+// with `disableEmbeddedWebUi: true` serveUIEffect fails closed with 404 rather
+// than forwarding to an external UI_UPSTREAM host. Every test below asserts a
+// 200 from that proxy, i.e. a feature this fork deliberately removed. Kept (not
+// deleted) so they come back with the UI if the fork ever ships packages/app.
+const strippedIt = it.live.skip
+
 describe("HttpApi UI fallback", () => {
-  it.live("serves the web UI through the HTTP API app", () =>
+  strippedIt("serves the web UI through the HTTP API app", () =>
     Effect.gen(function* () {
       let proxiedUrl: string | undefined
 
@@ -205,7 +213,7 @@ describe("HttpApi UI fallback", () => {
     }),
   )
 
-  it.live("strips upstream transfer encoding headers from proxied assets", () =>
+  strippedIt("strips upstream transfer encoding headers from proxied assets", () =>
     Effect.gen(function* () {
       let proxiedUrl: string | undefined
 
@@ -257,7 +265,7 @@ describe("HttpApi UI fallback", () => {
   // Regression for #25698 (Ope): upstream `transfer-encoding: chunked` was
   // forwarded through the proxy while the proxy itself re-frames the body,
   // causing browsers to fail with `ERR_INVALID_CHUNKED_ENCODING`.
-  it.live("strips upstream transfer-encoding header from proxied assets", () =>
+  strippedIt("strips upstream transfer-encoding header from proxied assets", () =>
     Effect.gen(function* () {
       const response = yield* Effect.gen(function* () {
         const fs = yield* FSUtil.Service
@@ -378,7 +386,7 @@ describe("HttpApi UI fallback", () => {
     }),
   )
 
-  it.live("accepts auth token for the web UI", () =>
+  strippedIt("accepts auth token for the web UI", () =>
     Effect.gen(function* () {
       const response = yield* uiApp({
         password: "secret",
@@ -392,7 +400,7 @@ describe("HttpApi UI fallback", () => {
     }),
   )
 
-  it.live("accepts basic auth for the web UI", () =>
+  strippedIt("accepts basic auth for the web UI", () =>
     Effect.gen(function* () {
       const response = yield* uiApp({
         password: "secret",
@@ -406,7 +414,7 @@ describe("HttpApi UI fallback", () => {
     }),
   )
 
-  it.live("accepts basic auth passwords containing colons for the web UI", () =>
+  strippedIt("accepts basic auth passwords containing colons for the web UI", () =>
     Effect.gen(function* () {
       const response = yield* uiApp({
         password: "sec:ret",

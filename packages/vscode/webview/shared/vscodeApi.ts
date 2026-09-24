@@ -10,11 +10,21 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
+import { blocks, listenForAway } from './nestWriteGate';
+
 let api: VsCodeApi | undefined;
 
 export function getVsCodeApi(): VsCodeApi {
   if (!api) {
-    api = acquireVsCodeApi();
+    const raw = acquireVsCodeApi();
+    // t-t7lfho: every post passes the nest write gate (nestWriteGate.ts): a write
+    // into a chat this desk gave to another desk is dropped here, in one place.
+    if (typeof window !== 'undefined') listenForAway();
+    api = {
+      postMessage: (msg) => { if (!blocks(msg)) raw.postMessage(msg); },
+      getState: () => raw.getState(),
+      setState: (state) => raw.setState(state),
+    };
   }
   return api;
 }

@@ -1,76 +1,40 @@
-// The ONE place this extension answers "where is the global origami config,
-// and how do I read and write it without lying to the user". Every reader and
-// every writer in firstFold.ts and toolDeferConfig.ts routes through here.
+// The one place this extension answers "where is the global origami config, and how do I read/write
+// it without lying to the user" — every reader/writer in firstFold.ts and toolDeferConfig.ts routes
+// through here.
 //
-// It exists because four independent divergences from the ENGINE lived in the
-// two hand-copied path/parse blocks it replaces (connections adversarial
-// review, 2026-08-15):
+// Fixes four divergences from the engine that used to live in hand-copied path/parse code: the
+// config dir must follow XDG_CONFIG_HOME like the engine does; the file must parse as JSONC
+// (comments, trailing commas) since the engine's own parser does; writes must be atomic (tmp +
+// rename) so an interrupted write can't leave a torn file the engine then discards; and a
+// background probe must never consume the user's one rollback backup slot.
 //
-//   F5  `~/.config` was hardcoded, so a user with XDG_CONFIG_HOME set wrote a
-//       file the engine never reads — every Connections action a confident
-//       no-op with no error on either side. The engine resolves the dir with
-//       xdg-basedir (packages/core/src/global.ts), and this extension already
-//       mirrors that correctly one folder away, in
-//       agentManager/archetypes.ts's globalAgentDir(). Now it does so ONCE.
-//
-//   F6  The engine parses every config file, origami.json included, with the
-//       JSONC parser (packages/engine/src/config/parse.ts). The extension used
-//       raw JSON.parse, so a user who documented their config with
-//       `// Spark 2 is the second DGX box` kept a working engine while the
-//       panel went blank and all 7 writers told them the file was "not valid
-//       JSON — fix or remove it first", which is false for this product.
-//
-//   F7  Writes were plain truncating writeFileSync. A write interrupted by the
-//       window reload the extension itself offers leaves a torn config; the
-//       engine's parse then throws and orElseSucceed swallows it into `{}` —
-//       the whole product on default settings, silently.
-//
-//   F8  One `.bak` slot, overwritten by BACKGROUND probes. A hand-edit gone
-//       wrong could be overwritten seconds later by a model probe nobody asked
-//       for, so the file named like a rollback point was never one.
-//
-// Pure Node I/O — no `vscode` import — so it unit-tests with no extension host,
-// the same property toolDeferConfig.ts was written for.
+// Pure Node I/O, no vscode import, so it unit-tests with no extension host.
 
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs';
 import { configShapeErrors } from './configShape';
 
-/** The engine's `Global.Path.config`, mirrored exactly: xdg-basedir's xdgConfig
- *  is (XDG_CONFIG_HOME || ~/.config) and the app dir is "origami". Identical
- *  expression to agentManager/archetypes.ts's globalAgentDir(), which asserts
- *  it in archetypes.test.ts — the drift test for this one lives beside it in
- *  globalConfig.test.ts. No effect/Global import; just the path. */
+/** The engine's global config dir, mirrored exactly (XDG_CONFIG_HOME || ~/.config, app dir
+ *  "origami") — identical to agentManager/archetypes.ts's globalAgentDir(), with a drift test
+ *  binding the two. */
 export function globalConfigDir(): string {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   return path.join(base, 'origami');
 }
 
-/** The GLOBAL config file this extension reads and writes.
- *
- *  `origami.json`, deliberately. The engine tries `origami.jsonc`,
- *  `origami.json`, `config.json` first-existing and merges them later-wins in
- *  the reverse order, so `.jsonc` outranks `.json` when both exist. That is
- *  fine as long as nothing SEEDS an empty `.jsonc`: an empty file at the top of
- *  the merge order shadows every write this extension makes, forever, with no
- *  error anywhere. The engine used to seed exactly that; it now seeds this file
- *  instead, and migrates an existing empty seed aside on load
- *  (packages/engine/src/config/config.ts, globalConfigFile + loadGlobal). */
+/** The global config file this extension reads and writes: `origami.json`, deliberately — the
+ *  engine tries `.jsonc`/`.json`/`config.json` and merges later-wins, so an empty seeded `.jsonc`
+ *  would shadow every write here forever. The engine now seeds `origami.json` instead and migrates
+ *  an empty seed aside on load. */
 export function globalConfigPath(): string {
   return path.join(globalConfigDir(), 'origami.json');
 }
 
-/** One pass over JSONC text: the comment-free equivalent, and whether any
- *  comment was there. String-aware, because the whole point is that a `//`
- *  inside a string value is data, not a comment — `{"url": "http://x"}` must
- *  survive untouched. Line comments stop AT the newline, so line numbers in a
- *  JSON.parse error still point at the user's real line.
- *
- *  Deliberately no more lenient than JSON otherwise: comments and trailing
- *  commas are what the engine's parser adds (`allowTrailingComma: true` in
- *  packages/engine/src/config/parse.ts) and are all this adds too. Anything
- *  else malformed stays malformed here AND there. */
+/** One pass over JSONC text: the comment-free equivalent, and whether any comment was there.
+ *  String-aware, so a `//` inside a string value (e.g. a URL) survives untouched; line comments
+ *  stop at the newline so error line numbers stay accurate. No more lenient than JSON otherwise —
+ *  matches what the engine's parser itself accepts. */
 function scanJsonc(text: string): { stripped: string; hasComments: boolean } {
   let out = '';
   let hasComments = false;
@@ -142,19 +106,12 @@ export function readConfigObject(file: string): Record<string, unknown> | null {
     : {};
 }
 
-/** Read the global config for a WRITE. `null` when the file is absent (the
- *  caller creates it). Throws with the REAL reason otherwise:
- *
- *  - unreadable            → the OS error
- *  - genuinely malformed   → "not valid JSON"
- *  - has comments          → says so, and says the change would delete them
- *
- *  That last case is the honest half of F6. Every one of the 7 writers is a
- *  whole-object rewrite (read → mutate → JSON.stringify the lot), and a
- *  rewrite CANNOT preserve comments; only an edit-based writer can, which
- *  needs jsonc-parser's modify/applyEdits — an engine dependency this package
- *  cannot resolve. So the writers refuse and say why, instead of writing and
- *  destroying the user's notes, and instead of blaming a file that is valid. */
+/**
+ * Read the global config for a WRITE. null when the file is absent (the caller creates it); throws
+ *  with the real reason otherwise — unreadable, malformed, or "has comments" (the honest half of
+ *  the fix: every writer is a whole-object rewrite that cannot preserve comments, so it refuses and
+ *  says why instead of silently destroying the user's notes).
+ */
 export function readConfigForWrite(file: string): { raw: string; cfg: Record<string, unknown> } | null {
   if (!fs.existsSync(file)) return null;
   let raw: string;
@@ -185,18 +142,12 @@ export function readConfigForWrite(file: string): { raw: string; cfg: Record<str
  *  `.bak.4` are the four before it, so the count below IS the total on disk. */
 export const MAX_BACKUPS = 5;
 
-/** Roll the backups one slot older, then write `raw` as the new `.bak`.
- *
- *  `.bak` stays the NEWEST on purpose: the panel already tells the user
- *  "Backed up to origami.json.bak" (DashboardPanel.ts, removeProvider), and a
- *  rotation that renamed the newest away would make that sentence false.
- *
- *  Reached through `saveConfig`, which calls it only for a user-initiated
- *  write. The automatic ones (the two probe paths into writeModelContextLimit,
- *  and maybeAdoptRemoteServedModel's writeModelConfig) pass no previous
- *  config: a background probe firing seconds after a hand-edit went wrong used
- *  to consume the single slot and take the user's only rollback point with it.
- *  Exported so the rotation can be tested as the property it is. */
+/**
+ * Roll the backups one slot older, then write `raw` as the new `.bak` (kept newest, matching the
+ *  panel's "Backed up to origami.json.bak" message). Reached only for a user-initiated write via
+ *  saveConfig — automatic probe writers pass no previous config, so a background probe firing after
+ *  a hand-edit can't consume the user's only rollback slot.
+ */
 export function backupConfig(file: string, raw: string): void {
   for (let i = MAX_BACKUPS - 1; i >= 1; i--) {
     const from = i === 1 ? `${file}.bak` : `${file}.bak.${i - 1}`;
@@ -216,25 +167,14 @@ export function writeConfigAtomic(file: string, text: string): void {
   fs.renameSync(tmp, file);
 }
 
-/** Every writer's last line: refuse a document the ENGINE would reject, back up
- *  what is being replaced, then write atomically.
- *
- *  The refusal is the point. A config that fails the engine's schema is not
- *  partially applied — packages/engine/src/config/parse.ts throws for the WHOLE
- *  file and cachedGlobal swallows it into `{}`, so one bad field silently
- *  reverts the user to no configuration at all while the panel still shows
- *  every pill green. Better to fail the one action, loudly, than to zero the
- *  file quietly. See configShape.ts for what is checked and how it is kept in
- *  step with the real schema.
- *
- *  ORDER: validate, THEN back up. A refused write must not spend a rotation
- *  slot — otherwise a user clicking a failing Connect five times flushes the
- *  real history out of the chain with five copies of the same unchanged file.
- *
- *  `previous` is the config being replaced (`readConfigForWrite`'s result), or
- *  null/undefined for a first write or an AUTOMATIC one. Automatic writers pass
- *  null on purpose: the chain is the user's rollback point for what the USER
- *  did, and a background probe must not consume it. */
+/**
+ * Every writer's last line: refuse a document the engine would reject, back up what is being
+ *  replaced, then write atomically.
+ * A refused write must not spend a rotation slot — validate, THEN back up — or repeatedly clicking
+ *  a failing Connect flushes real history out of the chain with copies of the same unchanged file.
+ * `previous` is null/undefined for a first write or an automatic one; automatic writers pass null
+ *  on purpose so a background probe never consumes the user's rollback point.
+ */
 export function saveConfig(
   file: string,
   cfg: Record<string, unknown>,

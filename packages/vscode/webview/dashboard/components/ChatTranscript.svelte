@@ -1,40 +1,36 @@
 <script lang="ts">
-  // ChatTranscript.svelte — ONE chat's message rows, and nothing else.
+  // ChatTranscript.svelte — ONE chat's message rows, and nothing else, so a second
+  // caller (a read-only transcript) renders them through the SAME renderer instead
+  // of a lookalike that drifts.
   //
-  // EXTRACTED VERBATIM from ChatPane.svelte's `{#each cellSession.messages}`
-  // loop (the pane was at 2700/2700) so a SECOND caller can render the same
-  // rows — a read-only transcript — through the SAME renderer instead of a
-  // lookalike that drifts. This commit adds no second caller and no read-only
-  // mode: it is the move only.
+  // Every <style> rule that targets a row lives HERE, not in ChatPane.svelte:
+  // Svelte scopes <style> per component, so a selector left behind simply stops
+  // matching the markup that moved — no error, no warning, and no test can see it,
+  // because the vitest config never puts a <style> element in the DOM. What stays
+  // in the pane is what is not a row: the scroller, the once-off headers above the
+  // loop, the staged-rewind banner below it, and the cell chrome.
   //
-  // WHY EVERY RULE CAME WITH IT. Svelte scopes <style> per component, so a
-  // selector left behind in the pane simply stops matching the markup that
-  // moved — no error, no warning, and no test can see it, because the vitest
-  // config never puts a <style> element in the DOM. So every rule that targets
-  // a row below moved with it: .turn-verdict*, .compaction-*, .agent-row +
-  // .rewind-btn, and .todo-summary-msg with its :global(.todo-strip) partner
-  // (that partner needs its scoped ancestor, which is now here).
-  // What deliberately STAYED in the pane, because it is not a row:
-  // .cell-messages (the scroller these rows sit in), .agent-banner and the
-  // pinned-user mirror (once-off headers ABOVE the loop), .rewind-undo (the
-  // staged-rewind banner BELOW it), and .arbiter-* (cell chrome).
-  //
-  // THE PROP BOUNDARY. The loop closed over `cellSession`, but the whole
-  // session is the WRONG prop: the read-only caller this exists for has a
-  // message list and no session at all, and would have to fabricate thirty
-  // fields to borrow the renderer. So each field the markup ACTUALLY read is
-  // its own prop, named after the field it came from, and the two things the
-  // markup wrote (open the lightbox, rewind a turn) are callbacks the pane
-  // wires back to its own state.
-  import ToolCard from './ToolCard.svelte';
+  // Each field the markup reads is its OWN prop rather than the whole session: the
+  // read-only caller has a message list and no session at all, and the two things
+  // the markup writes are callbacks the pane wires back to its own state.
+  import ToolRunGroup from './ToolRunGroup.svelte';
   import MessageRow from './MessageRow.svelte';
+  import { tip } from '../../shared/warmTip';
   import TodoStrip from './TodoStrip.svelte';
   import ThoughtPill from './ThoughtPill.svelte';
   import PeerMessageRow from './PeerMessageRow.svelte';
+  import SystemAlertRow from './SystemAlertRow.svelte';
+  import { engineAlert } from '../panes/engineNotice';
+  import { getVsCodeApi } from '../../shared/vscodeApi';
+  import VerdictRow from './VerdictRow.svelte';
+  import SecondOpinionCard from './SecondOpinionCard.svelte';
   import FocusGapRow from './FocusGap.svelte';
   import CraneMark from '../../shared/CraneMark.svelte';
   import { isThoughtOpen, withThoughtOpen } from '../panes/thoughtOpenState';
   import { foldForFocus, isFocusGap } from './focusGaps';
+  import { groupToolRuns } from './toolRuns';
+  import { isEmptyAgentTurn } from './chatFocus';
+  import { subagentIdentity, subagentKey, subagentLabel, subagentOrdinals } from '../panes/subagentLabel';
   import type { Message } from '../panes/chatMessage';
 
   interface Props {
@@ -46,47 +42,45 @@
     /** Live-turn flag. Pulses the streaming thought pill, and HIDES the rewind
      *  affordance mid-turn (you cannot rewind a turn that is still running). */
     inFlight: boolean;
-    /** The thought row currently streaming, and the agent row that is the
-     *  in-flight bubble. Both null between turns. */
+    /** The streaming thought row and the in-flight agent bubble; null between turns. */
     currentThoughtMsgId: number | null;
     currentAgentMsgId: number | null;
     /** Which reasoning blocks the user opened by hand (thoughtOpenState.ts). */
     openThoughtIds: number[] | undefined;
-    /** The next open-set after a pill toggle. The RULE that computes it stays
-     *  here with the markup; the pane owns the session field it lands on. */
+    /** The next open-set after a pill toggle. The RULE that computes it stays here
+     *  with the markup; the pane owns the session field it lands on. */
     onThoughtOpenIds: (ids: number[]) => void;
-    /** An image in a row was clicked. One lightbox serves the whole pane, so
-     *  the row only reports the click upward. Omit it and MessageRow leaves the
-     *  image inert — a caller with no lightbox of its own, not a safety gate:
-     *  enlarging a picture changes nothing on the machine. */
+    /** An image in a row was clicked. One lightbox serves the whole pane, so the row
+     *  only reports the click upward. Omit it and MessageRow leaves the image inert
+     *  — a caller with no lightbox of its own, not a safety gate. */
     onImageClick?: (src: string, alt: string) => void;
-    /** "Rewind here" on an agent row — the same (sessionId, engineMsgId) shape
-     *  the pane's rewindTo already took. Never called in read-only mode. */
+    /** "Rewind here" on an agent row, the same shape the pane's rewindTo took.
+     *  Never called in read-only mode. */
     onRewind?: (sessionId: string, engineMsgId?: string) => void;
+    /** Retry on a STOPPED stream-drop card: send the turn again. Omitted by a
+     *  read-only transcript, which then draws the card with no action. */
+    onRetryTurn?: (sessionId: string) => void;
     /**
-     * These rows are HISTORY — a sub-agent's stored session, replayed here so
-     * a finished child reads the way the chat that spawned it does.
+     * These rows are HISTORY — a sub-agent's stored session, replayed here so a
+     * finished child reads the way the chat that spawned it does.
      *
-     * It kills the two controls that act on the user's machine or on the LIVE
-     * turn, and it has to reach BOTH levels because they live at both: the
-     * rewind button is in this file (it posts revertToMessage, which rolls the
-     * working tree back — by far the most dangerous control to leave armed on
-     * a transcript from an hour ago), while ToolCard's Kill and Stop are one
-     * component down and take their own `readOnly`. Hiding markup here alone
-     * would leave those two live.
-     *
-     * What deliberately KEEPS working: every openAbsoluteFile sender (the path
-     * chips, a bash card's full output, a grep hit, a file link in prose).
-     * Opening a file the sub-agent touched is the whole point of reading its
-     * transcript, and it mutates nothing.
+     * It has to reach BOTH levels: the rewind button is in this file (it posts
+     * revertToMessage, which rolls the working tree back) while ToolCard's Kill and
+     * Stop are one component down and take their own `readOnly`, so hiding markup
+     * here alone would leave those two live. Every openAbsoluteFile sender KEEPS
+     * working: opening a file the sub-agent touched mutates nothing.
      */
     readOnly?: boolean;
-    /** FOCUS VIEW — draw only what was SAID (user, agent and peer prose), each
-     *  run of hidden rows folded to ONE counted divider so the work between two
-     *  answers survives as a number. Default false, so a caller that does not
-     *  ask for it — the live pane, the read-only sub-agent transcript — renders
+    /** A Claude Code passthrough cell: kills REWIND only. This is a live chat, so
+     *  ToolCard's Kill/Stop stay armed, but there is no transcript to revert to. */
+    passthrough?: boolean;
+    /** FOCUS VIEW — draw only what was SAID, each run of hidden rows folded to ONE
+     *  counted divider. Default false, so a caller that does not ask for it renders
      *  what it always did. The rule is chatFocus.ts's, the fold focusGaps.ts's. */
     focusMode?: boolean;
+    /** t-ucnp7t: what the T-numbers are counted over when it is more than `messages` — the
+     *  roster's stand-ins for sub-agents whose card is above the loaded page (chatHistory.ts). */
+    ordinalSource?: Message[];
   }
   let {
     messages,
@@ -98,52 +92,60 @@
     onThoughtOpenIds,
     onImageClick,
     onRewind,
-    readOnly = false,
-    focusMode = false,
+    onRetryTurn,
+    readOnly = false, passthrough = false,
+    focusMode = false, ordinalSource,
   }: Props = $props();
   /** A VIEW, never an edit: `messages` is untouched and every kept row passes
    *  through BY IDENTITY, so leaving focus puts every hidden row back. */
   const rows = $derived(focusMode ? foldForFocus(messages) : messages);
+  /** The loop key: a focus gap carries its own, a message is keyed by id. */
+  const keyOf = (msg: Message) => (isFocusGap(msg) ? msg.key : String(msg.id));
+  /** CHANGES.md change 21 — adjacent tool calls draw as ONE stepped strip.
+   *  Grouped AFTER the focus fold, so folding decides what is on screen and the
+   *  strip only groups what survived; the fold's own behaviour is untouched. */
+  const blocks = $derived(groupToolRuns(rows, keyOf));
+  // The chat's T-numbers, off the FULL transcript rather than `rows`: a folded
+  // focus view must not renumber the agents it happens to be hiding.
+  const ordinals = $derived(subagentOrdinals(ordinalSource ?? messages));
+  // A `task` card's own header is the word `task` (the engine titles the pending
+  // call with the tool name), so the card is named the way the drawer names it.
+  const taskName = (msg: Message) => subagentLabel(subagentIdentity(msg, ordinals.get(subagentKey(msg) ?? '') ?? 0));
+  /** A card's header text. Passed DOWN to the run group because the T-number it
+   *  reads is derived from the whole transcript, not from the run. */
+  const nameOf = (msg: Message) => (msg.toolName === 'task' ? taskName(msg) : msg.label);
+
+  // isEmptyAgentTurn is chatFocus.ts's (t-di3a0w): `foldForFocus` now swallows
+  // these rows before they ever reach `rows` in focus mode, so the guard below
+  // only fires in FULL view, where the row still passes through unfolded and
+  // must keep showing — it is a real turn boundary there, and the rewind
+  // control stays reachable. One definition, so the two views cannot disagree
+  // about what "nothing to show" means.
 </script>
-{#each rows as msg (isFocusGap(msg) ? msg.key : msg.id)}
+{#each blocks as block (block.key)}
+  {#if block.run}
+    <!-- Two or more adjacent calls in one turn: ONE stepped strip. -->
+    <ToolRunGroup rows={block.rows} {sessionId} {readOnly} {onImageClick} {nameOf} />
+  {:else}
+    {@const msg = block.row}
   {#if isFocusGap(msg)}
     <FocusGapRow label={msg.label} />
   {:else if msg.kind === 'tool'}
-    <ToolCard
-      title={msg.label}
-      kind={msg.toolKind || 'other'}
-      toolName={msg.toolName || ''}
-      status={msg.toolStatus || 'completed'}
-      result={msg.toolResult}
-      diff={msg.toolDiff}
-      path={msg.toolPath}
-      stream={msg.taskStream}
-      resumed={msg.taskResumed}
-      shell={msg.toolShell}
-      toolLines={msg.toolLines}
-      images={msg.toolImages} browser={msg.toolBrowser}
-      sessionId={sessionId} startedAt={msg.timestamp} {readOnly}
-    />
+    <!-- A lone call. The same component, which draws it with no strip at all. -->
+    <ToolRunGroup rows={[msg]} {sessionId} {readOnly} {onImageClick} {nameOf} />
   {:else if msg.kind === 'verdict' && msg.verdict}
-    <!-- Honest per-turn TERMINAL verdict, anchored inline at
-         the end of the turn it resolved. `incomplete` is red:
-         a budget-walled / no-progress / errored / parked-infra
-         turn must NOT read as benign progress. -->
-    <div class="turn-verdict verdict-{msg.verdict.kind}" title={msg.verdict.reason}>
-      <span class="verdict-dot" aria-hidden="true"></span>
-      <span class="verdict-text">{msg.text}</span>
-    </div>
+    <VerdictRow verdict={msg.verdict} text={msg.text} />
+  {:else if msg.kind === 'secondOpinion' && msg.secondOpinion}
+    <!-- A DIFFERENT model's review of the turn above: hand the chat over, or dismiss. -->
+    <SecondOpinionCard info={msg.secondOpinion} text={msg.text} {sessionId} {readOnly} />
   {:else if msg.kind === 'todoSummary' && msg.summaryTodos}
-    <!-- The collapsed task-list snapshot left in the transcript
-         after the overlay closes. `interactive` makes its header a
-         toggle so the finished one-liner can be re-opened to show
-         the items the agent tracked. -->
+    <!-- The collapsed task-list snapshot left after the overlay closes. `interactive`
+         makes its header a toggle, so the finished one-liner can be re-opened. -->
     <div class="todo-summary-msg">
       <TodoStrip todos={msg.summaryTodos} source="" interactive />
     </div>
   {:else if msg.kind === 'thought'}
-    <!-- Reasoning-model thoughts (ThoughtPill.svelte). Open state is
-         user-owned so a manual expand survives further deltas. -->
+    <!-- Reasoning-model thoughts. Open state is user-owned, so a manual expand survives. -->
     <ThoughtPill
       text={msg.text}
       label="Thought process"
@@ -152,11 +154,8 @@
       onToggle={(v: boolean) => onThoughtOpenIds(withThoughtOpen(openThoughtIds, msg.id, v))}
     />
   {:else if msg.kind === 'compacted'}
-    <!-- /compact result. A collapsed native <details> keeps the
-         carried-forward summary out of the transcript but available on
-         demand: "Compaction Completed" reads as a status divider;
-         expand to see exactly what survived the compaction. Reuses the
-         thought-block styling (collapsed, dim, mono). -->
+    <!-- /compact result. A collapsed native <details> keeps the carried-forward summary
+         out of the transcript but available on demand. Reuses the thought-block styling. -->
     <details class="compaction-block" class:live={msg.compacting}>
       <summary class="compaction-summary">
         <span class="compaction-crane" aria-hidden="true"><CraneMark size={13} /></span>
@@ -169,66 +168,46 @@
       </summary>
       <pre class="compaction-text">{msg.text || (msg.compacting ? '' : '(nothing beyond the recent turns needed carrying forward)')}</pre>
     </details>
+  {:else if msg.kind === 'streamDrop' && msg.streamDrop}
+    <!-- The ENGINE dropped a stream. NOT a MessageRow: this is the system
+         speaking, so the agent's name stays off it (t-q90gj9). -->
+    <SystemAlertRow
+      row={msg.streamDrop}
+      onRetry={readOnly || !onRetryTurn ? undefined : () => onRetryTurn(sessionId)}
+    />
+  {:else if msg.kind === 'engine' && msg.engine}
+    <!-- This chat's OWN engine is starting, failed or stopped: the same card (engineNotice.ts). -->
+    {@const alert = engineAlert(msg.engine)}
+    <SystemAlertRow {alert} onRetry={readOnly || !alert.retry ? undefined : () => getVsCodeApi().postMessage({ type: 'engineRetry', sessionId })} />
   {:else if msg.kind === 'peer'}
     <!-- NOT a MessageRow: the badge + provenance are the whole point. -->
-    <PeerMessageRow from={msg.label} replyTo={msg.peerReplyTo || ''} text={msg.text} timestamp={msg.timestamp} />
+    <PeerMessageRow from={msg.label} replyTo={msg.peerReplyTo || ''} text={msg.text} timestamp={msg.timestamp} flock={msg.peerFlock} subagent={msg.peerSubagent} />
   {:else if msg.kind === 'agent'}
-    <!-- Agent turn. Hover reveals a "Rewind here" affordance that
-         deterministically rolls the working tree + transcript back to
-         before this exchange. Hidden on the in-flight bubble and while
-         a turn is composing (can't rewind mid-turn). -->
-    <div class="agent-row">
-      <MessageRow kind={msg.kind} label={msg.label} text={msg.text} images={msg.images} timestamp={msg.timestamp} tokensAtTurn={msg.tokensAtTurn} tokensThisTurn={msg.tokensThisTurn} ctxPctAtTurn={msg.ctxPctAtTurn} onImageClick={onImageClick} />
-      {#if msg.engineMsgId && !inFlight && !readOnly && currentAgentMsgId !== msg.id}
-        <button class="rewind-btn"
-          title="Rewind to here — restores your files to before this exchange and drops this turn and everything after it (undoable until your next message)"
-          onclick={() => onRewind?.(sessionId, msg.engineMsgId)}>&#8630; Rewind here</button>
-      {/if}
-    </div>
+    <!-- Agent turn. Hover reveals a "Rewind here" affordance that rolls the working tree
+         and transcript back to before this exchange. Hidden while a turn is in flight.
+         Focus view additionally skips a turn with nothing to show — see isEmptyAgentTurn. -->
+    {#if !(focusMode && isEmptyAgentTurn(msg))}
+      <div class="agent-row" data-engine-msg={msg.engineMsgId}>
+        <!-- `streaming`: this row is the OPEN agent message, so its prose is
+             still arriving (MessageRow settles the colour itself). -->
+        <MessageRow kind={msg.kind} label={msg.label} text={msg.text} images={msg.images} timestamp={msg.timestamp} tokensAtTurn={msg.tokensAtTurn} tokensThisTurn={msg.tokensThisTurn} ctxPctAtTurn={msg.ctxPctAtTurn} onImageClick={onImageClick} streaming={inFlight && currentAgentMsgId === msg.id} />
+        {#if msg.engineMsgId && !inFlight && !readOnly && !passthrough && currentAgentMsgId !== msg.id}
+          <button class="rewind-btn"
+            use:tip={"Rewind to here — restores your files to before this exchange and drops this turn and everything after it (undoable until your next message)"}
+            onclick={() => onRewind?.(sessionId, msg.engineMsgId)}>&#8630; Rewind here</button>
+        {/if}
+      </div>
+    {/if}
   {:else}
     <MessageRow kind={msg.kind} label={msg.label} text={msg.text} images={msg.images} timestamp={msg.timestamp} tokensAtTurn={msg.tokensAtTurn} tokensThisTurn={msg.tokensThisTurn} ctxPctAtTurn={msg.ctxPctAtTurn} onImageClick={onImageClick} />
+  {/if}
   {/if}
 {/each}
 
 <style>
-  /* Inline per-turn terminal verdict row — sits at the end of the turn
-     it resolved, so the scrollback shows what each turn actually came
-     to (not a single replaced-in-place chip). */
-  .turn-verdict {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin: 6px 0 10px 0;
-    padding: 4px 10px;
-    font-size: 11px;
-    border-radius: 6px;
-    border: 1px solid var(--og-border);
-    background: var(--og-surface-alt);
-  }
-  .turn-verdict .verdict-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-    background: var(--og-text-muted);
-  }
-  .turn-verdict .verdict-text {
-    color: var(--og-text-secondary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .turn-verdict.verdict-done .verdict-dot { background: var(--og-success); }
-  .turn-verdict.verdict-done .verdict-text { color: var(--og-text); }
-  .turn-verdict.verdict-parked .verdict-dot { background: var(--og-warning); }
-  /* Incomplete/failed terminal — red. The thesis headline: this can
-     never collapse to a benign "Continue". */
-  .turn-verdict.verdict-incomplete {
-    border-color: color-mix(in srgb, var(--og-error) 45%, var(--og-border));
-    background: color-mix(in srgb, var(--og-error) 10%, var(--og-surface-alt));
-  }
-  .turn-verdict.verdict-incomplete .verdict-dot { background: var(--og-error); }
-  .turn-verdict.verdict-incomplete .verdict-text { color: var(--og-error); font-weight: 600; }
+  /* The per-turn verdict row's rules left WITH its markup (VerdictRow.svelte) —
+     Svelte scopes <style> per component, so a rule kept here would have stopped
+     matching silently. The same is true of the second-opinion card. */
   /* /compact status row. Flitters into the transcript as a compaction event;
      the Origami crane pulses while the turn is live, then settles. Its collapsed
      body used to borrow .thought-text; that rule left with the pill, so the

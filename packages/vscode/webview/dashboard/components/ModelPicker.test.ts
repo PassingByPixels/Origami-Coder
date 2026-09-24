@@ -16,6 +16,12 @@ import { usageLine } from '../../../src/dashboard/providerUsage';
 // here so the "picking current is free" claim is checked against the REAL rule
 // the DashboardPanel applies, not a restatement of it in a comment.
 import { shouldReloadLocalModel } from '../../../src/dashboard/firstFold';
+// The ONE section rule both this picker and the sidebar's connections UI read.
+import { classifySection } from '../../sidebar/connectionSection';
+// The rows the HOST attaches to `modelOptions` — used as this file's fixture so
+// the picker is driven by what actually arrives on the wire.
+import { claudeCodeModelRows } from '../../../src/claudeCode/models';
+import { claudeSubscriptionModelRows } from '../../../src/claudeSubscription/models';
 
 const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -452,7 +458,7 @@ describe('ModelPicker — group pills at 2+ (Local/Self Hosted, Providers, Labs)
         ],
       });
 
-      expect(await screen.findByRole('tab', { name: /^Local\/Self Hosted$/ })).toHaveAttribute('aria-selected', 'true');
+      expect(await screen.findByRole('tab', { name: /^Local$/ })).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByRole('tab', { name: /LM Studio/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /Ollama/i })).toBeInTheDocument();
     });
@@ -489,7 +495,7 @@ describe('ModelPicker — group pills at 2+ (Local/Self Hosted, Providers, Labs)
 
       // Pre-merge this painted "LM Studio" as a lone tab PLUS a collapsed
       // "Hosted" pill hiding the two Sparks. One pill now holds all three.
-      expect(await screen.findByRole('tab', { name: /^Local\/Self Hosted$/ })).toHaveAttribute('aria-selected', 'true');
+      expect(await screen.findByRole('tab', { name: /^Local$/ })).toHaveAttribute('aria-selected', 'true');
       expect(screen.queryByRole('tab', { name: /^Hosted$/ })).toBeNull();
       for (const name of [/LM Studio/i, /vLLM/i, /Spark2/i]) {
         expect(screen.getByRole('tab', { name })).toBeInTheDocument();
@@ -513,7 +519,7 @@ describe('ModelPicker — group pills at 2+ (Local/Self Hosted, Providers, Labs)
       postFromHost({ type: 'modelOptions', current: '', options: [{ value: 'vllm/qwen3.6-35b', name: 'Qwen3.6 35B', configured: true }] });
       postFromHost({ type: 'sessionModels', models: { [SID]: 'vllm/qwen3.6-35b' } });
 
-      expect(await screen.findByRole('tab', { name: /^Local\/Self Hosted$/ })).toHaveAttribute('aria-selected', 'true');
+      expect(await screen.findByRole('tab', { name: /^Local$/ })).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByRole('tab', { name: /vLLM/i })).toHaveAttribute('aria-selected', 'true');
       expect(await screen.findByText('Qwen3.6 35B')).toBeInTheDocument();
     });
@@ -644,6 +650,11 @@ describe('ModelPicker — group pills at 2+ (Local/Self Hosted, Providers, Labs)
 // (probe -> writeModelConfig -> reload toast) reachable from a selection-only
 // surface, and offered whenever ANY provider list lacked an ollama flavor — so
 // a user with LM Studio configured saw a connect affordance in a model list.
+//
+// The empty state's "Add provider" is NOT that button and these tests keep the
+// two apart: it writes nothing and probes nothing, it posts one message that
+// reveals the sidebar's own Add-provider fold. The rule was never "the picker
+// has no exit to setup" — it was "the picker does not perform setup".
 describe('ModelPicker — the picker never establishes a connection', () => {
   beforeEach(() => {
     globalThis.__vscodeApiMock.postMessage.mockReset();
@@ -660,18 +671,67 @@ describe('ModelPicker — the picker never establishes a connection', () => {
     expect(screen.queryByText(/Ollama/i)).toBeNull();
   });
 
-  it('with NO providers it points at the sidebar and posts nothing that could write config', async () => {
+  it('with NO providers it draws ONE non-selectable row saying so, and no model rows', async () => {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
-    globalThis.__vscodeApiMock.postMessage.mockReset();
     // The host answers the probe with an empty list — the real "nothing configured" state.
-    postFromHost({ type: 'providerStatus', providers: [] });
+    await postAndFlush({ type: 'providerStatus', providers: [] });
 
-    expect(await screen.findByText(/No providers configured/i)).toBeInTheDocument();
-    expect(screen.getByText(/Origami sidebar/i)).toBeInTheDocument();
-    // A hint, not a control: nothing to click, and nothing was sent.
+    expect(await screen.findByText(/No connections yet — add a provider/i)).toBeInTheDocument();
+    // Not a provider tab and not a pickable model: an aria-disabled option.
+    const row = screen.getByText(/No connections yet/i);
+    expect(row.getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+    // The tier-2 model list never opens, so there is nothing to select at all.
+    expect(screen.queryByPlaceholderText(/Filter models/i)).toBeNull();
+  });
+
+  it('Add provider posts openConnections — and writes NO config', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    await postAndFlush({ type: 'providerStatus', providers: [] });
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+
+    await fireEvent.click(screen.getByRole('button', { name: /Add provider/i }));
+
+    const sent = globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0]);
+    expect(sent).toEqual([{ type: 'openConnections' }]);
+    // The rule this file exists to pin: no setupProvider, no probe, no write.
+    expect(sent.some((m) => /setupProvider|connectOllama|setModel/.test(String(m?.type)))).toBe(false);
+  });
+
+  it('the composer footer reads "no model", never a model nothing serves', async () => {
+    // The owner's bug in one line: with nothing connected the engine still seeds
+    // a session with an unresolvable id, and the footer printed it (`big-pickle`).
+    render(ModelPicker, { props: { sessionId: SID, online: true, fallbackName: 'big-pickle' } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'unknown/unknown' } });
+    await postAndFlush({ type: 'providerStatus', providers: [] });
+
+    expect(await screen.findByRole('button', { name: /no model/i })).toBeInTheDocument();
+    expect(screen.queryByText(/big-pickle/i)).toBeNull();
+    expect(screen.queryByText(/^unknown$/i)).toBeNull();
+  });
+
+  it('a STALE selection whose provider is gone falls back to the same empty state', async () => {
+    // Not "keep showing the removed provider", and not "silently jump to the
+    // first catalogue entry" — both are a model the chat cannot reach.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'openrouter/qwen3-coder' } });
+    await postAndFlush({ type: 'providerStatus', providers: [] });
+
+    expect(await screen.findByRole('button', { name: /no model/i })).toBeInTheDocument();
+    expect(screen.queryByText(/qwen3-coder/i)).toBeNull();
+  });
+
+  it('says "Loading models…" — NOT "no connections" — before the probe answers', async () => {
+    // The distinction the providerStatusReceived gate exists for: an unanswered
+    // question is not an empty answer.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    await tick();
+    expect(screen.getByText(/Loading models/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No connections yet/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /Add provider/i })).toBeNull();
-    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -807,6 +867,123 @@ describe('ModelPicker — the sub-agent target', () => {
   });
 });
 
+// t-di2zmm: picking a model for THIS chat used to close the popover outright,
+// so offering it to sub-agents too meant close, reopen, click the Sub-agents
+// tab, and pick the same model again. The popover now stays open for one beat
+// and offers the two follow-ups inline, in place of the row just picked.
+describe('ModelPicker — inline sub-agent follow-up after a chat-model pick', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  it('stays open after a chat pick and shows both follow-up actions', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+
+    // The pick itself still posts setModel for THIS chat, same as before.
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'setModel',
+      modelId: 'openrouter/qwen/qwen3-coder',
+      sessionId: SID,
+    });
+    // The popover is still up — the old behaviour closed it here.
+    expect(screen.getByRole('dialog', { name: /Select model/i })).toBeInTheDocument();
+    expect(await screen.findByText('Also use for sub-agents')).toBeInTheDocument();
+    expect(screen.getByText('Choose a sub-agent model…')).toBeInTheDocument();
+  });
+
+  it('"Also use for sub-agents" posts setSubagentModel with the same id and closes', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+
+    await fireEvent.click(await screen.findByText('Also use for sub-agents'));
+
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'setSubagentModel',
+      modelId: 'openrouter/qwen/qwen3-coder',
+      sessionId: SID,
+    });
+    expect(screen.queryByRole('dialog', { name: /Select model/i })).toBeNull();
+  });
+
+  it('"Choose a sub-agent model…" switches the target in place — list stays open, next pick posts setSubagentModel', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+
+    await fireEvent.click(await screen.findByText('Choose a sub-agent model…'));
+
+    // Still open, no message posted by the switch itself.
+    expect(screen.getByRole('dialog', { name: /Select model/i })).toBeInTheDocument();
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalled();
+    // The target actually moved to Sub-agents — proven by the NEXT pick's route:
+    // the sub-agent target always asks for an optional context override first
+    // (t-lmqe0g), the same as picking it via the Sub-agents tab directly.
+    expect(screen.getByRole('button', { name: /^Sub-agents$/ })).toHaveClass('active');
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+    expect(await screen.findByLabelText(/Context length/i)).toBeInTheDocument();
+    await fireEvent.click(screen.getByText('Set'));
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setSubagentModel', modelId: 'openrouter/qwen/qwen3-coder' }),
+    );
+  });
+
+  it('is NOT shown on a passthrough cell — the old one-click close is unchanged', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true, passthrough: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+
+    // No Tier-0 target at all on a passthrough cell, so no follow-up either.
+    expect(screen.queryByText('Also use for sub-agents')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: /Select model/i })).toBeNull();
+  });
+
+  it('is NOT shown when the sub-agent model already equals the pick — closes as before', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: {}, subagentModels: { [SID]: 'openrouter/qwen/qwen3-coder' } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+
+    expect(screen.queryByText('Also use for sub-agents')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: /Select model/i })).toBeNull();
+  });
+
+  it('a fresh reopen clears any stale follow-up — closing elsewhere still works with no row shown', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'openrouter', name: 'OpenRouter', live: true, kind: 'cloud' }] });
+    postFromHost({ type: 'openRouterModels', providerId: 'openrouter', models: [{ id: 'qwen/qwen3-coder', name: 'Qwen3 Coder' }] });
+    await fireEvent.click(await screen.findByText('Qwen3 Coder'));
+    await screen.findByText('Also use for sub-agents');
+
+    // Backdrop click still closes the popover — the row does not trap the user.
+    await fireEvent.click(container.querySelector('.mp-backdrop') as HTMLElement);
+    expect(screen.queryByRole('dialog', { name: /Select model/i })).toBeNull();
+
+    // Reopening shows the plain model list again, not a stale follow-up.
+    await fireEvent.click(container.querySelector('.mp-trigger') as HTMLElement);
+    expect(await screen.findByText('Qwen3 Coder')).toBeInTheDocument();
+    expect(screen.queryByText('Also use for sub-agents')).toBeNull();
+  });
+});
+
 // The blank-flash fix: the empty-providers message used to render on EVERY
 // first open — even with providers configured and a model already active —
 // because it fired before the host round-trip landed (owner screenshot). It is
@@ -831,11 +1008,11 @@ describe('ModelPicker — no blank-flash before the first providerStatus payload
     expect(screen.queryByText(/No providers configured/i)).toBeNull();
   });
 
-  it('falls to the real empty-providers message once the PROBE actually answers empty', async () => {
+  it('falls to the real no-connections empty state once the PROBE actually answers empty', async () => {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
     postFromHost({ type: 'providerStatus', providers: [] });
-    expect(await screen.findByText(/No providers configured — add one in the Origami sidebar/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No connections yet — add a provider/i)).toBeInTheDocument();
     expect(screen.queryByText('Loading models…')).toBeNull();
   });
 
@@ -908,7 +1085,7 @@ describe('ModelPicker — the tab bar never paints from the id-only bootstrap', 
     // Nothing bucketed: no tab bar, no model rows, just the loading gate. The
     // mis-bucketed intermediate state is what must never reach the screen.
     expect(screen.queryAllByRole('tab')).toHaveLength(0);
-    expect(screen.queryByRole('tab', { name: /^Local\/Self Hosted$/ })).toBeNull();
+    expect(screen.queryByRole('tab', { name: /^Local$/ })).toBeNull();
     expect(screen.queryByText('qwen-coder')).toBeNull();
     expect(screen.getByText('Loading models…')).toBeInTheDocument();
 
@@ -916,7 +1093,7 @@ describe('ModelPicker — the tab bar never paints from the id-only bootstrap', 
     // so they collapse into that section's single pill with its members shown.
     postFromHost({ type: 'providerStatus', providers: PROBED });
 
-    expect(await screen.findByRole('tab', { name: /^Local\/Self Hosted$/ })).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: /^Local$/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /LM Studio/i })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: /^Hosted$/ })).toBeNull();
     expect(screen.queryByText('Loading models…')).toBeNull();
@@ -1184,5 +1361,554 @@ describe('ModelPicker — the usage pill is sized to fit a real reset-time line'
     // time — that gap is the bug this pins.
     const estimatedTextWidthPx = worst.length * 5.5;
     expect(maxWidthPx).toBeGreaterThanOrEqual(estimatedTextWidthPx);
+  });
+});
+
+// The per-row VISION CHIP. The case it exists for: a local server that answers
+// no capability probe at all (vLLM, SGLang) leaves EVERY one of its models
+// reading as blind, and until now the only place that said so was a popover
+// three clicks away, about the one model the chat had already selected. The
+// chip says it on the row, before the pick, and is the click target that
+// corrects it.
+//
+// End-to-end from the host broadcast on purpose. The state has to survive
+// `visibleModels`, which REBUILDS its rows — it dropped the field on its first
+// pass and no leaf test would have caught it, because there is no leaf test for
+// that projection. Rendering from the real `modelOptions` payload is what pins
+// the whole chain.
+describe('ModelPicker — the per-row vision chip', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  /** Open the picker on a probe-less vLLM box holding one model in `state`. */
+  async function withRow(visionState: string | undefined, value = 'vllm/glm-5.3-flash') {
+    const rendered = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'vllm', name: 'vLLM', live: true, baseURL: 'http://100.64.1.10:8000/v1', flavor: 'other' }] });
+    postFromHost({
+      type: 'modelOptions',
+      current: '',
+      options: [{ value, name: value.split('/')[1], configured: true, ...(visionState === undefined ? {} : { visionState }) }],
+    });
+    await screen.findByText(value.split('/')[1]);
+    return rendered;
+  }
+
+  const chip = (c: HTMLElement) => c.querySelector('.mp-vision') as HTMLButtonElement | null;
+
+  it.each([
+    ['auto-on', 'vision', { sees: true, pinned: false }],
+    ['on', 'vision', { sees: true, pinned: true }],
+    ['auto-off', 'no vision', { sees: false, pinned: false }],
+    ['off', 'no vision', { sees: false, pinned: true }],
+  ])('%s draws "%s"', async (state, label, tone) => {
+    const { container } = await withRow(state);
+    const el = chip(container)!;
+    expect(el.textContent?.trim()).toBe(label);
+    // DETECTED and PINNED are different claims about the same word, and only
+    // one of them survives the next detection pass — so the chip carries which,
+    // in a class the styling hangs off and in the tooltip.
+    expect(el.classList.contains('sees')).toBe(tone.sees);
+    expect(el.classList.contains('pinned')).toBe(tone.pinned);
+  });
+
+  it.each([
+    ['auto-on', 'engine-detected'],
+    ['on', 'pinned by you'],
+    ['auto-off', 'nothing detected'],
+    ['off', 'pinned by you'],
+  ])('%s names its SOURCE in the tooltip: %s', async (state, source) => {
+    const { container } = await withRow(state);
+    expect(chip(container)?.title).toContain(source);
+  });
+
+  it('draws no chip at all when the host sends no state — an older host, not a blind model', async () => {
+    const { container } = await withRow(undefined);
+    expect(chip(container)).toBeNull();
+  });
+
+  it('clicking it pins THIS ROW\'s model on, and does NOT switch the chat to it', async () => {
+    // The whole point of putting it on the row: the user is correcting a fact
+    // about a model they may have no intention of selecting. A click that also
+    // fired the row would switch the chat every time someone fixed a label.
+    const { container } = await withRow('auto-off');
+    await fireEvent.click(chip(container)!);
+
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'setVisionPin',
+      mode: 'on',
+      modelId: 'vllm/glm-5.3-flash',
+      sessionId: SID,
+    });
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel' }),
+    );
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setSubagentModel' }),
+    );
+  });
+
+  it('clicking a PINNED-ON chip hands the model back to Auto', async () => {
+    const { container } = await withRow('on');
+    await fireEvent.click(chip(container)!);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setVisionPin', mode: '', modelId: 'vllm/glm-5.3-flash' }),
+    );
+  });
+
+  it('a LEGACY off pin is pinned ON by a click, not cycled back through Off', async () => {
+    // Off is retired as a setting. The chip's job is to make a model see; the
+    // only way back to a stored 'off' would be a button nothing offers.
+    const { container } = await withRow('off');
+    await fireEvent.click(chip(container)!);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setVisionPin', mode: 'on' }),
+    );
+  });
+
+  it('the SUB-AGENT target does not turn the chip into a sub-agent model pick', async () => {
+    // `pickType` flips the ROW's message between setModel and setSubagentModel.
+    // The chip is not a pick at all and must ignore it.
+    const { container } = await withRow('auto-off');
+    await fireEvent.click(screen.getByRole('button', { name: /Sub-agents/i }));
+    await fireEvent.click(chip(container)!);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setVisionPin' }),
+    );
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setSubagentModel' }),
+    );
+  });
+
+  it('the row still selects the model when the row itself is clicked', async () => {
+    // The guard on the guard: stopPropagation on the chip must not have cost
+    // the row its own click.
+    await withRow('auto-off');
+    await fireEvent.click(screen.getByText('glm-5.3-flash'));
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel', modelId: 'vllm/glm-5.3-flash' }),
+    );
+  });
+});
+
+// The Claude Code entry (0.4.69). It is a MODEL, not a launcher button: the
+// user picks it for a chat the way they pick any other model, and the row only
+// exists when the host's own probe found the CLI. The host builds these rows in
+// src/claudeCode/models.ts and attaches them AFTER the live merge, on the
+// visionState precedent — they are offered, never configured.
+describe('ModelPicker — the Claude Code group', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const PROVIDERS = [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' as const }];
+  // The REAL rows, from the function the host calls — not a hand-copied fixture.
+  // A copy here would keep passing after models.ts started claiming a vision
+  // state or renaming the group, which is the whole class of drift this repo's
+  // "derive fixtures from the external thing" rule exists for.
+  const CC_ROWS = claudeCodeModelRows({ binary: 'C:\\claude.exe', version: '2.1.198', source: 'probe' });
+
+  async function open(rows: unknown[]) {
+    const r = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: PROVIDERS });
+    await postAndFlush({ type: 'modelOptions', current: '', options: [{ value: 'lmstudio/qwen3-30b', name: 'qwen3-30b' }, ...rows] });
+    return r;
+  }
+
+  it('labels the tab with the harness name and NOTHING else', async () => {
+    await open(CC_ROWS);
+    // The pill used to read "Claude Code 2.1.198", which parses as a product
+    // name and re-labels itself on every CLI upgrade. The version is still one
+    // hover away — it answers "which install am I driving", a different
+    // question from "what is this".
+    const tab = await screen.findByRole('tab', { name: 'Claude Code' });
+    expect(tab).toBeInTheDocument();
+    expect(tab).toHaveAttribute('data-tip', 'Claude Code 2.1.198 — Live');
+    expect(tab.textContent).not.toContain('2.1.198');
+  });
+
+  it('shows NO group when the CLI was not detected — the host sends no rows', async () => {
+    await open([]);
+    // Flushed (postAndFlush above), so this absence can genuinely fail.
+    expect(screen.queryByRole('tab', { name: /Claude Code/ })).toBeNull();
+    expect(screen.queryByText('Opus')).toBeNull();
+  });
+
+  it('sits under Labs — the same section rule the connections UI uses', () => {
+    // Not a render assertion: the claim is that the picker did not FORK the
+    // classification. classifySection is the one both surfaces read.
+    expect(classifySection({ id: 'claude-code' })).toBe('labs');
+  });
+
+  it('collapses INTO the Labs pill once Labs has another member', async () => {
+    // A lone section renders as its own tab, which is why the tests above find
+    // "Claude Code 2.1.198" at the top level. Add a second Labs provider and the
+    // real proof appears: both sit behind the section pill, so the group is
+    // genuinely IN Labs rather than merely next to it.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [...PROVIDERS, { id: 'anthropic', name: 'Anthropic', live: true }] });
+    await postAndFlush({ type: 'modelOptions', current: '', options: [{ value: 'lmstudio/qwen3-30b', name: 'qwen3-30b' }, ...CC_ROWS] });
+
+    const labs = await screen.findByRole('tab', { name: 'Labs' });
+    expect(labs).toHaveAttribute('data-tip', 'Labs (2)'); // the section pill, holding both
+    expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull();
+    await fireEvent.click(labs);
+    // …and the sub-select inside it lists the group by name.
+    const sub = await screen.findByRole('tab', { name: 'Claude Code' });
+    expect(sub).toHaveAttribute('data-tip', 'Claude Code 2.1.198 — Live');
+  });
+
+  it('lists the four aliases with no vision chip — an honest absence, not a claim', async () => {
+    const { container } = await open(CC_ROWS);
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Claude Code' }));
+    // Fable leads: the CLI resolves `--model fable` to claude-fable-5, verified
+    // on a live spawn (spike/transcript_probe.txt), so the row is real.
+    for (const name of ['Fable', 'Opus', 'Sonnet', 'Haiku']) expect(screen.getByText(name)).toBeInTheDocument();
+    expect(container.querySelector('.mp-models .mp-vision')).toBeNull();
+  });
+
+  it('posts setModel with the claude-code id — the prefix the host branches on', async () => {
+    await open(CC_ROWS);
+    await fireEvent.click(await screen.findByRole('tab', { name: 'Claude Code' }));
+    await fireEvent.click(screen.getByText('Opus'));
+    // No context prompt: it is not an lms-managed provider, so it switches live.
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel', modelId: 'claude-code/opus', sessionId: SID }),
+    );
+  });
+
+  it('never shadows a configured provider that happens to share the id', async () => {
+    // A real connection always wins the tab; the offered one is dropped.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'claude-code', name: 'My Own Block', live: false, baseURL: 'http://127.0.0.1:9/v1' }] });
+    await postAndFlush({ type: 'modelOptions', current: '', options: CC_ROWS });
+    expect(await screen.findByRole('tab', { name: /My Own Block/ })).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull();
+  });
+});
+
+// t-tijdof: the opt-in "Claude (subscription, experimental)" group. Real
+// end-to-end pass — the picker is driven by the SAME row-building function the
+// host calls (claudeSubscriptionModelRows), not a hand-copied fixture, so a
+// rename or a readiness-shape change here goes red rather than staying silent.
+describe('ModelPicker — the Claude (subscription, experimental) group', () => {
+  beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
+
+  const PROVIDERS = [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' as const }];
+  const GROUP = 'Claude (subscription, experimental)';
+
+  async function open(rows: unknown[]) {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: PROVIDERS });
+    await postAndFlush({ type: 'modelOptions', current: '', options: [{ value: 'lmstudio/qwen3-30b', name: 'qwen3-30b' }, ...rows] });
+  }
+
+  it('never appears when the setting is off — the host sends no rows at all', async () => {
+    await open(claudeSubscriptionModelRows(false, { state: 'ready' }));
+    expect(screen.queryByRole('tab', { name: GROUP })).toBeNull();
+  });
+
+  it('shows the tab even when not ready, so the user can see WHY — but nothing on it is pickable', async () => {
+    await open(claudeSubscriptionModelRows(true, { state: 'cli-missing' }));
+    const tab = await screen.findByRole('tab', { name: GROUP });
+    await fireEvent.click(tab);
+    expect(await screen.findByText('Claude Code CLI not found. Install it, then reopen this panel.')).toBeInTheDocument();
+    expect(screen.queryByText('Fable')).toBeNull();
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel' }),
+    );
+  });
+
+  it('names the version-too-old fix line with the found version and the floor', async () => {
+    await open(claudeSubscriptionModelRows(true, { state: 'version-too-old', found: '2.0.1', floor: '2.1.263' }));
+    await fireEvent.click(await screen.findByRole('tab', { name: GROUP }));
+    expect(await screen.findByText(/2\.0\.1 is older than 2\.1\.263/)).toBeInTheDocument();
+  });
+
+  it('names the not-logged-in fix line', async () => {
+    await open(claudeSubscriptionModelRows(true, { state: 'not-logged-in' }));
+    await fireEvent.click(await screen.findByRole('tab', { name: GROUP }));
+    expect(await screen.findByText(/Not logged in/)).toBeInTheDocument();
+  });
+
+  it('never says "Claude Code" — the Agent SDK branding rule', async () => {
+    await open(claudeSubscriptionModelRows(true, { state: 'cli-missing' }));
+    const tab = await screen.findByRole('tab', { name: GROUP });
+    expect(tab.textContent).not.toMatch(/Claude Code/);
+  });
+
+  it('ready: lists the four aliases and posts setModel with the claude-subscription prefix', async () => {
+    await open(claudeSubscriptionModelRows(true, { state: 'ready' }));
+    await fireEvent.click(await screen.findByRole('tab', { name: GROUP }));
+    for (const name of ['Fable', 'Opus', 'Sonnet', 'Haiku']) expect(screen.getByText(name)).toBeInTheDocument();
+    await fireEvent.click(screen.getByText('Opus'));
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'setModel', modelId: 'claude-subscription/opus', sessionId: SID }),
+    );
+  });
+});
+
+// The trigger's tooltip names the sub-agent override — `subagentModels`, off
+// the SAME `sessionModels` broadcast the per-chat model rides on, sent by
+// DashboardPanel's setSubagentModel case (session.subagentModel echo, since
+// the ACP wire itself never carries the value back — see sessionModelStatus.ts).
+describe('ModelPicker — trigger tooltip names the sub-agent override', () => {
+  it('adds the sub-agents clause when this session has an override', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'openrouter/x-ai/grok-4' }, subagentModels: { [SID]: 'openrouter/qwen3-coder' } });
+    const trigger = container.querySelector('.mp-trigger') as HTMLElement;
+    expect(trigger).toHaveAttribute(
+      'data-tip',
+      'openrouter/x-ai/grok-4 — click to switch model (this chat) · sub-agents run on openrouter/qwen3-coder',
+    );
+  });
+
+  it('omits the clause when no override is set', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'openrouter/x-ai/grok-4' } });
+    const trigger = container.querySelector('.mp-trigger') as HTMLElement;
+    expect(trigger).toHaveAttribute('data-tip', 'openrouter/x-ai/grok-4 — click to switch model (this chat)');
+  });
+
+  it('omits the clause on the Claude Code passthrough cell even with an override recorded', async () => {
+    // The passthrough hides the sub-agent target entirely (passthroughCaps.ts) —
+    // a stray broadcast must not surface a clause the picker never let the user set.
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true, passthrough: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'claude-code/opus' }, subagentModels: { [SID]: 'openrouter/qwen3-coder' } });
+    const trigger = container.querySelector('.mp-trigger') as HTMLElement;
+    expect(trigger).toHaveAttribute('data-tip', 'claude-code/opus — click to switch model (this chat)');
+  });
+
+  it('still shows the plain "select a model" prompt with no current model, override or not', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: false } });
+    await postAndFlush({ type: 'sessionModels', models: {}, subagentModels: { [SID]: 'openrouter/qwen3-coder' } });
+    const trigger = container.querySelector('.mp-trigger') as HTMLElement;
+    expect(trigger).toHaveAttribute('data-tip', 'Select a model for this chat');
+  });
+});
+
+// 0.4.116, owner: the "Weekly: 16% used" pill was missing from a chat that was
+// plainly working, and came BACK on its own the moment a turn ended. That is
+// the whole diagnosis - `requestUsage` was reachable from exactly two places,
+// opening the model bar and `turnDone`, so a picker whose capability inputs
+// (`sessionModels`, `providerAuthData`, `providerUsageCapable`, a provider
+// going live) landed AFTER mount had already made its one and only decision:
+// "this provider cannot report usage", and nothing ever revisited it.
+describe('ModelPicker - the usage pill survives late capability data', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  it('asks as soon as the capable list lands, with the model bar never opened', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    // The picker learns its model first, while nothing yet says opencode-go can
+    // report usage - so it must NOT ask here.
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'opencode-go/omen-alpha' } });
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'providerUsageRequest' }),
+    );
+    // The capability answer arrives late. THAT is the flip, and it has to be
+    // acted on - the user never opens the menu, and the turn may run for
+    // minutes before turnDone would have repaired it.
+    await postAndFlush({ type: 'providerUsageCapable', ids: ['opencode-go'] });
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({
+      type: 'providerUsageRequest',
+      providerId: 'opencode-go',
+    });
+    postFromHost({ type: 'providerUsageData', providerId: 'opencode-go', lines: ['Weekly: 16% used, resets in 6d 1h'] });
+    expect(await screen.findByText('Weekly: 16% used, resets in 6d 1h')).toBeInTheDocument();
+  });
+
+  it('asks when the OAuth set lands late, and when the provider comes back live', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'openai/gpt-5.6-sol' } });
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+    await postAndFlush({ type: 'providerAuthData', methods: {}, connected: { openai: { type: 'oauth' } } });
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'providerUsageRequest', providerId: 'openai' });
+
+    // A read that never came back leaves the slot empty, so the next liveness
+    // broadcast - the probe finally landing - is a fresh chance to repair it.
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+    await postAndFlush({ type: 'providerStatus', providers: [{ id: 'openai', name: 'ChatGPT', live: true, kind: 'cloud', primary: false }] });
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'providerUsageRequest', providerId: 'openai' });
+  });
+
+  it('is a repair, not a poll: an ANSWERED provider is never re-asked', async () => {
+    // The 20s status tick would otherwise become a usage request every 20s per
+    // open pane. An "unavailable" answer counts as an answer - the provider has
+    // said it has no usage source, and asking again cannot change that.
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'xai/grok-4' } });
+    await postAndFlush({ type: 'providerAuthData', methods: {}, connected: { xai: { type: 'oauth' } } });
+    await postAndFlush({ type: 'providerUsageData', providerId: 'xai', unavailable: 'xAI publishes no usage endpoint for OAuth sign-ins.' });
+
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+    await postAndFlush({ type: 'providerStatus', providers: [{ id: 'xai', name: 'xAI', live: true, kind: 'cloud', primary: false }] });
+    await postAndFlush({ type: 'providerStatus', providers: [{ id: 'xai', name: 'xAI', live: true, kind: 'cloud', primary: false }] });
+    expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'providerUsageRequest' }),
+    );
+    // And it still renders nothing, exactly as before.
+    expect(screen.queryByText(/used/i)).toBeNull();
+  });
+});
+
+// t-d942yi — the Claude plan pill's hover tooltip lists every reported window
+// (5h/7d/30d…), not only the one the pill's own number came from.
+describe('ModelPicker — the Claude plan pill tooltip lists every window', () => {
+  it('posting a multi-window meter shows the tightest number on the pill and every window in the tooltip', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: false } });
+    const now = Date.now();
+    await postAndFlush({
+      type: 'passthroughMeter', sessionId: SID, subscription: true,
+      pillPct: 100, pillResetsAt: now + 17 * 86_400_000, pillWindow: '30d',
+      pillTitle: 'Claude subscription — 100% of your 30d limit used.',
+      windows: [
+        { label: '5h', pct: 73, resetsAt: now + 3_600_000 },
+        { label: '7d', pct: 98, resetsAt: now + 6 * 86_400_000 },
+        { label: '30d', pct: 100, resetsAt: now + 17 * 86_400_000 },
+      ],
+    });
+
+    const pill = container.querySelector('.mp-usage') as HTMLElement;
+    expect(pill).not.toBeNull();
+    // Owner ask: a 73% five-hour lane must not hide a maxed-out monthly one —
+    // the pill's own number is the TIGHTEST of everything reported, 100%.
+    expect(pill.textContent).toContain('100% used');
+    expect(pill.dataset.tip).toContain('5h · 73% · resets');
+    expect(pill.dataset.tip).toContain('7d · 98% · resets');
+    expect(pill.dataset.tip).toContain('30d · 100% · resets');
+  });
+
+  it('a single-window meter falls back to the one-sentence title, not a one-line tooltip list', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: false } });
+    const now = Date.now();
+    await postAndFlush({
+      type: 'passthroughMeter', sessionId: SID, subscription: true,
+      pillPct: 80, pillResetsAt: now + 6 * 86_400_000, pillWindow: '7d',
+      pillTitle: 'Claude subscription — 80% of your 7d limit used (allowed_warning).',
+      windows: [{ label: '7d', pct: 80, resetsAt: now + 6 * 86_400_000 }],
+    });
+
+    const pill = container.querySelector('.mp-usage') as HTMLElement;
+    expect(pill.dataset.tip).toBe('Claude subscription — 80% of your 7d limit used (allowed_warning).');
+  });
+});
+
+// t-d942yi (follow-up) — the GENERIC provider pill (ChatGPT/xai/Copilot, the
+// providerUsageData/usageLines path) gets the same treatment: the pill's own
+// number is the tightest reported window, and its tooltip lists every one.
+describe('ModelPicker — the generic provider pill (providerUsageData) picks the tightest window', () => {
+  async function primeOpenaiCurrent(container: HTMLElement) {
+    await postAndFlush({ type: 'providerStatus', providers: [{ id: 'openai', name: 'ChatGPT', live: true, kind: 'cloud', primary: false }] });
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'openai/gpt-5.6' } });
+    await postAndFlush({ type: 'providerAuthData', methods: {}, connected: { openai: { type: 'oauth' } } });
+  }
+
+  it('a 73% 5-hour window next to a 100% monthly one: the pill shows 100% and the tooltip lists all three', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await primeOpenaiCurrent(container);
+    const now = Date.now();
+    await postAndFlush({
+      type: 'providerUsageData', providerId: 'openai', plan: 'plus',
+      lines: ['5-hour: 73% used, resets in 1h 0m', '7-day: 40% used, resets in 3d 0h', '30-day: 100% used, resets in 12d 0h'],
+      windows: [
+        { label: '5-hour', pct: 73, resetsAt: now + 3_600_000 },
+        { label: '7-day', pct: 40, resetsAt: now + 3 * 86_400_000 },
+        { label: '30-day', pct: 100, resetsAt: now + 12 * 86_400_000 },
+      ],
+    });
+
+    const pill = container.querySelector('.mp-usage') as HTMLElement;
+    expect(pill).not.toBeNull();
+    // Owner's actual blocker: the old windows[0]-only read would have shown
+    // "5-hour: 73% used…" here and hidden the maxed-out monthly cap.
+    expect(pill.textContent).toBe('30-day: 100% used, resets in 12d 0h');
+    expect(pill.dataset.tip).toContain('5-hour · 73% · resets');
+    expect(pill.dataset.tip).toContain('7-day · 40% · resets');
+    expect(pill.dataset.tip).toContain('30-day · 100% · resets');
+  });
+
+  it('a single-window answer shows that one line as both text and tooltip, no list', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await primeOpenaiCurrent(container);
+    await postAndFlush({
+      type: 'providerUsageData', providerId: 'openai',
+      lines: ['Weekly: 48% used'],
+      windows: [{ label: 'Weekly', pct: 48, resetsAt: 0 }],
+    });
+
+    const pill = container.querySelector('.mp-usage') as HTMLElement;
+    expect(pill.textContent).toBe('Weekly: 48% used');
+    expect(pill.dataset.tip).toBe('Weekly: 48% used');
+  });
+
+  it('an answer with no `windows` (an older engine) still shows the FIRST line, same as before this change', async () => {
+    const { container } = render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await primeOpenaiCurrent(container);
+    await postAndFlush({ type: 'providerUsageData', providerId: 'openai', lines: ['5-hour: 12% used, resets in 2h 30m', 'Weekly: 48% used'] });
+
+    const pill = container.querySelector('.mp-usage') as HTMLElement;
+    expect(pill.textContent).toBe('5-hour: 12% used, resets in 2h 30m');
+  });
+});
+
+// t-ry6ecn — a gateway's PRUNED rows used to leave no trace. The entitlement
+// sweep drops every model a key cannot call, so the OpenCode Zen tab silently
+// lost its `-free` ids and the provider's own refusal ("the free tier works
+// only inside the OpenCode client") read as a missing model. These pin that the
+// picker now says so, and that the line is themed rather than hard-coded.
+describe('ModelPicker — the gateway prune is explained, not silent', () => {
+  beforeEach(() => {
+    globalThis.__vscodeApiMock.postMessage.mockReset();
+  });
+
+  async function openZenTab(gatewayNotes: Record<string, unknown>) {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'opencode', name: 'Zen', live: true, baseURL: 'https://opencode.ai/zen/v1', kind: 'cloud' }] });
+    await postAndFlush({
+      type: 'modelOptions',
+      current: '',
+      options: [{ value: 'opencode/deepseek-v4-flash', name: 'deepseek-v4-flash', configured: true }],
+      gatewayNotes,
+    });
+    await screen.findByText('deepseek-v4-flash');
+  }
+
+  it('names the free tier when the sweep pruned free ids', async () => {
+    await openZenTab({ opencode: { hidden: 6, hiddenFree: 6, keyed: true } });
+    expect(screen.getByText(/6 models hidden: not entitled on this key/)).toBeInTheDocument();
+    expect(screen.getByText(/only inside the OpenCode client/)).toBeInTheDocument();
+  });
+
+  it('says nothing when the key can call everything the gateway lists', async () => {
+    await openZenTab({ opencode: { hidden: 0, hiddenFree: 0, keyed: true } });
+    expect(screen.queryByText(/hidden/)).toBeNull();
+  });
+
+  it('draws no hint at all on a host that sends no notes (version skew)', async () => {
+    render(ModelPicker, { props: { sessionId: SID, online: true } });
+    await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
+    postFromHost({ type: 'providerStatus', providers: [{ id: 'opencode', name: 'Zen', live: true, baseURL: 'https://opencode.ai/zen/v1', kind: 'cloud' }] });
+    await postAndFlush({ type: 'modelOptions', current: '', options: [{ value: 'opencode/deepseek-v4-flash', name: 'deepseek-v4-flash', configured: true }] });
+    await screen.findByText('deepseek-v4-flash');
+    expect(screen.queryByText(/hidden/)).toBeNull();
+  });
+
+  it('the hint line takes its colour from a theme token, never a literal', () => {
+    const src = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'ModelPicker.svelte'),
+      'utf8',
+    );
+    const rule = /\.mp-empty,\s*\.mp-hint\s*\{([^}]*)\}/.exec(src);
+    expect(rule, '.mp-hint must keep its own declared rule').not.toBeNull();
+    const body = rule![1];
+    expect(body).toContain('var(--og-text-muted)');
+    // A literal colour survives one theme and fails the other four, silently.
+    expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(/);
   });
 });

@@ -1,38 +1,14 @@
-// The repo map's isometric FLOOR PLAN — the STREETS, and the assembly of the
-// whole picture from the leaves around it. Pure: a RepoMap in, plain geometry
-// out. No DOM, no markup, no colour.
-//
-// THE PLAN IS "FLOW SPINE" (Passing's pick, variant B of the cartographer
-// mockups). Each flow becomes one STREET laid along the grid diagonal (+1,-1).
-// That diagonal projects to a perfectly HORIZONTAL screen row — every box on one
-// street shares x+y, so it shares its screen y — and consecutive streets are
-// offset along (+1,+1), which is pure screen-DOWN. So a runtime path stops being
-// a hunt across a diagonal band and becomes a line of text you read end to end.
-//
-// Two rules keep it honest:
-//   1. FIRST STREET WINS. A component sits on the first flow that reaches it and
-//      nowhere else, so nothing is drawn twice and "where does this live" has one
-//      answer. Revisits inside a single flow are dropped the same way — three of
-//      the four flows in the reference map re-enter the same node several times,
-//      and the schema has no marker that separates a genuine second visit from a
-//      duplicate (that idea is a wiki note, not code).
-//   2. EVERYTHING ELSE DOCKS. Components no flow touches are packed into pillar
-//      districts below the last street (isoDock.ts) instead of interrupting the
-//      story.
-//
-// The cluster: isoProject.ts is the camera, isoBox.ts turns one node into a
-// solid, isoPack.ts is the packing search, isoDock.ts places the leftovers, and
-// isoWires.ts joins everything up.
-//
-// ONE COPY, ON THE HOST SIDE, ON PURPOSE. The webview cannot import a runtime
-// value out of src/ (tsconfig.webview.json pins rootDir to `webview/`), and the
-// house answer is normally to MIRROR the value with a drift guard. A mirror is
-// the right trade for a constant table and the wrong one for a page of geometry,
-// where the only guard you could write is a byte-compare. So the layout is
-// computed once, here, and the RESULT is serialized: mapHtml.ts renders it into
-// the static artifact, mapTab.ts puts it in the webview payload. Both consume
-// numbers, and the screen imports only this file's TYPES — which the compiler
-// checks, so the two pictures cannot drift at all.
+// The repo map's isometric floor plan: the streets, and assembly of the whole picture. Pure
+// — a RepoMap in, geometry out.
+// Plan is "flow spine": each flow becomes one street laid on the grid diagonal (+1,-1), which
+// projects to a perfectly horizontal screen row, so a runtime path reads as a line of text
+// end to end. Two rules: (1) first street wins — a component sits on the first flow that
+// reaches it, so nothing draws twice; (2) everything else docks into pillar districts below
+// the last street (isoDock.ts) instead of interrupting the story.
+// The layout is computed once, host-side, and the RESULT serialized to both the static
+// map.html and the webview payload — the webview can't import a runtime value from src/, and
+// mirroring ~180 lines of geometry with only a byte-compare guard is the wrong trade, so both
+// renderers consume numbers instead.
 
 import { boundsOf, project, type Pt } from './isoProject';
 import { emit, sizesOf, type IsoBox, type Sizes } from './isoBox';
@@ -48,12 +24,8 @@ const STREET_PITCH = 8.5;
 /** Slack around the whole picture, in screen px. */
 const VIEW_PAD = 64;
 
-/** A painted ground plate: one flow's street, or one pillar's district.
- *
- *  It carries the flow INDEX and the pillar NUMBER, never a name. Each renderer
- *  looks the pillar name up in its own PILLARS copy (which is what keeps the
- *  webview mirror load-bearing and its drift guard honest) and the flow name up
- *  in the map it was handed. */
+/** A painted ground plate: one flow's street or one pillar's district, carrying the flow
+ *  index/pillar number (never a name) — each renderer looks the name up itself. */
 export interface IsoZone {
   kind: 'street' | 'district';
   /** Index into map.flows for a street; -1 for a district. */
@@ -143,10 +115,8 @@ export function layoutMap(map: RepoMap): IsoLayout {
   const spanX = streets(map, s, placed, boxes, zones);
   dockDistricts(map, s, placed, spanX, boxes, zones, sectionLabels);
 
-  // Painter's order. An SVG has no depth buffer, so the ONLY thing that makes a
-  // box in front cover the box behind it is being drawn later. Sorting here,
-  // once, means neither renderer can get the occlusion wrong. `sort` is stable,
-  // so boxes sharing a depth keep the order they were placed in.
+  // Painter's order: an SVG has no depth buffer, so drawing later is the only thing that makes
+  // a box in front cover one behind. Sort is stable, so same-depth boxes keep placement order.
   boxes.sort((a, b) => a.depth - b.depth);
   zones.sort((a, b) => a.depth - b.depth);
 

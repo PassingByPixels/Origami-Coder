@@ -12,6 +12,8 @@
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import PromptCaptureSection from '../components/PromptCaptureSection.svelte';
   import CacheStatsCard from '../components/CacheStatsCard.svelte';
+  // t-s9jr6u: the settings cards moved to the Settings view and Storage to the
+  // Nests view. Insights keeps insights only: instructions, cache, capture.
   import InstructionRow from '../components/InstructionRow.svelte';
   import { openMessage, sections, type OverrideSource } from '../components/instructionRows';
   const vscode = getVsCodeApi();

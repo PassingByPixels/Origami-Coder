@@ -3,8 +3,13 @@
   // at the top of a repo column moves here, because there is now exactly one repo
   // on screen: its default model, the cartographer map controls + status, the
   // card filter, the background-agent auto-approve toggle, and — for a repo that
-  // is not this window's workspace — unregister.
+  // is not this window's workspace — Edit path (the host opens a folder picker) and
+  // remove-from-board (RepoRemoveControl, which owns the ✕ and its confirm step; the
+  // workspace guard stays here at the mount).
   import AgentModelSelect from './AgentModelSelect.svelte';
+  import RepoRemoveControl from './RepoRemoveControl.svelte';
+  import SpringCheckbox from './SpringCheckbox.svelte';
+  import { tip } from '../../shared/warmTip';
   import type { RepoBoard } from './boardBuckets';
 
   interface ModelOpt { value: string; name: string; configured?: boolean; }
@@ -78,14 +83,17 @@
     placeholder="Filter cards…  ( / )" spellcheck="false" aria-label="Filter cards" />
 
   <label class="am-autoapprove" title="Background agents have no window to answer a permission prompt — with this off, a permission ask hangs the run.">
-    <input type="checkbox" checked={autoApprove}
-      onchange={(e) => post({ type: 'amSetAutoApprove', on: (e.currentTarget as HTMLInputElement).checked })} />
+    <!-- No `label` prop: this control is already wrapped in a <label> with
+         the same text, and an aria-label on the input would give the control
+         a second, competing accessible name. -->
+    <SpringCheckbox checked={autoApprove} onchange={(v) => post({ type: 'amSetAutoApprove', on: v })} />
     Auto-approve agent permissions
   </label>
 
   {#if !repo.workspace}
-    <button class="am-repo-x" title="Unregister from the board — worktrees on disk are untouched"
-      aria-label="Unregister this repository" onclick={() => post({ type: 'amRemoveRepo', root: repo.root })}>✕</button>
+    <button class="am-map-btn" use:tip={'Pick the folder this repo moved to. No files are moved or changed.'}
+      onclick={() => post({ type: 'amRepointRepo', root: repo.root })}>Edit path…</button>
+    <RepoRemoveControl name={shown} root={repo.root} post={post} />
   {/if}
 </div>
 
@@ -124,16 +132,4 @@
     font-size: 11px;
   }
   .am-autoapprove { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; cursor: pointer; }
-  .am-repo-x {
-    margin-left: auto;
-    background: transparent;
-    color: var(--og-text);
-    border: 1px solid transparent;
-    border-radius: 4px;
-    padding: 1px 6px;
-    font-size: 12px;
-    cursor: pointer;
-    opacity: 0.6;
-  }
-  .am-repo-x:hover { opacity: 1; border-color: #c05050; color: #ff9d9d; }
 </style>

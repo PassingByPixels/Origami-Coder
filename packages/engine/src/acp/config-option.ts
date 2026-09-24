@@ -69,14 +69,12 @@ export function buildEffortSelectOption(input: {
   }
 }
 
-/**
- * The per-chat auto-approve presets, in the ORDER a client should offer them and
- * under the EXACT value strings `setSessionConfigOption("permission", ...)`
- * accepts - a client reads `currentValue` here and hands the same string back.
- * Kept beside the other option builders rather than in permission/presets.ts,
- * because these are the display names; the rules the modes stand for are that
- * table's business.
- */
+/** The per-chat auto-approve presets, in the ORDER a client should offer them and
+ *  under the EXACT value strings `setSessionConfigOption("permission", ...)`
+ *  accepts - a client reads `currentValue` here and hands the same string back.
+ *  Kept beside the other option builders rather than in permission/presets.ts,
+ *  because these are the display names; the rules the modes stand for are that
+ *  table's business. */
 export const PERMISSION_MODES: ReadonlyArray<{ value: string; name: string; description: string }> = [
   { value: "default", name: "Ask", description: "Ask before anything that needs approval" },
   { value: "auto", name: "Auto-approve edits", description: "Allow file edits without asking" },
@@ -85,12 +83,10 @@ export const PERMISSION_MODES: ReadonlyArray<{ value: string; name: string; desc
 
 export const DEFAULT_PERMISSION_MODE = "default"
 
-/**
- * The chat's live auto-approve preset, so a client that CONNECTS, loads or
- * resumes can seed its approve control from the engine instead of from its own
- * memory of a previous window. Without it the composer could show "Ask" over a
- * session the engine is genuinely bypassing.
- */
+/** The chat's live auto-approve preset, so a client that CONNECTS, loads or
+ *  resumes can seed its approve control from the engine instead of from its own
+ *  memory of a previous window. Without it the composer could show "Ask" over a
+ *  session the engine is genuinely bypassing. */
 export function buildPermissionSelectOption(input: { currentMode?: string }): SessionConfigOption {
   const current = PERMISSION_MODES.some((mode) => mode.value === input.currentMode)
     ? input.currentMode!

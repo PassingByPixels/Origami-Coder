@@ -23,6 +23,8 @@ import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
 import { BackgroundJob } from "@/background/job"
+import { SessionRunState } from "@/session/run-state" // origami_change (t-41dz9f)
+import { SessionStatus } from "@/session/status" // origami_change (t-41dz9f)
 import { Interject } from "@/origami/interject"
 import { TaskListTool } from "@/tool/task_list"
 import { TaskStopTool } from "@/tool/task_stop"
@@ -129,6 +131,19 @@ const fill = (mode: "lines" | "bytes", n: number) => {
       ? "console.log(Array.from({length:Number(Bun.argv[1])},(_,i)=>i+1).join(String.fromCharCode(10)))"
       : "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1])))"
   const text = `${bin} -e ${evalarg(code)} ${n}`
+  if (PS.has(sh())) return `& ${text}`
+  return text
+}
+// t-tc2rlo: one already-warm process writing N small chunks `delayMs` apart.
+// Unlike spawning N shell subcommands (each pays real process-start latency on
+// Windows and can coalesce), this keeps the inter-chunk gap close to `delayMs`.
+const stress = (n: number, delayMs: number) => {
+  // No literal quotes in the code string at all (String.fromCharCode instead,
+  // as `fill` above already does): a quoted arg survives differently through
+  // each shell's own re-quoting, and this command must run identically on all
+  // of them.
+  const code = `(async()=>{for(let i=0;i<${n};i++){process.stdout.write(String.fromCharCode(116,105,99,107)+i+String.fromCharCode(10));await new Promise(function(r){setTimeout(r,${delayMs})})}})()`
+  const text = `${bin} -e ${evalarg(code)}`
   if (PS.has(sh())) return `& ${text}`
   return text
 }
@@ -1036,7 +1051,20 @@ describe("tool.shell permissions", () => {
 })
 
 describe("tool.shell abort", () => {
-  it.live(
+  // t-tc2rlo note: pinned to a real `&&`-supporting shell (bash on Windows,
+  // the platform's own `Shell.acceptable()` elsewhere). Without this, the
+  // ambient default on this machine can resolve to Windows PowerShell 5.1,
+  // where `&&` is a parse error - the command never runs `echo before` at
+  // all, and the test was only ever passing because the FIRST chunk of that
+  // parse error happens to echo the source line back, which also happens to
+  // contain the literal text "before".
+  const abortShell = process.platform === "win32" ? bash : Shell.acceptable()
+  const abortTest = (title: string, run: () => Effect.Effect<void, unknown, ShellTestServices>, timeout?: number) =>
+    abortShell
+      ? it.live(title, () => withShell({ label: "bash", shell: abortShell }, run()), timeout)
+      : it.live.skip(title, () => Effect.void)
+
+  abortTest(
     "preserves output when aborted",
     () =>
       runIn(
@@ -1200,17 +1228,27 @@ describe("tool.shell abort", () => {
         runIn(
           projectRoot,
           Effect.gen(function* () {
-            // Ticks every 150 ms for ~900 ms, twice the 400 ms silence window.
+            // Ticks every 800 ms for ~6.4 s, well past the 4 s silence window.
             // A watchdog that slept ONCE for the window would kill this.
+            //
+            // The window is 4 s, not the 400 ms the neighbouring cases use,
+            // because the clock starts at SPAWN (`lastOutput = Date.now()` in
+            // src/tool/shell.ts, before the child exists) and the first tick
+            // cannot arrive until the shell itself has started. Measured on
+            // this machine, `powershell -NoProfile -Command "echo tick0"` takes
+            // 600-1230 ms to print, so a 400 ms window killed this command
+            // during its own startup and the case was red on Windows whenever
+            // the shell was not already warm. The claim is unchanged: gaps far
+            // SHORTER than the window, total runtime far LONGER than it.
             const parts: string[] = []
-            for (let i = 0; i < 7; i++) parts.push(`echo tick${i}`, "sleep 0.15")
+            for (let i = 0; i < 8; i++) parts.push(`echo tick${i}`, "sleep 0.8")
             const result = yield* run({ command: seq(parts), timeout: 20_000 })
             expect(result.metadata.exit).toBe(0)
             expect(result.output).toContain("tick0")
-            expect(result.output).toContain("tick6")
+            expect(result.output).toContain("tick7")
             expect(result.output).not.toContain("produced no output")
           }),
-        ).pipe(Effect.provide(RuntimeFlags.layer({ bashIdleTimeoutMs: 400 }))),
+        ).pipe(Effect.provide(RuntimeFlags.layer({ bashIdleTimeoutMs: 4_000 }))),
       30_000,
     )
   }
@@ -1446,6 +1484,41 @@ describe("tool.shell abort", () => {
       }),
     ),
   )
+
+  if (sh() !== "cmd") {
+    it.live(
+      "throttles the tool part metadata write to about 250 ms, but the final output is always complete (t-tc2rlo)",
+      () =>
+        runIn(
+          projectRoot,
+          Effect.gen(function* () {
+            const updates: string[] = []
+            // 40 chunks over roughly 1.2 s of wall clock (30 ms apart), from one
+            // already-warm process. Un-throttled, each chunk rewrites the whole
+            // tool part: about 40 metadata writes. A 250 ms throttle window bounds
+            // that to about 1200/250 + slack.
+            const result = yield* run(
+              { command: stress(40, 30), timeout: 20_000 },
+              {
+                ...ctx,
+                metadata: (input) =>
+                  Effect.sync(() => {
+                    const output = (input.metadata as { output?: string })?.output
+                    if (output) updates.push(output)
+                  }),
+              },
+            )
+            expect(updates.length).toBeGreaterThan(0)
+            expect(updates.length).toBeLessThan(15)
+            // The final state is written separately, at completion, unthrottled:
+            // every tick must still be there even though most were coalesced away.
+            expect(result.output).toContain("tick0")
+            expect(result.output).toContain("tick39")
+          }),
+        ),
+      30_000,
+    )
+  }
 })
 
 describe("tool.shell truncation", () => {
@@ -1812,3 +1885,251 @@ describe("tool.shell hang recovery", () => {
   )
 })
 
+// ---------------------------------------------------------------------------
+// origami_change (t-41dz9f): a background command that ends must SAY so.
+//
+// Before this, a `bash` with `background: true` told the model nothing on any
+// path - success, failure, or turn end - while two prompts it reads promised
+// results arrive by themselves. The tests below drive the real tool against a
+// real process and capture the injection through a fake `promptOps`, which is
+// the same seam `tool/task.ts` reads (`session/tools.ts` puts it in every
+// tool's `ctx.extra`). No model, no network.
+// ---------------------------------------------------------------------------
+
+type Injected = { sessionID: string; agent?: string; noReply?: boolean; text: string; metadata: unknown }
+
+/** A `promptOps` that records instead of prompting. `busy` is settable because
+ *  it is the only thing that differs between the mid-turn and after-turn
+ *  deliveries, and the notifier must behave identically for both. */
+function fakeOps(busy = false) {
+  const injections: Injected[] = []
+  const ops = {
+    cancel: () => Effect.void,
+    resolvePromptParts: () => Effect.succeed([]),
+    busy: () => Effect.succeed(busy),
+    prompt: (input: any) =>
+      Effect.sync(() => {
+        const part = input.parts[0]
+        injections.push({
+          sessionID: input.sessionID,
+          agent: input.agent,
+          noReply: input.noReply,
+          text: part.text,
+          metadata: part.metadata,
+        })
+        return {} as any
+      }),
+  }
+  return { ops, injections }
+}
+
+const notifyCtx = (ops: unknown) => ({ ...ctx, extra: { promptOps: ops } }) as unknown as Tool.Context
+
+/** Poll until the notifier has injected, or give up. The job settles on its own
+ *  fiber, so there is no handle to await - but the wait is bounded and the
+ *  assertion below fails loudly if nothing ever lands. */
+const awaitInjection = (injections: Injected[], within = "10 seconds") =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline) {
+      if (injections.length > 0) return injections[0]!
+      yield* Effect.sleep("50 millis")
+    }
+    return undefined
+  }).pipe(Effect.map((value) => value))
+
+describe("tool.shell background notification", () => {
+  // Same joiner the abort suite uses; scoped locally because that one is.
+  const seq = (parts: string[]) => parts.join(sh() === "cmd" ? " & " : "; ")
+
+  it.live(
+    "a background command that exits NON-ZERO injects an error block carrying the code and the tail",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const { ops, injections } = fakeOps()
+          const result = yield* run(
+            { command: seq(["echo boom-line", "exit 3"]), background: true },
+            notifyCtx(ops),
+          )
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+
+          const landed = yield* awaitInjection(injections)
+          expect(landed).toBeDefined()
+          expect(landed!.text).toContain(`<shell id="${jobId}" state="error" exit="3">`)
+          expect(landed!.text).toContain("Background command failed with exit 3")
+          expect(landed!.text).toContain("<shell_error>")
+          // The output the model needs to act on travels WITH the notice.
+          expect(landed!.text).toContain("boom-line")
+          expect(landed!.text).toContain("Full output:")
+          // The machine-readable stamp, so a client settles the card without
+          // parsing prose.
+          expect(landed!.metadata).toMatchObject({
+            origami_shell_result: { jobId, state: "error", exit: 3 },
+          })
+
+          // And the registry agrees: this is a FAILURE, not a completion.
+          const jobs = yield* BackgroundJob.Service
+          const info = yield* jobs.get(jobId)
+          expect(info?.status).toBe("error")
+          expect(info?.exit).toBe(3)
+        }),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "a background command that exits 0 injects the same shape with exit 0",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const { ops, injections } = fakeOps()
+          const result = yield* run({ command: "echo done-line", background: true }, notifyCtx(ops))
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+
+          const landed = yield* awaitInjection(injections)
+          expect(landed).toBeDefined()
+          expect(landed!.text).toContain(`<shell id="${jobId}" state="completed" exit="0">`)
+          expect(landed!.text).toContain("<shell_result>")
+          expect(landed!.text).toContain("done-line")
+          expect(landed!.metadata).toMatchObject({
+            origami_shell_result: { jobId, state: "completed", exit: 0 },
+          })
+          expect((yield* (yield* BackgroundJob.Service).get(jobId))?.status).toBe("completed")
+        }),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "delivery does not depend on the session being idle: a BUSY session is written to the same way",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          // Mid-turn and after-turn differ in what `ops.prompt` DOES with the
+          // write - join the run in flight, or start a turn - and that decision
+          // belongs to session/run-state.ts, not here. What this file owns is
+          // that the notifier writes unconditionally and never asks for the
+          // turn to be suppressed: `noReply` absent is what lets an idle
+          // session start one.
+          const { ops, injections } = fakeOps(true)
+          yield* run({ command: "echo busy-case", background: true }, notifyCtx(ops))
+          const landed = yield* awaitInjection(injections)
+          expect(landed).toBeDefined()
+          expect(landed!.noReply).toBeUndefined()
+          expect(landed!.sessionID).toBe(ctx.sessionID)
+          expect(landed!.agent).toBe(ctx.agent)
+        }),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "task_list shows the exit code and an output tail, so a failure cannot read as a completion",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const { ops, injections } = fakeOps()
+          const result = yield* run(
+            { command: seq(["echo listed-line", "exit 7"]), background: true },
+            notifyCtx(ops),
+          )
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+          yield* awaitInjection(injections)
+
+          const listTool = yield* Tool.init(yield* TaskListTool)
+          const listed = yield* listTool.execute({}, ctx)
+          expect(listed.output).toContain(jobId)
+          expect(listed.output).toContain("[error]")
+          expect(listed.output).toContain("exit=7")
+          expect(listed.output).toContain("listed-line")
+        }),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "a tool invoked with no promptOps still runs the command and does not fail",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          // A plugin harness or probe has no session to inject into. The job
+          // must still run and settle rather than taking the caller down.
+          const result = yield* run({ command: "echo no-ops", background: true }, ctx)
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+          const jobs = yield* BackgroundJob.Service
+          yield* jobs.wait({ id: jobId })
+          expect((yield* jobs.get(jobId))?.status).toBe("completed")
+        }),
+      ),
+    30_000,
+  )
+})
+
+// ---------------------------------------------------------------------------
+// origami_change (t-41dz9f): the Stop button vs a background command.
+//
+// `SessionRunState.cancel(id, spareDetached=true)` is what a user Stop calls
+// (server/routes/.../session.ts). Its spare clause used to end with
+// `job.metadata?.sessionId !== sessionID`, and a detached SHELL is the one kind
+// of job that stamps that key with the session that STARTED it, so the spare
+// never applied to it and Stop tree-killed the user's own dev server. A
+// sub-agent job carries the child's id there, so it was always spared - the
+// asymmetry was a metadata convention, not a decision.
+// ---------------------------------------------------------------------------
+
+const runStateLayer = LayerNode.compile(
+  LayerNode.group([SessionRunState.node, BackgroundJob.node, SessionStatus.node]),
+  [],
+)
+
+describe("tool.shell background vs Stop", () => {
+  it.live(
+    "a user Stop spares a background command started by that same session",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const result = yield* run({ command: `sleep 30`, background: true }, ctx)
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+          const jobs = yield* BackgroundJob.Service
+          expect((yield* jobs.get(jobId))?.status).toBe("running")
+
+          const runState = yield* SessionRunState.Service
+          yield* runState.cancel(ctx.sessionID, true)
+          yield* Effect.sleep("300 millis")
+
+          // The command the model deliberately backgrounded outlives the turn
+          // the user stopped. task_stop remains the way to end it on purpose.
+          expect((yield* jobs.get(jobId))?.status).toBe("running")
+          yield* jobs.cancel(jobId)
+        }).pipe(Effect.provide(runStateLayer)),
+      ),
+    30_000,
+  )
+
+  it.live(
+    "a cancel that is NOT sparing detached work still kills it",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const result = yield* run({ command: `sleep 30`, background: true }, ctx)
+          const jobId = (result.metadata as { jobId?: string }).jobId!
+          const jobs = yield* BackgroundJob.Service
+
+          const runState = yield* SessionRunState.Service
+          yield* runState.cancel(ctx.sessionID)
+          yield* Effect.sleep("300 millis")
+
+          expect((yield* jobs.get(jobId))?.status).toBe("cancelled")
+        }).pipe(Effect.provide(runStateLayer)),
+      ),
+    30_000,
+  )
+})
