@@ -461,7 +461,7 @@ describe('the side-quest popup (t-f89g49)', () => {
   it('keeps the instructions behind a fold — they are for the agent, not the reader', async () => {
     const { getByText, queryByText } = mount();
     expect(queryByText(ROW.instructions)).toBeNull();
-    await fireEvent.click(getByText('Instructions'));
+    await fireEvent.click(getByText(/Show instructions/)); // t-yyz5je: mockup label
     expect(getByText(ROW.instructions)).toBeInTheDocument();
   });
 

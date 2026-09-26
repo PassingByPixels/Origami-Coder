@@ -44,6 +44,13 @@ interface EffectCmdOpts<Args, A> {
    * `serve`, `web`, `account`, `db`, `upgrade`).
    */
   instance?: boolean | ((args: Args) => boolean)
+  /**
+   * origami_change (t-xsufpe): environment the command sets for itself, written
+   * to `process.env` BEFORE the first `AppRuntime` run. The runtime builds
+   * `RuntimeFlags` from env once, when it starts; a write inside `handler` is
+   * too late and every flag keeps its default.
+   */
+  env?: Readonly<Record<string, string>>
   /** Defaults to process.cwd(). Override for commands that take a directory positional. */
   directory?: (args: Args) => string
   handler: (args: WithDoubleDash<Args>) => Effect.Effect<A, CliError, AppServices | InstanceStore.Service>
@@ -73,6 +80,7 @@ export const effectCmd = <Args, A>(opts: EffectCmdOpts<Args, A>) =>
     describe: opts.describe,
     builder: opts.builder as never,
     async handler(rawArgs) {
+      if (opts.env) Object.assign(process.env, opts.env)
       const { AppRuntime } = await import("@/effect/app-runtime")
       // yargs typing wraps Args in ArgumentsCamelCase<WithDoubleDash<...>>; cast at the boundary.
       const args = rawArgs as unknown as WithDoubleDash<Args>

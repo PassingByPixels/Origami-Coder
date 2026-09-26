@@ -3,6 +3,8 @@ import fsp from "fs/promises"
 import os from "os"
 import path from "path"
 import { AgentBroker } from "../../src/origami/agent-broker"
+import { ElasticOs } from "../../src/elastic/os"
+import { ElasticState } from "../../src/elastic/state"
 
 // The broker is a FILE protocol between separate engine processes, so every test
 // here works on real files under a scratch home. `Global.Path.origami` is a
@@ -413,5 +415,73 @@ describe("resolving an address", () => {
     })
     expect("error" in AgentBroker.resolve(peers, "cortex#ses_gone")).toBe(true)
     expect("error" in AgentBroker.resolve([peer("cortex", 11, [])], "cortex")).toBe(true)
+  })
+})
+
+// t-w2qlop: an engine in the elastic `idle` class beats every IDLE_REFRESH_MS,
+// says so in its entry, and readers scale their bounds by what it said - so the
+// slow beat neither lists it as dead nor refuses delivery to its open chat.
+describe("the heartbeat period follows the elastic class", () => {
+  afterEach(() => {
+    ElasticState.resetForTest()
+    ElasticOs.setForTest(undefined)
+  })
+
+  test("idle: the period in the entry and the interval armed both move to 60 s; active: back to 20 s", async () => {
+    ElasticOs.setForTest({ apply: () => ({ priority: "normal", ecoqos: false }), trim: () => ({ trimmed: false }) })
+    const realSet = globalThis.setInterval
+    const periods: number[] = []
+    globalThis.setInterval = ((fn: () => void, ms?: number) => {
+      periods.push(ms ?? 0)
+      return realSet(fn, ms)
+    }) as typeof setInterval
+    try {
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:5555", cwd: "/repos/cortex" })
+      await Bun.sleep(30)
+      const file = AgentBroker.entryPath(process.pid)
+      expect(JSON.parse(await fsp.readFile(file, "utf8")).refreshMs).toBeUndefined()
+
+      ElasticState.request("idle")
+      await Bun.sleep(30)
+      // Published at once, before the longer gap starts.
+      expect(JSON.parse(await fsp.readFile(file, "utf8")).refreshMs).toBe(AgentBroker.IDLE_REFRESH_MS)
+
+      ElasticState.request("active")
+      await Bun.sleep(30)
+      expect(JSON.parse(await fsp.readFile(file, "utf8")).refreshMs).toBeUndefined()
+      expect(periods).toEqual([AgentBroker.REFRESH_MS, AgentBroker.IDLE_REFRESH_MS, AgentBroker.REFRESH_MS])
+      await broker.stop()
+    } finally {
+      globalThis.setInterval = realSet
+    }
+  })
+
+  test("a slow-beating peer is still listed and still attached inside ITS bounds, and dropped outside them", async () => {
+    const age = AgentBroker.STALE_MS + 10_000
+    await writePeer({ pid: process.pid + 5, lastSeen: Date.now() - age, refreshMs: AgentBroker.IDLE_REFRESH_MS })
+    await writePeer({ pid: process.pid + 6, lastSeen: Date.now() - age })
+    expect((await AgentBroker.readPeers(anyoneAlive)).map((entry) => entry.pid)).toEqual([process.pid + 5])
+
+    const slow = { refreshMs: AgentBroker.IDLE_REFRESH_MS }
+    const entry = (ms: number, extra = {}): AgentBroker.Entry => ({
+      version: 1,
+      pid: 1,
+      name: "p",
+      cwd: "/w",
+      httpBase: "http://127.0.0.1:1",
+      kind: "interactive",
+      sessionIds: ["ses_a"],
+      lastSeen: Date.now() - ms,
+      ...extra,
+    })
+    // Older than the fixed bound, inside the scaled one.
+    expect(AgentBroker.attached(entry(AgentBroker.ATTACH_FRESH_MS + 5_000, slow), "ses_a")).toBe(true)
+    expect(AgentBroker.attached(entry(AgentBroker.ATTACH_FRESH_MS + 5_000), "ses_a")).toBe(false)
+    expect(AgentBroker.attached(entry(AgentBroker.attachFreshMs(slow) + 1, slow), "ses_a")).toBe(false)
+  })
+
+  test("an entry cannot buy an unbounded staleness window", async () => {
+    await writePeer({ pid: process.pid + 7, lastSeen: Date.now() - AgentBroker.STALE_MS - 1, refreshMs: 1e12 })
+    expect(await AgentBroker.readPeers(anyoneAlive)).toEqual([])
   })
 })

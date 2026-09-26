@@ -120,12 +120,14 @@ describe('SubagentLimitCard — the pane half', () => {
     expect(container.querySelector('.sal-error')?.textContent).toContain('at least 0.5');
   });
 
-  it('says the change needs a RELOAD, because the engine reads the env at spawn', () => {
+  it('says the change applies to NEW chats, because the engine reads the env at spawn (t-xtimx0)', () => {
     // Without this the setting looks broken: it is written, and the sub-agent
     // running right now keeps the cap it was spawned with.
     // t-s9jr6u: the caveat is the Settings row's "reload" pill (its tooltip).
     const { container } = render(SubagentLimitCard);
-    expect(container.querySelector('.pill')?.getAttribute('data-tip')?.toLowerCase()).toContain('reload the window');
+    expect(container.querySelector('.pill')?.getAttribute('data-tip')?.toLowerCase()).toContain('new chats');
+    expect(container.querySelector('.pill')?.getAttribute('data-tip')?.toLowerCase()).not.toContain('reload');
+    expect(container.querySelector('.pill')?.textContent).toBe('new chats'); // the pill word said "reload" too
   });
 
   it('says the ENGINE default applies while nothing is stored, and stops saying so once it is', async () => {

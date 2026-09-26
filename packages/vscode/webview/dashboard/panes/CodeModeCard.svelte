@@ -24,7 +24,8 @@
     Experimental. Replaces the individual MCP tools with one <code>execute</code> tool running a confined
     JavaScript program, so the model can call several MCP tools — including in parallel — from one script.
     It changes how the model reaches MCP tools, so try it before leaving it on.
-    <strong>Reload the window</strong> after changing this: the engine reads the setting when it starts.
+    <strong>New chats use the change at once.</strong> Open chats keep the value they started with until you close
+    and reopen them: a chat's engine reads the setting when it starts.
   </div>
 </div>
 

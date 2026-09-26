@@ -177,13 +177,13 @@ describe("flock over a real relay", () => {
     await connected(a, bobHandle)
     await connected(b, aliceHandle)
 
-    const answer = await a.peer!.ask(bobHandle, "what does the MOT check?", 20_000)
+    const answer = await a.peer!.ask(bobHandle, "what does the tax form cover?", 20_000)
     expect(answer.ok).toBe(true)
     expect(answer.from).toBe(bobHandle)
     expect(answer.signatureOk).toBe(true)
     expect(answer.tokens).toBe(42)
-    expect(answer.text).toBe("bob says: WHAT DOES THE MOT CHECK?")
-    expect(log).toContain(`bob answered "what does the MOT check?" from ${aliceHandle} on test/fake`)
+    expect(answer.text).toBe("bob says: WHAT DOES THE TAX FORM COVER?")
+    expect(log).toContain(`bob answered "what does the tax form cover?" from ${aliceHandle} on test/fake`)
 
     // The counters moved on BOTH sides, which is the state the next two tests
     // are entirely about.

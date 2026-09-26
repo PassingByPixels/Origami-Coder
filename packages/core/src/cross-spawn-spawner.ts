@@ -25,6 +25,7 @@ import * as NodeChildProcess from "node:child_process"
 import { PassThrough } from "node:stream"
 import launch from "cross-spawn"
 import { makeGlobalNode } from "./effect/app-node"
+import { SpawnLock } from "./spawn-lock"
 import { filesystem, path } from "./effect/app-node-platform"
 
 const toError = (err: unknown): Error => (err instanceof globalThis.Error ? err : new globalThis.Error(String(err)))
@@ -295,37 +296,51 @@ export const make = Effect.gen(function* () {
   const spawn = (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) =>
     Effect.callback<readonly [NodeChildProcess.ChildProcess, ExitSignal], PlatformError.PlatformError>((resume) => {
       const signal = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
-      const proc = launch(command.command, command.args, opts)
-      let end = false
-      let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
-      let grace: ReturnType<typeof setTimeout> | undefined
-      const settle = (args: readonly [code: number | null, signal: NodeJS.Signals | null]) => {
-        if (end) return
-        end = true
-        if (grace) clearTimeout(grace)
-        Deferred.doneUnsafe(signal, Exit.succeed(exit ?? args))
-      }
-      proc.on("error", (err) => {
-        resume(Effect.fail(toPlatformError("spawn", err, command)))
-      })
-      proc.on("exit", (...args) => {
-        exit = args
-        // The process itself is gone. Arm the grace and let `close` win it if
-        // the pipes are ours alone - which is the ordinary case, by
-        // milliseconds. `unref` so a grace timer can never be the reason the
-        // host process stays up.
-        if (end || grace) return
-        grace = setTimeout(() => settle(args), EXIT_SETTLE_GRACE_MS)
-        grace.unref?.()
-      })
-      proc.on("close", (...args) => {
-        settle(args)
-      })
-      proc.on("spawn", () => {
-        resume(Effect.succeed([proc, signal]))
+      let started: NodeChildProcess.ChildProcess | undefined
+      // origami_change (t-x0lim2): start under the process-wide spawn lock, so
+      // no Worker starts a process at the same moment (on Windows each child
+      // would take the other's pipe ends). A start that has to wait does not
+      // hold this thread.
+      const cancel = SpawnLock.when(() => {
+        let proc: NodeChildProcess.ChildProcess
+        try {
+          proc = launch(command.command, command.args, opts)
+        } catch (error) {
+          return resume(Effect.die(error))
+        }
+        started = proc
+        let end = false
+        let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
+        let grace: ReturnType<typeof setTimeout> | undefined
+        const settle = (args: readonly [code: number | null, signal: NodeJS.Signals | null]) => {
+          if (end) return
+          end = true
+          if (grace) clearTimeout(grace)
+          Deferred.doneUnsafe(signal, Exit.succeed(exit ?? args))
+        }
+        proc.on("error", (err) => {
+          resume(Effect.fail(toPlatformError("spawn", err, command)))
+        })
+        proc.on("exit", (...args) => {
+          exit = args
+          // The process itself is gone. Arm the grace and let `close` win it if
+          // the pipes are ours alone - which is the ordinary case, by
+          // milliseconds. `unref` so a grace timer can never be the reason the
+          // host process stays up.
+          if (end || grace) return
+          grace = setTimeout(() => settle(args), EXIT_SETTLE_GRACE_MS)
+          grace.unref?.()
+        })
+        proc.on("close", (...args) => {
+          settle(args)
+        })
+        proc.on("spawn", () => {
+          resume(Effect.succeed([proc, signal]))
+        })
       })
       return Effect.sync(() => {
-        proc.kill("SIGTERM")
+        cancel()
+        started?.kill("SIGTERM")
       })
     })
 

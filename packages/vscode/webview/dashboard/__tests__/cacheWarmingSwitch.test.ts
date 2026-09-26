@@ -58,8 +58,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('cacheWarmingEnabled — reading the setting', () => {
-  it('is ON by default, and the id is the one the package contributes', () => {
-    expect(cacheWarmingEnabled()).toBe(true);
+  // 0.4.184 (owner, 2026-09-26): OFF by default. Until 0.4.183 no warm was ever
+  // sent (InstanceRef bug), so a warm is a new cost for users who never asked for it.
+  it('is OFF by default, and the id is the one the package contributes', () => {
+    expect(cacheWarmingEnabled()).toBe(false);
     expect(CACHE_WARMING_SETTING).toBe('origamicoder.cacheWarming.enabled');
     const contributed = JSON.parse(read('package.json')).contributes.configuration.properties[
       CACHE_WARMING_SETTING
@@ -67,22 +69,22 @@ describe('cacheWarmingEnabled — reading the setting', () => {
     expect(contributed).toBeDefined();
     // The default ships in the manifest too, or VS Code shows a switch whose
     // position disagrees with what the engine will actually do.
-    expect(contributed.default).toBe(true);
+    expect(contributed.default).toBe(false);
   });
 
-  it('is off for an explicit false and NOTHING else', () => {
-    fake.settings[CACHE_WARMING_SETTING] = false;
-    expect(cacheWarmingEnabled()).toBe(false);
-    for (const junk of ['false', 0, null, undefined, {}]) {
+  it('is on for an explicit true and NOTHING else', () => {
+    fake.settings[CACHE_WARMING_SETTING] = true;
+    expect(cacheWarmingEnabled()).toBe(true);
+    for (const junk of ['true', 1, null, undefined, {}]) {
       fake.settings[CACHE_WARMING_SETTING] = junk;
-      expect(cacheWarmingEnabled(), String(junk)).toBe(true);
+      expect(cacheWarmingEnabled(), String(junk)).toBe(false);
     }
   });
 
-  it('is on when there is no settings store at all', () => {
-    fake.settings[CACHE_WARMING_SETTING] = false;
+  it('is off when there is no settings store at all', () => {
+    fake.settings[CACHE_WARMING_SETTING] = true;
     fake.throws = true;
-    expect(cacheWarmingEnabled()).toBe(true);
+    expect(cacheWarmingEnabled()).toBe(false);
   });
 });
 
@@ -99,18 +101,18 @@ describe('setCacheWarmingEnabled — writing the setting', () => {
 });
 
 describe('the engine spawn env', () => {
-  it('says NOTHING while warming is on, and sets the kill switch when it is off', () => {
-    expect(cacheWarmingSpawnEnv()).toEqual({});
-    fake.settings[CACHE_WARMING_SETTING] = false;
+  it('sets the kill switch unless warming is explicitly on (the engine itself defaults ON)', () => {
     expect(cacheWarmingSpawnEnv()).toEqual({ [CACHE_WARMING_DISABLE_VAR]: '1' });
+    fake.settings[CACHE_WARMING_SETTING] = true;
+    expect(cacheWarmingSpawnEnv()).toEqual({});
   });
 
   it('reaches the REAL overlay every engine child is spawned with', () => {
     // Through engineSpawnEnv, not cacheWarmingSpawnEnv alone: a switch that is
     // never spread into the spawn is a switch that does nothing.
-    expect(engineSpawnEnv({ codeMode: false })[CACHE_WARMING_DISABLE_VAR]).toBeUndefined();
-    fake.settings[CACHE_WARMING_SETTING] = false;
     expect(engineSpawnEnv({ codeMode: false })[CACHE_WARMING_DISABLE_VAR]).toBe('1');
+    fake.settings[CACHE_WARMING_SETTING] = true;
+    expect(engineSpawnEnv({ codeMode: false })[CACHE_WARMING_DISABLE_VAR]).toBeUndefined();
   });
 
   it('spells the variable exactly as the ENGINE reads it', () => {
@@ -134,7 +136,7 @@ describe('the host pane', () => {
 
   it('answers a read with the current value', async () => {
     await handleCacheWarmingMessage({ post }, { type: 'requestCacheWarming' });
-    expect(post).toHaveBeenCalledWith({ type: 'cacheWarmingData', enabled: true });
+    expect(post).toHaveBeenCalledWith({ type: 'cacheWarmingData', enabled: false });
   });
 
   it('writes a boolean and refuses anything else', async () => {
@@ -161,20 +163,23 @@ describe('the Settings row (t-s9jr6u: moved out of Insights)', () => {
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'requestCacheWarming' });
 
     const sw = container.querySelector('[role=switch]') as HTMLButtonElement;
-    expect(sw.getAttribute('aria-checked')).toBe('true'); // ON before the host has answered
+    expect(sw.getAttribute('aria-checked')).toBe('false'); // OFF before the host has answered (the default)
     sw.click();
     await tick();
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenLastCalledWith({
       type: 'cacheWarmingSet',
-      enabled: false,
+      enabled: true,
     });
   });
 
   it('follows the HOST, so a refused write does not leave the switch lying', async () => {
     const { container } = render(CacheWarmingCard);
-    window.dispatchEvent(new MessageEvent('message', { data: { type: 'cacheWarmingData', enabled: false } }));
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'cacheWarmingData', enabled: true } }));
     await tick();
     const sw = container.querySelector('[role=switch]') as HTMLButtonElement;
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'cacheWarmingData', enabled: 'yes' } }));
+    await tick();
     expect(sw.getAttribute('aria-checked')).toBe('false');
     expect(sw.textContent).toContain('Off');
   });

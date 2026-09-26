@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 220" role="img" aria-label="A parked chat with cache warming on. The engine runs until your park time, then stops. One minute before each warm is due, the engine starts in the background, sends the warm and parks again. Your next message starts the engine, and it sends the same bytes, so the warm cache hits.">
+  <defs>
+    <marker id="wn-pw-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <text class="t-title" x="20" y="22">A parked chat, with cache warming on</text>
+  <text class="t-muted t-small" x="24" y="46">engine runs</text>
+  <text class="t-muted t-small" x="206" y="46">parked: no process</text>
+  <text class="t-small" x="350" y="38" text-anchor="middle">wake, warm, park</text>
+  <text class="t-small" x="500" y="38" text-anchor="middle">wake, warm, park</text>
+  <rect class="fill-chat" x="20" y="54" width="180" height="12" rx="3"/>
+  <rect class="box-dim" x="200" y="54" width="400" height="12" rx="3"/>
+  <rect class="fill-chat" x="344" y="46" width="12" height="28" rx="3"/>
+  <rect class="fill-chat" x="494" y="46" width="12" height="28" rx="3"/>
+  <path class="line" d="M20 82 H616" marker-end="url(#wn-pw-head)"/>
+  <text class="t-small" x="20" y="100">you leave</text>
+  <text class="t-small" x="200" y="100" text-anchor="middle">park time</text>
+  <text class="t-small" x="620" y="100" text-anchor="end">next message</text>
+  <text class="t-small" x="20" y="132">1. At your "Park idle chats after" time, the engine process stops. The chat stays.</text>
+  <text class="t-small" x="20" y="150">2. One minute before a warm is due, the engine starts in the background, sends the warm and parks again.</text>
+  <text class="t-small" x="20" y="168">3. Your next message starts the engine. It sends the same bytes, so the warm cache hits.</text>
+  <text class="t-muted t-small" x="20" y="202">Each warm is a request that uses tokens. With warming off, a parked chat stays parked.</text>
+</svg>

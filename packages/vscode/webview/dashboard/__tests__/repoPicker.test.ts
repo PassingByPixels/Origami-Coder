@@ -101,7 +101,7 @@ describe('repoPickerOptions', () => {
     fs.mkdirSync(path.join(home, '.origami'), { recursive: true });
     fs.writeFileSync(
       path.join(home, '.origami', 'repos.json'),
-      JSON.stringify({ version: 1, repos: [{ root: 'C:/Repos/Projects/learning-apps', name: 'learning-apps', displayName: 'Learning apps', addedAt: 1 }] }),
+      JSON.stringify({ version: 1, repos: [{ root: 'C:/Repos/Projects/demo-app', name: 'demo-app', displayName: 'Demo app', addedAt: 1 }] }),
     );
   });
 
@@ -112,7 +112,7 @@ describe('repoPickerOptions', () => {
     await handleRepoPickerMessage(host, { type: 'repoPickerOptions' });
     expect(posted[0]).toEqual({
       type: 'repoPickerOptions',
-      repos: [{ root: 'C:/Repos/Projects/learning-apps', name: 'Learning apps' }],
+      repos: [{ root: 'C:/Repos/Projects/demo-app', name: 'Demo app' }],
       defaultRoot: 'C:/workspace',
       cwdBySession: { 'session-1': 'C:/Repos/a' },
     });

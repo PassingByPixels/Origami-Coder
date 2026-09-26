@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test"
+import fsp from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import type {
   AgentSideConnection,
   ForkSessionResponse,
@@ -156,6 +159,8 @@ describe("ACP service sessions", () => {
       todos?: readonly { content: string; status: string; priority: string }[]
       /** Make that read fail, to pin that a restore survives it. */
       todoFails?: boolean
+      /** t-w2txb2: make `prompt_async` refuse, as an engine that cannot admit a body does. */
+      promptAsyncFails?: boolean
     },
   ) => {
     const updates: SessionNotification[] = []
@@ -171,6 +176,7 @@ describe("ACP service sessions", () => {
     const reverts: unknown[] = []
     const unreverts: unknown[] = []
     const titleUpdates: unknown[] = []
+    const promptAsyncs: unknown[] = []
     const sessions =
       options?.sessions ??
       Array.from({ length: 102 }, (_, index) => ({
@@ -245,6 +251,11 @@ describe("ACP service sessions", () => {
               },
             })
           }),
+        promptAsync: (input: unknown) => {
+          if (options?.promptAsyncFails) return Promise.reject(new Error("prompt_async refused"))
+          promptAsyncs.push(input)
+          return Promise.resolve({ data: undefined })
+        },
         command: (input: unknown) => {
           commands.push(input)
           return Promise.resolve({
@@ -337,6 +348,7 @@ describe("ACP service sessions", () => {
       reverts,
       unreverts,
       titleUpdates,
+      promptAsyncs,
     }
   }
 
@@ -652,6 +664,69 @@ describe("ACP service sessions", () => {
   // gets a replayed transcript that can carry an OLDER todowrite frame,
   // `resume` replays no messages at all, and a `fork` replays the PARENT's
   // writes. Each therefore pushes the stored list.
+  // t-w2txb2: a message kept for a PARKED chat is delivered when its engine is
+  // started again - through the same prompt_async route a live peer uses, once.
+  describe("parked chat mailbox", () => {
+    const withHome = async (run: (home: string) => Promise<void>) => {
+      const home = await fsp.mkdtemp(path.join(os.tmpdir(), "acp-park-"))
+      const previous = process.env.ORIGAMI_TEST_HOME
+      process.env.ORIGAMI_TEST_HOME = home
+      try {
+        await run(home)
+      } finally {
+        if (previous === undefined) delete process.env.ORIGAMI_TEST_HOME
+        else process.env.ORIGAMI_TEST_HOME = previous
+        await fsp.rm(home, { recursive: true, force: true })
+      }
+    }
+    const body = { parts: [{ type: "text", text: "<peer_message>hi</peer_message>", metadata: { origami_peer: { from: "a", replyTo: "a#s", id: "abc" } } }] }
+    const seed = async (home: string, sessionId: string) => {
+      const agents = path.join(home, ".origami", "agents")
+      await fsp.mkdir(path.join(agents, "parked"), { recursive: true })
+      await fsp.writeFile(
+        path.join(agents, "parked", `${sessionId}.json`),
+        JSON.stringify({ version: 1, parked: true, name: "n", cwd: "/workspace", kind: "interactive", sessionId, hostPid: process.pid, parkedAt: 1 }),
+      )
+      await fsp.mkdir(path.join(agents, "mailbox", sessionId), { recursive: true })
+      await fsp.writeFile(path.join(agents, "mailbox", sessionId, `1-abc.json`), JSON.stringify(body))
+      return agents
+    }
+
+    for (const [label, open] of [
+      ["resume", (s: ReturnType<typeof makeService>["service"]) => s.resumeSession({ cwd: "/workspace", sessionId: "ses_resume", mcpServers: [] })],
+      ["load", (s: ReturnType<typeof makeService>["service"]) => s.loadSession({ cwd: "/workspace", sessionId: "ses_resume", mcpServers: [] })],
+    ] as const) {
+      it(`${label} admits a kept message once through prompt_async, then removes it and the stand-in`, () =>
+        withHome(async (home) => {
+          const agents = await seed(home, "ses_resume")
+          const { service, promptAsyncs } = makeService()
+
+          await Effect.runPromise(open(service))
+
+          expect(promptAsyncs).toEqual([{ ...body, sessionID: "ses_resume", directory: "/workspace" }])
+          expect(await fsp.readdir(path.join(agents, "mailbox", "ses_resume"))).toEqual([])
+          expect(await fsp.readdir(path.join(agents, "parked"))).toEqual([])
+
+          // Opened again: nothing is left to deliver.
+          await Effect.runPromise(open(service))
+          expect(promptAsyncs).toHaveLength(1)
+        }))
+    }
+
+    it("a body the engine refuses stays in the mailbox for the next load, and the chat still opens", () =>
+      withHome(async (home) => {
+        const agents = await seed(home, "ses_resume")
+        const { service } = makeService([], { promptAsyncFails: true })
+
+        const result = await Effect.runPromise(
+          service.resumeSession({ cwd: "/workspace", sessionId: "ses_resume", mcpServers: [] }),
+        )
+
+        expect(result.configOptions).toBeDefined()
+        expect(await fsp.readdir(path.join(agents, "mailbox", "ses_resume"))).toEqual(["1-abc.json"])
+      }))
+  })
+
   describe("todo restore", () => {
     const stored = [
       { content: "reproduce the failure", status: "completed", priority: "high" },

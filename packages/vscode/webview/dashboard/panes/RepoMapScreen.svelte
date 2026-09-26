@@ -1,6 +1,6 @@
 <script lang="ts">
   // Repo architecture-map SCREEN (S15) — the CARTOGRAPHER's map as the FLOW-SPINE
-  // isometric drawing (Passing's pick of the mockups). A slim header, a filter
+  // isometric drawing (the owner's pick of the mockups). A slim header, a filter
   // rail, the picture, and a rail carrying the repository, the flows and whatever
   // is selected. Both rails drag to resize and fold away, so the map can have the
   // whole pane.

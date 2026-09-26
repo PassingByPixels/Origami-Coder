@@ -41,7 +41,9 @@
   export function claudeSubscriptionTiles(open: boolean, inuse: boolean) {
     if (!asked) requestStatus();
     if (!status.enabled) return [];
-    const light = { name: 'Claude (subscription)', live: status.ready, reason: status.fixLine || undefined };
+    // t-xu5o64: the short name, as in the model picker ("Claude (Sub)/<model>"). The tile has
+    // no "Pill name" fold to shorten it, and "Claude (subscription)" was cut to "Claude (subscri...".
+    const light = { name: 'Claude (Sub)', live: status.ready, reason: status.fixLine || undefined };
     return [{ id: CLAUDE_SUB_TILE_ID, label: 'CS', title: gridLabel(light), light: lightOf(light), open, dotted: false, inuse }];
   }
 </script>

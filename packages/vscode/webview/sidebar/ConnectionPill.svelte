@@ -108,7 +108,7 @@
      10px type were what made the sidebar read as zoomed in. Two 9px lines at
      1.15 come to 20.7px, which clears the 24px inside the border. */
   .grid-square.named { flex-direction: column; gap: 0; width: var(--conn-tile-w, 26px); min-width: 0; height: 26px; padding: 0 3px; line-height: 1.15; scroll-snap-align: start; }
-  .grid-line { display: block; max-width: 100%; font-size: 9px; font-weight: 600; letter-spacing: 0.01em; overflow-wrap: anywhere; }
+  .grid-line { display: block; max-width: 100%; font-size: 9px; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* t-vikozs: never a mid-word break */
   /* A harness, not a connection. Dotted + the crane tone; the border WIDTH is
      unchanged, so the box stays exactly the size of the squares beside it. */
   .grid-square.dotted {

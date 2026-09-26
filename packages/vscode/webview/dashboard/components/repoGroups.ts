@@ -35,6 +35,9 @@ export interface WorktreeRowInfo {
 export interface RepoDetailInfo {
   worktrees: WorktreeRowInfo[];
   branches: string[];
+  /** t-vikozs: the host has answered. Unset while the request is in flight, so an
+   *  answered empty list is not read as "still loading". */
+  loaded?: boolean;
 }
 
 /** One card: the repository, the entry the board drives it through, and every

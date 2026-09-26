@@ -26,15 +26,16 @@ export const CACHE_WARMING_SETTING = `${CACHE_WARMING_SECTION}.${CACHE_WARMING_E
  *  the two names drift. */
 export const CACHE_WARMING_DISABLE_VAR = 'ORIGAMI_DISABLE_CACHE_WARM';
 
-/** Is warming on? DEFAULT TRUE, and only an explicit `false` turns it off — a
- *  host with no settings store and an older settings.json with no such key both
- *  read as ON, because the engine defaults the same way and the two halves must
- *  not disagree. */
+/** Is warming on? DEFAULT FALSE since 0.4.184 (owner, 2026-09-26): before 0.4.183
+ *  no warm was ever sent, so a warm is a new token cost a user must choose. Only an
+ *  explicit `true` turns it on; no settings store reads as OFF. The engine still
+ *  defaults ON when run on its own, so the spawn env below sets its kill switch
+ *  for every chat whose user has not chosen warming. */
 export function cacheWarmingEnabled(): boolean {
   try {
-    return vscode.workspace.getConfiguration(CACHE_WARMING_SECTION).get<boolean>(CACHE_WARMING_ENABLED_KEY) !== false;
+    return vscode.workspace.getConfiguration(CACHE_WARMING_SECTION).get<boolean>(CACHE_WARMING_ENABLED_KEY) === true;
   } catch {
-    return true;
+    return false;
   }
 }
 

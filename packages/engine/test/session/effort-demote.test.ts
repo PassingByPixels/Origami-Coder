@@ -403,4 +403,27 @@ describe("session effort demotion end to end", () => {
       ),
     15_000,
   )
+
+  // t-ysudw8: "off" (`none`) is a tier some models do not offer (Claude (Sub) Fable and
+  // Opus 1M answer thinking-disabled with a 400). A chat still holding it is carried UP
+  // to the weakest offered tier, not sent with no effort at all.
+  it.live(
+    "a session holding 'none' on a model that does not offer it sends the weakest offered tier",
+    () =>
+      provideTmpdirServer(
+        ({ dir, llm }) =>
+          Effect.gen(function* () {
+            const session = yield* Session.Service
+            const chat = yield* session.create({})
+            const { result, variants } = yield* turn(chat.id, dir, "hi", "none")
+            expect(result).toBe("continue")
+            expect(variants).not.toContain("none")
+            const inputs = yield* llm.inputs
+            expect(inputs.length).toBe(1)
+            expect(inputs[0]!["reasoning_effort"]).toBe(variants[0])
+          }),
+        { config: (url) => config(url) },
+      ),
+    15_000,
+  )
 })

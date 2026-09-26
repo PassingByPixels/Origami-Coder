@@ -190,11 +190,11 @@ describe("flock_set_identity", () => {
     const directory = tmp()
     const before = ACPFlock.state({ directory }).identity
 
-    const result = ACPFlock.setIdentity({ directory, name: "Passing by Pixels", icon: "fox" })
+    const result = ACPFlock.setIdentity({ directory, name: "Jane Doe", icon: "fox" })
     expect(result.ok).toBe(true)
 
     const after = ACPFlock.state({ directory }).identity
-    expect(after.name).toBe("Passing by Pixels")
+    expect(after.name).toBe("Jane Doe")
     expect(after.icon).toBe("fox")
     // The pane shows the name; every contact MATCHES on the handle, so it must
     // survive a rename untouched — the short form and the fingerprint with it.
@@ -347,14 +347,14 @@ describe("flock_front_desk / flock_set_specialties — which file each lands in"
       scope: { repos: ["work/api"], wiki: ["wiki/public"] },
     })
 
-    ACPFlock.setSpecialties({ directory, specialties: [" WordPress ", "", "UK MOT rules"] })
+    ACPFlock.setSpecialties({ directory, specialties: [" WordPress ", "", "UK tax rules"] })
     // Trimmed, blanks dropped, and NOT in the config file — the card's prose
     // lives beside the friends, which is the split the module documents.
-    expect(ACPFlock.state({ directory }).specialties).toEqual(["WordPress", "UK MOT rules"])
+    expect(ACPFlock.state({ directory }).specialties).toEqual(["WordPress", "UK tax rules"])
     expect(readConfig(directory)["flock"]["frontDesk"]["specialties"]).toBeUndefined()
     expect(JSON.parse(fs.readFileSync(path.join(directory, "flock.json"), "utf8")).desk.specialties).toEqual([
       "WordPress",
-      "UK MOT rules",
+      "UK tax rules",
     ])
   })
 
@@ -422,13 +422,13 @@ describe("the answer log the Inbox reads", () => {
       runner: async () => ({ text: "the answer", tokens: 412 }),
     })
 
-    await desk.ask({ friend, question: "how does the MOT check work?", id: "q-log-1" })
+    await desk.ask({ friend, question: "how does the tax refund work?", id: "q-log-1" })
 
     const answered = ACPFlock.state({ directory }).answers
     expect(answered).toHaveLength(1)
     expect(answered[0]).toMatchObject({
       from: friend.handle,
-      question: "how does the MOT check work?",
+      question: "how does the tax refund work?",
       tokens: 412,
       ok: true,
     })
@@ -475,7 +475,7 @@ describe("flock_mailbox and flock_pending — what the mail manager renders", ()
 
   test("a row carries the contact's NAME and icon, which a handle alone cannot give a reader", () => {
     const { directory, store, contact } = mailbox()
-    store.openIn({ id: "q1", contact: contact.handle, question: "how does the MOT check work?" })
+    store.openIn({ id: "q1", contact: contact.handle, question: "how does the tax refund work?" })
 
     const rows = ACPFlock.mailbox({ directory })
     expect(rows.threads).toHaveLength(1)
@@ -501,7 +501,7 @@ describe("flock_mailbox and flock_pending — what the mail manager renders", ()
 
   test("flock_pending is the questions waiting, with the thread id the decision names", () => {
     const { directory, store, contact } = mailbox()
-    store.openIn({ id: "q1", contact: contact.handle, question: "how does the MOT check work?" })
+    store.openIn({ id: "q1", contact: contact.handle, question: "how does the tax refund work?" })
     store.openIn({ id: "q2", contact: contact.handle, question: "already dealt with" })
     store.settleIn({ id: "q2", contact: contact.handle, ok: true, text: "done", tokens: 5 })
 
@@ -512,7 +512,7 @@ describe("flock_mailbox and flock_pending — what the mail manager renders", ()
       sessionID: "",
       from: contact.handle,
       name: contact.name,
-      question: "how does the MOT check work?",
+      question: "how does the tax refund work?",
     })
   })
 

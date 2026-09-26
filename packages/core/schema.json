@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "135c64c3-55fb-42c8-8b5f-c55634743006",
+  "id": "e6c2f9ae-4c42-44ea-8321-4bb9f34da4c5",
   "prevIds": [
-    "7390d14c-00a9-45b4-8051-86dbca806249"
+    "135c64c3-55fb-42c8-8b5f-c55634743006"
   ],
   "ddl": [
     {
@@ -88,6 +88,10 @@
     },
     {
       "name": "session_message",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_request_memory",
       "entityType": "tables"
     },
     {
@@ -1574,6 +1578,46 @@
     },
     {
       "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_request_memory"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "session_request_memory"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "session_request_memory"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "data",
+      "entityType": "columns",
+      "table": "session_request_memory"
+    },
+    {
+      "type": "text",
       "notNull": false,
       "autoincrement": false,
       "default": null,
@@ -2244,6 +2288,21 @@
     },
     {
       "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_request_memory_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "session_request_memory"
+    },
+    {
+      "columns": [
         "project_id"
       ],
       "tableTo": "project",
@@ -2316,6 +2375,17 @@
       "name": "project_directory_pk",
       "entityType": "pks",
       "table": "project_directory"
+    },
+    {
+      "columns": [
+        "session_id",
+        "kind",
+        "key"
+      ],
+      "nameExplicit": false,
+      "name": "session_request_memory_pk",
+      "entityType": "pks",
+      "table": "session_request_memory"
     },
     {
       "columns": [

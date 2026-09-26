@@ -74,7 +74,7 @@ export function isGuarded(target: unknown): boolean {
     p = decodeURIComponent(target.pathname.replace(/^\/([A-Za-z]:)/, '$1'));
   } else return false;
   // Windows compares case-insensitively; the separator keeps a sibling whose
-  // name merely starts with the guarded one (~/.config/origami-tickets) out.
+  // name merely starts with the guarded one (~/.config/origami-notes) out.
   const fold = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s);
   const resolved = fold(realPath.resolve(p));
   const dir = fold(REAL_CONFIG_DIR);

@@ -339,14 +339,17 @@ const serverToolResultType = (name: string): AnthropicServerToolResultType | und
   return undefined
 }
 
-const lowerServerToolResult = Effect.fn("AnthropicMessages.lowerServerToolResult")(function* (part: ToolResultPart) {
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+const lowerServerToolResult = Effect.fnUntraced(function* (part: ToolResultPart) {
   const wireType = serverToolResultType(part.name)
   if (!wireType)
     return yield* invalid(`Anthropic Messages does not know how to round-trip server tool result for ${part.name}`)
   return { type: wireType, tool_use_id: part.id, content: part.result.value } satisfies AnthropicServerToolResultBlock
 })
 
-const lowerImage = Effect.fn("AnthropicMessages.lowerImage")(function* (part: MediaPart) {
+const lowerImage = Effect.fnUntraced(function* (part: MediaPart) {
   const media = yield* ProviderShared.validateMedia(
     "Anthropic Messages",
     part,
@@ -364,7 +367,7 @@ const lowerImage = Effect.fn("AnthropicMessages.lowerImage")(function* (part: Me
 
 // Tool results may carry structured text/images. Keep media as provider-native
 // content instead of JSON-stringifying base64 into a prompt string.
-const lowerToolResultContentItem = Effect.fn("AnthropicMessages.lowerToolResultContentItem")(function* (
+const lowerToolResultContentItem = Effect.fnUntraced(function* (
   item: ToolContent,
 ) {
   if (item.type === "text") return { type: "text" as const, text: item.text } satisfies AnthropicTextBlock
@@ -383,7 +386,7 @@ const lowerToolResultContentItem = Effect.fn("AnthropicMessages.lowerToolResultC
   } satisfies AnthropicImageBlock
 })
 
-const lowerToolResultContent = Effect.fn("AnthropicMessages.lowerToolResultContent")(function* (part: ToolResultPart) {
+const lowerToolResultContent = Effect.fnUntraced(function* (part: ToolResultPart) {
   // Text/json/error results stay a string, as existing cassettes and providers expect.
   if (part.result.type !== "content") return ProviderShared.toolResultText(part)
   // Preserve the narrowed array element type when compiled through a consumer package.
@@ -424,7 +427,7 @@ const splitsLocalToolResults = (messages: LLMRequest["messages"], index: number)
   return pending.size > 0
 }
 
-const lowerNativeSystemUpdate = Effect.fn("AnthropicMessages.lowerNativeSystemUpdate")(function* (
+const lowerNativeSystemUpdate = Effect.fnUntraced(function* (
   message: LLMRequest["messages"][number],
   breakpoints: Cache.Breakpoints,
 ) {

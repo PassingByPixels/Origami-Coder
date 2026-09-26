@@ -105,7 +105,8 @@ export function clearFrames(store: FrameStore, sessionId: string): FrameStore {
 export function viewportCaption(frames: readonly BrowserFrame[]): string {
   if (frames.length === 0) return '';
   const newest = frames[frames.length - 1];
-  const where = `frame ${frames.length} of ${frames.length}`;
+  // t-yyz5je: the caption NAMES the newest frame by the verb that took it.
+  const where = `frame ${frames.length} of ${frames.length}${newest.action ? ` · ${newest.action}` : ''}`;
   if (!newest.width || !newest.height) return where;
   // The VIEWPORT is the number that answers "what was the page laid out at", so it keeps
   // the first slot and now says so in a word. The shown size joins it only when the two

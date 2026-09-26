@@ -1,7 +1,7 @@
 // Origami Remote — WIRE v1.3 AT THE BYTE LEVEL: the §9 pad buckets, the frame
 // version byte, the receiver rule, and a PINNED K' vector.
 //
-// Every number here is quoted from `wire_v1_3_session_key.md` (§3, §4, §9), not
+// Every number here is quoted from the v1.3 session-key design (§3, §4, §9), not
 // read back out of the implementation. The app owner builds the phone half
 // against the same text on a different machine in a different language, so a
 // value the desktop agrees with itself about is worth nothing — which is what

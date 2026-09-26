@@ -1,5 +1,6 @@
 import type { ModelMessage, Tool } from "ai"
 import { SessionPromptCapture } from "./prompt-capture"
+import { SessionRequestMemoryRows } from "./request-memory-rows"
 
 /**
  * Does a request fit the model's context window? (t-tc20mj)
@@ -101,16 +102,19 @@ export function fit(input: { readonly context: number; readonly estimate: number
 // session keeps the last ratio of reported to estimated and scales its next
 // estimate by it. Only upward, at most double: an estimate that errs high costs
 // a slightly smaller max_tokens, one that errs low costs a refused request.
-// Process-local and bounded, like the prompt capture.
+// Bounded, like the prompt capture. The ratio is persisted per session
+// (t-w2qb1x) and loaded back on a miss, since it can decide `max_tokens`; the
+// pending estimate lives from a send to its reply only, so it is not.
 // ---------------------------------------------------------------------------
 
 const LIMIT = 64
 const MAX_RATIO = 2
 
 const pending = new Map<string, number>()
-const ratios = new Map<string, number>()
+/** `undefined` = this process holds the session and has no ratio for it yet. */
+const ratios = new Map<string, number | undefined>()
 
-function bounded(map: Map<string, number>, key: string, value: number) {
+function bounded<T>(map: Map<string, T>, key: string, value: T) {
   map.delete(key)
   map.set(key, value)
   for (const oldest of map.keys()) {
@@ -129,11 +133,36 @@ export function observe(sessionID: string, reported: number) {
   const estimate = pending.get(sessionID)
   pending.delete(sessionID)
   if (!estimate || !(reported > 0)) return
-  bounded(ratios, sessionID, Math.min(MAX_RATIO, Math.max(1, reported / estimate)))
+  const ratio = Math.min(MAX_RATIO, Math.max(1, reported / estimate))
+  // t-w2qb1x: queued only when it moves, so a steady ratio writes nothing.
+  if (ratios.get(sessionID) !== ratio)
+    SessionRequestMemoryRows.stage(sessionID, [{ kind: "window_fit", key: "", data: ratio }])
+  bounded(ratios, sessionID, ratio)
 }
 
 export function calibrate(sessionID: string, estimate: number) {
   return Math.ceil(estimate * (ratios.get(sessionID) ?? 1))
+}
+
+/** True while this process holds the session (with or without a ratio). */
+export function has(sessionID: string) {
+  return ratios.has(sessionID)
+}
+
+/** Put back the ratio the database holds for a session this process does not
+ *  hold (t-w2qb1x). No row restores "no ratio yet". The LAST row wins
+ *  (t-wdyp7r): rows queued in this process follow the stored one and are newer. */
+export function restore(sessionID: string, rows: readonly SessionRequestMemoryRows.Row[]) {
+  if (ratios.has(sessionID)) return
+  const row = rows.findLast((row) => row.kind === "window_fit")
+  bounded(ratios, sessionID, typeof row?.data === "number" ? row.data : undefined)
+}
+
+/** The chat closed (t-w2u5vf). The ratio is persisted and loaded back on a
+ *  miss; an estimate in flight has no reply left to read it. */
+export function evict(sessionID: string) {
+  pending.delete(sessionID)
+  ratios.delete(sessionID)
 }
 
 /** Test hook. */

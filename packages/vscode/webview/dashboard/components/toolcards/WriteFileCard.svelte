@@ -13,6 +13,7 @@
   // background neutral.
 
   import { getVsCodeApi } from '../../../shared/vscodeApi';
+  import { tip } from '../../../shared/warmTip';
 
   interface Props {
     result: string;
@@ -78,7 +79,7 @@
   <div class="write-card">
     <div class="write-header">
       <span class="write-verb">{parsed.verb}</span>
-      <button class="write-path" onclick={() => openPath(parsed!.path)} title="Open file">
+      <button class="write-path" onclick={() => openPath(parsed!.path)} use:tip={'Open file'}>
         {parsed.path}
       </button>
       <span class="write-stats">
@@ -92,13 +93,16 @@
 {:else}
   <!-- Origami engine's terse "Wrote file successfully." carries no path in the
        result text, so surface the authoritative path from the tool metadata. -->
-  <div class="write-card">
+  <!-- t-yyz5yk (Round 8): the file bar. The engine sends no content for a
+       write (no diff block: acp/tool.ts diffContent needs oldString), so the
+       mockup's numbered new lines and line count are deferred. -->
+  <div class="write-card dbox">
     {#if displayPath}
-      <div class="write-header">
-        <span class="write-verb">Wrote</span>
-        <button class="write-path" onclick={() => openPath(openTarget)} title="Open file">
-          {displayPath}
-        </button>
+      <div class="dbar">
+        <span class="write-path-text"><bdi dir="ltr">{displayPath}</bdi></span>
+        <span class="write-state">· written</span>
+        <span class="sp"></span>
+        <button type="button" class="write-open" onclick={() => openPath(openTarget)} use:tip={`Open ${displayPath}`}>Open file</button>
       </div>
     {/if}
     {#if result && result.trim() !== 'Wrote file successfully.'}
@@ -108,6 +112,14 @@
 {/if}
 
 <style>
+  .dbox { border: 1px solid var(--og-border); border-radius: 8px; background: var(--og-bg); overflow: hidden; }
+  .dbar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; background: color-mix(in srgb, var(--og-surface) 60%, transparent); color: var(--og-text-muted); }
+  .write-path-text { color: var(--og-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .write-state { color: var(--og-success); flex: none; }
+  .sp { flex: 1; }
+  .write-open { flex: none; background: none; border: 0; padding: 0; font: inherit; color: var(--og-chat, var(--og-accent)); cursor: pointer; }
+  .write-open:hover { text-decoration: underline; }
+  .dbox .write-fallback { padding: 6px 8px; border-top: 1px solid var(--og-border); }
   .write-card {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11px;

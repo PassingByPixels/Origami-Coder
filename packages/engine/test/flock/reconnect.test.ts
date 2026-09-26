@@ -172,7 +172,7 @@ describe("the service, across a drop", () => {
     // Asked while the wire was UP, then the relay goes away before anybody
     // answered. The row is the durable part: it lives in flock.json, so it
     // outlives this socket and, on a bad day, this whole process.
-    await handle.peer!.post(friend.handle, "what did you do about the MOT?")
+    await handle.peer!.post(friend.handle, "what did you do about the tax form?")
     expect(store.pending()).toHaveLength(1)
 
     relay.dropAll({ forget: true })

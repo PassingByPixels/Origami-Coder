@@ -75,7 +75,7 @@ describe("flock_reply", () => {
 
   test("signs the answer onto the thread and the ASKER's row settles to answered", async () => {
     const { alice, bob, alicePeer, bobPeer, bobHandle } = pair()
-    const sent = await alicePeer.post(bobHandle, "how does the MOT check work?")
+    const sent = await alicePeer.post(bobHandle, "how does the tax refund work?")
     await until("bob's inbox row", () => bob.thread(sent.thread) !== undefined)
 
     const result = await reply(sent.thread, "  section 4 covers it  ", (frame) => bobPeer.reply(frame))

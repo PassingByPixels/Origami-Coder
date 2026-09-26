@@ -25,6 +25,7 @@ export type Cause =
   | "cold"
   | "model"
   | "compaction"
+  | "stopped"
   | "idle"
   | "system"
   | "tools"
@@ -154,11 +155,22 @@ export type Facts = {
   readonly modelChanged: boolean
   readonly systemChanged: boolean
   readonly toolsChanged: boolean
+  /**
+   * The halves of the prefix that changed while the engine was stopped: the
+   * previous request is the last one PERSISTED before a restart, and these
+   * moved against it. Absent when the previous request was in this process,
+   * or when nothing moved. A history rewrite an engine rewriter named is not
+   * here: it is the ordinary `history` cause.
+   */
+  readonly stopped?: readonly StoppedHalf[] | undefined
   /** The previous request's whole array survived as a byte-identical prefix. */
   readonly preserved?: boolean | undefined
   readonly idleMs?: number | undefined
   readonly ttlSeconds?: number | undefined
 }
+
+/** A half of the cached prefix that can change while the engine is stopped. */
+export type StoppedHalf = "system" | "tools" | "history"
 
 /**
  * The one cause of a miss. Precedence is fixed and ordered by how far upstream
@@ -176,6 +188,7 @@ export function cause(
   if (input.first) return "cold"
   if (input.compacted) return "compaction"
   if (input.modelChanged) return "model"
+  if (input.stopped !== undefined && input.stopped.length > 0) return "stopped"
   if (input.systemChanged) return "system"
   if (input.toolsChanged) return "tools"
   if (input.preserved === false) return "history"

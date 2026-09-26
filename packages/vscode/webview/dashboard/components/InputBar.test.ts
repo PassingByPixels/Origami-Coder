@@ -93,6 +93,25 @@ describe('InputBar — the action row belongs to THIS chat and never disappears'
     expect(actionRow(container)!.querySelectorAll('button').length).toBe(4);
   });
 
+  // t-y5ec3s: the sticky full-width plan banner was dropped as a duplicate of this
+  // chip (permBannerCopy now returns '' for every mode). This chip is therefore the
+  // ONLY on-screen sign of plan mode left, and `/default` (routed through the same
+  // `modeUpdate` message as any other mode switch, DashboardPanel.ts MODE_COMMANDS)
+  // must still clear it.
+  it('/default exits plan mode: the toggle and badge both clear', async () => {
+    const { container } = mount(() => {});
+    post({ type: 'modeUpdate', sessionId: SID, mode: 'plan' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(labels(container)).toContain('Plan: on');
+    expect(container.querySelector('.mode-badge.mode-plan')).not.toBeNull();
+
+    post({ type: 'modeUpdate', sessionId: SID, mode: 'default' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(labels(container)).toContain('Plan');
+    expect(labels(container)).not.toContain('Plan: on');
+    expect(container.querySelector('.mode-badge.mode-plan')).toBeNull();
+  });
+
   it('another chat’s plan mode changes nothing here — the events are session-scoped', async () => {
     const { container } = mount(() => {});
     post({ type: 'modeUpdate', sessionId: 'some-other-chat', mode: 'plan' });
@@ -360,7 +379,7 @@ describe('InputBar — a slash command named mid-body', () => {
     const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
     await fireEvent.input(box, { target: { value: 'summarise this and then /delegate' } });
     await fireEvent.keyDown(box, { key: 'Enter' });
-    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'delegate', args: 'summarise this and then' }]);
+    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'delegate', args: 'summarise this and then', sessionId: SID }]); // t-xsufto: the chat it was typed in
   });
 
   it('leaves an unregistered /word as literal text — sent as a normal prompt', async () => {
@@ -395,7 +414,7 @@ describe('InputBar — a slash command named mid-body', () => {
     await fireEvent.input(box, { target: { value: 'please /delegate this and also /spend the log' } });
     await fireEvent.keyDown(box, { key: 'Enter' });
     expect(slashSent()).toEqual([
-      { type: 'slashCommand', command: 'delegate', args: 'please this and also /spend the log' },
+      { type: 'slashCommand', command: 'delegate', args: 'please this and also /spend the log', sessionId: SID },
     ]);
   });
 
@@ -405,7 +424,7 @@ describe('InputBar — a slash command named mid-body', () => {
     const box = container.querySelector('textarea.input') as HTMLTextAreaElement;
     await fireEvent.input(box, { target: { value: '/deep-plan ' } });
     await fireEvent.keyDown(box, { key: 'Enter' });
-    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'deep-plan', args: '' }]);
+    expect(slashSent()).toEqual([{ type: 'slashCommand', command: 'deep-plan', args: '', sessionId: SID }]);
   });
 });
 
@@ -1432,7 +1451,7 @@ describe('InputBar - the third session mode', () => {
     // The hyphen is the trap: the composer splits on whitespace, so the command
     // must arrive whole. A split on '-' would post 'deep', which MODE_COMMANDS
     // does not know and the host would send to the model as a prompt.
-    expect(sent('slashCommand')).toEqual([{ type: 'slashCommand', command: 'deep-plan', args: '' }]);
+    expect(sent('slashCommand')).toEqual([{ type: 'slashCommand', command: 'deep-plan', args: '', sessionId: MSID }]);
     expect(sent('setMode')).toEqual([]);
   });
 });
@@ -2093,7 +2112,7 @@ describe('InputBar — the slash palette opens mid-message', () => {
     await type(box, 'summarise this and then /delegate');
     await fireEvent.keyDown(box, { key: 'Enter' });
     expect(globalThis.__vscodeApiMock.postMessage.mock.calls.map((c) => c[0]))
-      .toContainEqual({ type: 'slashCommand', command: 'delegate', args: 'summarise this and then' });
+      .toContainEqual({ type: 'slashCommand', command: 'delegate', args: 'summarise this and then', sessionId: SID });
     expect(onSend).not.toHaveBeenCalled();
   });
 });

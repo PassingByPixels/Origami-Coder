@@ -9,6 +9,7 @@ import { Config } from "@/config/config"
 import { Identifier } from "../id/id"
 import { ToolID } from "./schema"
 import { TRUNCATION_DIR } from "./truncation-dir"
+import { ElasticState } from "@/elastic/state"
 
 const RETENTION = Duration.days(7)
 
@@ -140,7 +141,11 @@ const layer = Layer.effect(
       } as const
     })
 
-    yield* cleanup().pipe(
+    // origami_change (t-w2qlop): the HOURLY pass is skipped while the engine rests
+    // (background / idle). An active engine of the same folder or store runs it;
+    // a hidden chat's engine doing heavy disk work once an hour is what option D
+    // takes away. The on-demand `cleanup` is unchanged.
+    yield* Effect.suspend(() => (ElasticState.resting() ? Effect.void : cleanup())).pipe(
       Effect.catchCause((cause) => Effect.logError("truncation cleanup failed", { cause: Cause.pretty(cause) })),
       Effect.repeat(Schedule.spaced(Duration.hours(1))),
       Effect.delay(Duration.minutes(1)),

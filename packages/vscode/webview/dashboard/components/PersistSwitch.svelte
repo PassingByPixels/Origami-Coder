@@ -6,7 +6,7 @@
   // answer on sight: it read as a status label, so nothing said it was
   // clickable, and its text named the STATE rather than the SETTING, so the
   // one word on screen changed meaning depending on a state you could only
-  // discover by clicking it. Passing looked straight at it and did not see a
+  // discover by clicking it. The owner looked straight at it and did not see a
   // toggle.
   //
   // So: a real switch. The name is fixed ("Persistent" — the setting, never the

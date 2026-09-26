@@ -5,6 +5,7 @@ import { SessionV1 } from "@origami/core/v1/session"
 import { CollabActivity } from "@/collab/activity"
 import { CollabRunner } from "@/collab/runner"
 import { CollabStore } from "@/collab/store"
+import { ElasticIdle } from "@/elastic/idle"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(LayerNode.group([CollabStore.node])))
@@ -2123,6 +2124,27 @@ describe("collab activity log", () => {
         reply: speak("hi"),
       })
       expect((yield* collab.runner.activityLog(collab.collab.id)).size).toBe(0)
+    }),
+  )
+})
+
+// t-w2qlop: a collab turn is live work the engine must not be stopped under.
+describe("collab and the elastic idle report", () => {
+  it.live("a collab with a turn in flight makes the engine unparkable until it settles", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>()
+      const room = yield* harness({
+        title: "Elastic",
+        agentSlugs: ["alice"],
+        reply: () => Deferred.await(gate).pipe(Effect.as({ text: "" })),
+      })
+      yield* room.runner.post({ collabId: room.collab.id, text: "work" })
+      yield* waitUntil(() => room.turns.length === 1, "the turn never started")
+      expect(ElasticIdle.report().reasons).toContain("collab-run")
+
+      yield* Deferred.succeed(gate, undefined)
+      yield* awaitWithTimeout(room.runner.settle, "the collab did not settle", "10 seconds")
+      expect(ElasticIdle.report().reasons).not.toContain("collab-run")
     }),
   )
 })

@@ -33,7 +33,7 @@ async function strip(status: Record<string, unknown>) {
   await post(status);
   return view;
 }
-const subTile = () => screen.queryByRole('button', { name: /^Claude \(subscription\)/ });
+const subTile = () => screen.queryByRole('button', { name: /^Claude \(Sub\)/ }); // t-xu5o64: the short name
 const card = (container: HTMLElement) => container.querySelector('.claude-sub-card');
 
 afterEach(async () => {
@@ -83,5 +83,26 @@ describe('Claude (subscription) is a connection tile, and its card opens and clo
     mock().mockClear();
     await post({ type: 'modelListsRefreshed', ok: true });
     expect(mock()).toHaveBeenCalledWith({ type: 'requestClaudeSubscriptionStatus' });
+  });
+
+  it('t-ysud6n: ready shows a GREEN tile, not just a title (the acceptance ask, not just "some tile")', async () => {
+    const { container } = await strip({ type: 'claudeSubscriptionStatus', enabled: true, ready: true, label: 'Ready', fixLine: '', cli: '' });
+    const tile = subTile();
+    expect(tile).not.toBeNull();
+    expect(tile!.classList.contains('light-green')).toBe(true);
+    // A click still opens the READY card (label + Disconnect, no fix line).
+    await fireEvent.click(tile!);
+    expect(card(container)).not.toBeNull();
+    expect(container.textContent).toContain('Ready');
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+  });
+
+  it('t-ysud6n: the tile still lights when its status answer lands BEFORE providerStatus (the CLI-only Gate B check is faster than the network provider probe)', async () => {
+    render(ControlStrip);
+    await post({ type: 'claudeSubscriptionStatus', enabled: true, ready: true, label: 'Ready', fixLine: '', cli: '' });
+    await post({ type: 'providerStatus', providers: [LMSTUDIO] });
+    const tile = subTile();
+    expect(tile).not.toBeNull();
+    expect(tile!.classList.contains('light-green')).toBe(true);
   });
 });

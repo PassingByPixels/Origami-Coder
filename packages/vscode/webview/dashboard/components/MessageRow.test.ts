@@ -60,7 +60,7 @@ describe('MessageRow — clickable file paths', () => {
   };
 
   it('a backticked Windows path with spaces links as one path (the owner\'s case)', async () => {
-    const p = 'C:\\Users\\dev\\Desktop\\Workspace\\projects\\Origami Spark\\SparkConsole\\engines\\glm53.py';
+    const p = 'C:\\Users\\dev\\Desktop\\Workspace\\projects\\Model Lab\\Console\\engines\\model.py';
     expect(await clickOnly('Edit `' + p + '` next.')).toEqual({ type: 'openAbsoluteFile', path: p, line: undefined });
   });
 
@@ -95,8 +95,8 @@ describe('MessageRow — clickable file paths', () => {
   });
 
   it('a markdown link whose target has spaces (<...> form) opens the whole path', async () => {
-    expect(await clickOnly('See [glm53](<C:\\a b\\glm53.py>).'))
-      .toEqual({ type: 'openAbsoluteFile', path: 'C:\\a b\\glm53.py', line: undefined });
+    expect(await clickOnly('See [model](<C:\\a b\\model.py>).'))
+      .toEqual({ type: 'openAbsoluteFile', path: 'C:\\a b\\model.py', line: undefined });
   });
 
   it('a markdown link whose target is %20-encoded opens the decoded path', async () => {
@@ -106,13 +106,13 @@ describe('MessageRow — clickable file paths', () => {
 
   it('a markdown link with a raw space (marked leaves it as text) still links, with its label', async () => {
     const { container } = render(MessageRow, {
-      kind: 'agent', label: 'Coder', text: 'See [glm53.py](C:\\x\\Origami Spark\\file (1).py:7) now.',
+      kind: 'agent', label: 'Coder', text: 'See [model.py](C:\\x\\Model Lab\\file (1).py:7) now.',
     });
     const links = [...container.querySelectorAll('a.file-link')] as HTMLElement[];
     expect(links).toHaveLength(1);
-    expect(links[0].textContent).toBe('glm53.py');
+    expect(links[0].textContent).toBe('model.py');
     await fireEvent.click(links[0]);
-    expect(post()).toHaveBeenCalledWith({ type: 'openAbsoluteFile', path: 'C:\\x\\Origami Spark\\file (1).py', line: 7 });
+    expect(post()).toHaveBeenCalledWith({ type: 'openAbsoluteFile', path: 'C:\\x\\Model Lab\\file (1).py', line: 7 });
   });
 
   it('a bare prose path with non-ASCII letters links whole', async () => {
@@ -124,10 +124,10 @@ describe('MessageRow — clickable file paths', () => {
   // only for a rooted path, so a command in backticks keeps its own path link.
   it('does not join words across a space in unquoted prose', () => {
     const { container } = render(MessageRow, {
-      kind: 'agent', label: 'Coder', text: 'the Origami Spark/engines/glm53.py file',
+      kind: 'agent', label: 'Coder', text: 'the Model Lab/engines/model.py file',
     });
     const paths = [...container.querySelectorAll('a.file-link')].map((l) => (l as HTMLElement).dataset.path);
-    expect(paths).toEqual(['Spark/engines/glm53.py']);
+    expect(paths).toEqual(['Lab/engines/model.py']);
   });
 
   it('a command in backticks links only the path argument, not the whole command', () => {

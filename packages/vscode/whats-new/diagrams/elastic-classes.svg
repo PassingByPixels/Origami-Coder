@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 236" role="img" aria-label="One chat after you leave it. On screen it is active. Hidden, it goes to the background at a lower priority. Hidden and quiet, it is idle at the lowest priority, and on Windows its memory is trimmed. At your park time its engine process stops, and the chat stays. When you open the chat or send a message, it is active again. A parked chat starts again and sends the same bytes.">
+  <defs>
+    <marker id="wn-ec-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="wn-ec-head-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <text class="t-title" x="20" y="22">One chat after you leave it</text>
+  <rect class="box-hi" x="20" y="36" width="132" height="96" rx="8"/>
+  <text class="t-title" x="32" y="58">Active</text>
+  <text class="t-muted t-small" x="32" y="74">on screen</text>
+  <text class="t-small" x="32" y="96">normal priority</text>
+  <rect class="box" x="176" y="36" width="132" height="96" rx="8"/>
+  <text class="t-title" x="188" y="58">Background</text>
+  <text class="t-muted t-small" x="188" y="74">hidden</text>
+  <text class="t-small" x="188" y="96">lower priority</text>
+  <rect class="box" x="332" y="36" width="132" height="96" rx="8"/>
+  <text class="t-title" x="344" y="58">Idle</text>
+  <text class="t-muted t-small" x="344" y="74">hidden and quiet</text>
+  <text class="t-small" x="344" y="96">lowest priority</text>
+  <text class="t-small" x="344" y="112">memory trim</text>
+  <rect class="box-dim" x="488" y="36" width="132" height="96" rx="8"/>
+  <text class="t-title" x="500" y="58">Parked</text>
+  <text class="t-muted t-small" x="500" y="74">at your park time</text>
+  <text class="t-small" x="500" y="96">process stopped</text>
+  <text class="t-small" x="500" y="112">the chat stays</text>
+  <path class="line" d="M154 84 H174" marker-end="url(#wn-ec-head)"/>
+  <path class="line" d="M310 84 H330" marker-end="url(#wn-ec-head)"/>
+  <path class="line" d="M466 84 H486" marker-end="url(#wn-ec-head)"/>
+  <path class="line-hi" d="M554 134 V152 H86 V136" marker-end="url(#wn-ec-head-hi)"/>
+  <text class="t-small" x="100" y="170">Open the chat or send a message: it is active again.</text>
+  <text class="t-small" x="100" y="186">A parked chat starts again and sends the same bytes, so a warm cache still hits.</text>
+  <text class="t-muted t-small" x="20" y="222">Trim is on Windows only. On macOS, only idle lowers the priority, and parking frees memory.</text>
+</svg>

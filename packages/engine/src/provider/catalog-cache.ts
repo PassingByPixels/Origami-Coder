@@ -48,6 +48,17 @@ const ENV_PATTERN = /(API_?KEY|_TOKEN|_KEY|BASE_?URL|_HOST|^ORIGAMI_CONFIG)/i
  *  added to fix. */
 const ENV_DENY = /^(ORIGAMI_PID|ORIGAMI_CONSOLE_TOKEN)$/
 
+/** origami_change (t-y579wi): the runtime flags the provider build reads
+ *  (provider.ts `runtimeFlags.<field>`), by the env name each is read from
+ *  (effect/runtime-flags.ts). They change which rows the catalog has, and they are
+ *  fixed per process at spawn: an engine started before the Claude (Sub) setting
+ *  moved lists other rows than one started after it, so each value is its own key.
+ *  A test keeps this list equal to the fields provider.ts reads. */
+export const PROVIDER_FLAGS = {
+  experimentalClaudeSubscription: "ORIGAMI_EXPERIMENTAL_CLAUDE_SUBSCRIPTION",
+  enableExperimentalModels: "ORIGAMI_ENABLE_EXPERIMENTAL_MODELS",
+} as const
+
 /** Option/header names whose VALUE is a credential. */
 const SECRET_PATTERN = /(key|token|secret|password|authorization|cookie)/i
 
@@ -74,8 +85,9 @@ function authStamp() {
 
 function envStamp() {
   const parts: string[] = []
+  const flags: readonly string[] = Object.values(PROVIDER_FLAGS)
   for (const name of Object.keys(process.env).toSorted()) {
-    if (!ENV_PATTERN.test(name) || ENV_DENY.test(name)) continue
+    if (!(ENV_PATTERN.test(name) || flags.includes(name)) || ENV_DENY.test(name)) continue
     parts.push(`${name}=${sha(process.env[name] ?? "")}`)
   }
   return parts.join("\n")
@@ -89,7 +101,8 @@ function envStamp() {
  *  - the directory, because project config is merged per directory;
  *  - the MERGED config, which is what a "config change" means to the user;
  *  - the auth store's mtime+size, so pasting a credential is picked up;
- *  - the credential-shaped environment.
+ *  - the credential-shaped environment, and the runtime flags the build reads
+ *    (PROVIDER_FLAGS, t-y579wi).
  *
  * Known gap, deliberately not covered: a PLUGIN's `config()` hook can rewrite
  * `cfg.provider` after this hash is taken. Plugins are declared in the config, so

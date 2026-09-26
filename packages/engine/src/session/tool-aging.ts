@@ -1,8 +1,10 @@
 import { isRecord } from "@/util/record"
 import type { SessionV1 } from "@origami/core/v1/session"
+import { SessionRequestMemoryRows } from "./request-memory-rows"
 
 /**
- * TOOL-RESULT AGING — the outgoing array only, never the database.
+ * TOOL-RESULT AGING — the outgoing array only, never the stored parts. (The
+ * decisions themselves are kept in session_request_memory, t-w2qb1x.)
  *
  * Most prompt tokens this harness sends are tool results carried in history,
  * and a result is re-derivable: the file is still on disk, the command can run
@@ -518,7 +520,40 @@ export function plan(input: {
 
   for (const [id, rewrite] of fresh) state.rewrites.set(id, rewrite)
   for (const id of reprieves) state.reprieved.add(id)
+  // t-w2qb1x: every decision is also queued for the database, which the
+  // request layer writes before the request that carries it goes out. A
+  // restarted engine, or this one after the LRU above dropped the session,
+  // loads them back (`restore`) instead of deciding again from scratch.
+  SessionRequestMemoryRows.stage(input.sessionID, [
+    ...[...fresh].map(([id, rewrite]) => ({ kind: "aging.rewrite" as const, key: id, data: rewrite })),
+    ...reprieves.map((id) => ({ kind: "aging.reprieve" as const, key: id, data: true })),
+  ])
   return { rewrites: state.rewrites, counts: { aged: fresh.size, superseded, kept } }
+}
+
+/** True while this process holds the session's decisions. */
+export function has(sessionID: string): boolean {
+  return store.has(sessionID)
+}
+
+/**
+ * Put back the decisions the database holds for a session this process does
+ * not hold (t-w2qb1x). `rows` may carry other kinds; only the aging ones are
+ * read. No rows restores an empty state, which is what a new session starts with.
+ */
+export function restore(sessionID: string, rows: readonly SessionRequestMemoryRows.Row[]): void {
+  if (store.has(sessionID)) return
+  const state = sessionState(sessionID)
+  for (const row of rows) {
+    if (row.kind === "aging.rewrite" && isRecord(row.data)) state.rewrites.set(row.key, row.data as Rewrite)
+    if (row.kind === "aging.reprieve") state.reprieved.add(row.key)
+  }
+}
+
+/** The chat closed (t-w2u5vf). Its decisions are on disk, so a reopen loads
+ *  them back on the first miss (`SessionRequestMemory.ensure`). */
+export function evict(sessionID: string): void {
+  store.delete(sessionID)
 }
 
 /** Test seam — the store is module state, so a test must be able to empty it. */

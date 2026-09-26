@@ -272,8 +272,10 @@ describe('the sub-agent time limit — hours in, milliseconds out', () => {
     expect(prop.default).toBe(SUBAGENT_LIMIT_DEFAULT_HOURS);
     expect(prop.minimum).toBe(SUBAGENT_LIMIT_MIN_HOURS);
     // The env is read at SPAWN. A description that does not say so sends the
-    // user looking for a bug when the change appears to do nothing.
-    expect(prop.description.toLowerCase()).toContain('reload the window');
+    // user looking for a bug when the change appears to do nothing. t-xtimx0:
+    // a NEW chat spawns with it at once; no reload is needed.
+    expect(prop.description.toLowerCase()).toContain('new chats');
+    expect(prop.description.toLowerCase()).not.toContain('reload the window');
   });
 });
 

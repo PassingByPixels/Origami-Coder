@@ -42,15 +42,22 @@ let store: LeaseStore | null = null;
 let windowId = '';
 let now: () => number = () => Date.now();
 let onLost: ((rid: string) => void) | null = null;
-/** The rid this window holds, or null. Local truth; the store is the shared one. */
-let held: string | null = null;
+/** The rids this window holds. Local truth; the store is the shared one. A SET
+ *  (t-xum9r8): the phone pairing and each desk link are separate rids, and a
+ *  single slot beat only the last one claimed, so the others went stale. */
+const held = new Set<string>();
+/** Claims refused because a live record named another window, with the call
+ *  that asks again. Retried on the heartbeat (t-xum9r8): at an extension-host
+ *  restart the old window's release is lost and its record lives STALE_MS on. */
+const waiting = new Map<string, () => void>();
 
 export function registerOwnerLease(next: LeaseStore | null, id: string, hooks: LeaseHooks = {}): void {
   store = next;
   windowId = id;
   now = hooks.now ?? (() => Date.now());
   onLost = hooks.onLost ?? null;
-  held = null;
+  held.clear();
+  waiting.clear();
 }
 
 /** Test hook: put the module back to a window that never activated Remote. */
@@ -59,7 +66,8 @@ export function resetOwnerLease(): void {
   windowId = '';
   now = () => Date.now();
   onLost = null;
-  held = null;
+  held.clear();
+  waiting.clear();
 }
 
 /** Every lease in the store. A malformed record is treated as ABSENT rather
@@ -90,7 +98,7 @@ export function ownedElsewhere(rid: string | null): boolean {
 }
 
 export function holdsLease(rid: string | null): boolean {
-  return rid !== null && held === rid;
+  return rid !== null && held.has(rid);
 }
 
 async function write(rid: string): Promise<boolean> {
@@ -107,15 +115,23 @@ async function write(rid: string): Promise<boolean> {
   // leave Remote dead in every window — absent means "nobody said otherwise".
   const confirmed = all()[rid];
   const ours = confirmed === undefined || confirmed.windowId === windowId;
-  held = ours ? rid : null;
+  if (ours) {
+    held.add(rid);
+    waiting.delete(rid);
+  } else held.delete(rid);
   return ours;
 }
 
-/** Take this pairing if it is free, stale, or already ours. False = another window owns it. */
-export async function claimLease(rid: string): Promise<boolean> {
+/** Take this pairing if it is free, stale, or already ours. False = another
+ *  window owns it; `onFree` is then called on the first heartbeat that finds the
+ *  record free again, and the caller claims once more. */
+export async function claimLease(rid: string, onFree?: () => void): Promise<boolean> {
   if (!store || !rid) return true;
   const record = all()[rid];
-  if (live(record) && record!.windowId !== windowId) return false;
+  if (live(record) && record!.windowId !== windowId) {
+    if (onFree) waiting.set(rid, onFree);
+    return false;
+  }
   return write(rid);
 }
 
@@ -125,26 +141,35 @@ export async function takeLease(rid: string): Promise<boolean> {
   return write(rid);
 }
 
-/** Give the pairing up so the next window claims it within one heartbeat. */
+/** Give every held pairing up so the next window claims it within one heartbeat. */
 export async function releaseLease(): Promise<void> {
-  const rid = held;
-  held = null;
-  if (!store || !rid) return;
+  const rids = [...held];
+  held.clear();
+  waiting.clear();
+  if (!store || rids.length === 0) return;
   const leases = all();
-  if (leases[rid]?.windowId !== windowId) return;
-  delete leases[rid];
+  const ours = rids.filter((rid) => leases[rid]?.windowId === windowId);
+  if (ours.length === 0) return;
+  for (const rid of ours) delete leases[rid];
   await store.update(LEASE_KEY, leases);
 }
 
-/** One beat. Refreshes our record, or drops the claim and says so ONCE. */
+/** One beat. Refreshes each record we hold, or drops that claim and says so
+ *  ONCE; then asks again for every refused claim whose record is now free. */
 export async function leaseHeartbeat(): Promise<void> {
-  const rid = held;
-  if (!store || !rid) return;
-  const record = all()[rid];
-  if (record && record.windowId !== windowId) {
-    held = null;
-    onLost?.(rid);
-    return;
+  if (!store) return;
+  for (const rid of [...held]) {
+    const record = all()[rid];
+    if (record && record.windowId !== windowId) {
+      held.delete(rid);
+      onLost?.(rid);
+      continue;
+    }
+    await write(rid);
   }
-  await write(rid);
+  for (const [rid, retry] of [...waiting]) {
+    if (ownedElsewhere(rid)) continue;
+    waiting.delete(rid);
+    retry();
+  }
 }

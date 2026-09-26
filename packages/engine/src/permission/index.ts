@@ -7,6 +7,9 @@ import { Clock, Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@origami/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { ElasticActivity } from "@/elastic/activity"
+import { Database } from "@origami/core/database/database"
+import { SessionRequestMemoryRows } from "@/session/request-memory-rows"
 
 export const Event = PermissionV1.Event
 
@@ -182,6 +185,9 @@ interface State {
   /** Child session id -> parent session id, as {@link Interface.link} reports
    *  it. Read only by `blockedMs`, walking UP from each blocked session. */
   parents: Map<string, string>
+  /** origami_change (t-w2txb2): the root sessions whose stored "always allow"
+   *  answers are in `approved` already (see `recall`). */
+  recalled: Set<string>
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -203,6 +209,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
     const config = yield* Config.Service
+    const { db } = yield* Database.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
@@ -212,7 +219,11 @@ const layer = Layer.effect(
           latestRuleset: new Map<string, PermissionV1.Ruleset>(),
           blocked: new Map<string, BlockedEntry>(),
           parents: new Map<string, string>(),
+          recalled: new Set<string>(),
         }
+
+        // origami_change (t-w2qlop): an unanswered ask keeps the engine unparkable.
+        yield* ElasticActivity.probeScoped("permission-pending", () => state.pending.keys())
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -308,8 +319,52 @@ const layer = Layer.effect(
           }),
       )
 
+    /**
+     * origami_change (t-w2txb2): "always allow" answers outlive the engine
+     * process, for the chat that gave them only (owner decision 2026-09-24).
+     *
+     * `approved` is process memory, so an engine the extension stopped after a
+     * long idle (and restored on the next message) asked again for every answer
+     * the user had already given - as a window reload always did. Each answer is
+     * written for the ROOT session of the ask (a sub-agent's ask is the chat's),
+     * and read back into `approved` the first time this process sees an ask from
+     * that chat. Another chat's engine never reads them. A failed read is logged
+     * and tried again on the next ask; a failed write only loses the answer at
+     * the next restart, the old behaviour.
+     */
+    const rootOf = (parents: Map<string, string>, sessionID: string, parentSessionID?: string) => {
+      const seen = new Set<string>([sessionID])
+      let current = parentSessionID ?? parents.get(sessionID) ?? sessionID
+      while (!seen.has(current)) {
+        seen.add(current)
+        const up = parents.get(current)
+        if (up === undefined) break
+        current = up
+      }
+      return current
+    }
+
+    const recall = Effect.fnUntraced(function* (s: State, root: string) {
+      if (s.recalled.has(root)) return
+      const rows = yield* SessionRequestMemoryRows.load(db, root, ALWAYS_KIND).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("always-allow answers not read", { "session.id": root, cause }).pipe(Effect.as(undefined)),
+        ),
+      )
+      if (!rows) return
+      s.recalled.add(root)
+      for (const row of rows) {
+        const rule = row.data as Partial<PermissionV1.Rule> | null
+        if (typeof rule?.permission !== "string" || typeof rule.pattern !== "string") continue
+        if (s.approved.some((item) => item.permission === rule.permission && item.pattern === rule.pattern)) continue
+        s.approved.push({ permission: rule.permission, pattern: rule.pattern, action: "allow" })
+      }
+    })
+
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
-      const { approved, pending, latestRuleset } = yield* InstanceState.get(state)
+      const current = yield* InstanceState.get(state)
+      yield* recall(current, rootOf(current.parents, input.sessionID, input.parentSessionID))
+      const { approved, pending, latestRuleset } = current
       const { ruleset, parentSessionID, ...request } = input
       let needsAsk = false
 
@@ -425,6 +480,21 @@ const layer = Layer.effect(
           action: "allow",
         })
       }
+      // origami_change (t-w2txb2): kept for this chat past an engine restart (`recall`).
+      const root = rootOf((yield* InstanceState.get(state)).parents, existing.info.sessionID)
+      yield* SessionRequestMemoryRows.write(
+        db,
+        root,
+        existing.info.always.map((pattern) => ({
+          kind: ALWAYS_KIND,
+          key: `${existing.info.permission}\u0000${pattern}`,
+          data: { permission: existing.info.permission, pattern },
+        })),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("always-allow answer not written", { "session.id": root, cause }),
+        ),
+      )
 
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
@@ -597,6 +667,9 @@ export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Config.node] })
+/** The session_request_memory kind an "always allow" answer is stored under (t-w2txb2). */
+const ALWAYS_KIND = "permission.always" as const
+
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Config.node, Database.node] })
 
 export * as Permission from "."

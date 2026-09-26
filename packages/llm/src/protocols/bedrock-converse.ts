@@ -260,7 +260,10 @@ const lowerToolCall = (part: ToolCallPart): BedrockToolUseBlock => ({
   },
 })
 
-const lowerToolResultContent = Effect.fn("BedrockConverse.lowerToolResultContent")(function* (part: ToolResultPart) {
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+const lowerToolResultContent = Effect.fnUntraced(function* (part: ToolResultPart) {
   if (part.result.type === "text" || part.result.type === "error")
     return [{ text: ProviderShared.toolResultText(part) }]
   if (part.result.type === "json") return [{ json: part.result.value }]
@@ -284,7 +287,7 @@ const lowerToolResultContent = Effect.fn("BedrockConverse.lowerToolResultContent
   return content
 })
 
-const lowerToolResult = Effect.fn("BedrockConverse.lowerToolResult")(function* (part: ToolResultPart) {
+const lowerToolResult = Effect.fnUntraced(function* (part: ToolResultPart) {
   return {
     toolResult: {
       toolUseId: part.id,

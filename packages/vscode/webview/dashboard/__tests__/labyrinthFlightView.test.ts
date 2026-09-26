@@ -412,6 +412,30 @@ describe('the ENGINE-recorded cause (0.4.160+) is read verbatim, never re-derive
     expect(lossFactsText(cold!)).toBeUndefined();
   });
 
+  it('`stopped` names what changed while the engine was parked, never a plain cold start', () => {
+    const restored: LayoutStep[] = [
+      step(0, { kind: 'prompt', title: 'restored run', startedAt: at(0) }),
+      step(1, { tool: 'read', title: 'tools moved during the stop', startedAt: at(1_000), endedAt: at(1_400), model: OPUS,
+        tokens: engineMiss(5_000, 100), cache: { cause: 'stopped', stopped: ['tools'], idleMs: 20 * 60_000 } }),
+      step(2, { tool: 'read', title: 'system and history moved', startedAt: at(2_000), endedAt: at(2_400), model: OPUS,
+        tokens: engineMiss(5_000, 100), cache: { cause: 'stopped', stopped: ['system', 'history'] } }),
+      step(3, { tool: 'read', title: 'history alone', startedAt: at(3_000), endedAt: at(3_400), model: OPUS,
+        tokens: engineMiss(5_000, 100), cache: { cause: 'stopped', stopped: ['history'] } }),
+    ];
+    const [tools, both, history] = cacheLosses(restored);
+    expect(tools!.cause).toBe('stopped');
+    expect(lossReasonText(tools!)).toBe(
+      'the tool list changed while the engine was parked (settings, instructions, skills, agents or MCP servers were edited) — the restored request could not reuse the cache',
+    );
+    expect(lossFactsText(tools!)).toBe('changed while parked: the tool list · idle 20m');
+    expect(lossReasonText(both!)).toContain('the system prompt and the earlier messages changed while the engine was parked');
+    // A history-only change was not an edit of settings, so no such hint.
+    expect(lossReasonText(history!)).toBe(
+      'the earlier messages changed while the engine was parked — the restored request could not reuse the cache',
+    );
+    for (const loss of [tools, both, history]) expect(lossReasonText(loss!)).not.toContain('first billed prefill');
+  });
+
   it('a step with `cache` but no `ttlSeconds` never prints "idle" — a window-less provider reads as `provider`', () => {
     const provider = cacheLosses(ENGINE_RUN).find((l) => l.ordinal === 9)!;
     expect(provider.facts?.ttlSeconds).toBeUndefined();

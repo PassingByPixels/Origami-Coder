@@ -168,7 +168,10 @@ const lowerToolConfig = (toolChoice: NonNullable<LLMRequest["toolChoice"]>) =>
     tool: (name) => ({ functionCallingConfig: { mode: "ANY" as const, allowedFunctionNames: [name] } }),
   })
 
-const lowerUserPart = Effect.fn("Gemini.lowerUserPart")(function* (part: TextPart | MediaPart) {
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+const lowerUserPart = Effect.fnUntraced(function* (part: TextPart | MediaPart) {
   if (part.type === "text") return { text: part.text }
   const media = yield* ProviderShared.validateMedia("Gemini", part, MEDIA_MIMES)
   return { inlineData: { mimeType: media.mime, data: media.base64 } }

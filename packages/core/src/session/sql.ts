@@ -178,6 +178,28 @@ export const SessionInputTable = sqliteTable(
   ],
 )
 
+/**
+ * What an engine process decided about a session's requests and must not
+ * forget on a restart (t-w2qb1x): tool-aging rewrites and reprieves, the tools
+ * `tool_search` loaded, refused request knobs, a learned image cap, the
+ * window-fit ratio. One row per (session, kind, key); engine
+ * session/request-memory.ts owns the kinds and the `data` shapes. Deleted with
+ * the session.
+ */
+export const SessionRequestMemoryTable = sqliteTable(
+  "session_request_memory",
+  {
+    session_id: text()
+      .$type<SessionSchema.ID>()
+      .notNull()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
+    kind: text().notNull(),
+    key: text().notNull(),
+    data: text({ mode: "json" }).notNull().$type<unknown>(),
+  },
+  (table) => [primaryKey({ columns: [table.session_id, table.kind, table.key] })],
+)
+
 export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
   session_id: text()
     .$type<SessionSchema.ID>()

@@ -47,6 +47,7 @@ export function row(over: Partial<SubagentRow> = {}): SubagentRow {
 export function dockProps(messages: SubagentMessage[], over: Partial<SubagentDockProps> = {}): SubagentDockProps {
   return {
     messages,
+    sessionId: 'chat-1',
     dismissed: [],
     open: true,
     chatTitle: '#1 coder',

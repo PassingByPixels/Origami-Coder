@@ -2,7 +2,8 @@ export * as StorageNests from "./nests"
 
 import { Effect } from "effect"
 import { eq, sql } from "drizzle-orm"
-import { existsSync, readdirSync, statSync } from "node:fs"
+import { existsSync } from "node:fs"
+import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { Database } from "@origami/core/database/database"
 import type { EventV2 } from "@origami/core/event"
@@ -341,7 +342,7 @@ const journalSize = Effect.fnUntraced(function* (sessionID: string, seq: number)
  * twice leave the table as the first apply did. A higher seq replaces the row;
  * the SAME seq also replaces it, because `state` changes without a journal
  * write (a chat is closed, a turn ends); a lower seq is a late, older message
- * and is dropped. `replace` means the rows are that desk's whole index, so a
+ * and is dropped - unless `replace` (t-z6nt1b). `replace` means the rows are that desk's whole index, so a
  * row it no longer lists was deleted there and goes here too.
  */
 export const applyIndex = Effect.fn("StorageNests.applyIndex")(function* (input: {
@@ -374,7 +375,10 @@ export const applyIndex = Effect.fn("StorageNests.applyIndex")(function* (input:
                 row: string
               }>(sql`SELECT seq, row FROM ${INDEX} WHERE desk = ${row.desk} AND id = ${row.id}`)
               .pipe(Effect.orDie)
-            if (held && row.seq < held.seq) {
+            // t-z6nt1b: a full index is the desk's current truth. Its seq can be LOWER
+            // than the held one: the owner's first export compacts the journal and
+            // renumbers it. Dropping it froze the row (a closed chat stayed "open").
+            if (held && row.seq < held.seq && !input.replace) {
               totals.stale++
               continue
             }
@@ -781,7 +785,9 @@ export const storage = Effect.fn("StorageNests.storage")(function* (input: {
       page_size: number
     }>(sql`SELECT (SELECT * FROM pragma_page_count()) AS page_count, (SELECT * FROM pragma_page_size()) AS page_size`)
     .pipe(Effect.orDie)
-  const artifacts = directoryBytes(input.artifactsDir ?? path.join(Global.Path.data, "artifacts"))
+  const artifacts = yield* Effect.promise(() =>
+    directoryBytes(input.artifactsDir ?? path.join(Global.Path.data, "artifacts")),
+  )
   const result = (sums: StorageNestsMeasure.Sums, progress: number, done: boolean): StorageResult => {
     const partCount = sums.parts[0] + sums.parts[1]
     return {
@@ -810,25 +816,35 @@ export const storage = Effect.fn("StorageNests.storage")(function* (input: {
   return result(sums, 1, true)
 })
 
-/** Sum of file sizes under `dir`; 0 when it does not exist. */
-function directoryBytes(dir: string): number {
-  let total = 0
+/** Stats in flight at once in `directoryBytes`. */
+const STAT_BATCH = 256
+
+/** Sum of file sizes under `dir`; 0 when it does not exist. Async listing and
+ *  stats in batches (t-vs5krz): the blocking walk held the engine's event loop
+ *  284-439 ms at 30,000 artifact blobs (soak, store copy). */
+async function directoryBytes(dir: string): Promise<number> {
   let entries: import("node:fs").Dirent[]
   try {
-    entries = readdirSync(dir, { withFileTypes: true })
+    entries = await readdir(dir, { withFileTypes: true })
   } catch {
     return 0
   }
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) total += directoryBytes(full)
-    else if (entry.isFile()) {
-      try {
-        total += statSync(full).size
-      } catch {
-        // Removed between the listing and the stat: it holds nothing now.
-      }
-    }
+  let total = 0
+  for (const entry of entries) if (entry.isDirectory()) total += await directoryBytes(path.join(dir, entry.name))
+  const files = entries.filter((entry) => entry.isFile())
+  for (let at = 0; at < files.length; at += STAT_BATCH) {
+    const sizes = await Promise.all(
+      files.slice(at, at + STAT_BATCH).map((entry) =>
+        stat(path.join(dir, entry.name)).then(
+          (info) => info.size,
+          // Removed between the listing and the stat: it holds nothing now.
+          () => 0,
+        ),
+      ),
+    )
+    for (const size of sizes) total += size
+    // Bun can finish a whole batch of stats in one loop turn: give one back.
+    await new Promise((resolve) => setImmediate(resolve))
   }
   return total
 }
@@ -917,11 +933,14 @@ const pruneArtifacts = (dir: string | undefined, days: number, dryRun: boolean) 
       bytes: report.removedBytes,
     })
     if (!existsSync(path.join(root, "artifacts.db"))) return done({ removedBlobs: 0, removedBytes: 0 })
+    // A dry run lists and stats the blobs without holding the event loop (t-vs5krz).
+    const prune = (store: ArtifactStore) =>
+      dryRun ? store.pruneByWindowDry(days) : Promise.resolve(store.pruneByWindow(days, { dryRun }))
     // The engine's own store goes through the one handle of this process.
-    if (dir === undefined) return done((await artifactStore()).pruneByWindow(days, { dryRun }))
+    if (dir === undefined) return done(await prune(await artifactStore()))
     const store = await ArtifactStore.open(dir)
     try {
-      return done(store.pruneByWindow(days, { dryRun }))
+      return done(await prune(store))
     } finally {
       store.close()
     }

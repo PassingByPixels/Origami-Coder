@@ -14,12 +14,14 @@
   import BrowserSettings from '../components/BrowserSettings.svelte';
   import CacheWarmingCard from '../components/CacheWarmingCard.svelte';
   import BackdropSetting from '../components/BackdropSetting.svelte';
+  import EngineSettingsCard from '../components/EngineSettingsCard.svelte';
   import { SETTING_COUNT, SETTING_GROUPS, groupMatches } from './settingsGroups';
 
   /** Which row components draw each group, in the table's row order. */
   const MOUNTS: Record<string, Component<{ filter?: string }>> = {
     Chat: DensityCard,
     Agents: SubagentLimitCard,
+    Engines: EngineSettingsCard,
     Browser: BrowserSettings,
     Cache: CacheWarmingCard,
     Appearance: BackdropSetting,

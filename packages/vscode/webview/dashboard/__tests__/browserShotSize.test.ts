@@ -89,20 +89,20 @@ describe('the pane lets every frame field through', () => {
 describe('the caption', () => {
   it('names the viewport AND the shown size when the capture was scaled', () => {
     expect(viewportCaption([frame({ width: 1920, height: 1080, shotWidth: 320, shotHeight: 180 })]))
-      .toBe('frame 1 of 1 · 1920 × 1080 viewport · 320 × 180 shown');
+      .toBe('frame 1 of 1 · screenshot · 1920 × 1080 viewport · 320 × 180 shown');
   });
 
   it('says it once when the picture is the size of the page', () => {
     expect(viewportCaption([frame({ width: 1920, height: 1080, shotWidth: 1920, shotHeight: 1080 })]))
-      .toBe('frame 1 of 1 · 1920 × 1080 px');
+      .toBe('frame 1 of 1 · screenshot · 1920 × 1080 px');
   });
 
   it('an old host sends no shown size — the caption is what it always was', () => {
-    expect(viewportCaption([frame({ width: 1280, height: 720 })])).toBe('frame 1 of 1 · 1280 × 720 px');
+    expect(viewportCaption([frame({ width: 1280, height: 720 })])).toBe('frame 1 of 1 · screenshot · 1280 × 720 px');
   });
 
   it('still prints no size at all when the viewport is unknown', () => {
-    expect(viewportCaption([frame({ shotWidth: 320, shotHeight: 180 })])).toBe('frame 1 of 1');
+    expect(viewportCaption([frame({ shotWidth: 320, shotHeight: 180 })])).toBe('frame 1 of 1 · screenshot');
     expect(viewportCaption([])).toBe('');
   });
 
@@ -111,9 +111,9 @@ describe('the caption', () => {
       props: { frames: [frame({ width: 1920, height: 1080, shotWidth: 320, shotHeight: 180 })], onReveal: () => {} },
     });
     expect(scaled.container.querySelector('.browser-viewport-size')?.textContent)
-      .toBe('frame 1 of 1 · 1920 × 1080 viewport · 320 × 180 shown');
+      .toBe('frame 1 of 1 · screenshot · 1920 × 1080 viewport · 320 × 180 shown');
 
     const bare = render(BrowserViewportRow, { props: { frames: [frame()], onReveal: () => {} } });
-    expect(bare.container.querySelector('.browser-viewport-size')?.textContent).toBe('frame 1 of 1');
+    expect(bare.container.querySelector('.browser-viewport-size')?.textContent).toBe('frame 1 of 1 · screenshot');
   });
 });

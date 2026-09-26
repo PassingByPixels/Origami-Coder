@@ -318,14 +318,35 @@ describe('toolsPane host — resetting the sub-agent ledger with no roster', () 
 });
 
 describe('toolsPane host — the code-mode toggle', () => {
-  it('writes the setting, re-posts state, and says the change needs a reload', async () => {
+  // t-xtimx0, owner UAT of 0.4.178: the toast said "reload the window", and was cut at about 69
+  // characters ("Code mode off — reload the window to start the engine with the new ..."). No reload
+  // is needed: the warm spare is dropped at once and a new chat starts with the new value, while an
+  // open chat keeps the env it was spawned with (acpClient.ts `spawnEnv ??=`).
+  it('writes the setting, re-posts state, and says new chats get it and open chats keep the old value', async () => {
     const { host, posted } = hostWith({ listTools: async () => CATALOG });
 
     await handleToolsPaneMessage(host, { type: 'toolsSetCodeMode', on: true });
 
     expect(fake.updates).toEqual([{ key: 'experimentalCodeMode', value: true }]);
     expect(posted[0]).toMatchObject({ type: 'toolsData', codeMode: true });
-    expect(fake.infos.join(' ')).toMatch(/reload/i);
+    expect(fake.infos).toEqual(['Code mode on for new chats. Open chats keep it off until closed.']);
+  });
+
+  it('says the same, the other way round, when code mode goes off', async () => {
+    const { host } = hostWith({ listTools: async () => CATALOG });
+
+    await handleToolsPaneMessage(host, { type: 'toolsSetCodeMode', on: false });
+
+    expect(fake.infos).toEqual(['Code mode off for new chats. Open chats keep it on until closed.']);
+  });
+
+  it('fits the collapsed toast: no reload, and under the ~69 characters the owner saw before the cut', async () => {
+    const { host } = hostWith({ listTools: async () => CATALOG });
+    for (const on of [true, false]) await handleToolsPaneMessage(host, { type: 'toolsSetCodeMode', on });
+    for (const line of fake.infos) {
+      expect(line).not.toMatch(/reload/i);
+      expect(line.length).toBeLessThanOrEqual(64);
+    }
   });
 
   it('treats anything that is not an exact true as off', async () => {

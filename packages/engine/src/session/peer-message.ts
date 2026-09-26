@@ -162,6 +162,13 @@ export function claimPeerMessage(sessionID: string, id: string, now = Date.now()
   return true
 }
 
+/** origami_change (t-wdybz9): give a claim back. For the SENDER, whose send
+ *  failed: the id was claimed before the POST, so the model's retry of a
+ *  message that never arrived was refused as "already went". */
+export function releasePeerMessage(sessionID: string, id: string): void {
+  delivered.get(sessionID)?.delete(id)
+}
+
 /** Test seam: the ledger is process-wide, so a suite needs a way back to zero. */
 export function resetPeerMessages(): void {
   delivered.clear()

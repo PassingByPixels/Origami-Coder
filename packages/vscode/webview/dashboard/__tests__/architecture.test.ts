@@ -892,6 +892,10 @@ const CAPS: Record<string, number> = {
   // as 0, so the math cannot be proven against a real layout at all). 1199 ->
   // 1223, 7 lines of slack left.
   'webview/dashboard/components/InputBar.svelte': 1230,
+  // t-z69b8m: the drop overlay's resets and the drop payload rules (composerDropIntake.ts),
+  // out of InputBar.svelte (1229 -> 1224); the host half reads explorer-dropped files. Intro 23 + slack.
+  'webview/dashboard/components/composerDropIntake.ts': 115,
+  'src/dashboard/droppedFiles.ts': 60,
   // ModelWarning.svelte (0.4.61): the composer's connectivity strip — the amber
   // line that stands until this chat's provider confirms a model. Markup and CSS
   // moved VERBATIM out of InputBar.svelte; the copy rule stayed in modelBanner.ts,
@@ -1529,7 +1533,7 @@ const CAPS: Record<string, number> = {
   'webview/dashboard/components/RaceGroup.svelte': 120,
   // RaceCompareScreen (S6d): the full editor-tab compare SCREEN — two aligned
   // columns of REAL per-file diff text for the file union, sibling selectors,
-  // refresh. Replaces the deleted in-column RaceComparePanel (Passing's UAT).
+  // refresh. Replaces the deleted in-column RaceComparePanel (the owner's UAT).
   'webview/dashboard/panes/RaceCompareScreen.svelte': 250,
   // RepoMapScreen (S15): the full editor-tab map SCREEN - layer columns of node boxes,
   // the flows list, the selected-flow steps panel + SVG path connectors. Capped at
@@ -3885,6 +3889,12 @@ const CAPS: Record<string, number> = {
   'webview/dashboard/components/SideQuestsDrawer.svelte': 170,
   'webview/dashboard/components/SideQuestsTab.svelte': 60,
   'webview/dashboard/components/SideQuestPopup.svelte': 145,
+  // t-yyz5je (redesign R4): the rail's shared folding header (Side quests and
+  // Browser use it; the sub-agent pull-out can), one side-quest row extracted
+  // from the drawer, and the row's age rule. New files, intro + slack.
+  'webview/dashboard/components/RailFoldHead.svelte': 65,
+  'webview/dashboard/components/SideQuestRow.svelte': 70,
+  'webview/dashboard/panes/sideQuestAge.ts': 25,
   'webview/dashboard/panes/sideQuestProps.ts': 60,
   // The host half of the same feature. sideQuestFile.ts is the PURE file contract
   // (parse + stamp, no fs); sideQuestsPane.ts is the folder and the four messages
@@ -3964,6 +3974,13 @@ const CAPS: Record<string, number> = {
   // COLLAPSED by default. No new component split makes sense here: the three
   // lines are one row's own content, not three separable concerns.
   'webview/dashboard/components/SubagentRow.svelte': 150,
+  // t-yyz57i (redesign R3): the ONE card face the pull-out row and the agent map
+  // share (SubagentCardFace.svelte), its pure line-2 / counts / wire rules
+  // (subagentCard.ts) and the pull-out head's three dot counts
+  // (SubagentCounts.svelte, extracted so SubagentDrawer.svelte stays at 184/185).
+  'webview/dashboard/components/SubagentCardFace.svelte': 80,
+  'webview/dashboard/components/SubagentCounts.svelte': 40,
+  'webview/dashboard/panes/subagentCard.ts': 95,
   // chatScroll.ts: the follow-the-stream predicate. Its own module because the
   // threshold is the whole decision — an exact bottom test unsticks a user who
   // never touched the wheel — and a threshold nobody can unit-test is one
@@ -4118,6 +4135,17 @@ const CAPS: Record<string, number> = {
   // three rows) — a new `.sm-model` conditional + style block, and a comment
   // on the width choice.
   'webview/dashboard/components/SubagentMap.svelte': 195,
+  // t-z1xlfy (agent map, full mockup): SubagentMap.svelte was rewritten INSIDE its
+  // 195 cap; the new parts are leaves. agentTree.ts: the tree off three sources
+  // (pull-out rows, the host's roster for deeper tiers, background shells) + the
+  // host wire. agentMapLayout.ts: the pure layout model (tiers, rows, elbow wires,
+  // extents, zoom maths). AgentMapChip / AgentMapZoom: the chip and the zoom group.
+  // agentTreeHost.ts: the host's per-chat store and the `origami/backgroundTask` decode.
+  'webview/dashboard/panes/agentTree.ts': 170,
+  'webview/dashboard/panes/agentMapLayout.ts': 170,
+  'webview/dashboard/components/AgentMapChip.svelte': 50,
+  'webview/dashboard/components/AgentMapZoom.svelte': 35,
+  'src/dashboard/agentTreeHost.ts': 75,
   // SubagentTab.svelte: the drawer's EDGE HANDLE and its running badge —
   // EXTRACTED from SubagentDrawer.svelte at 184/185 when the panel head gained
   // the agent-map button. The handle is the affordance that exists precisely
@@ -5399,7 +5427,10 @@ const CAPS: Record<string, number> = {
   // The Settings view (t-s9jr6u): the pane, its table and the row shell. The
   // rows themselves are the former Insights cards, restyled in place.
   'webview/dashboard/panes/SettingsPane.svelte': 100,
-  'webview/dashboard/panes/settingsGroups.ts': 85,
+  // 85 -> 100 (t-xf2e9q): the Engines group's 7 rows (origamicoder.elastic.*),
+  // each with real plain-word help naming its default — the table's own words,
+  // not extractable logic, so the cap moves with the content it holds.
+  'webview/dashboard/panes/settingsGroups.ts': 100,
   'webview/dashboard/components/SettingRow.svelte': 50,
   'webview/dashboard/components/BackdropSetting.svelte': 50,
   // BoardRail.svelte: BoardShell.svelte's rail, extracted at 189/190 so the
@@ -5455,7 +5486,10 @@ const CAPS: Record<string, number> = {
   // above reached 250/250 and a new desk-settings write (t-qcwpyy) had to be
   // dispositioned. EXTRACTION, not a cap raise: the two lists answer opposite
   // questions and both only ever grow.
-  'src/remote/remoteRefusalsTable.ts': 150,
+  // 150 -> 155 (t-xf2e9q): one more named row, `engineSettingsSet` (the
+  // Settings view's Engines group), on the cacheWarmingSet precedent right
+  // above it.
+  'src/remote/remoteRefusalsTable.ts': 155,
   'src/remote/authority.ts': 135,
   'src/remote/privilege.ts': 250,
   // The desk's half of the mode REPORT (lane/remote-mode-state), split out
@@ -6024,6 +6058,11 @@ const CAPS: Record<string, number> = {
   'webview/shared/warmTipWatch.ts': 60,
   'webview/sidebar/ConnectionCarousel.svelte': 175,
   'webview/sidebar/connectionCarouselFit.ts': 90,
+  // t-ysud6n: the paging arrow (with its hidden-tile count) and the count's pure
+  // arithmetic, as NEW leaves: ConnectionCarousel.svelte sat one line under its
+  // cap and came DOWN to 163. Intro sizes + slack.
+  'webview/sidebar/ConnectionArrow.svelte': 50,
+  'webview/sidebar/connectionHidden.ts': 30,
 
   // --- t-qlgav5: the dock pages instead of clipping at a narrow sidebar.
   // Two new leaves, FIRST caps: SidebarDock.svelte was already at its 235

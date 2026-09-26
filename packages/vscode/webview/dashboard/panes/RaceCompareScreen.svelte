@@ -1,6 +1,6 @@
 <script lang="ts">
   // Race Compare SCREEN (S6d) — a full editor tab that replaces S6c's in-column
-  // numbers table (Passing's UAT: a table doesn't let him SEE how siblings differ).
+  // numbers table (the owner's UAT: a table doesn't let him SEE how siblings differ).
   // For the UNION of files either selected sibling changed (post-.origami-exclusion)
   // it renders TWO ALIGNED COLUMNS of REAL diff content: sibling A's hunks vs base
   // on the left, sibling B's on the right, with add/remove colouring, per-file

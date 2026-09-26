@@ -2,6 +2,7 @@ import { SessionV1 } from "@origami/core/v1/session"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import type { Err } from "./retry"
+import { SessionRequestMemoryRows } from "./request-memory-rows"
 
 /**
  * Image cap: an endpoint refusing a prompt because it carries too many
@@ -15,7 +16,8 @@ import type { Err } from "./retry"
  * and let the window clamp to it. A second refusal at the same number is let out
  * with the provider's own words — the count was not the cause.
  *
- * Process-local, session-scoped, bounded store, as in `session/degrade.ts`.
+ * Session-scoped, bounded store, as in `session/degrade.ts`, persisted per
+ * session (t-w2qb1x) and loaded back on a miss.
  */
 
 /** The one sentence this classifier trusts, copied from a live failure. A looser
@@ -52,7 +54,8 @@ export function detect(error: Err): number | undefined {
  *  server opens a session per sub-agent. */
 export const LIMIT = 128
 
-const caps = new Map<string, number>()
+/** `undefined` = this process holds the session and no cap was learned. */
+const caps = new Map<string, number | undefined>()
 
 /** Remember that this endpoint takes at most `images` per prompt. */
 export function record(sessionID: string, images: number): void {
@@ -60,6 +63,8 @@ export function record(sessionID: string, images: number): void {
   // The SMALLEST wins: two lanes behind one endpoint can answer with different
   // caps, and the tighter one is the only one both accept.
   const next = current === undefined ? images : Math.min(current, images)
+  // t-w2qb1x: written before the request that carries the clamp.
+  SessionRequestMemoryRows.stage(sessionID, [{ kind: "image_cap", key: "", data: next }])
   caps.delete(sessionID)
   caps.set(sessionID, next)
   for (const key of caps.keys()) {
@@ -95,6 +100,29 @@ export function clamp(sessionID: string, model: Provider.Model): Provider.Model 
 /** The one line the user reads in the chat when the window is clamped. */
 export function notice(images: number): string {
   return `This endpoint accepts at most ${images} image${images === 1 ? "" : "s"} per request — older images were replaced with a note. Attach fewer images, or raise the server's image limit.`
+}
+
+/** True while this process holds the session (with or without a cap). */
+export function has(sessionID: string): boolean {
+  return caps.has(sessionID)
+}
+
+/** Put back the cap the database holds for a session this process does not
+ *  hold (t-w2qb1x). No row restores "no cap learned". The LAST row wins
+ *  (t-wdyp7r): rows queued in this process follow the stored one and are newer. */
+export function restore(sessionID: string, rows: readonly SessionRequestMemoryRows.Row[]): void {
+  if (caps.has(sessionID)) return
+  const row = rows.findLast((row) => row.kind === "image_cap")
+  caps.set(sessionID, typeof row?.data === "number" ? row.data : undefined)
+  for (const key of caps.keys()) {
+    if (caps.size <= LIMIT) break
+    caps.delete(key)
+  }
+}
+
+/** The chat closed (t-w2u5vf). Persisted, so a reopen loads it back on a miss. */
+export function evict(sessionID: string): void {
+  caps.delete(sessionID)
 }
 
 /** Test seam — the store is module state, so a test must be able to empty it. */

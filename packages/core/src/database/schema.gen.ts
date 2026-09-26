@@ -253,6 +253,16 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_request_memory\` (
+          \`session_id\` text NOT NULL,
+          \`kind\` text NOT NULL,
+          \`key\` text NOT NULL,
+          \`data\` text NOT NULL,
+          CONSTRAINT \`session_request_memory_pk\` PRIMARY KEY(\`session_id\`, \`kind\`, \`key\`),
+          CONSTRAINT \`fk_session_request_memory_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session\` (
           \`id\` text PRIMARY KEY,
           \`project_id\` text NOT NULL,

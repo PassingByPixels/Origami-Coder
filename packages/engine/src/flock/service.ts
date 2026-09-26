@@ -1,3 +1,4 @@
+import { ElasticState } from "@/elastic/state"
 import { FlockDeliver } from "./deliver"
 import { FlockExit } from "./exit"
 import { FlockFrontDesk } from "./frontdesk"
@@ -415,6 +416,13 @@ export function start(options: Options): Handle {
     inner = open(options, log)
   }
 
+  /** origami_change (t-w2qlop): the holder beats every HEARTBEAT_MS whatever
+   *  its class - a slower beat would let a sibling read the lease as stale
+   *  (STALE_MS) and take the relay slots from a live engine. A NON-holder only
+   *  retries, so it rests with the engine: every HEARTBEAT_MS while active, every
+   *  ElasticState.REST_MIN_MS while background or idle. */
+  const beatMs = (): number => (inner ? FlockOwnerLease.HEARTBEAT_MS : ElasticState.period(FlockOwnerLease.HEARTBEAT_MS))
+
   // ONE TIMER, TWO JOBS: while we own the flock it keeps the lease fresh; while
   // another engine owns it, it is the retry that takes over within one beat of
   // that engine going away. A gate refusal arms nothing — `refresh()` wakes it.
@@ -436,15 +444,23 @@ export function start(options: Options): Handle {
     // A store gate that refused is re-run from the file, so a contact accepted
     // in another window brings this engine up within one beat.
     else if (!refused || RECHECKABLE.has(refused)) take()
-    timer = deps.setTimer(tick, FlockOwnerLease.HEARTBEAT_MS)
+    timer = deps.setTimer(tick, beatMs())
     publishState()
   }
 
   const arm = (): void => {
     if (armed) return
     armed = true
-    timer = deps.setTimer(tick, FlockOwnerLease.HEARTBEAT_MS)
+    timer = deps.setTimer(tick, beatMs())
   }
+
+  // A class change re-arms a resting retry at the new period, so an engine
+  // that becomes active is back on the short beat now, not after its rest.
+  const unfollow = ElasticState.onChange(() => {
+    if (!armed || inner) return
+    deps.clearTimer(timer)
+    timer = deps.setTimer(tick, beatMs())
+  })
 
   function restart(): void {
     // The store object was loaded at boot and the pane and the CLI each write
@@ -494,6 +510,7 @@ export function start(options: Options): Handle {
     refresh: restart,
     stop: () => {
       unhook?.()
+      unfollow()
       deps.clearTimer(timer)
       timer = null
       armed = false

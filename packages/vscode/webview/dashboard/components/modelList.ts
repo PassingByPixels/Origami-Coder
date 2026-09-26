@@ -24,6 +24,8 @@ export interface ModelRow {
    *  OpenRouter rows, which come from a live catalogue the host sends no vision
    *  state for — those draw no chip, which is honest rather than wrong. */
   visionState?: string;
+  /** t-y5ecbj: values this row stands for (a saved alias pick whose row the host dropped). */
+  covers?: string[];
 }
 
 export interface ModelListInput {
@@ -33,7 +35,7 @@ export interface ModelListInput {
    *  (claudeSubscription/models.ts's not-ready marker row) keeps a row out of
    *  this list while still letting offeredProviders.ts build a tab from it —
    *  the tab exists, but nothing on it can be picked. */
-  modelOptions: ReadonlyArray<{ value: string; name: string; visionState?: string; selectable?: boolean }>;
+  modelOptions: ReadonlyArray<{ value: string; name: string; visionState?: string; selectable?: boolean; covers?: string[] }>;
   /** OpenRouter's live catalogue (bare ids — it is fetched, not configured). */
   openRouterModels: ReadonlyArray<{ id: string; name: string }>;
   filter: string;
@@ -55,7 +57,7 @@ export function visibleModels(input: ModelListInput): ModelRow[] {
       ? input.openRouterModels.map((m) => ({ value: `openrouter/${m.id}`, name: m.name || m.id }))
       : input.modelOptions
           .filter((o) => o.value.startsWith(input.providerId + '/') && o.selectable !== false)
-          .map((o) => ({ value: o.value, name: o.name, visionState: o.visionState }));
+          .map((o) => ({ value: o.value, name: o.name, visionState: o.visionState, ...(o.covers ? { covers: o.covers } : {}) }));
   const q = input.filter.trim().toLowerCase();
   if (q) list = list.filter((m) => m.name.toLowerCase().includes(q) || m.value.toLowerCase().includes(q));
   return promoteLoaded(list, input.loadedValue);

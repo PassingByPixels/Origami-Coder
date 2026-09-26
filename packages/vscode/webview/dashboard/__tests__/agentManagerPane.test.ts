@@ -842,6 +842,19 @@ describe('Folds board — the selected repo fills the detail pane', () => {
     expect(detail(container).textContent).toContain('No local branches read yet.');
   });
 
+  // t-vikozs: an empty worktree list from the host read "Reading worktrees…" for ever.
+  it('an answered but empty worktree list shows an empty state, not the loading line', async () => {
+    const { container } = render(AgentManagerPane);
+    amState([{ ...repo('/x/alpha'), groupId: 'g1', primary: '/x/alpha', branch: 'trunk' }]);
+    await tick();
+    expect(detail(container).textContent).toContain('Reading worktrees');
+    sendWorktrees('/x/alpha', [], []);
+    await tick();
+    expect(rowsOf(container)).toHaveLength(0);
+    expect(detail(container).textContent).not.toContain('Reading worktrees');
+    expect(detail(container).textContent).toContain('No checkouts found.');
+  });
+
   it('there is ONE detail pane, and it follows the selection', async () => {
     const { container } = render(AgentManagerPane);
     amState([

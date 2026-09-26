@@ -1,4 +1,4 @@
-> Copy of the canonical spec kept in the owner's Cortex workspace (`projects/Origami Coder/reports/remote_wire_spec_v1.md`). Source files cite sections of this file by name; edit the canonical copy first, then refresh this one.
+> This is the Origami Remote wire specification. Source files cite sections of this file by name.
 
 # Origami Remote — wire spec v1 (shared contract for the relay, extension and phone lanes)
 
@@ -98,7 +98,7 @@ cert) and tailnet mode are v2; the QR format already reserves the optional LAN U
 ## Addendum v1.1 — device identity (2026-09-06, the iOS app lane)
 
 Added by `lane/remote-device-key`. The wording of the two frames and of the signed bytes is
-copied verbatim from `docs/native_bridge_v1.md` §5.1-§5.2 in the `origami-remote-ios` repo, so the
+copied verbatim from the iOS app's native bridge specification, sections 5.1-5.2, so the
 two documents cannot drift. OPTIONAL on the wire: a desktop that sends no challenge is the desktop
 that shipped before this, and a page that sends no `deviceKey` is a browser — both keep working.
 
@@ -196,7 +196,7 @@ The phone drives the desktop's REAL privilege system, Ask and YOLO, and every gr
 authority from the phone is bound to the enrolled Secure Enclave key. Nothing a relay can
 replay, and nothing a copied `Ks` can mint, escalates the desktop.
 
-Companion: `ORIGAMI_REMOTE_PRIVILEGE_SPEC_2026-09-06.md` (the app owner's contract).
+Companion: the iOS app's privilege specification.
 Threat model, set by the owner: defend IMPERSONATION. A phone stolen while unlocked with
 the app open is out of scope. One identity confirmation per escalation, no timers, no
 auto-revert.
@@ -403,7 +403,7 @@ No change.
 
 ## v1.3 — a session key a copied secret cannot derive (2026-09-07)
 
-Owner's decision, from `wire_v1_3_session_key.md` (the app lane's text). It closes what the
+Owner's decision, from the v1.3 session-key design. It closes what the
 90-second ring only shortened: `Ks` is copyable, so anyone holding it can open every frame the
 relay replays. After the phone proves its enrolled Secure Enclave key, both ends derive a SECOND
 key from an ECDH the copy cannot compute, and seal everything after that with it. The relay does

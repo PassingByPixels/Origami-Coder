@@ -17,42 +17,51 @@
 
   let { result, diff }: Props = $props();
 
-  interface Row {
-    left: string | null;
-    right: string | null;
-  }
-
-  function splitRows(oldText: string, newText: string): Row[] {
-    const oldLines = oldText.length ? oldText.split('\n') : [];
-    const newLines = newText.length ? newText.split('\n') : [];
-    const n = Math.max(oldLines.length, newLines.length);
-    const rows: Row[] = [];
-    for (let i = 0; i < n; i++) {
-      rows.push({
-        left: i < oldLines.length ? oldLines[i] : null,
-        right: i < newLines.length ? newLines[i] : null,
-      });
-    }
-    return rows;
-  }
+  // t-yyz5yk (Round 8, "Inside each element"): the two sides are ALIGNED by
+  // a line diff (lineDiff.ts), so an insertion no longer shows every later
+  // line as changed. Split (before | after, line numbers per side, hatched
+  // filler) is the default; the switch goes to Unified. Line numbers count
+  // within the edited region: the diff block carries no offset into the file.
+  import { lineDiff, splitRows } from './lineDiff';
 
   let hasDiff = $derived(!!diff && (diff.oldText.length > 0 || diff.newText.length > 0));
-  let rows = $derived(diff ? splitRows(diff.oldText, diff.newText) : []);
+  let ops = $derived(diff ? lineDiff(diff.oldText, diff.newText) : []);
+  let rows = $derived(splitRows(ops));
+  let mode = $state<'split' | 'unified'>('split');
 </script>
 
 {#if hasDiff && diff}
   <div class="diff-split">
-    {#if diff.path}
-      <div class="diff-path">{diff.path}</div>
-    {/if}
-    <div class="diff-grid">
-      <div class="head head-old">before</div>
-      <div class="head head-new">after</div>
-      {#each rows as row, i (i)}
-        <div class="cell old" class:blank={row.left === null}>{row.left ?? ''}</div>
-        <div class="cell new" class:blank={row.right === null}>{row.right ?? ''}</div>
-      {/each}
+    <div class="dbar">
+      {#if diff.path}<span class="diff-path">{diff.path}</span>{/if}
+      <span class="sp"></span>
+      <span class="seg" role="group" aria-label="Diff layout">
+        <button type="button" aria-pressed={mode === 'split'} onclick={() => (mode = 'split')}>Split</button>
+        <button type="button" aria-pressed={mode === 'unified'} onclick={() => (mode = 'unified')}>Unified</button>
+      </span>
     </div>
+    {#if mode === 'split'}
+      <div class="split">
+        <div class="side">Before</div>
+        <div class="side">After</div>
+        {#each rows as row, i (i)}
+          <div class="sl-row" style="--i: {Math.min(i, 30)}">
+            {#if row.left}<div class="sl" class:del={row.left.del}><b class="sl-n">{row.left.n}</b><span>{row.left.text}</span></div>
+            {:else}<div class="sl empty"></div>{/if}
+            {#if row.right}<div class="sl" class:add={row.right.add}><b class="sl-n">{row.right.n}</b><span>{row.right.text}</span></div>
+            {:else}<div class="sl empty"></div>{/if}
+          </div>
+        {/each}
+      </div>
+    {:else}
+      <div class="unified">
+        {#each ops as o, i (i)}
+          <div class="ul" class:del={o.t === 'del'} class:add={o.t === 'add'} style="--i: {Math.min(i, 30)}">
+            <b>{o.t === 'add' ? '' : o.ai + 1}</b><b>{o.t === 'del' ? '' : o.bi + 1}</b><span>{o.t === 'add' ? o.b : o.a}</span>
+          </div>
+        {/each}
+      </div>
+    {/if}
   </div>
 {:else}
   <pre class="edit-fallback">{result}</pre>
@@ -62,75 +71,47 @@
   .diff-split {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11px;
-    line-height: 1.4;
+    line-height: 18px;
+    border: 1px solid var(--og-border);
+    border-radius: 8px;
+    background: var(--og-bg);
+    overflow: hidden;
   }
-  .diff-path {
-    color: var(--og-text-muted);
-    font-style: italic;
-    margin-bottom: 4px;
-  }
-
-  /* Two equal columns; the header row spans both. On a pane narrower than
-     ~360px the columns stack (before above after) so neither is squeezed
-     into illegibility. */
-  .diff-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 4px;
-    row-gap: 0;
-    align-items: stretch;
-  }
-
-  .head {
-    font-size: 9px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 600;
-    padding: 1px 4px;
-    margin-bottom: 2px;
-    color: var(--og-text-muted);
+  .dbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 8px;
     border-bottom: 1px solid var(--og-border);
+    background: color-mix(in srgb, var(--og-surface) 60%, transparent);
+    font-family: inherit;
   }
-  .head-old { color: color-mix(in srgb, var(--og-error) 80%, var(--og-text-muted)); }
-  .head-new { color: color-mix(in srgb, var(--og-success) 80%, var(--og-text-muted)); }
-
-  .cell {
-    padding: 0 4px;
-    white-space: pre;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-  .cell.old {
-    background: rgba(243, 139, 168, 0.10);
-    color: var(--og-text-secondary);
-  }
-  .cell.new {
-    background: rgba(80, 220, 80, 0.10);
-    color: var(--og-text);
-  }
-  /* A side with no corresponding line (one text longer than the other) —
-     a faint hatched filler so the row alignment reads as add/remove. */
-  .cell.blank {
-    background:
-      repeating-linear-gradient(
-        45deg,
-        transparent,
-        transparent 5px,
-        var(--og-border) 5px,
-        var(--og-border) 6px
-      );
-    opacity: 0.5;
-    min-height: 1.4em;
-  }
-
-  @media (max-width: 360px) {
-    .diff-grid {
-      grid-template-columns: 1fr;
-    }
-    /* In stacked mode keep before/after visually paired by colour; the
-       header labels still announce which is which. */
-    .head-new { margin-top: 6px; }
-  }
+  .diff-path { color: var(--og-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--og-border); border-radius: 6px; overflow: hidden; flex: none; }
+  .seg button { font: inherit; font-size: 10.5px; padding: 0 8px; border: 0; background: transparent; color: var(--og-text-muted); cursor: pointer; }
+  .seg button[aria-pressed='true'] { background: var(--og-surface); color: var(--og-text); }
+  .split { display: grid; grid-template-columns: 1fr 1fr; }
+  .side { padding: 0 8px; font-size: 10.5px; color: var(--og-text-muted); border-bottom: 1px solid var(--og-border); font-family: var(--vscode-font-family, sans-serif); }
+  .side + .side, .sl + .sl { border-left: 1px solid var(--og-border); }
+  .sl-row { display: contents; }
+  .sl, .ul { display: grid; white-space: pre; min-height: 18px; overflow: hidden; }
+  .sl { grid-template-columns: 34px 1fr; }
+  .ul { grid-template-columns: 34px 34px 1fr; }
+  .sl b, .ul b { font-weight: 400; text-align: right; padding-right: 8px; color: var(--og-text-muted); opacity: 0.7; user-select: none; }
+  .sl span, .ul span { overflow: hidden; text-overflow: ellipsis; color: var(--og-text-secondary); }
+  .sl.del, .ul.del { background: color-mix(in srgb, var(--og-error) 11%, transparent); }
+  .sl.add, .ul.add { background: color-mix(in srgb, var(--og-success) 11%, transparent); }
+  .sl.del span, .sl.add span, .ul.del span, .ul.add span { color: var(--og-text); }
+  .sl.del b, .ul.del b { color: var(--og-error); }
+  .sl.add b, .ul.add b { color: var(--og-success); }
+  .sl.empty { background: repeating-linear-gradient(135deg, transparent 0 5px, color-mix(in srgb, var(--og-border) 35%, transparent) 5px 6px); }
+  /* Lines arrive once, 16 ms apart, when the view opens. */
+  .sl, .ul { animation: lnin 240ms cubic-bezier(0.23, 1, 0.32, 1) backwards; animation-delay: calc(var(--i, 0) * 16ms); }
+  @keyframes lnin { from { opacity: 0; transform: translateY(3px); } }
+  @media (prefers-reduced-motion: reduce) { .sl, .ul { animation: none; } }
+  /* On a very narrow pane, split cannot fit two readable columns. */
+  @media (max-width: 360px) { .split { grid-template-columns: 1fr; } .side + .side, .sl + .sl { border-left: 0; } }
 
   .edit-fallback {
     margin: 0;

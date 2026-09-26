@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { SessionV1 } from "@origami/core/v1/session"
 import path from "path"
 import { tool, type ModelMessage } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Logger, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Logger, Option, References, Scope, Stream } from "effect"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import z from "zod"
@@ -21,6 +21,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
+import { SessionCacheWarm } from "@/session/cache-warm"
 import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@origami/core/provider"
 import { ModelV2 } from "@origami/core/model"
@@ -2331,9 +2332,25 @@ describe("session.llm.stream — AI SDK warnings reach the engine log", () => {
    * what reached the log sink and not on a spy we installed ourselves. */
   function captureLogs() {
     const lines: string[] = []
+    /** Per line: the span names and Effect.fn frames the logging fiber carries. */
+    const traces: string[][] = []
+    const trace = (fiber: Fiber.Fiber<unknown, unknown>) => {
+      const names: string[] = []
+      for (let span = fiber.currentSpan; span?._tag === "Span"; span = Option.getOrUndefined(span.parent))
+        names.push(span.name)
+      for (let frame = Context.get(fiber.context, References.CurrentStackFrame); frame; frame = frame.parent)
+        names.push(frame.name)
+      return names
+    }
     return {
       lines,
-      layer: Logger.layer([Logger.make<unknown, void>((options) => lines.push(JSON.stringify(options.message)))]),
+      traces,
+      layer: Logger.layer([
+        Logger.make<unknown, void>((options) => {
+          lines.push(JSON.stringify(options.message))
+          traces.push(trace(options.fiber))
+        }),
+      ]),
     }
   }
 
@@ -2410,6 +2427,11 @@ describe("session.llm.stream — AI SDK warnings reach the engine log", () => {
         expect(line, `no provider warning in ${capture.lines.length} log lines`).toBeDefined()
         expect(line).toContain("topK")
         expect(line).toContain(resolved.api.id)
+        // t-w2u5vf: the logger stays on the global after the request, so it must
+        // not carry the request's span or call frames: they keep the whole
+        // request (its messages) alive until the next one replaces the logger.
+        const trace = capture.traces[capture.lines.indexOf(line!)]!
+        expect(trace).not.toContain("LLM.run")
       }).pipe(Effect.provide(capture.layer))
     },
     {
@@ -2422,5 +2444,185 @@ describe("session.llm.stream — AI SDK warnings reach the engine log", () => {
         },
       }),
     },
+  )
+
+  // t-x3admf: after a request that FAILED, the logger kept the whole turn
+  // until the next request replaced it. Its bridge carried the request's
+  // context, and with it the request's Scope. That Scope closes with the
+  // failure, and Effect annotates every failure with the Effect.fn frame it
+  // happened in, whose `stack` closure keeps that call's arguments (the step
+  // input, all its messages): a soak kept +180 MB after closing chats whose
+  // last request failed. The logger stays on the global, so the fiber it logs
+  // on (whose context is what the logger keeps) must not hold that Scope.
+  aiSdkIt.instance(
+    "after a failed request the installed warning logger does not hold the request's scope",
+    () => {
+      const lines: string[] = []
+      /** Per line: the Scope in the logging fiber's context, read while it logs. */
+      const scopes: (Scope.Scope | undefined)[] = []
+      const capture = Logger.layer([
+        Logger.make<unknown, void>((options) => {
+          lines.push(JSON.stringify(options.message))
+          scopes.push(Option.getOrUndefined(Context.getOption(options.fiber.context, Scope.Scope)))
+        }),
+      ])
+      return Effect.gen(function* () {
+        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(JSON.stringify({ error: { message: "bad request", type: "invalid_request_error" } }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(vivgridFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-failed-request")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        // As SessionProcessor.process runs a step: an Effect.fn whose argument
+        // is the step input, so the failure is annotated with its frame.
+        const process = Effect.fn("TestProcessor.process")(function* (input: LLM.StreamInput) {
+          return yield* drain(input)
+        })
+        const exit = yield* Effect.exit(
+          process({
+            user: {
+              id: MessageID.make("msg_user-failed"),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: agent.name,
+              model: {
+                providerID: ProviderV2.ID.make(vivgridFixture.providerID),
+                modelID: resolved.id,
+                variant: undefined,
+              },
+            } satisfies SessionV1.User,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          }),
+        )
+        yield* Effect.promise(() => request)
+        expect(Exit.isFailure(exit)).toBe(true)
+
+        // The logger the failed request installed, used after the request ended,
+        // as the SDK does when the next warning comes.
+        const logger = globalThis.AI_SDK_LOG_WARNINGS
+        if (typeof logger !== "function") throw new Error("the request installed no warning logger")
+        logger({ warnings: [{ type: "other", message: "after the failure" }], provider: "p", model: "m" })
+        const index = () => lines.findIndex((line) => line.includes("after the failure"))
+        for (let attempt = 0; attempt < 50 && index() < 0; attempt++) yield* Effect.sleep("20 millis")
+        expect(index(), `no logger line in ${lines.length} log lines`).toBeGreaterThanOrEqual(0)
+
+        const scope = scopes[index()]
+        const kept = scope?.state._tag === "Closed" ? scope.state.exit : undefined
+        expect(kept && Exit.isFailure(kept), "the logger holds the scope the failed request closed").toBeFalsy()
+      }).pipe(Effect.provide(capture))
+    },
+    {
+      config: () => ({
+        enabled_providers: [vivgridFixture.providerID],
+        provider: {
+          [vivgridFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
+  )
+})
+
+describe("session.llm — an armed cache warm", () => {
+  // t-x3admf: the same holder as the warning logger, in the cache warm. A warm is
+  // armed before the request is sent, and its `log` forked on a bridge built
+  // from the request's context: after a failed request the armed warm kept the
+  // request's closed Scope (the failure, the provider error with the request
+  // body) and the turn's span chain until it fired, up to 0.8 x the cache
+  // window (48 min for a 1-hour cache), on top of the messages it needs.
+  it.instance(
+    "after a failed request the armed cache warm does not hold the request's scope",
+    () => {
+      const lines: string[] = []
+      const scopes: (Scope.Scope | undefined)[] = []
+      const capture = Logger.layer([
+        Logger.make<unknown, void>((options) => {
+          lines.push(JSON.stringify(options.message))
+          scopes.push(Option.getOrUndefined(Context.getOption(options.fiber.context, Scope.Scope)))
+        }),
+      ])
+      const due: (() => void)[] = []
+      SessionCacheWarm.reset()
+      SessionCacheWarm.setClock({
+        setTimeout: (fn) => (due.push(fn), { id: due.length }),
+        clearTimeout: () => {},
+      })
+      return Effect.gen(function* () {
+        const model = loadFixture("openai", "gpt-5.2").model
+        const request = waitRequest(
+          "/responses",
+          new Response(JSON.stringify({ error: { message: "bad request", type: "invalid_request_error" } }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+        const sessionID = SessionID.make("session-failed-warm")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const process = Effect.fn("TestProcessor.process")(function* (input: LLM.StreamInput) {
+          return yield* drain(input)
+        })
+        const exit = yield* Effect.exit(
+          process({
+            user: {
+              id: MessageID.make("msg_user-failed-warm"),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: agent.name,
+              model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: undefined },
+            } satisfies SessionV1.User,
+            sessionID,
+            model: resolved,
+            agent,
+            system: ["You are a helpful assistant."],
+            messages: [{ role: "user", content: "Hello" }],
+            tools: {},
+          }),
+        )
+        yield* Effect.promise(() => request)
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(SessionCacheWarm.pending(sessionID), "the failed request armed no warm").toBe(true)
+
+        // Fire the warm; it logs before it sends. Its own request is not answered.
+        for (const fire of due.splice(0)) fire()
+        const index = () => lines.findIndex((line) => line.includes("cache warm"))
+        for (let attempt = 0; attempt < 50 && index() < 0; attempt++) yield* Effect.sleep("20 millis")
+        expect(index(), `no warm line in ${lines.length} log lines`).toBeGreaterThanOrEqual(0)
+
+        const scope = scopes[index()]
+        const kept = scope?.state._tag === "Closed" ? scope.state.exit : undefined
+        expect(kept && Exit.isFailure(kept), "the warm holds the scope the failed request closed").toBeFalsy()
+      }).pipe(
+        Effect.provide(capture),
+        Effect.ensuring(Effect.sync(() => SessionCacheWarm.reset())),
+      )
+    },
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
 })

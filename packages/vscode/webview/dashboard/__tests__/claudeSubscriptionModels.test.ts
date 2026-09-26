@@ -87,7 +87,8 @@ describe('claudeSubscriptionModelRows — the rows the host offers', () => {
     expect(rows.map((r) => r.value)).toEqual([
       'claude-subscription/fable', 'claude-subscription/opus', 'claude-subscription/sonnet', 'claude-subscription/haiku',
     ]);
-    expect(rows.map((r) => r.name)).toEqual(['Fable', 'Opus', 'Sonnet', 'Haiku']);
+    // t-xu5o64: the same "Claude (Sub)/<model>" the engine's rows carry.
+    expect(rows.map((r) => r.name)).toEqual(['Claude (Sub)/Fable', 'Claude (Sub)/Opus', 'Claude (Sub)/Sonnet', 'Claude (Sub)/Haiku']);
     expect(new Set(rows.map((r) => r.group))).toEqual(new Set([CLAUDE_SUBSCRIPTION_GROUP]));
     for (const r of rows) {
       expect(r.selectable).not.toBe(false);
@@ -203,6 +204,102 @@ describe('mergeClaudeSubscriptionRows — the engine rows and the host rows, joi
 
   it('the setting is off: the engine rows pass through unchanged', () => {
     expect(mergeClaudeSubscriptionRows(engine, [], tooOld)).toEqual(engine);
+  });
+
+  // t-xu5o64, owner UAT of 0.4.178 on a Max plan. The engine's live catalog is
+  // the CLI picker's own values (recorded 2026-09-25 by one read-only handshake):
+  // opus[1m], claude-fable-5-1[1m], sonnet, haiku. The host used to append its
+  // aliases `fable` and `opus` beside them, because neither value is listed
+  // under that exact name: two bare, unbadged rows ("Fable", "Opus").
+  const ownerLive = [
+    { value: 'lmstudio/qwen3', name: 'LM Studio/qwen3', configured: true, visionState: 'auto-off' },
+    ...[['opus[1m]', 'Opus (1M context)'], ['claude-fable-5-1[1m]', 'Fable'], ['sonnet', 'Sonnet'], ['haiku', 'Haiku']]
+      .map(([id, name]) => ({ value: `claude-subscription/${id}`, name: `Claude (Sub)/${name}`, configured: true, visionState: 'auto-on' })),
+  ];
+
+  it('ready with a live catalog: only the account\'s models, once each, named and badged alike, in one tab', () => {
+    const merged = mergeClaudeSubscriptionRows(ownerLive, claudeSubscriptionModelRows(true, { state: 'ready' }), { state: 'ready' });
+    const shown = pick(merged) as Array<{ value: string; name: string; visionState?: string }>;
+    expect(shown.map((m) => m.value)).toEqual([
+      'claude-subscription/opus[1m]', 'claude-subscription/claude-fable-5-1[1m]', 'claude-subscription/sonnet', 'claude-subscription/haiku',
+    ]);
+    for (const m of shown) {
+      expect(m.name).toMatch(/^Claude \(Sub\)\//);
+      expect(m.visionState).toBe('auto-on');
+    }
+    // The rows still give the family its one tab, named like the rows.
+    const tabs = withOffered([], merged);
+    expect(tabs.map((t) => t.name)).toEqual([CLAUDE_SUBSCRIPTION_GROUP]);
+    expect(CLAUDE_SUBSCRIPTION_GROUP).toBe('Claude (Sub)');
+    // Other providers' rows are untouched.
+    expect(merged.find((r) => r.value === 'lmstudio/qwen3')).toEqual(ownerLive[0]);
+  });
+
+  it('ready but the engine lists no row of the family (no chat to ask): the aliases stand in, in the tab', () => {
+    const merged = mergeClaudeSubscriptionRows(engine.slice(0, 1), claudeSubscriptionModelRows(true, { state: 'ready' }), { state: 'ready' });
+    expect(pick(merged).map((m) => m.name)).toEqual(['Claude (Sub)/Fable', 'Claude (Sub)/Opus', 'Claude (Sub)/Sonnet', 'Claude (Sub)/Haiku']);
+    expect(withOffered([], merged).map((t) => t.name)).toEqual([CLAUDE_SUBSCRIPTION_GROUP]);
+  });
+});
+
+// t-y5ecbj, owner UAT of 0.4.179 (subscription ready, spare off). The picker
+// showed Claude (Sub)/claude-fable-5-1[1m], /Fable (ticked: the saved pick
+// `claude-subscription/fable`), /Haiku, /Opus, /opus[1m]. An engine lists its
+// live catalog OR the pinned aliases, never both, so a second row of one family
+// can only come from the origami.json block: every pick the chat's engine did
+// not list is persisted there as `models[<id>] = { name: <id> }`
+// (DashboardPanel setModel -> firstFold.writeModelConfig), and vision overrides
+// add alias keys too (the block read from the owner's config on 2026-09-23 held
+// opus, sonnet, haiku, fable).
+describe('mergeClaudeSubscriptionRows — one row per model, readable names (t-y5ecbj)', () => {
+  const READY: ClaudeSubscriptionReadiness = { state: 'ready' };
+  const sub = (id: string, name: string) => ({ value: `claude-subscription/${id}`, name: `Claude (Sub)/${name}`, configured: true });
+  const merged = (rows: Array<{ value: string; name: string }>, persisted: string[]) =>
+    mergeClaudeSubscriptionRows(rows, claudeSubscriptionModelRows(true, READY), READY, new Set(persisted)) as Array<{ value: string; name: string; covers?: string[] }>;
+  const family = (rows: Array<{ value: string }>) => rows.filter((r) => isClaudeSubscriptionModel(r.value));
+
+  it('the UAT rows (pinned aliases + persisted full ids): each model once, readable, no raw id or [1m] in a name', () => {
+    const uat = [
+      sub('claude-fable-5-1[1m]', 'claude-fable-5-1[1m]'), sub('fable', 'Fable'), sub('haiku', 'Haiku'),
+      sub('opus', 'Opus'), sub('opus[1m]', 'opus[1m]'), sub('sonnet', 'Sonnet'),
+    ];
+    const rows = family(merged(uat, ['opus', 'sonnet', 'haiku', 'fable', 'claude-fable-5-1[1m]', 'opus[1m]']));
+    expect(rows.map((r) => [r.value, r.name])).toEqual([
+      ['claude-subscription/claude-fable-5-1[1m]', 'Claude (Sub)/Fable (1M context)'],
+      ['claude-subscription/haiku', 'Claude (Sub)/Haiku'],
+      ['claude-subscription/opus[1m]', 'Claude (Sub)/Opus (1M context)'],
+      ['claude-subscription/sonnet', 'Claude (Sub)/Sonnet'],
+    ]);
+  });
+
+  it('live catalog + persisted alias rows named by their id: the aliases go, the live rows stay, names readable', () => {
+    const live = [
+      sub('opus[1m]', 'Opus (1M context)'), sub('claude-fable-5-1[1m]', 'Fable'), sub('sonnet', 'Sonnet'), sub('haiku', 'haiku'),
+      sub('fable', 'fable'), sub('opus', 'opus'),
+    ];
+    const rows = family(merged(live, ['opus', 'sonnet', 'haiku', 'fable']));
+    expect(rows.map((r) => [r.value, r.name])).toEqual([
+      ['claude-subscription/opus[1m]', 'Claude (Sub)/Opus (1M context)'],
+      ['claude-subscription/claude-fable-5-1[1m]', 'Claude (Sub)/Fable (1M context)'],
+      ['claude-subscription/sonnet', 'Claude (Sub)/Sonnet'],
+      ['claude-subscription/haiku', 'Claude (Sub)/Haiku'],
+    ]);
+  });
+
+  it('a saved alias pick maps to its live row: the Fable row stands for `claude-subscription/fable`', () => {
+    const rows = merged([sub('claude-fable-5-1[1m]', 'Fable'), sub('fable', 'fable'), sub('opus[1m]', 'Opus (1M context)'), sub('opus', 'opus')], ['fable', 'opus']);
+    expect(rows.find((r) => r.value === 'claude-subscription/claude-fable-5-1[1m]')?.covers).toEqual(['claude-subscription/fable']);
+    expect(rows.find((r) => r.value === 'claude-subscription/opus[1m]')?.covers).toEqual(['claude-subscription/opus']);
+  });
+
+  it('two rows of one family that both come from the live catalog (nothing persisted) both stay', () => {
+    const rows = family(merged([sub('sonnet', 'Sonnet'), sub('sonnet[1m]', 'Sonnet (1M context)')], []));
+    expect(rows.map((r) => r.value)).toEqual(['claude-subscription/sonnet', 'claude-subscription/sonnet[1m]']);
+  });
+
+  it('rows seeded from origami.json with no engine (bare names) read like the engine\'s', () => {
+    const seeded = [{ value: 'claude-subscription/claude-fable-5-1[1m]', name: 'claude-fable-5-1[1m]', configured: true }];
+    expect(family(merged(seeded, ['claude-fable-5-1[1m]'])).map((r) => r.name)).toEqual(['Claude (Sub)/Fable (1M context)']);
   });
 });
 

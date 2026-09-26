@@ -29,7 +29,7 @@ const extensionOptions = {
   format: 'cjs',
   platform: 'node',
   target: 'node18',
-  sourcemap: true,
+  sourcemap: watch ? true : 'external', // release: map written for local triage, no sourceMappingURL comment in the shipped file
   external: ['vscode'],
   minify: false,
   logLevel: 'info',
@@ -47,7 +47,7 @@ function svelteViewOptions(entry, outfile) {
     format: 'iife',
     platform: 'browser',
     target: 'es2022',
-    sourcemap: true,
+    sourcemap: watch ? true : 'external',
     minify: false,
     logLevel: 'info',
     plugins: [

@@ -126,7 +126,10 @@ describe('R9 — the webview reports every dismissal and honours the replay', ()
   async function openComplete(container: HTMLElement) {
     if (!container.querySelector('.sa-groups')) await fireEvent.click(container.querySelector('.sa-head') as HTMLElement); // t-ru13hb: a running row may have unfolded it already
     await tick();
-    await fireEvent.click(container.querySelector('.sa-group-fold') as HTMLElement);
+    // t-yyz57i: a failed row sits in the Failed band, which never folds; the
+    // Done fold is there only when a done row is.
+    const fold = container.querySelector('.sa-group-fold');
+    if (fold) await fireEvent.click(fold as HTMLElement);
     await tick();
   }
 

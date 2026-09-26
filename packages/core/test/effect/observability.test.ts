@@ -227,3 +227,153 @@ test("rotateIfOwned: two fds on the same oversize file rotate exactly once, and 
     fsSync.closeSync(nextB)
   }
 })
+
+/** Counts the timers armed with exactly `ms` while `body` runs. Effect's `sleep`
+ *  and a plain `setTimeout` both land on `globalThis.setTimeout`, so this sees
+ *  every wake-up the logger schedules, whoever schedules it. */
+async function countTimers<T>(
+  ms: number,
+  body: (seen: { count: number }) => Promise<T>,
+): Promise<{ count: number; value: T }> {
+  const real = globalThis.setTimeout
+  const seen = { count: 0 }
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...rest: unknown[]) => {
+    if (delay === ms) seen.count++
+    return real(fn, delay, ...rest)
+  }) as typeof setTimeout
+  try {
+    const value = await body(seen)
+    return { count: seen.count, value }
+  } finally {
+    globalThis.setTimeout = real
+  }
+}
+
+test("t-w2qlop: an idle file logger arms no flush timer, and one burst arms exactly one", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "origami-log-idle-"))
+  await using _ = {
+    async [Symbol.asyncDispose]() {
+      await fs.rm(dir, { recursive: true, force: true })
+    },
+  }
+  const file = path.join(dir, "origami.log")
+  // A window no other code in this process uses, so the count is the logger's.
+  const window = 37
+  const layer = Logger.layer([rotatingFileLogger(file, { batchWindow: window })]).pipe(
+    Layer.provide(NodeFileSystem.layer),
+    Layer.orDie,
+  )
+
+  const { count, value } = await countTimers(window, (seen) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        // Idle for about ten windows: the old `sleep(window) -> flush, forever`
+        // loop woke the process on every one of them with nothing to write.
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, window * 10)))
+        const idle = seen.count
+        yield* Effect.logInfo("one")
+        yield* Effect.logInfo("two")
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, window * 4)))
+        return idle
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    ),
+  )
+  expect(value).toBe(0)
+  expect(count).toBe(1)
+  const lines = (await fs.readFile(file, "utf8")).trim().split("\n")
+  expect(lines).toHaveLength(2)
+})
+
+test("t-w2qlop: lines logged just before the scope closes are written, not dropped", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "origami-log-exit-"))
+  await using _ = {
+    async [Symbol.asyncDispose]() {
+      await fs.rm(dir, { recursive: true, force: true })
+    },
+  }
+  const file = path.join(dir, "origami.log")
+  // A window far longer than the test: only the close path can write these.
+  await Effect.logInfo("last words").pipe(
+    Effect.provide(
+      Logger.layer([rotatingFileLogger(file, { batchWindow: 60_000 })]).pipe(
+        Layer.provide(NodeFileSystem.layer),
+        Layer.orDie,
+      ),
+    ),
+    Effect.scoped,
+    Effect.runPromise,
+  )
+  expect(await fs.readFile(file, "utf8")).toContain('message="last words"')
+})
+
+test("t-w2qlop: a pending batch is written by process exit, which runs no Effect finalizer", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "origami-log-exit-"))
+  await using _ = {
+    async [Symbol.asyncDispose]() {
+      await fs.rm(dir, { recursive: true, force: true })
+    },
+  }
+  const file = path.join(dir, "origami.log")
+  const module = path.resolve(import.meta.dir, "../../src/observability/logging.ts")
+  // A child process that logs one line and calls process.exit() inside the
+  // batch window, the way `index.ts` ends: the scope never closes there.
+  const script = `
+    import { Effect, Logger } from ${JSON.stringify(Bun.resolveSync("effect", import.meta.dir))}
+    import { rotatingFileLogger } from ${JSON.stringify(module)}
+    const layer = Logger.layer([rotatingFileLogger(${JSON.stringify(file)}, { batchWindow: 60_000 })])
+    await Effect.runPromise(Effect.gen(function* () {
+      yield* Effect.logInfo("before exit")
+      process.exit(0)
+    }).pipe(Effect.provide(layer), Effect.scoped))
+  `
+  const scriptFile = path.join(dir, "exit.ts")
+  await fs.writeFile(scriptFile, script)
+  const child = Bun.spawnSync([process.execPath, scriptFile], { cwd: path.resolve(import.meta.dir, "../..") })
+  expect({ exit: child.exitCode, stderr: child.stderr.toString() }).toEqual({ exit: 0, stderr: "" })
+  expect(await fs.readFile(file, "utf8").catch(() => "")).toContain('message="before exit"')
+})
+
+// t-wdybz9 (review finding 5): the flush runs from a raw timer. A reopen that
+// fails (a read-only file, another engine rotating at that moment, antivirus)
+// threw out of the timer: an uncaught exception, exit code 1. The fd variable
+// also kept the number of the CLOSED file, so a later flush could stat, write
+// to or close whatever the process opened next under that number.
+test("t-wdybz9: a failed reopen neither crashes the process nor leaves the logger on a stale fd", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "origami-log-reopen-"))
+  await using _ = {
+    async [Symbol.asyncDispose]() {
+      await fs.chmod(path.join(dir, "origami.log"), 0o644).catch(() => {})
+      await fs.rm(dir, { recursive: true, force: true })
+    },
+  }
+  const file = path.join(dir, "origami.log")
+  const victim = path.join(dir, "victim.txt")
+  const module = path.resolve(import.meta.dir, "../../src/observability/logging.ts")
+  const script = `
+    import fs from "fs"
+    import { Effect, Logger } from ${JSON.stringify(Bun.resolveSync("effect", import.meta.dir))}
+    import { rotatingFileLogger } from ${JSON.stringify(module)}
+    const layer = Logger.layer([rotatingFileLogger(${JSON.stringify(file)}, { batchWindow: 20, maxBytes: 1, maxFiles: 1 })])
+    await Effect.runPromise(Effect.gen(function* () {
+      yield* Effect.logInfo("first")
+      yield* Effect.sleep("150 millis")
+      fs.chmodSync(${JSON.stringify(file)}, 0o444)
+      yield* Effect.logInfo("second")
+      yield* Effect.sleep("150 millis")
+      fs.chmodSync(${JSON.stringify(file)}, 0o644)
+      const other = fs.openSync(${JSON.stringify(victim)}, "w")
+      yield* Effect.logInfo("third")
+      yield* Effect.sleep("150 millis")
+      fs.closeSync(other)
+    }).pipe(Effect.provide(layer), Effect.scoped))
+    console.log("survived")
+  `
+  const scriptFile = path.join(dir, "reopen.ts")
+  await fs.writeFile(scriptFile, script)
+  const child = Bun.spawnSync([process.execPath, scriptFile], { cwd: path.resolve(import.meta.dir, "../..") })
+  expect({ exit: child.exitCode, stdout: child.stdout.toString().trim() }).toEqual({ exit: 0, stdout: "survived" })
+  const log = await fs.readFile(file, "utf8")
+  expect(log).toContain("message=first")
+  expect(log).toContain("message=third")
+  expect(await fs.readFile(victim, "utf8")).toBe("")
+})

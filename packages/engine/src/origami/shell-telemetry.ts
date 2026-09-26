@@ -21,6 +21,8 @@ export const Event = {
       lastOutputAt: Schema.optional(Schema.Number),
       output: Schema.String,
       exit: Schema.optional(Schema.NullOr(Schema.Number)),
+      /** t-z1xlfy: the command, on a background run only - the agent map names its chip with it. */
+      command: Schema.optional(Schema.String),
     },
   }),
 }

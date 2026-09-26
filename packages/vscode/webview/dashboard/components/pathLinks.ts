@@ -6,7 +6,7 @@
 // Two kinds of match:
 //  1. BARE: a path in prose ("packages/engine/src/agent/agent.ts:109"). Its end
 //     is not marked, so it may not hold a space or a parenthesis — "see the
-//     Origami Spark/a.py file" must not join words across the space.
+//     Model Lab/a.py file" must not join words across the space.
 //  2. DELIMITED: the whole of an inline code span, a quoted run ("…", '…', `…`,
 //     “…”) or an unparsed markdown link target. Here the delimiters mark both
 //     ends, so the path may hold spaces, parentheses and any letters. A space is

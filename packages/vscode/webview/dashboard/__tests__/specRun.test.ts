@@ -45,7 +45,7 @@ const RAW = [
   'updated: 2026-08-06T10:00:00Z',
   "fold: ''",
   "branch: ''",
-  'owner: passing',
+  'owner: jane_doe',
   '---',
   '',
   'The scroll block runs edge to edge on a wide window.',
@@ -190,7 +190,7 @@ describe('spec flow — the brief and the session', () => {
     expect(path.isAbsolute(abs)).toBe(true);
     expect(brief).toContain(abs);
     expect(brief).toContain('Scroll block needs a max-width');
-    expect(brief).toContain('owner: passing'); // the FULL file, unknown frontmatter keys included
+    expect(brief).toContain('owner: jane_doe'); // the FULL file, unknown frontmatter keys included
     expect(brief).toContain('The scroll block runs edge to edge on a wide window.');
     expect(brief).toContain('`- [ ]` lines under a `## Acceptance` heading');
     expect(brief).toContain('edit ONLY that file');
@@ -229,7 +229,7 @@ describe('spec flow — what the FILE says at the end', () => {
     expect(row.spec).toBeUndefined(); // the mark is gone the moment the turn ends
     const after = fs.readFileSync(ticketPath(repo, id), 'utf8');
     expect(after).toContain('folds: spec complete');
-    expect(after).toContain('owner: passing'); // the stamp kept the unknown key
+    expect(after).toContain('owner: jane_doe'); // the stamp kept the unknown key
     expect(errors(host)).toEqual([]);
     expect(b.n).toBe(2); // marked, then settled
   });
@@ -328,7 +328,7 @@ describe('the spec log write is a targeted edit, not a rebuild', () => {
     const text = fs.readFileSync(ticketPath(repo, id), 'utf8');
     const t = parseTicket(text, ticketPath(repo, id));
     expect(t.malformed).toBe(false);
-    expect(scalar(t.fm, 'owner')).toBe('passing');
+    expect(scalar(t.fm, 'owner')).toBe('jane_doe');
     expect(t.body).toContain('The scroll block runs edge to edge on a wide window.');
     expect(text).not.toContain('\r');
   });

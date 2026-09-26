@@ -149,6 +149,10 @@ for (const item of targets) {
   await $`mkdir -p dist/${name}/bin`
 
   const workerPath = "./src/cli/tui/worker.ts"
+  // t-w2r1kf: the snapshot's git Worker (src/snapshot/git-runner.ts) and the
+  // storage stats Worker (src/storage/read-runner.ts).
+  const snapshotWorkerPath = "./src/snapshot/git-worker.ts"
+  const storageWorkerPath = "./src/storage/read-worker.ts"
   const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
 
@@ -178,6 +182,8 @@ for (const item of targets) {
     entrypoints: [
       "./src/index.ts",
       workerPath,
+      snapshotWorkerPath,
+      storageWorkerPath,
       treeSitterWorkerPath,
       ...(embeddedFileMap ? ["origami-web-ui.gen.ts"] : []),
     ],
@@ -187,6 +193,8 @@ for (const item of targets) {
       ORIGAMI_MODELS_DEV: generated.modelsData,
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       ORIGAMI_WORKER_PATH: workerPath,
+      ORIGAMI_SNAPSHOT_WORKER_PATH: snapshotWorkerPath,
+      ORIGAMI_STORAGE_WORKER_PATH: storageWorkerPath,
       ORIGAMI_CHANNEL: `'${Script.channel}'`,
       ORIGAMI_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),

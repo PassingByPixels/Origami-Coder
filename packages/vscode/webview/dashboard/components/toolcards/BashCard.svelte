@@ -14,6 +14,7 @@
   // null = killed).
   import { getVsCodeApi } from '../../../shared/vscodeApi';
   import type { ToolShell } from '../../panes/chatToolMsg';
+  import { tip } from '../../../shared/warmTip';
 
   // The age chip and the Kill button used to live here. They now live in
   // ToolCard's header strip, because this component is only mounted once the
@@ -76,6 +77,14 @@
 </script>
 
 <div class="bash-card">
+  <!-- t-yyz5yk (Round 8, "Inside each element"): the terminal's bar names the
+       shell and the folder it ran in; the timeout moved here from the IN rail. -->
+  <div class="dbar">
+    <span>{shell?.display ?? 'Shell'}</span>
+    {#if shell?.cwd}<span class="bash-cwd" use:tip={shell.cwd}>· <bdi dir="ltr">{shell.cwd}</bdi></span>{/if}
+    <span class="sp"></span>
+    {#if shell?.timeout}<span>timeout {Math.round(shell.timeout / 1000)}s</span>{/if}
+  </div>
   <!-- IN and OUT stack on a narrow card and sit side by side on a wide one.
        The decision is a CONTAINER query on .bash-card, so the same card is
        right in the 380px sidebar and in a full-width editor tab. -->
@@ -83,12 +92,6 @@
     <div class="bash-row">
       <span class="bash-rail bash-rail-in">IN</span>
       <div class="bash-cell">
-        {#if shell?.cwd || shell?.timeout}
-          <div class="bash-chips">
-            {#if shell?.cwd}<span class="bash-chip" title={shell.cwd}>{shell.cwd}</span>{/if}
-            {#if shell?.timeout}<span class="bash-chip">timeout {Math.round(shell.timeout / 1000)}s</span>{/if}
-          </div>
-        {/if}
         <pre class="bash-block bash-in">{command}</pre>
       </div>
     </div>
@@ -126,6 +129,11 @@
 </div>
 
 <style>
+  .dbar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--og-border); border-radius: 6px; background: color-mix(in srgb, var(--og-surface) 60%, transparent); color: var(--og-text-muted); font-family: var(--vscode-font-family, sans-serif); }
+  .bash-cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp { flex: 1; }
+  /* A terminal prompt before the command; CSS only, so the text stays the command. */
+  .bash-in::before { content: '> '; color: var(--og-text-muted); }
   .bash-card {
     display: flex;
     flex-direction: column;

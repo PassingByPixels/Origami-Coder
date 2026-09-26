@@ -59,7 +59,7 @@ describe('rule 3 — order', () => {
       'Aetheron: snow shader pass',
       'Coder: relay heartbeat bug',
       'Relay: phone page CSP',
-      'WH3: Shenzoo unit table',
+      'WH3: dwarf unit table',
     ]);
   });
 });

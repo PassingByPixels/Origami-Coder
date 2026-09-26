@@ -631,6 +631,8 @@ export const ShellTool = Tool.define(
                 ...(firstOutputAt ? { lastOutputAt: lastOutput } : {}),
                 output: ShellTelemetry.boundedOutput(last),
                 ...(exit !== undefined ? { exit } : {}),
+                // origami_change (t-z1xlfy): a background run names its map chip.
+                ...(state !== "foreground" ? { command: input.command } : {}),
               }).pipe(Effect.asVoid, Effect.catch(() => Effect.void))
       // The silence window, or 0 for "not armed". It must be strictly SHORTER
       // than the wall clock to mean anything: at or above it the two arms fire

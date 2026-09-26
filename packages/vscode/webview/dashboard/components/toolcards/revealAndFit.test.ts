@@ -90,6 +90,16 @@ describe('change 46 — a path reveals the file in the OS explorer', () => {
     expect(container.querySelector('.expand-arrow.open')).toBeNull();
   });
 
+  // t-vikozs: .tool-path is `direction: rtl` (ellipsis at the front). Without an LTR
+  // isolate the bidi algorithm draws "/home/u/x.ts" as "home/u/x.ts/".
+  it('a POSIX path sits in an LTR isolate, so its leading slash stays first', () => {
+    const { container } = render(ToolCard, {
+      title: 'read', kind: 'read', toolName: 'read', status: 'completed',
+      result: 'body', path: '/home/u/x.ts',
+    });
+    expect(container.querySelector('.tool-path bdi[dir="ltr"]')?.textContent).toBe('/home/u/x.ts');
+  });
+
   it('the path is reachable from the keyboard', () => {
     const { container } = render(ToolCard, {
       title: 'read', kind: 'read', toolName: 'read', status: 'completed',

@@ -27,14 +27,28 @@ import { Database } from "@origami/core/database/database"
  *
  * On the owner-size store copy: 5.5 s in all, longest event-loop stall 61 ms.
  *
+ * t-vs5krz: short stalls were not enough. With ranges of up to 16 MB, one range
+ * took most of every loop turn, and a small chat in the same engine waited
+ * 0.6-3.4 s for its first word (soak on the store copy). Ranges are now at most
+ * 1,024 rows and 4 MB (about 6 ms of JSON work on the owner's store), and after
+ * WORK_MS of ranges the walk rests REST_MS on a timer, so other work gets
+ * several loop turns. A range sized by measured time was tried first: inside the
+ * engine that time also holds other fibers' work (scheduler yields, the
+ * connection's semaphore), so under load the ranges shrank and the measure took
+ * 80-118 s. The retention dry run walks the part table with the same
+ * `eachRange`.
+ *
  * `MeasureJob` keeps ONE measure per engine process. A second request joins
  * the one that runs (the card sends one on every mount), and `waitMs` makes a
  * request return the partial sums when the measure is not done by then.
  */
 
-export const SLICE_ROWS = 4096
-export const SLICE_BYTES = 16 * 1024 * 1024
+export const SLICE_ROWS = 1024
+export const SLICE_BYTES = 4 * 1024 * 1024
 export const HUGE_BYTES = 32 * 1024 * 1024
+/** t-vs5krz: ranges back to back for at most this long, then a rest. */
+export const WORK_MS = 8
+export const REST_MS = 4
 
 export type Sums = {
   journal: number
@@ -46,7 +60,7 @@ export type Sums = {
 
 export const emptySums = (): Sums => ({ journal: 0, partEvents: 0, body: [0, 0], tool: [0, 0], parts: [0, 0] })
 
-type Table = "event" | "message" | "part"
+export type Table = "event" | "message" | "part"
 const TABLES: readonly Table[] = ["event", "message", "part"]
 
 /** The rows after `lo`, at most `rows`, with their byte sizes. Header reads only. */
@@ -120,7 +134,47 @@ function add(sums: Sums, table: Table, rows: readonly Row[]) {
 }
 
 /** A macrotask turn: ACP calls, streaming chats and timers run here. */
-const turn = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)))
+export const turn = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)))
+/** A rest on a timer: the loop runs as many turns as other work needs. */
+const rest = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, REST_MS)))
+
+/**
+ * Walk `table` up to rowid `top` in ranges of at most `sliceRows` rows and
+ * `sliceBytes` bytes. `read(lo, hi)` reads the rows `lo < rowid <= hi`;
+ * `after(hi)` runs after it. The event loop gets a turn after each range, and
+ * a rest after WORK_MS of them.
+ */
+export function eachRange<E, R>(input: {
+  readonly table: Table
+  readonly top: number
+  readonly read: (lo: number, hi: number) => Effect.Effect<void, E, R>
+  readonly after?: (hi: number) => void
+  readonly sliceRows?: number
+  readonly sliceBytes?: number
+}) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const rows = input.sliceRows ?? SLICE_ROWS
+    const bytes = input.sliceBytes ?? SLICE_BYTES
+    let lo = 0
+    let since = performance.now()
+    while (lo < input.top) {
+      const hi = rangeEnd(
+        yield* db.all<{ r: number; len: number | null }>(sizes(input.table, lo, rows)).pipe(Effect.orDie),
+        bytes,
+      )
+      if (hi === undefined) break
+      yield* input.read(lo, hi)
+      lo = hi
+      input.after?.(lo)
+      if (performance.now() - since < WORK_MS) yield* turn
+      else {
+        yield* rest
+        since = performance.now()
+      }
+    }
+  })
+}
 
 /**
  * Walk the three tables in bounded rowid ranges. `onSlice(sums, progress)` runs
@@ -134,8 +188,6 @@ export const walk = Effect.fn("StorageNestsMeasure.walk")(function* (input: {
   readonly hugeBytes?: number
 }) {
   const { db } = yield* Database.Service
-  const rows = input.sliceRows ?? SLICE_ROWS
-  const bytes = input.sliceBytes ?? SLICE_BYTES
   const huge = input.hugeBytes ?? HUGE_BYTES
   const sums = emptySums()
   const tops: Record<Table, number> = { event: 0, message: 0, part: 0 }
@@ -148,18 +200,18 @@ export const walk = Effect.fn("StorageNestsMeasure.walk")(function* (input: {
   const total = tops.event + tops.message + tops.part
   let before = 0
   for (const table of TABLES) {
-    let lo = 0
-    while (lo < tops[table]) {
-      const hi = rangeEnd(
-        yield* db.all<{ r: number; len: number | null }>(sizes(table, lo, rows)).pipe(Effect.orDie),
-        bytes,
-      )
-      if (hi === undefined) break
-      add(sums, table, yield* db.all<Row>(slice(table, lo, hi, huge)).pipe(Effect.orDie))
-      lo = hi
-      input.onSlice?.(sums, total === 0 ? 1 : (before + Math.min(lo, tops[table])) / total)
-      yield* turn
-    }
+    yield* eachRange({
+      table,
+      top: tops[table],
+      read: (lo, hi) =>
+        db.all<Row>(slice(table, lo, hi, huge)).pipe(
+          Effect.orDie,
+          Effect.map((rows) => add(sums, table, rows)),
+        ),
+      after: (lo) => input.onSlice?.(sums, total === 0 ? 1 : (before + Math.min(lo, tops[table])) / total),
+      ...(input.sliceRows !== undefined ? { sliceRows: input.sliceRows } : {}),
+      ...(input.sliceBytes !== undefined ? { sliceBytes: input.sliceBytes } : {}),
+    })
     before += tops[table]
   }
   return sums

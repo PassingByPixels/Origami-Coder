@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 292" role="img" aria-label="The agent map. One column per level: the main chat, its sub-agents, and their sub-agents. Each sub-agent sits on the row of its parent, joined by elbow lines. Nodes show counts and chips for background shells.">
+  <text class="t-muted t-small" x="20" y="22">Chat</text>
+  <text class="t-muted t-small" x="230" y="22">Sub-agents</text>
+  <text class="t-muted t-small" x="440" y="22">Their sub-agents</text>
+  <path class="line" d="M170 57 H230"/>
+  <path class="line" d="M200 57 V237 H230"/>
+  <path class="line" d="M200 117 H230"/>
+  <path class="line" d="M380 117 H440"/>
+  <path class="line" d="M410 117 V177 H440"/>
+  <path class="line" d="M380 237 H440"/>
+  <rect class="box-hi" x="20" y="40" width="150" height="34" rx="6"/>
+  <text class="t-title" x="30" y="55">Main chat</text>
+  <text class="t-muted t-small" x="30" y="68">3 sub-agents</text>
+  <rect class="box" x="230" y="40" width="150" height="34" rx="6"/>
+  <text class="t-title" x="240" y="55">explore</text>
+  <text class="t-muted t-small" x="240" y="68">done</text>
+  <rect class="box-hi" x="230" y="100" width="150" height="34" rx="6"/>
+  <text class="t-title" x="240" y="115">build</text>
+  <text class="t-muted t-small" x="240" y="128">2 sub-agents</text>
+  <rect class="box-dim" x="326" y="106" width="46" height="16" rx="8"/>
+  <text class="t-small" x="349" y="118" text-anchor="middle">shell</text>
+  <rect class="box" x="230" y="220" width="150" height="34" rx="6"/>
+  <text class="t-title" x="240" y="235">review</text>
+  <text class="t-muted t-small" x="240" y="248">1 sub-agent</text>
+  <rect class="box-hi" x="440" y="100" width="150" height="34" rx="6"/>
+  <text class="t-title" x="450" y="115">tests</text>
+  <text class="t-muted t-small" x="450" y="128">running</text>
+  <rect class="box-dim" x="536" y="106" width="46" height="16" rx="8"/>
+  <text class="t-small" x="559" y="118" text-anchor="middle">shell</text>
+  <rect class="box" x="440" y="160" width="150" height="34" rx="6"/>
+  <text class="t-title" x="450" y="175">lint</text>
+  <text class="t-muted t-small" x="450" y="188">done</text>
+  <rect class="box" x="440" y="220" width="150" height="34" rx="6"/>
+  <text class="t-title" x="450" y="235">fix</text>
+  <text class="t-muted t-small" x="450" y="248">done</text>
+  <text class="t-muted t-small" x="20" y="282">Each sub-agent sits on the row of its parent. The map updates live. You can pan and zoom.</text>
+</svg>

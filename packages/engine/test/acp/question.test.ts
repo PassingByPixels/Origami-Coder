@@ -509,3 +509,58 @@ describe("a handler failure never leaves the question unanswered", () => {
     expect(loggedAbout("que_reply_error", "store busy")).toBe(true)
   })
 })
+
+// t-xum9v2. A `multiple: true` question ("tick all that apply"): the client must be
+// told it is multi-select, and every ticked label must reach the engine, not just one.
+describe("acp question multi-select (t-xum9v2)", () => {
+  const multi = { ...second, multiple: true }
+  const ticked = (answers: unknown[]) =>
+    createHarness(() =>
+      Promise.resolve({
+        outcome: { outcome: "selected", optionId: "0", _meta: { answers } },
+      } as unknown as RequestPermissionResponse),
+    )
+
+  it("marks a multi-select question on _meta.questions and leaves single ones unmarked", async () => {
+    const harness = ticked([{ optionId: "0" }, { optionIds: ["0"] }])
+    await createSession(harness.session, "ses_a")
+    harness.subscription.handle(questionAsked("ses_a", "que_mark", [first, multi]))
+    await pollUntil(() => harness.replies.length === 1, "never replied")
+    const meta = harness.requests[0]!._meta as { questions: Array<Record<string, unknown>> }
+    expect(meta.questions[0]).not.toHaveProperty("multiple")
+    expect(meta.questions[1]!.multiple).toBe(true)
+  })
+
+  it("returns EVERY ticked label for a multi-select answer, in option order given", async () => {
+    const harness = ticked([{ optionId: "1" }, { optionId: "0", optionIds: ["0", "1"] }])
+    await createSession(harness.session, "ses_a")
+    harness.subscription.handle(questionAsked("ses_a", "que_all", [first, multi]))
+    await pollUntil(() => harness.replies.length === 1, "never replied")
+    expect(harness.replies[0]).toMatchObject({ requestID: "que_all", answers: [["B"], ["C", "D"]] })
+  })
+
+  it("adds typed Other text to the ticked labels, in place of the bare 'Other'", async () => {
+    const harness = ticked([{ optionId: "0", optionIds: ["1", "2"], answerText: " also E " }])
+    await createSession(harness.session, "ses_a")
+    harness.subscription.handle(questionAsked("ses_a", "que_txt", [multi]))
+    await pollUntil(() => harness.replies.length === 1, "never replied")
+    expect(harness.replies[0]).toMatchObject({ answers: [["D", "also E"]] })
+  })
+
+  it("an empty tick list is a real answer (none apply), not a decline", async () => {
+    const harness = ticked([{ optionIds: [] }])
+    await createSession(harness.session, "ses_a")
+    harness.subscription.handle(questionAsked("ses_a", "que_none", [multi]))
+    await pollUntil(() => harness.replies.length === 1, "never replied")
+    expect(harness.replies[0]).toMatchObject({ answers: [[]] })
+    expect(harness.rejects).toHaveLength(0)
+  })
+
+  it("an out-of-range tick declines the ask rather than inventing a label", async () => {
+    const harness = ticked([{ optionIds: ["0", "9"] }])
+    await createSession(harness.session, "ses_a")
+    harness.subscription.handle(questionAsked("ses_a", "que_bad", [multi]))
+    await pollUntil(() => harness.rejects.length === 1, "never rejected")
+    expect(harness.replies).toHaveLength(0)
+  })
+})

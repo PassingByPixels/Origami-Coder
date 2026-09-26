@@ -67,7 +67,7 @@
       <div class="am-detail-empty">folder missing from disk</div>
     {:else if mode === 'checkouts'}
       <div class="am-detail-list">
-        {#if rows.length === 0}<div class="am-detail-empty">Reading worktrees…</div>{/if}
+        {#if rows.length === 0}<div class="am-detail-empty">{detail?.loaded ? 'No checkouts found.' : 'Reading worktrees…'}</div>{/if}
         {#each rows as wt (wt.path)}
           <RepoCheckoutRow root={root} wt={wt} post={post} />
         {/each}

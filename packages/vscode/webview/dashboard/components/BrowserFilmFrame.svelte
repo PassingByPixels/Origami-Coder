@@ -32,6 +32,7 @@
 >
   <img src={frame.imageDataUrl} alt={label} />
   <span class="browser-frame-seq" aria-hidden="true">{seq}</span>
+  <span class="browser-frame-act" aria-hidden="true">{frame.action}</span>
 </button>
 
 <style>
@@ -62,6 +63,9 @@
      with the strip's, at any strip width. */
   .browser-frame-new { border-color: var(--og-accent); scroll-snap-align: end; }
   .browser-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* t-yyz5je: the verb that took the frame, shown on hover. */
+  .browser-frame-act { position: absolute; left: 0; right: 0; bottom: 0; padding: 1px 4px; font-size: 8.5px; line-height: 12px; text-align: left; color: var(--og-text); background: var(--og-surface); opacity: 0; transition: opacity 0.16s ease; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .browser-frame:hover .browser-frame-act, .browser-frame:focus-visible .browser-frame-act { opacity: 0.9; }
   .browser-frame-seq {
     position: absolute;
     top: 2px;

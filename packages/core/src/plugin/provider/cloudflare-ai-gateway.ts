@@ -1,7 +1,7 @@
 import os from "os"
 import { InstallationVersion } from "../../installation/version"
 import { Effect, Option, Schema } from "effect"
-import { define } from "../internal"
+import { define } from "../define"
 
 export const CloudflareAIGatewayPlugin = define({
   id: "cloudflare-ai-gateway",

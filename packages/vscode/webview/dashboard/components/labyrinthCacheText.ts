@@ -7,6 +7,7 @@
 // Pure — no DOM.
 
 import type { CacheLoss } from './labyrinthCache';
+import { stoppedHalves, stoppedText } from './labyrinthStoppedText';
 
 const LEGACY_PREFIX = 'Derived by the viewer (run recorded before 0.4.160): ';
 /** A Claude Code transcript never carries an engine cause — the CLI is not the
@@ -44,6 +45,7 @@ function engineCauseText(loss: CacheLoss): string {
         : 'the model changed since the previous request — a cache entry does not carry across models';
     case 'compaction':
       return 'the context was compacted just before this step — the summary is a new prefix, so none of the old one could be read back';
+    case 'stopped': return stoppedText(f?.stopped);
     case 'system': return 'the system prompt changed';
     case 'tools': return 'the tool list changed';
     case 'history': {
@@ -95,13 +97,15 @@ export function lossReasonText(loss: CacheLoss): string {
   return `${LEGACY_PREFIX}${parts.join('; ')}`;
 }
 
-/** The facts line under an engine-recorded cause — idle gap, where an
- *  already-sent message diverged and why, and whether a warm request landed
- *  first. Undefined when the loss carries no `cause` (legacy path) or no facts. */
+/** The facts line under an engine-recorded cause — what changed while the
+ *  engine was parked, idle gap, where an already-sent message diverged and
+ *  why, and whether a warm request landed first. Undefined when the loss carries no `cause` (legacy path) or no facts. */
 export function lossFactsText(loss: CacheLoss): string | undefined {
   const f = loss.facts;
   if (loss.cause === undefined || !f) return undefined;
   const parts: string[] = [];
+  const stopped = stoppedHalves(f.stopped);
+  if (stopped) parts.push(`changed while parked: ${stopped}`);
   if (f.idleMs !== undefined) parts.push(`idle ${Math.round(f.idleMs / 60_000)}m`);
   if (f.divergence) {
     const label = sourceLabel(f.divergence.source);

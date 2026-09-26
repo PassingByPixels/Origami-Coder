@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 226" role="img" aria-label="Left: one shared engine for all chats. When it hangs or crashes, every chat stops, all chats have one priority, and a busy chat slows the others. Right: Origami gives each chat its own engine. A failure stays in its chat, and each chat has its own class: active, idle or failed.">
+  <text class="t-title" x="20" y="22">One shared engine</text>
+  <text class="t-title" x="330" y="22">Origami: one engine per chat</text>
+  <rect class="pill-warn" x="20" y="34" width="290" height="116" rx="8"/>
+  <text class="t-warn" x="34" y="54">One engine hangs</text>
+  <rect class="box-dim" x="34" y="64" width="262" height="22" rx="4"/>
+  <text class="t-muted t-small" x="44" y="79">Chat 1: stopped</text>
+  <rect class="box-dim" x="34" y="92" width="262" height="22" rx="4"/>
+  <text class="t-muted t-small" x="44" y="107">Chat 2: stopped</text>
+  <rect class="box-dim" x="34" y="120" width="262" height="22" rx="4"/>
+  <text class="t-muted t-small" x="44" y="135">Chat 3: stopped</text>
+  <rect class="box-hi" x="330" y="34" width="86" height="116" rx="8"/>
+  <text class="t-title" x="342" y="56">Chat 1</text>
+  <text class="t-muted t-small" x="342" y="72">own engine</text>
+  <text class="t-small" x="342" y="98">priority:</text>
+  <text class="t-small" x="342" y="112">normal</text>
+  <text class="t-small" x="342" y="136">active</text>
+  <rect class="pill-warn" x="432" y="34" width="86" height="116" rx="8"/>
+  <text class="t-warn" x="444" y="56">Chat 2</text>
+  <text class="t-muted t-small" x="444" y="72">own engine</text>
+  <text class="t-small" x="444" y="98">stops only</text>
+  <text class="t-small" x="444" y="112">this chat</text>
+  <text class="t-warn t-small" x="444" y="136">failed</text>
+  <rect class="box" x="534" y="34" width="86" height="116" rx="8"/>
+  <text class="t-title" x="546" y="56">Chat 3</text>
+  <text class="t-muted t-small" x="546" y="72">own engine</text>
+  <text class="t-small" x="546" y="98">priority:</text>
+  <text class="t-small" x="546" y="112">lowest</text>
+  <text class="t-small" x="546" y="136">idle</text>
+  <text class="t-small" x="20" y="174">A crash or hang stops every chat.</text>
+  <text class="t-small" x="20" y="192">All chats share one priority.</text>
+  <text class="t-small" x="20" y="210">A busy chat slows the others.</text>
+  <text class="t-small" x="330" y="174">A failure stays in its chat.</text>
+  <text class="t-small" x="330" y="192">Each chat has its own priority class.</text>
+  <text class="t-small" x="330" y="210">Hidden chats give back memory and CPU.</text>
+</svg>

@@ -47,3 +47,17 @@ export async function pageSessions(list: ListSessionsCall, params: { cwd?: strin
   }
   return out;
 }
+
+/** `AcpClient.listSessions` (moved here VERBATIM, t-wdyi2t, to keep acpClient.ts under its cap): every page for
+ *  the workspace. Fallback: fire when the cwd-scoped query surfaced no chats OTHER than the CURRENT session — a
+ *  fresh session in this workspace returns exactly 1 row (itself), and a cwd-key mismatch (loose files, C:\ vs
+ *  C:/) returns none. Retry unfiltered and adopt it only if it actually surfaces past chats. */
+export async function listWorkspaceSessions(list: ListSessionsCall, cwd: string | undefined, currentId: string | null): Promise<Array<{ sessionId: string; cwd: string; title: string; updatedAt: string }>> {
+  let sessions = await pageSessions(list, cwd ? { cwd } : {});
+  const others = (rows: SessionRow[]) => rows.filter((s) => String(s['sessionId'] ?? '') !== (currentId ?? ''));
+  if (cwd && others(sessions).length === 0) {
+    const all = await pageSessions(list, {});
+    if (others(all).length > 0) sessions = all;
+  }
+  return sessions.map((s) => ({ sessionId: String(s['sessionId'] ?? ''), cwd: String(s['cwd'] ?? ''), title: String(s['title'] ?? ''), updatedAt: String(s['updatedAt'] ?? '') }));
+}

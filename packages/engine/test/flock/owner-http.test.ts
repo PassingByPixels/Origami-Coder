@@ -176,7 +176,7 @@ function ownerEngine(text = "the answer") {
       const identity = deskStore.identity()
       return FlockCard.build({
         identity,
-        specialties: ["MOT rules"],
+        specialties: ["tax rules"],
         policy: FlockPolicy.resolve({ config: { model: "test/fake", dailyBudgetTokens: 200_000 } }),
         signPrivateKey: identity.sign.privateKey,
       })
@@ -251,7 +251,7 @@ describe("a second engine's flock_ask", () => {
     expect(FlockService.kind()).toBe("other-engine")
     expect(FlockTransport.getTransport()).toBeUndefined()
 
-    const result = await ask([owner.contact], "what does the MOT check?")
+    const result = await ask([owner.contact], "what does the tax form cover?")
 
     // FIRE AND RETURN, through the forward as well: what comes back is the
     // receipt, never the answer. An answer here would mean the forwarding
@@ -266,7 +266,7 @@ describe("a second engine's flock_ask", () => {
     const threads = owner.store.mailbox().filter((thread) => thread.direction === "out")
     expect(threads).toHaveLength(1)
     expect(threads[0]!.contact).toBe(owner.contact)
-    expect(threads[0]!.question.text).toBe("what does the MOT check?")
+    expect(threads[0]!.question.text).toBe("what does the tax form cover?")
     expect(result.output).toContain(threads[0]!.id)
   })
 
@@ -285,7 +285,7 @@ describe("a second engine's flock_ask", () => {
     })
     startService({ flock, lease, publish: true })
 
-    await ask([owner.contact], "what does the MOT check?", { sessionID: "ses_engine_7", title: "chat 3" })
+    await ask([owner.contact], "what does the tax form cover?", { sessionID: "ses_engine_7", title: "chat 3" })
 
     const thread = owner.store.mailbox().find((row) => row.direction === "out")
     expect(thread!.origin).toEqual({ sessionID: "ses_engine_7", title: "chat 3" })
@@ -337,7 +337,7 @@ describe("a second engine's flock_ask", () => {
     const result = await who()
 
     expect(result.output).toContain(owner.contact)
-    expect(result.output).toContain("specialties: MOT rules")
+    expect(result.output).toContain("specialties: tax rules")
     expect(result.metadata.reached).toBe(1)
   })
 

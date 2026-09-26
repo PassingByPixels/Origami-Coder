@@ -75,13 +75,16 @@ describe('permission banner — follows the mode stream, never a poll', () => {
   // The bypass banner was a full-width duplicate of the InputBar's own red
   // "Access: Bypass" chip (Phase C2); the auto banner duplicated the same
   // chip's "Auto-approve" label (t-dih1p7) — `setApproveMode` writes the
-  // identical mode id into both places. Both render no copy now, same as
-  // `default`. Only plan (no other on-screen indicator) keeps its banner.
-  it('bypass and auto render no banner copy; plan still does', () => {
+  // identical mode id into both places (8f56fec784). t-y5ec3s: the plan
+  // banner duplicated the InputBar's own "Plan: on" chip the same way, and
+  // it painted on views that do not display the session it was for (the
+  // sidebar showing a background chat's plan mode) — so it is dropped the
+  // same way. Every mode now renders no copy at all.
+  it('no mode renders banner copy — plan dropped the same way bypass and auto were', () => {
     expect(permBannerCopy('bypass')).toBe('');
     expect(permBannerCopy('default')).toBe('');
     expect(permBannerCopy('auto')).toBe('');
-    expect(permBannerCopy('plan')).not.toBe('');
+    expect(permBannerCopy('plan')).toBe('');
   });
 });
 

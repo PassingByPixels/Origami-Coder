@@ -46,6 +46,7 @@
         shell={msg.toolShell}
         toolLines={msg.toolLines}
         images={msg.toolImages} readImage={msg.toolReadImage} browser={msg.toolBrowser}
+        taskTokens={msg.taskTokens} taskModel={msg.taskModel}
         sessionId={sessionId} startedAt={msg.timestamp} {readOnly} {onImageClick}
       />
     </div>

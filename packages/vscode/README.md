@@ -19,6 +19,15 @@
 
 ---
 
+## What's new in 0.4.184
+
+- **Elastic engines.** Every chat keeps its own engine, so one failure never stops the others. Hidden chats now cost close to nothing: they drop to a lower priority, give back memory, and park after 20 minutes. Your next message restores a parked chat with byte-identical requests, so the prompt cache still hits. In our test, 6 idle big chats went from 2.63 GB to 0.57 GB of memory in use.
+- **New chats start at once** on a spare engine that is already running.
+- **Plan mode works:** the plan agent writes a plan file and ends with an approve / revise review.
+- **Agent map:** every sub-agent and its own sub-agents, in tier columns, live.
+- **Drop to attach:** drop a file from the VS Code explorer into the composer.
+- **Cache warming is off by default** and now really works when you turn it on (each warm is billed as a cache read).
+
 ## What's new in 0.4.175
 
 - **Big chats open fast.** A large chat opens in about a second, and a long chat no longer pauses at the end of a reply.

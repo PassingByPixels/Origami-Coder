@@ -15,7 +15,7 @@
   import FocusEye from './FocusEye.svelte';
   import ImageLightbox from './ImageLightbox.svelte';
   import { atLatestOnly, beginEarlier, beginLatest, initialPaging, settle, type PagingState } from './subagentPaging';
-  import { anchorPillLabel, followLatest, initialAnchorState, jumpToLatest, onAnchorResize, onAnchorScroll, onAnchorWheel, readerScrolled, watchTop, type AnchorState } from './subagentScrollAnchor'; import { watchResize } from '../panes/chatScrollInput';
+  import { anchorPillLabel, followLatest, initialAnchorState, jumpToLatest, onAnchorResize, onAnchorScroll, onAnchorWheel, readerScrolled, watchTop, type AnchorState } from './subagentScrollAnchor'; import { watchResize } from '../panes/chatScrollInput'; import { rearmOnContent, watchContent } from '../panes/chatScrollContent';
   import { NO_ANSWER, POLL_MS, replyDeadline } from './subagentTranscriptTiming'; // t-tydjkm: no reply = a visible error, never "Loading…" for ever
 
   interface Props {
@@ -145,7 +145,7 @@
     <button class="sat-refresh" aria-label="Refresh transcript" use:tip={'Refresh'} onclick={request}>&#8635;</button>
     <button class="sat-close" aria-label="Close transcript" use:tip={'Close'} onclick={onClose}>&times;</button>
   </div>
-  <div class="sat-body" bind:this={body} use:watchResize={(el) => (anchor = onAnchorResize(anchor, el))}
+  <div class="sat-body" bind:this={body} use:watchResize={(el) => (anchor = onAnchorResize(anchor, el))} use:watchContent={(el) => { if (!anchor.stuckToBottom && rearmOnContent(el, false)) anchor = initialAnchorState(); }}
     onscroll={(ev) => { armed ||= readerScrolled(ev.currentTarget); anchor = onAnchorScroll(anchor, ev.currentTarget as HTMLDivElement, messages.at(-1)?.id ?? null); }}
     onwheel={(ev) => { armed = true; anchor = onAnchorWheel(anchor, ev.currentTarget as HTMLDivElement, ev.deltaY, messages.at(-1)?.id ?? null, ev.target); }}>
     {#if !loaded}

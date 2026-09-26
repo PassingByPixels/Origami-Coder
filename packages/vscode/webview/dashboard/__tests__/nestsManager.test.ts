@@ -365,10 +365,10 @@ describe('NestStorage — measuring, edit, Apply', () => {
 // Settings (acceptance 3). Bug caught: a setting that left Insights and landed
 // nowhere, or a filter that hides a row but leaves its empty group behind.
 describe('Settings — groups, rows, filter', () => {
-  it('holds exactly the owner groups and the seven moved settings', () => {
-    expect(SETTING_GROUPS.map((g) => g.name)).toEqual(['Chat', 'Agents', 'Browser', 'Cache', 'Appearance']);
-    expect(SETTING_COUNT).toBe(7);
-    expect(settingRow('cacheWarming').reload).toMatch(/Reload the window/);
+  it('holds exactly the owner groups and the settings moved or added to them', () => {
+    expect(SETTING_GROUPS.map((g) => g.name)).toEqual(['Chat', 'Agents', 'Engines', 'Browser', 'Cache', 'Appearance']);
+    expect(SETTING_COUNT).toBe(14); // t-xf2e9q: +7, the Engines group (origamicoder.elastic.*)
+    expect(settingRow('cacheWarming').reload).toMatch(/New chats use the new value at once/); // t-xtimx0: read at spawn, no reload
     // The backdrop row flips live, so it carries no reload pill.
     expect(settingRow('backdrop').reload).toBeUndefined();
   });

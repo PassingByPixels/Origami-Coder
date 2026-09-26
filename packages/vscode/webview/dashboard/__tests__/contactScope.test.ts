@@ -25,9 +25,9 @@ const DESK: FlockScope = { repos: ['C:/Repos/work/api'], wiki: ['wiki/pages', 'w
 const NO_OPTIONS: FlockScopeOptions = { repos: [], wiki: [] };
 
 const friend = (policy: FlockFriendRow['policy']): FlockFriendRow => ({
-  handle: 'chris@abc',
-  handleShort: 'chris@abc',
-  name: 'chris',
+  handle: 'robin@abc',
+  handleShort: 'robin@abc',
+  name: 'robin',
   addedAt: '2026-09-01T00:00:00.000Z',
   policy,
   spentToday: 0,
@@ -128,10 +128,10 @@ describe('scopePills — known options, the desk list and the contact list, over
   });
 
   it('a repo\'s label is its REGISTERED name, not its root path', () => {
-    const options: FlockScopeOptions = { repos: [{ root: 'C:/Repos/Origami Labs/site', name: 'site' }], wiki: [] };
+    const options: FlockScopeOptions = { repos: [{ root: 'C:/Repos/acme/site', name: 'site' }], wiki: [] };
     const pills = scopePills(friend({}), undefined, options);
     expect(pills).toEqual([
-      { kind: 'repos', value: 'C:/Repos/Origami Labs/site', label: 'site', on: false, isDefault: false, differs: false },
+      { kind: 'repos', value: 'C:/Repos/acme/site', label: 'site', on: false, isDefault: false, differs: false },
     ]);
   });
 });
@@ -197,7 +197,7 @@ describe('autoPill and the reset gate', () => {
 
 describe('pillLabel', () => {
   it('keeps the tail of a path, on either separator, and a wiki entry whole', () => {
-    expect(pillLabel({ kind: 'repos', value: 'C:/Repos/Origami Labs/site' })).toBe('site');
+    expect(pillLabel({ kind: 'repos', value: 'C:/Repos/acme/site' })).toBe('site');
     expect(pillLabel({ kind: 'folders', value: 'D:\\notes\\2026\\' })).toBe('2026');
     // A wiki entry is already short AND is the thing the owner ticked by that
     // name, so trimming it to `pages` would name a different-looking share.

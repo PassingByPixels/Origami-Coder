@@ -106,6 +106,9 @@ describe('drift guard — every session-scoped post is classified', () => {
     forkChat: 'reads the source to make a NEW chat; writes nothing into the source (t-v5qv6u)',
     setMode: 'engine config kept out of the session row (not in ROW_WRITING_CONFIG, engine/src/acp/service.ts)',
     setEffort: 'engine config kept out of the session row (not in ROW_WRITING_CONFIG)',
+    sidebarChat: 'view state: the chat the sidebar displays (t-xp0dzr)',
+    imageError: 'a notice shown in the chat; writes no row (t-xsufto: the id only places it)',
+    setBudget: 'the global monthly cap (~/.origami/budget.json); the id only places the note (t-xsufto)',
   };
   const files = [
     'panes/ChatPane.svelte', 'components/ChatTranscript.svelte', 'components/MessageRow.svelte', 'components/ToolCard.svelte',

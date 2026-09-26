@@ -1,7 +1,7 @@
 // cronLog — how many times a cron ran and how the last run ended, read from the
 // cron's own log. The log is an audit trail written by a batch file at 3am with
 // nobody watching, so these tests are built from the REAL on-disk shape (taken
-// verbatim from \Origami\cms791dnuckui's log on Passing's machine) rather than
+// verbatim from \Origami\cms791dnuckui's log on the owner's machine) rather than
 // an idealised one: locale-formatted dates, ANSI escapes, CRLF, and arbitrary
 // agent stdout dumped between the markers.
 //

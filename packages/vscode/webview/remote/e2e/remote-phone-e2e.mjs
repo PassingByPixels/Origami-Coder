@@ -14,8 +14,9 @@
 // webview/remote/*:
 //
 //   cd packages/vscode && npm run build
-//   copy this file into a checkout that has Playwright installed
-//   (C:/Repos/Origami Folio/origami-webmcp), then: node remote-phone-e2e.mjs
+//   copy this file into any folder that has Playwright installed, then:
+//   ORIGAMI_REPO=<path to this repo's checkout> node remote-phone-e2e.mjs
+//   (optional: SHOTS_DIR=<folder for the screenshots>; default is a temp folder)
 //
 // It caught two defects that were green in all 133 unit tests: the composer
 // floating mid-screen (a forced flex layout broke the grid stretch), and an
@@ -23,10 +24,16 @@
 import { chromium } from '@playwright/test';
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-const OUT = 'C:/Repos/Origami Coder/origami-coder.wt/remote-phone/packages/vscode/out/remote';
-const SHOTS = 'C:/Users/dev/AppData/Local/Temp/claude/c--Users-dev-Desktop-Workspace/86d82c38-23ee-4d0d-87e9-b6a9d26d7537/scratchpad/remote-phone';
+const REPO = process.env.ORIGAMI_REPO;
+if (!REPO) {
+  console.error('Set ORIGAMI_REPO to the root of an Origami Code checkout (the folder that holds packages/).');
+  process.exit(2);
+}
+const OUT = path.join(REPO, 'packages/vscode/out/remote');
+const SHOTS = process.env.SHOTS_DIR || path.join(os.tmpdir(), 'origami-remote-phone-e2e');
 const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 fs.mkdirSync(SHOTS, { recursive: true });

@@ -22,6 +22,10 @@ export interface ManagerHost {
   /** Close the session + kill its engine child, or Windows holds the worktree's file locks. */
   closeSession(sessionId: string): void;
   sessionAlive(sessionId: string): boolean;
+  /** t-w2txb2: stop the session's engine, keeping the session (its transcript, its tab, its engine id);
+   *  the next prompt or the Chat button starts it again. null = stopped, else why not. Optional: a host
+   *  without elastic parking keeps the engine up, as before. */
+  parkSession?(sessionId: string): Promise<string | null>;
   openChat(sessionId: string): void;
   /** Broadcast to every attached webview. */
   post(msg: object): void;

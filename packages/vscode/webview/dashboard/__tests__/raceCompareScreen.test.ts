@@ -1,5 +1,5 @@
 // Race Compare SCREEN (S6d) — the full editor-tab compare view that replaced the
-// S6c in-column numbers table. These assert the observable behaviour Passing's UAT
+// S6c in-column numbers table. These assert the observable behaviour the owner's UAT
 // demanded: for the file UNION of two siblings it renders TWO columns of REAL diff
 // content (coloured add/remove lines), a "not touched" placeholder + a truncation
 // notice where they apply, a working sibling gets a drift note, the selectors swap

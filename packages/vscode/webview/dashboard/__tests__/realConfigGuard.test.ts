@@ -36,9 +36,9 @@ describe('the guard knows which directory is the real one', () => {
 
   // The prefix test is a string compare, so the sibling directory whose name
   // merely STARTS with the guarded one must not be swept in — a real
-  // ~/.config/origami-tickets is not this file's business.
+  // ~/.config/origami-notes is not this file's business.
   it('does not sweep in a sibling that shares the prefix', () => {
-    expect(isGuarded(`${REAL}-tickets/data.jsonl`)).toBe(false);
+    expect(isGuarded(`${REAL}-notes/data.jsonl`)).toBe(false);
     expect(isGuarded(path.join(os.tmpdir(), 'origami-writers-x', 'origami', 'origami.json'))).toBe(false);
   });
 

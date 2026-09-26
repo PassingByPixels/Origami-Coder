@@ -68,8 +68,8 @@
 </div>
 
 <style>
-  .lab-map-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--og-border); flex-shrink: 0; }
-  .lab-map-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--og-text-secondary); flex: 1; }
+  .lab-map-head { /* t-vikozs: wraps, never runs under the inspector (which covered Fit) */ display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 12px; border-bottom: 1px solid var(--og-border); flex-shrink: 0; }
+  .lab-map-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--og-text-secondary); flex: 1; min-width: 0; }
   .lab-modes { display: flex; gap: 4px; }
   .lab-mode, .lab-toggle, .lab-export, .lab-back { background: var(--og-btn-bg); border: 1px solid var(--og-border); color: var(--og-text-secondary); border-radius: 4px; padding: 2px 9px; font-size: 10px; cursor: pointer; font-family: inherit; }
   .lab-mode:hover, .lab-toggle:hover, .lab-export:enabled:hover, .lab-back:hover { color: var(--og-text); }

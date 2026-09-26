@@ -113,6 +113,17 @@ describe("the cache verdict lands on the step that carries the message's tokens"
     expect(steps[2]!.tokens?.output).toBe(20)
   })
 
+  test("a restore's `stopped` cause and its halves pass through; unknown halves are dropped (t-w2txb2)", () => {
+    const steps = project([
+      assistant("msg_s", [
+        text("msg_s", "Back."),
+        stepFinish("msg_s", { cause: "stopped", stopped: ["tools", "sunspots", "history"], idleMs: 60_000 }),
+      ]),
+    ]).steps
+
+    expect(steps[0]!.cache).toEqual({ cause: "stopped", idleMs: 60_000, stopped: ["tools", "history"] })
+  })
+
   test("a message whose only parts are bookkeeping still reports its verdict", () => {
     const steps = project([assistant("msg_c", [stepFinish("msg_c", { cause: "compaction" })])]).steps
 

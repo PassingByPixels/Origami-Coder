@@ -53,8 +53,9 @@ describe('BrowserOverlay — the agent page strip', () => {
     const { container } = render(BrowserOverlay, { props: props() });
     expect(container.querySelector('.browser-caption')?.textContent).toBe('https://a.test/two');
     expect(container.querySelector('.browser-action')?.textContent).toBe('screenshot');
-    // ...and it says how many pictures are behind the one on the right.
-    expect(container.querySelector('.browser-count')?.textContent).toBe('2');
+    // t-yyz5je: the frame count moved to the tab, shown while hidden
+    // (railPullouts.test.ts); open, the caption under the strip says "frame 2 of 2".
+    expect(container.querySelector('.browser-viewport-size')?.textContent).toBe('frame 2 of 2 · screenshot');
   });
 
   it('falls back to the page text when a frame carries no url', () => {

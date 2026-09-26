@@ -3,7 +3,7 @@
 // (unchanged AgentManagerPane), Labyrinth, Skills, Loops,
 // Instructions. These tests pin down the two behaviours the task cares
 // about: Folds is the
-// default (Passing: "when users click Agents they go to folds"), and each
+// default (the owner: "when users click Agents they go to folds"), and each
 // rail entry swaps the body + marks itself active — not an echo of the
 // VIEWS array, but a DOM assertion per pane's own root class, so a wiring
 // regression (wrong component mounted, active class stuck) fails the test.

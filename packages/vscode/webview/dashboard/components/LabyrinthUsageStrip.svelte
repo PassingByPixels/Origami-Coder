@@ -80,7 +80,7 @@
     {#if spend.branches.some((b) => chip(b.total))}
       <div class="spend-rows">
         <span class="spend-of">of which delegated</span>
-        {#each spend.branches as b (b.first)}
+        {#each spend.branches as b, i (i)}<!-- by position: two branches can share `first` (t-vikozs) -->
           {#if chip(b.total)}
             {#if onOpenSession && childOf(b.first)}
               <button class="spend-chip branch open" title={`Open this delegated run: ${b.title}`} {...over({ kind: 'branch', first: b.first })}

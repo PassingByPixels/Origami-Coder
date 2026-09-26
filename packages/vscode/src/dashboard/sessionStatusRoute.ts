@@ -16,6 +16,9 @@ export interface SessionStatusRouteDeps {
   /** The LOCAL id this chat is known by everywhere else (`session-N`). */
   localSessionId: string;
   post: (message: { type: 'sessionStatus'; status: string; sessionId: string }) => void;
+  /** t-w2qv3o: the HOST copy of the status (elastic/elasticWindow.ts noteEngineStatus): a turn the
+   *  engine started by itself keeps a hidden chat out of the idle class. */
+  record?: (status: string) => void;
 }
 
 /** Builds the `onSessionStatus` handler: forwards a status report under the LOCAL id, and drops one
@@ -23,6 +26,7 @@ export interface SessionStatusRouteDeps {
 export function makeSessionStatusHandler(deps: SessionStatusRouteDeps): (args: SessionStatusArgs) => void {
   return (args) => {
     if (args.sessionId !== deps.engineSessionId()) return;
+    deps.record?.(args.status);
     deps.post({ type: 'sessionStatus', status: args.status, sessionId: deps.localSessionId });
   };
 }

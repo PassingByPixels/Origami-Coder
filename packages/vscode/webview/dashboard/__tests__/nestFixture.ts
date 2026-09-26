@@ -24,7 +24,7 @@ export const ROWS: NestIndexRow[] = [
   row('n-tf', 'iOS: TestFlight notes', MAC, 'closed', 1300),
   row('n-relay', 'Coder: relay heartbeat bug', RTX, 'closed', 4300),
   row('n-csp', 'Relay: phone page CSP', MAC, 'closed', 5800),
-  row('n-wh3', 'WH3: Shenzoo unit table', RTX, 'closed', 10100),
+  row('n-wh3', 'WH3: dwarf unit table', RTX, 'closed', 10100),
 ];
 
 export const DESKS: NestDesk[] = [SELF, RTX, MAC];

@@ -62,7 +62,10 @@ const documentBlock = (part: MediaPart, format: DocumentFormat, bytes: string): 
 // document block. Image MIME types not in `IMAGE_FORMATS` (e.g. `image/svg+xml`)
 // get an image-specific error so the caller knows it's a format-support issue,
 // not a kind-detection issue.
-export const lower = Effect.fn("BedrockMedia.lower")(function* (part: MediaPart) {
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+export const lower = Effect.fnUntraced(function* (part: MediaPart) {
   const mime = part.mediaType.toLowerCase()
   const imageFormat = IMAGE_FORMATS[mime as keyof typeof IMAGE_FORMATS]
   if (imageFormat) {

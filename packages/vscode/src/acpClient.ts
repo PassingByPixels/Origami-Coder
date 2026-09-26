@@ -20,7 +20,8 @@ import * as fs from 'node:fs';
 import type { RunStepsResult, RunStatsResult, InstructionSet, SubagentTranscriptResult, SubagentTodosResult, SubagentChangesResult, ToolCatalog } from './acpExtTypes';
 import { engineSpawnEnv, codeModeEnabled } from './engineEnv';
 import { subagentLimitHours } from './subagentLimit'; // the sub-agent cap is read at SPAWN, like every other value in the overlay
-import { agentNameSetting } from './peerName';
+import { agentNameSetting, AGENT_NAME_VAR } from './peerName';
+import { pinnedSpawnEnv } from './elastic/spawnPin'; // t-w2u2ki: TZ pinned for every spawn
 import { shutdownEngine } from './engineShutdown';
 import { peerFromMeta, type PeerOrigin } from './acpPeerMeta';
 import { modelOnlyContent } from './acpAudience';
@@ -33,8 +34,10 @@ import { handleBrowserExtMethod, isBrowserMethod, type BrowserSnapshot } from '.
 import { questionsFromMeta, replyMeta, type QuestionAsk, type QuestionAnswer } from './questionBatch';
 import { planCandidatesFrom, taskShapeFrom, todoSnapshotFrom, arbiterDecisionFrom, flockMailboxFrom, cacheStateFrom, type PlanCandidates, type TaskShape, type TodoSnapshot, type ArbiterDecision, type FlockMailboxPush, type CacheStatePush } from './acpNotify';
 import { artifactsChangedFrom, type ArtifactDiffResult, type ArtifactListResult, type ArtifactOpenResult, type ArtifactRestoreResult, type ArtifactVersionsResult, type ArtifactsChangedPush } from './dashboard/artifactAcp';
-import { pageSessions } from './sessionPaging';
+import { listWorkspaceSessions } from './sessionPaging';
+import { forwardStderr } from './acpStderr';
 import { establishSession, type SessionConnection } from './acpFork';
+import { backgroundTaskFrom, type BackgroundTask } from './dashboard/agentTreeHost';
 import { historyPageReplyFrom, historySearchReplyFrom, historyWindowFrom, pageTag, subagentRosterFrom, type HistoryPageReply, type HistorySearchReply, type HistoryWindow, type SubagentRoster } from './acpHistory';
 
 export type { RunStep, RunStepsResult, InstructionEntry, InstructionSet } from './acpExtTypes';
@@ -271,6 +274,7 @@ export interface AcpEventHandlers {
   onHistoryWindow?(win: HistoryWindow): void;
   /** `origami/subagentRoster` (wire_contract.md 4): every descendant, from session rows. */
   onSubagentRoster?(roster: SubagentRoster): void;
+  onBackgroundTask?(task: BackgroundTask): void; // t-z1xlfy `origami/backgroundTask`: a sub-agent's background shell (agentTreeHost.ts)
   onClose(reason: string): void;
   onError(message: string): void;
 }
@@ -363,6 +367,12 @@ export function bunCandidates(platform: string, home: string): string[] {
   return [path.join(home, '.bun', 'bin', 'bun'), '/opt/homebrew/bin/bun', '/usr/local/bin/bun'];
 }
 
+/** t-w2u2ki: the env one engine spawn adds to the host env. The warm spare's spawn digest reads the same. */
+export function engineOverlay(headless?: boolean): Record<string, string> {
+  const rg = bundledRgCandidate(); // ORIGAMI_RG_PATH is set only when the merged install shipped an rg
+  return { ...engineSpawnEnv({ codeMode: codeModeEnabled(), agentName: agentNameSetting(), headless, subagentLimitHours: subagentLimitHours() }), ...(rg ? { ORIGAMI_RG_PATH: rg } : {}), ...pinnedSpawnEnv() };
+}
+
 /** Live-source dev mode: when `origami.devEngineSource` points at a checked-out
  *  `packages/engine`, run the engine from source via Bun so edits take effect on
  *  a window reload. Returns the Bun executable + arg prefix, or null. */
@@ -440,6 +450,11 @@ export class AcpClient {
   private readonly pageSinks = new Map<string, AcpEventHandlers>();
   /** The load/fork response's `_meta.origami_history`; null on an old engine or a new session. */
   public restoredHistory: HistoryWindow | null = null;
+  /** t-w2qv3o: when the host last asked this engine something (ms epoch, 0 = never), for the elastic tracker. */
+  public lastExtAt = 0;
+  /** t-w2txb2 (elastic/park.ts): set while this chat's engine is parked — a call that needs the engine runs it
+   *  first, through the chat's gate. The spawn env is the one the chat started with; `sets` = the config values set. */
+  public wake: (() => Promise<void>) | null = null; private spawnEnv: Record<string, string> | null = null; private parking: Promise<void> | null = null; public readonly sets = new Map<string, string>(); private resumedOn: unknown = null; // t-wdyi2t: the connection the session is open on
 
   constructor(private readonly handlers: AcpEventHandlers) {}
 
@@ -457,14 +472,14 @@ export class AcpClient {
    *  endpoint comes from config (origami.json). The child otherwise inherits the
    *  parent env unchanged. */
   async start(cwd: string, engineUrl?: string, loadSessionId?: string, headless?: boolean, agent?: string, forkFromSessionId?: string): Promise<string> {
-    if (this.sessionId !== null) {
+    if (this.sessionId !== null && !this.deferredLoad) {
       return this.sessionId;
     }
     void engineUrl;
     await this.connect(cwd, headless);
     // Fork / recall / fresh — the branch itself lives in acpFork.ts.
     const established = await establishSession(this.connection as unknown as SessionConnection, { cwd, loadSessionId, forkFromSessionId, agent });
-    this.sessionId = established.sessionId;
+    this.sessionId = established.sessionId; this.resumedOn = this.connection; if (this.deferredLoad) { this.deferredLoad = false; this.wake = null; } // t-wypna7: the deferred load ran
     this.configOptions = established.configOptions;
     this.restoredHistory = established.history ?? null;
     console.log(`[origami] ACP session ${established.how}: ${this.sessionId}`);
@@ -474,9 +489,9 @@ export class AcpClient {
   /** Spawn the engine and run the ACP handshake, with NO session. A chat's start()
    *  runs this first; the window's host connection (hostEngine.ts, t-sh7cog) runs
    *  only this, so it writes no stored session and builds no model catalog. */
-  async connect(cwd: string, headless?: boolean): Promise<void> {
+  async connect(cwd: string, headless?: boolean, extraEnv?: Record<string, string>): Promise<void> { // extraEnv: the warm spare's ORIGAMI_SPARE (elastic/warmSpare.ts)
+    this.cwd = cwd; // t-wdyi2t: before the early return, so a chat on the adopted spare keeps ITS cwd string (a restore resumes with it)
     if (this.connection) return;
-    this.cwd = cwd;
 
     // Live-source dev mode (opt-in via origami.devEngineSource) runs the engine from
     // source via Bun; otherwise the compiled binary.
@@ -502,12 +517,9 @@ export class AcpClient {
         cwd,
         windowsHide: true,
         // Which engine flags this shell turns on, and why, lives in engineEnv.ts.
-        // ORIGAMI_RG_PATH is set only when the merged install shipped an rg.
-        env: {
-          ...process.env,
-          ...engineSpawnEnv({ codeMode: codeModeEnabled(), agentName: agentNameSetting(), headless, subagentLimitHours: subagentLimitHours() }),
-          ...(() => { const rg = bundledRgCandidate(); return rg ? { ORIGAMI_RG_PATH: rg } : {}; })(),
-        },
+        // t-w2txb2: the overlay is read once per CHAT, not per process — a restore (park.ts) spawns with the env this chat
+        // started with. t-w2u2ki: `extraEnv` (the warm spare's ORIGAMI_SPARE) is never recorded, so a restore never respawns as a spare.
+        env: { ...process.env, ...(this.spawnEnv ??= engineOverlay(headless)), ...extraEnv },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -518,37 +530,15 @@ export class AcpClient {
 
     child.on('exit', (code, signal) => {
       const reason = `origami-acp exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
-      this.handlers.onClose(reason);
+      this.handlers.onClose(this.parking ? `${reason} (parked: a planned stop)` : reason);
       this.connection = null;
-      this.sessionId = null;
+      if (!this.parking && !this.wake) this.sessionId = null; // a parked chat keeps its engine session (t-w2txb2), also through an exit mid-park or mid-restore (t-wdyi2t)
       this.child = null;
     });
     child.on('error', (err) => {
       this.handlers.onError(`origami-acp child error: ${err.message}`);
     });
-    // Forward piped stderr to the extension host log, per line so multi-line panics
-    // are not truncated.
-    if (child.stderr) {
-      child.stderr.setEncoding('utf8');
-      let buf = '';
-      child.stderr.on('data', (chunk: string) => {
-        buf += chunk;
-        let nl = buf.indexOf('\n');
-        while (nl !== -1) {
-          const line = buf.slice(0, nl).trimEnd();
-          if (line.length > 0) {
-            console.error(`[origami-acp] ${line}`);
-          }
-          buf = buf.slice(nl + 1);
-          nl = buf.indexOf('\n');
-        }
-      });
-      child.stderr.on('end', () => {
-        if (buf.trim().length > 0) {
-          console.error(`[origami-acp] ${buf.trim()}`);
-        }
-      });
-    }
+    forwardStderr(child.stderr); // per line, to the extension host log (acpStderr.ts)
 
     if (!child.stdin || !child.stdout) {
       throw new Error('origami-acp child has no stdio');
@@ -582,6 +572,7 @@ export class AcpClient {
   }
 
   async prompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<acp.StopReason> {
+    await this.live();
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.prompt called before start()');
     }
@@ -628,11 +619,15 @@ export class AcpClient {
    *  requires a leading `_` on the wire for extension methods and the JS SDK does
    *  not add it; drop it and every ext-method `method_not_found`s. */
   async extMethod(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    const wireMethod = method.startsWith('_') ? method : `_${method}`;
+    // t-w2qv3o: the activity tracker's quiet clock (elastic/). Its own `_elastic_*` calls do not count, and (t-wdyi2t) never wake a parked engine: they fail fast.
+    const stamp = !wireMethod.startsWith('_elastic_');
+    if (stamp) await this.live();
     if (!this.connection) {
       throw new Error('AcpClient.extMethod called before start()');
     }
-    const wireMethod = method.startsWith('_') ? method : `_${method}`;
-    return this.connection.extMethod(wireMethod, params);
+    if (stamp) this.lastExtAt = Date.now();
+    try { return await this.connection.extMethod(wireMethod, params); } finally { if (stamp) this.lastExtAt = Date.now(); }
   }
 
   /** `run_steps` — an ordered, read-only projection of a PAST run's steps. Safe
@@ -832,6 +827,7 @@ export class AcpClient {
    *  server validates the id and returns the refreshed `configOptions`, which is
    *  cached. Returns the resolved model id; throws on an invalid model. */
   async setModel(modelId: string): Promise<string> {
+    await this.live();
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.setModel called before start()');
     }
@@ -843,6 +839,7 @@ export class AcpClient {
     this.configOptions = ((resp as { configOptions?: unknown[] }).configOptions ?? []) as Array<
       Record<string, unknown>
     >;
+    this.sets.set('model', modelId);
     return this.getModelOption()?.current ?? modelId;
   }
 
@@ -850,6 +847,7 @@ export class AcpClient {
    *  validates the value against the session's snapshot and throws an honest error
    *  when it is not valid for the current model — never a silent no-op. */
   async setConfigOption(configId: string, value: string): Promise<void> {
+    await this.live();
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.setConfigOption called before start()');
     }
@@ -861,6 +859,7 @@ export class AcpClient {
     this.configOptions = ((resp as { configOptions?: unknown[] }).configOptions ?? []) as Array<
       Record<string, unknown>
     >;
+    this.sets.set(configId, value);
   }
 
   /** Deterministic rollback. `revert(messageID)` restores the working tree to the
@@ -876,45 +875,67 @@ export class AcpClient {
   /** List prior sessions for the current workspace (ACP `listSessions`) — the one
    *  recall surface. Recall one by passing its id to `start(cwd, _, sessionId)`. */
   async listSessions(): Promise<Array<{ sessionId: string; cwd: string; title: string; updatedAt: string }>> {
+    await this.live();
     if (!this.connection) {
       throw new Error('AcpClient.listSessions called before start()');
     }
-    // EVERY page, not just the first — sessionPaging.ts owns the loop and why.
-    const pageAll = (params: { cwd?: string }) =>
-      pageSessions((p) => this.connection!.listSessions(p), params);
-
-    let sessions = await pageAll(this.cwd ? { cwd: this.cwd } : {});
-
-    // Fallback: fire when the cwd-scoped query surfaced no chats OTHER than the
-    // CURRENT session — a fresh session in this workspace returns exactly 1 row
-    // (itself), and a cwd-key mismatch (loose files, C:\ vs C:/) returns none. Retry
-    // unfiltered and adopt it only if it actually surfaces past chats.
-    const others = (rows: Array<Record<string, unknown>>) =>
-      rows.filter(s => String(s['sessionId'] ?? '') !== (this.sessionId ?? ''));
-    if (this.cwd && others(sessions).length === 0) {
-      const all = await pageAll({});
-      if (others(all).length > 0) sessions = all;
-    }
-
-    return sessions.map((s) => ({
-      sessionId: String(s['sessionId'] ?? ''),
-      cwd: String(s['cwd'] ?? ''),
-      title: String(s['title'] ?? ''),
-      updatedAt: String(s['updatedAt'] ?? ''),
-    }));
+    // EVERY page, not just the first, and the cwd fallback — sessionPaging.ts owns the loop and why.
+    return listWorkspaceSessions((p) => this.connection!.listSessions(p), this.cwd, this.sessionId);
   }
 
   /** Switch the ACP permission mode (default / plan / auto / bypass). */
   async setSessionMode(modeId: string): Promise<Record<string, unknown>> {
+    await this.live();
     if (!this.connection || !this.sessionId) {
       throw new Error('AcpClient.setSessionMode called before start()');
     }
-    const resp = await this.connection.setSessionMode({
-      sessionId: this.sessionId,
-      modeId,
-    });
+    const resp = await this.connection.setSessionMode({ sessionId: this.sessionId, modeId });
+    this.cacheMode(modeId); // t-wdyi2t: the engine sends no current_mode_update for it; a restore (park.ts) sets it again from here
     return resp as unknown as Record<string, unknown>;
   }
+  /** Keep the cached `mode` select in step, so getModeOption() reflects the new mode rather than the stale pre-switch currentValue. */
+  private cacheMode(modeId: string): void { const opt = this.configOptions.find((o) => o['id'] === 'mode' && o['type'] === 'select'); if (opt) opt['currentValue'] = modeId; }
+
+  /** t-w2txb2: a parked chat's engine is started again (through its gate) before a call that needs it. */
+  private async live(): Promise<void> { if (this.wake) await this.wake(); } // t-wdyi2t: also while the park is asked or a restore failed: the gate decides
+
+  /** t-w2txb2: stop this chat's engine ON PURPOSE (elastic/park.ts). The engine session id and the spawn env
+   *  stay; `restore()` brings the engine back for the same session. Resolves once the process has exited. */
+  park(): Promise<void> {
+    const child = this.child;
+    if (!child || !this.sessionId) return Promise.resolve();
+    this.parking = new Promise<void>((done) => { child.once('exit', () => done()); shutdownEngine(child); }).finally(() => { this.parking = null; });
+    return this.parking;
+  }
+
+  /** t-x3a89j: kill an engine that did not answer its start or restore in time (elastic/park.ts startWithin), so Retry
+   *  spawns a fresh one. Resolves once it has exited. A parked chat keeps its session id through it (the exit handler). */
+  stopStart(): Promise<void> {
+    const child = this.child;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise<void>((done) => { child.once('exit', () => done()); try { child.kill(); } catch { done(); } });
+  }
+
+  /** t-w2txb2: spawn the engine again (the recorded env) and reopen the kept session with `session/resume`,
+   *  which replays NO history into the live handlers, so the transcript is not doubled. */
+  async restore(): Promise<boolean> { // t-wdyi2t: false = the engine never stopped (nothing to set again); a failed resume is sent again on Retry
+    await this.parking;
+    const id = this.sessionId;
+    if (!id) throw new Error('the chat has no engine session to start again'); // closed meanwhile: start nothing
+    if (this.connection && this.resumedOn === this.connection) return false;
+    if (this.spawnEnv && this.peerAgentName && !this.spawnEnv[AGENT_NAME_VAR]) this.spawnEnv[AGENT_NAME_VAR] = this.peerAgentName; // the same peer name, so replies to it still arrive (engine name defaults to cwd + pid)
+    if (!this.connection) await this.connect(this.cwd);
+    const conn = this.connection as unknown as { resumeSession(p: object): Promise<unknown> } | null;
+    if (!conn) throw new Error('the engine stopped while it was starting again');
+    const resp = await conn.resumeSession({ sessionId: id, cwd: this.cwd, mcpServers: [] });
+    this.configOptions = ((resp as { configOptions?: unknown[] } | null)?.configOptions ?? []) as Array<Record<string, unknown>>;
+    this.resumedOn = conn; return true;
+  }
+
+  /** t-wypna7 (elastic/reloadDefer.ts): a chat reopened at a reload with no engine yet holds its engine session id (open set, /loop,
+   *  mail read it); `wake` runs before a call that needs the engine. The next start() loads that session, then clears both. */
+  defer(sessionId: string, cwd: string, wake: () => Promise<void>): void { this.sessionId = sessionId; this.cwd = cwd; this.wake = wake; this.deferredLoad = true; }
+  private deferredLoad = false;
 
   /** Get the current session ID (null if not started). */
   get currentSessionId(): string | null {
@@ -1157,8 +1178,7 @@ export class AcpClient {
             if (modeId) {
               // Keep the cached `mode` select in sync so getModeOption() reflects the new mode
               // rather than the stale pre-switch currentValue.
-              const opt = this.configOptions.find((o) => o['id'] === 'mode' && o['type'] === 'select');
-              if (opt) opt['currentValue'] = modeId;
+              this.cacheMode(modeId);
               h.onModeChanged?.({ modeId });
             }
             break;
@@ -1336,6 +1356,7 @@ export class AcpClient {
             if (win) this.handlers.onHistoryWindow?.(win);
             break;
           }
+          case 'origami/backgroundTask': { const task = backgroundTaskFrom(p); if (task) this.handlers.onBackgroundTask?.(task); break; }
           case 'origami/subagentRoster': {
             const roster = subagentRosterFrom(p);
             if (roster) this.handlers.onSubagentRoster?.(roster);

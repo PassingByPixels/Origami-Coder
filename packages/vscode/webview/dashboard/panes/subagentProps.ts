@@ -15,11 +15,14 @@
 // types. Rename a prop and `npm run typecheck` fails on the fixture — one
 // gate, both directions, no mirror test to keep in step.
 import type { SubagentMessage, SubagentRow } from './subagentRows';
+import type { ShellCard } from './agentTree';
 
 export interface SubagentDockProps {
   /** This chat's transcript — the rows are DERIVED from it, never a second
    *  wire that could disagree with the tool cards it was read from. */
-  messages: ReadonlyArray<SubagentMessage>;
+  messages: ReadonlyArray<SubagentMessage & ShellCard>;
+  /** t-z1xlfy. This chat's id: the host's `agentTree` post (deeper tiers, sub-agents' shells) is keyed by it. */
+  sessionId: string;
   /** Roster keys retired by hand (the row's ×) or by the next turn's
    *  auto-clear of a failed spawn. Nothing retires a row on the clock — a
    *  finished row is history the drawer keeps (t-h8gv8w). */

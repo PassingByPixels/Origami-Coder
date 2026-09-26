@@ -158,11 +158,15 @@ interface Desk {
   hold: { on: boolean; queued: Array<() => void> };
   /** The keychain and globalState: pass them to makeDesk again to restart the desk. */
   keep: { secrets: SecretStore; roster: GroupRosterStore };
+  /** t-xsrtml: this window's open-chat engine session ids, as the panel would report them
+   *  (incl. a parked chat's id). Mutable so a test can change what is "open" mid-run. */
+  openIds: string[];
 }
 
 function makeDesk(name: string, fleet: RelayFleet, keep: Desk['keep'] = { secrets: secrets(), roster: new GroupRosterStore(memento()) }): Desk {
   const ticks: Desk['ticks'] = [];
   const status: string[] = [];
+  const openIds: string[] = [];
   const hub = new NestHub({
     enabled: () => true,
     // The 30 s index tick is captured and fired by hand; the pull's answer
@@ -188,8 +192,8 @@ function makeDesk(name: string, fleet: RelayFleet, keep: Desk['keep'] = { secret
   const posts: Array<Record<string, unknown>> = [];
   const opened: string[] = [];
   hub.attachGroup({ deviceId: () => ctl.deviceId, deskName: name, devices: () => ctl.snapshot().devices, send: (p, m) => ctl.send(p, m) });
-  hub.attachView({ engine: () => engine, post: (m) => void posts.push(m), open: (id) => void opened.push(id) });
-  return { ctl, hub, engine, posts, opened, ticks, status, hold, keep };
+  hub.attachView({ engine: () => engine, post: (m) => void posts.push(m), open: (id) => void opened.push(id), openSessionIds: () => openIds });
+  return { ctl, hub, engine, posts, opened, ticks, status, hold, keep, openIds };
 }
 
 // t-tbyb2c: a Date.now() deadline reads as "failed" under CPU contention
@@ -251,6 +255,17 @@ describe('Nests wiring — two desks over a loopback relay', () => {
     expect(A.ticks.map((t) => t.ms)).toEqual([30_000]);
   });
 
+  // t-xsrtml: nestHub.sync() used to hard-code `open: []` — the extension never told the engine
+  // which chats are open in the window, so a parked chat (no engine loaded) could never read as
+  // open on a peer. openSessionIds() is the extension's own answer; sync() must forward it as is.
+  it('t-xsrtml: nest_index carries this window\'s open-chat ids, incl. a parked chat with no engine loaded', async () => {
+    A.openIds.push('a1', 'a-parked'); // same array the attachView() closure reads; reassigning A.openIds would not be seen
+    A.engine.calls.length = 0;
+    await A.hub.sync();
+    const call = A.engine.calls.find(([m]) => m === 'nest_index');
+    expect(call?.[1]['open']).toEqual(['a1', 'a-parked']);
+  });
+
   it('index: the 30 s tick resends, a desk going offline keeps its last rows with online=false', async () => {
     B.engine.add('b4', 'New on the 5090', 1);
     B.ticks.shift()!.fn();
@@ -259,6 +274,15 @@ describe('Nests wiring — two desks over a loopback relay', () => {
     const b = B.ctl.snapshot().deviceId;
     await until(() => lastIndex(A)!.desks.find((d) => d['id'] === b)?.['online'] === false, 'desk B shows offline');
     expect(ids(A).sort()).toEqual(['b1', 'b2', 'b3', 'b4']);
+  });
+
+  // t-z6nt1b: a close writes no journal event (seq unchanged); the touch sync must still carry it.
+  it('t-z6nt1b: a state-only change (open -> closed, same seq) reaches the other desk within one touch sync', async () => {
+    const state = () => lastIndex(A)!.rows.find((r) => r['id'] === 'b3')?.['state'];
+    expect(state()).toBe('open');
+    B.engine.sessions.get('b3')!.state = 'closed';
+    B.hub.touch(); // the fixture runs the 2 s touch timer as a short real timeout
+    await until(() => state() === 'closed', 'the closed state crossed');
   });
 
   it('continue (idle owner): the body crosses in chunks over the link, then taken, the chat opens here, the owner gets nest_release', async () => {

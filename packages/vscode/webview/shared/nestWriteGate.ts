@@ -11,14 +11,14 @@
 // setSessionConfigOption ids in ROW_WRITING_CONFIG, engine/src/acp/service.ts).
 // Not here, on purpose: cancel and permission (they stop or answer; they write
 // no row), dismissSubagent (workspaceState only), secondOpinion (a read-only
-// review), stopSubagent (a child session). slashCommand carries no sessionId;
-// only the composer sends it, and the composer is not drawn on an away chat.
+// review), stopSubagent (a child session). slashCommand carries its chat's id since t-xsufto (an engine command
+// prompts that chat), so it is gated like send, although the composer is not drawn on an away chat.
 
 export const NEST_WRITE_TYPES: ReadonlySet<string> = new Set([
   'send', 'sendWithImages', 'interject', 'compactContext', 'planAction',
   'revertToMessage', 'undoRevert', 'renameSession',
   'setSubagentModel', 'setApproveMode', 'setVisionProfile', 'setCompactionThreshold',
-  'stopBackgroundShell',
+  'stopBackgroundShell', 'slashCommand',
 ]);
 
 let away: ReadonlySet<string> = new Set();

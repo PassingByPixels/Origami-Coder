@@ -205,6 +205,8 @@ describe('the Nests view draws the tail (acceptance 5)', () => {
     const noop = () => undefined;
     const { container, unmount } = render(NestDeskTile, { desk: d, now: 0, onRename: noop, onHome: noop, onRemove: noop, tail: 'tailed: 2 chats, behind by 1' });
     expect(container.querySelector('[data-tail]')?.textContent).toContain('tailed: 2 chats, behind by 1');
+    // t-vikozs: the separator kept its trailing space but lost the leading one ("ago· tailed").
+    expect(container.querySelector('.ell')?.textContent).toMatch(/\S · tailed: 2 chats/);
     unmount();
     const bare = render(NestDeskTile, { desk: d, now: 0, onRename: noop, onHome: noop, onRemove: noop });
     expect(bare.container.querySelector('[data-tail]')).toBeNull();

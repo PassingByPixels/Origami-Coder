@@ -183,7 +183,7 @@ describe('the existing sub-agent drawer picks the tally up as a row', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.state).toBe('running');
     expect(rows[0]!.title).toBe('Audit the parser');
-    // The drawer's tab count and its header line — the numbers Passing asked
+    // The drawer's tab count and its header line — the numbers the owner asked
     // the mini tab to answer.
     expect(groupSubagents(rows).running).toHaveLength(1);
     expect(rosterSummary(rows)).toBe('1 running');

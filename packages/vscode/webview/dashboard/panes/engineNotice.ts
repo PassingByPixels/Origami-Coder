@@ -12,12 +12,15 @@
 export type EngineStage = 'starting' | 'ready' | 'failed' | 'stopped';
 
 /** One `engineState` post. `held` = the messages waiting on the engine at that moment;
- *  `retry` = a failed start that is safe to run again (a fork that never got its id is not). */
+ *  `retry` = a failed start that is safe to run again (a fork that never got its id is not).
+ *  t-x3a89j: `at` = when it failed or stopped (ms since epoch); `details` = the text Copy details copies. */
 export interface EngineNotice {
   stage: EngineStage;
   reason: string;
   held: number;
   retry: boolean;
+  at?: number;
+  details?: string;
 }
 
 const STAGES: readonly EngineStage[] = ['starting', 'ready', 'failed', 'stopped'];
@@ -25,14 +28,22 @@ const STAGES: readonly EngineStage[] = ['starting', 'ready', 'failed', 'stopped'
 /** Fail-closed shape check for a value off the host wire. */
 export function asEngineNotice(value: unknown): EngineNotice | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const { stage, reason, held, retry } = value as Record<string, unknown>;
+  const { stage, reason, held, retry, at, details } = value as Record<string, unknown>;
   if (!STAGES.includes(stage as EngineStage)) return undefined;
   return {
     stage: stage as EngineStage,
     reason: typeof reason === 'string' ? reason : '',
     held: Number.isInteger(held) && (held as number) > 0 ? (held as number) : 0,
     retry: stage === 'failed' && retry === true, // fail-closed: no Retry unless the host said so
+    ...(typeof at === 'number' && Number.isFinite(at) ? { at } : {}),
+    ...(typeof details === 'string' ? { details } : {}),
   };
+}
+
+/** Local wall-clock time, HH:MM:SS. */
+function clock(at: number): string {
+  const d = new Date(at);
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
 /** What SystemAlertRow draws for a notice. */
@@ -42,20 +53,24 @@ export interface EngineAlert {
   detail: string;
   /** Only a failed start can be tried again from the card. */
   retry: boolean;
+  /** t-x3a89j: what Copy details copies; absent = no Copy details / Open engine log. */
+  details?: string;
 }
 
 export function engineAlert(n: EngineNotice): EngineAlert {
   const yours = n.held === 1 ? 'Your message' : `${n.held} messages`;
   const join = (...parts: string[]) => parts.filter(Boolean).join(' · ');
+  const when = n.at ? `at ${clock(n.at)}` : '';
+  const end = n.details !== undefined ? { details: n.details } : {};
   switch (n.stage) {
     case 'starting':
       return { state: 'retrying', title: 'Starting the engine', detail: n.held > 0 ? `${yours} will send when the engine is up.` : '', retry: false };
     case 'ready':
       return { state: 'recovered', title: 'Engine ready', detail: n.held === 1 ? 'Your message was sent.' : n.held > 1 ? `${yours} go out in the order you sent them.` : '', retry: false };
     case 'failed':
-      return { state: 'stopped', title: 'The engine did not start', detail: join(n.reason, n.retry && n.held > 0 ? `${yours} ${n.held === 1 ? 'is kept. Retry sends it.' : 'are kept. Retry sends them.'}` : ''), retry: n.retry };
+      return { state: 'stopped', title: 'The engine did not start', detail: join(n.reason, when, n.retry && n.held > 0 ? `${yours} ${n.held === 1 ? 'is kept. Retry sends it.' : 'are kept. Retry sends them.'}` : ''), retry: n.retry, ...end };
     case 'stopped':
-      return { state: 'stopped', title: 'The engine stopped', detail: join(n.reason, 'Reload the window to start it again.'), retry: false };
+      return { state: 'stopped', title: 'The engine stopped', detail: join(n.reason, when, 'Reload the window to start it again.'), retry: false, ...end };
   }
 }
 

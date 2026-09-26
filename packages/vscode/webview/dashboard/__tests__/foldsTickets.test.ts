@@ -50,7 +50,7 @@ const SAMPLE = [
   "fold: ''",
   "branch: ''",
   'blocked-by: [t-aaa111]',
-  'owner: passing',
+  'owner: jane_doe',
   '---',
   '',
   'The scroll block runs edge to edge on a wide window.',
@@ -79,7 +79,7 @@ const MINIMAL = [
   'priority: normal',
   'created: 2026-08-06T09:00:00Z',
   'updated: 2026-08-06T09:00:00Z',
-  'owner: passing',
+  'owner: jane_doe',
   '---',
   '',
   'Body prose only.',
@@ -114,7 +114,7 @@ describe('ticket file — parse/serialize round-trip', () => {
     const t = parseTicket(after, ticketPath(repo, 't-8k2fq1'));
     // The two keys this layer has never heard of survive verbatim...
     expect(scalar(t.fm, 'blocked-by')).toBe('[t-aaa111]');
-    expect(scalar(t.fm, 'owner')).toBe('passing');
+    expect(scalar(t.fm, 'owner')).toBe('jane_doe');
     // ...as do the body's prose and its acceptance boxes...
     expect(t.body).toContain('The scroll block runs edge to edge on a wide window.');
     expect(acceptance(t.body)).toEqual({ done: 1, total: 3 });
@@ -139,7 +139,7 @@ describe('ticket file — minimal-format template (§12 item 5)', () => {
   it('parses, defaults every omitted key, and counts a body-only Acceptance section', () => {
     const t = parseTicket(MINIMAL, 'C:/x/.origami/tickets/t-min001.md');
     expect(t.malformed).toBe(false); // id + title present is all malformed requires
-    expect(scalar(t.fm, 'owner')).toBe('passing'); // the hand-added key still reads
+    expect(scalar(t.fm, 'owner')).toBe('jane_doe'); // the hand-added key still reads
     const row = ticketRow(t);
     expect(row).toMatchObject({
       id: 't-min001', title: 'Minimal ticket, no scaffolding', status: 'todo',
@@ -170,7 +170,7 @@ describe('ticket file — hostile and hand-edited input', () => {
     unlinkTicket(repo, 't-8k2fq1', 'normalised');
     const after = fs.readFileSync(ticketPath(repo, 't-8k2fq1'), 'utf8');
     expect(after).not.toContain('\r');
-    expect(after).toContain('owner: passing');
+    expect(after).toContain('owner: jane_doe');
     expect(acceptance(after)).toEqual({ done: 1, total: 3 });
   });
 
@@ -594,7 +594,7 @@ describe('fold lifecycle stamps a ticket (real git, faked host)', () => {
       expect(scalar(t1.fm, 'status')).toBe('pending');
       expect(scalar(t1.fm, 'fold')).toBe(rec.id);
       expect(scalar(t1.fm, 'branch')).toBe(rec.branch);
-      expect(scalar(t1.fm, 'owner')).toBe('passing'); // unknown key survived the stamp
+      expect(scalar(t1.fm, 'owner')).toBe('jane_doe'); // unknown key survived the stamp
 
       const board = lastState(host)?.repos.find((r) => r.root === repo);
       expect(board?.tickets).toHaveLength(1);
@@ -638,7 +638,7 @@ describe('fold lifecycle stamps a ticket (real git, faked host)', () => {
       );
       expect(scalar(t1.fm, 'fold')).toBe(rec.id);
       expect(scalar(t1.fm, 'branch')).toBe(rec.branch);
-      expect(scalar(t1.fm, 'owner')).toBe('passing');
+      expect(scalar(t1.fm, 'owner')).toBe('jane_doe');
       expect(raw).not.toContain('labels:');
       expect(raw).not.toContain('assignee:');
     } finally {

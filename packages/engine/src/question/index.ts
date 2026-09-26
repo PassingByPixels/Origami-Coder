@@ -4,6 +4,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { ElasticActivity } from "@/elastic/activity"
 import { QuestionV1 } from "@origami/schema/question-v1"
 
 export const Option = QuestionV1.Option
@@ -84,6 +85,9 @@ const layer = Layer.effect(
         const state = {
           pending: new Map<QuestionID, PendingEntry>(),
         }
+
+        // origami_change (t-w2qlop): an unanswered ask keeps the engine unparkable.
+        yield* ElasticActivity.probeScoped("question-pending", () => state.pending.keys())
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {

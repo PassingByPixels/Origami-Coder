@@ -12,7 +12,9 @@ type Connection = Partial<Pick<AgentSideConnection, "requestPermission">>
 // is `requestPermission`, so each question is surfaced as a permission prompt, the
 // chosen option mapped back to its label, and the reply sent via
 // `sdk.question.reply` - mirroring acp/permission.ts. A multi-select question
-// degrades to the single chosen option and never silently drops the request.
+// (t-xum9v2) is marked `multiple: true` on `_meta.questions`; a client that knows
+// it replies `optionIds` and every ticked label is returned. A client that does
+// not still answers with one option, as before.
 //
 // A MULTI-question request is offered as ONE prompt, not N: ACP has no
 // many-questions request, so the batch rides `_meta.questions` while the top-level
@@ -118,6 +120,7 @@ export class Handler {
             question: question.question,
             header: question.header,
             options: promptOptions(question),
+            ...(question.multiple ? { multiple: true } : {}),
           })),
         },
       })
@@ -209,6 +212,23 @@ function answerFor(optionId: unknown, typed: string | undefined, labels: string[
 }
 
 /**
+ * t-xum9v2. The labels of a multi-select answer: every ticked option, in the order
+ * sent, with typed text in place of the bare "Other". An empty list is a real
+ * answer ("none apply"); an id that names no option declines the whole ask.
+ */
+function ticked(optionIds: unknown[], typed: string | undefined, labels: string[]): string[] | undefined {
+  const out: string[] = []
+  for (const id of optionIds) {
+    const label = answerFor(id, undefined, labels)
+    if (label === undefined) return undefined
+    if (label === OTHER_LABEL && Number(id) === labels.length && typed) continue
+    if (!out.includes(label)) out.push(label)
+  }
+  if (typed) out.push(typed)
+  return out
+}
+
+/**
  * Every answer this outcome carries, in the order the batch was offered.
  * `_meta.answers` is the batch reply: one `{ optionId, answerText }` per question a
  * "Question 1 of N" client showed. Absent or unusable means a legacy
@@ -227,7 +247,14 @@ function resolveAnswers(
     const answers: string[][] = []
     for (const [index, entry] of batched.slice(0, batch.length).entries()) {
       const picked = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {}
-      const answer = answerFor(picked["optionId"], trimmedText(picked["answerText"]), labelsOf(batch[index]!))
+      const question = batch[index]!
+      if (question.multiple && Array.isArray(picked["optionIds"])) {
+        const all = ticked(picked["optionIds"], trimmedText(picked["answerText"]), labelsOf(question))
+        if (all === undefined) return undefined
+        answers.push(all)
+        continue
+      }
+      const answer = answerFor(picked["optionId"], trimmedText(picked["answerText"]), labelsOf(question))
       if (answer === undefined) return undefined
       answers.push([answer])
     }

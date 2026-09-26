@@ -16,7 +16,7 @@ import {
 
 const REPOS = [
   { root: 'C:\\Repos\\Origami Coder\\origami-coder', name: 'Origami Coder' },
-  { root: 'C:/Repos/Projects/learning-apps', name: 'Learning apps' },
+  { root: 'C:/Repos/Projects/demo-app', name: 'Demo app' },
 ];
 
 describe('sameDir', () => {
@@ -41,7 +41,7 @@ describe('repoForCwd', () => {
 
   it('prefers the DEEPER registration when one repo is nested in another', () => {
     const nested = [{ root: 'C:/Repos', name: 'all' }, ...REPOS];
-    expect(repoForCwd(nested, 'C:/Repos/Projects/learning-apps')?.name).toBe('Learning apps');
+    expect(repoForCwd(nested, 'C:/Repos/Projects/demo-app')?.name).toBe('Demo app');
   });
 
   it('is undefined for a folder no registered repo contains', () => {

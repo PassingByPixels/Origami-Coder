@@ -59,6 +59,8 @@
     color: var(--og-text-muted);
   }
   .sa-group-count { font-size: 9px; color: var(--og-text-muted); font-variant-numeric: tabular-nums; }
+  /* t-yyz57i: a hairline runs from the label to the panel edge. */
+  .sa-group-head::after { content: ''; flex: 1 1 auto; height: 1px; align-self: center; background: var(--og-border); }
 
   .sa-list {
     list-style: none;

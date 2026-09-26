@@ -1179,6 +1179,37 @@ export function toPublicInfo(provider: Info): Info {
   )
 }
 
+/**
+ * origami_change (t-woacbl): the provider state's table of public rows, copied
+ * from the catalog when a row is first READ, not all at once. The state keeps
+ * only the providers the user can use, but the eager copy checked and cloned
+ * every catalog row (~220 providers, 8,000 models): 180-230 ms of one
+ * main-thread block at every engine's first prompt. Same keys in the same order,
+ * same values; a written row replaces its key in place, a new key goes last.
+ * `env` reads a row's env list without copying it (a copy keeps the list as is).
+ */
+export function _lazyPublicRows<T extends { env: string[] }>(catalog: Record<string, T>, copy: (row: T) => T) {
+  const rows = {} as Record<string, T>
+  const pending = new Set(Object.keys(catalog))
+  const settle = (id: string, value: T) => {
+    pending.delete(id)
+    Object.defineProperty(rows, id, { value, writable: true, enumerable: true, configurable: true })
+  }
+  for (const id of pending) {
+    Object.defineProperty(rows, id, {
+      get: () => {
+        const value = copy(catalog[id]!)
+        settle(id, value)
+        return value
+      },
+      set: (value: T) => settle(id, value),
+      enumerable: true,
+      configurable: true,
+    })
+  }
+  return { rows, env: (id: string) => (pending.has(id) ? catalog[id]!.env : rows[id]!.env) }
+}
+
 export function defaultModelIDs<T extends { models: Record<string, { id: string }> }>(providers: Record<string, T>) {
   return mapValues(providers, (item) => sort(Object.values(item.models))[0].id)
 }
@@ -1458,7 +1489,8 @@ const layer = Layer.effect(
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
-        const database = mapValues(catalog, toPublicInfo)
+        // origami_change (t-woacbl): rows are copied when read (_lazyPublicRows).
+        const { rows: database, env: databaseEnv } = _lazyPublicRows(catalog, toPublicInfo)
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>
         const languages = new Map<string, LanguageModelV3>()
@@ -1614,10 +1646,14 @@ const layer = Layer.effect(
               provider,
               fallback: [existingModel?.api.npm, modelsDev[providerID]?.npm],
             })
+            // origami_change (t-y5ecbj): in a `claude-subscription` block a name equal to the
+            // model id is a persisted pick (the extension writes `name: <id>`), not a label:
+            // the family's own name stays, and a row it does not list gets a readable one.
+            const subscriptionRow = providerID === claudeSubscriptionID
             const name = iife(() => {
-              if (model.name) return model.name
+              if (model.name && !(subscriptionRow && model.name === modelID)) return model.name
               if (model.id && model.id !== modelID) return modelID
-              return existingModel?.name ?? modelID
+              return existingModel?.name ?? (subscriptionRow ? ClaudeSubscription.readableName(modelID) : modelID)
             })
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
@@ -1710,14 +1746,17 @@ const layer = Layer.effect(
 
         // load env
         const envs = yield* env.all()
-        for (const [id, provider] of Object.entries(database)) {
+        for (const id of Object.keys(database)) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
-          const apiKey = provider.env.map((item) => envs[item]).find(Boolean)
+          // origami_change (t-woacbl): the env list only; a row with a key is
+          // copied by `mergeProvider`, the rest never are.
+          const names = databaseEnv(id)
+          const apiKey = names.map((item) => envs[item]).find(Boolean)
           if (!apiKey) continue
           mergeProvider(providerID, {
             source: "env",
-            key: provider.env.length === 1 ? apiKey : undefined,
+            key: names.length === 1 ? apiKey : undefined,
           })
         }
 

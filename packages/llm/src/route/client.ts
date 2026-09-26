@@ -346,9 +346,12 @@ const compile = Effect.fn("LLM.compile")(function* (request: LLMRequest) {
   const resolved = applyCachePolicy(resolveRequestOptions(request))
   const route = resolved.model.route
 
-  const body = yield* route.body
-    .from(resolved)
-    .pipe(Effect.flatMap(ProviderShared.validateWith(Schema.decodeUnknownEffect(route.body.schema))))
+  // t-vs5p1y: lowering, validation and serialising a big chat's body are each
+  // 10-50 ms; a yield between them lets other work on the thread run.
+  const lowered = yield* route.body.from(resolved)
+  yield* Effect.yieldNow
+  const body = yield* ProviderShared.validateWith(Schema.decodeUnknownEffect(route.body.schema))(lowered)
+  yield* Effect.yieldNow
   const prepared = yield* route.prepareTransport(body, resolved)
 
   return {

@@ -28,6 +28,8 @@ export const PHONE_DENIED_TYPES: ReadonlySet<string> = new Set([
   'feedMessage',
   // The spend glidepath, every 30 minutes for ever (usageHistory.ts).
   'glidepathData',
+  // t-z69b8m: a desktop drop's file bytes, answered to the composer that asked.
+  'droppedFiles',
 ]);
 
 export function deniedToPhone(msg: unknown): boolean {

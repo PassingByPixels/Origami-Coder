@@ -1,4 +1,4 @@
-// Regression guard for the Context tracker removal (Passing: "i want to ditch
+// Regression guard for the Context tracker removal (the owner: "i want to ditch
 // context manager"). The cross-session token tracker — the collapsible
 // Context section, its picker + monitored-chat rows — is GONE from the
 // sidebar launcher; the per-chat context gauge inside ChatPane is a

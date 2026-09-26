@@ -39,7 +39,7 @@ function writeTicket(repo: string, id: string, status: string, branch = ''): str
   fs.writeFileSync(file, [
     '---', `id: ${id}`, 'title: A thing to do', `status: ${status}`,
     'priority: normal', 'created: 2026-09-01T10:00:00Z', 'updated: 2026-09-01T10:00:00Z',
-    `branch: ${branch || "''"}`, 'owner: passing', '---', '',
+    `branch: ${branch || "''"}`, 'owner: jane_doe', '---', '',
     'Body prose.', '', '## Log', '', '- 2026-09-01T10:00:00Z folds: created via quick-add', '',
   ].join('\n'));
   return file;
@@ -69,7 +69,7 @@ describe('reconcileMergedTickets (real git)', () => {
     expect(after).toContain('status: merged');
     expect(after).toContain('branch: lane/t-ab12cd-thing');
     expect(after).toContain('merged into master (seen by the board)'); // the Log line
-    expect(after).toContain('owner: passing');                         // unknown key survived
+    expect(after).toContain('owner: jane_doe');                         // unknown key survived
 
     // The 5s poll runs this forever: a second pass must not rewrite the file.
     expect(await reconcileMergedTickets(repo)).toBe(false);

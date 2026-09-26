@@ -1,7 +1,7 @@
 // Origami Remote — DEVICE IDENTITY. The phone proves, on every socket, that it
 // holds the key enrolled when the pairing was made: Ks alone is copyable (a
 // photographed QR), and the iOS shell's P-256 Secure Enclave key is not. The
-// wire (`native_bridge_v1.md` 5.2):
+// wire (the iOS app's native bridge specification, 5.2):
 //   phone hello  -> deviceKey { alg:'ES256', pub, fp, backend }
 //   desktop      -> { type:'remote/challenge', v:1, challenge:<b64url 32 bytes> }
 //   phone        -> { type:'remote/challenge-response', v:1, sig, pub, fp }

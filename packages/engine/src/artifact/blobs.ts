@@ -80,7 +80,11 @@ export class BlobStore {
   /** Blob names only — the `.tmp` files of a publish that died mid-write are
    *  not blobs and must never be counted, served or pruned as one. */
   list(): string[] {
-    return fs.readdirSync(this.directory).filter((name) => /^[0-9a-f]{64}$/.test(name))
+    return fs.readdirSync(this.directory).filter(BlobStore.isBlobName)
+  }
+
+  static isBlobName(name: string): boolean {
+    return /^[0-9a-f]{64}$/.test(name)
   }
 
   /** Bytes on disk, measured by stat rather than summed from the manifests, so

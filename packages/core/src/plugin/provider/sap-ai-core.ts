@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { pathToFileURL } from "url"
-import { define } from "../internal"
+import { define } from "../define"
 import { Npm } from "../../npm"
 import { ProviderV2 } from "../../provider"
 

@@ -40,6 +40,9 @@ export interface SubagentIdentity {
   description?: string;
   /** The agent type asked for (`general-purpose`, `Explore`, ...), off the same input. */
   agentType?: string;
+  /** t-z1xlfy. A nested sub-agent's tier id (`T3.1.2`), set by agentTree.ts; a direct
+   *  child has none and prints `T<ordinal>`. */
+  short?: string;
 }
 
 /** `description` + `subagent_type` off a `task` call's `rawInput`, as the two
@@ -104,6 +107,7 @@ export function subagentIdentity(m: RosterMessage, ordinal: number): SubagentIde
  *  `T?` for an unnumbered row rather than `T0`, which would read as a real
  *  ordinal zero — and a blank would leave an unclickable tab. */
 export function subagentShort(row: SubagentIdentity): string {
+  if (row.short) return row.short;
   return row.ordinal >= 1 ? `T${row.ordinal}` : 'T?';
 }
 

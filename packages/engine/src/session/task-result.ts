@@ -245,3 +245,10 @@ export function forget(parentSessionID: string) {
 export function queuedResults(parentSessionID: string) {
   return pendingResults.get(parentSessionID)?.length ?? 0
 }
+
+/** origami_change (t-w2qlop): the parent sessions with a finished result still
+ *  waiting to be written. Read by the elastic idle report: stopping the engine
+ *  now would lose these, because the queue lives only in this process. */
+export function parentsWithResults(): string[] {
+  return [...pendingResults.entries()].filter(([, queue]) => queue.length > 0).map(([parent]) => parent)
+}

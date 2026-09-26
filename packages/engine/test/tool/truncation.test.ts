@@ -1,4 +1,7 @@
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, afterEach } from "bun:test"
+import * as TestClock from "effect/testing/TestClock"
+import { ElasticOs } from "@/elastic/os"
+import { ElasticState } from "@/elastic/state"
 import { ConfigV1 } from "@origami/core/v1/config/config"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { filesystem } from "@origami/core/effect/app-node-platform"
@@ -260,5 +263,36 @@ describe("Truncate", () => {
         expect(yield* fs.exists(recent)).toBe(true)
       }),
     )
+
+    // t-w2qlop: the HOURLY pass is heavy disk work nobody waits for, so a hidden
+    // (resting) engine skips it and an active one does it.
+    describe("the hourly pass and the elastic class", () => {
+      afterEach(() => {
+        ElasticState.resetForTest()
+        ElasticOs.setForTest(undefined)
+      })
+
+      it.effect("skipped while the engine rests, run again once it is active", () =>
+        Effect.gen(function* () {
+          ElasticOs.setForTest({ apply: () => ({ priority: "normal", ecoqos: false }), trim: () => ({ trimmed: false }) })
+          yield* Truncate.Service
+          const fs = yield* FileSystem.FileSystem
+          yield* fs.makeDirectory(Truncate.DIR, { recursive: true })
+          const old = path.join(Truncate.DIR, Identifier.create("tool", "ascending", Date.now() - 10 * DAY_MS))
+          yield* writeFileStringScoped(old, "old content")
+          const settle = Effect.promise(() => Bun.sleep(100))
+
+          ElasticState.request("idle")
+          yield* TestClock.adjust("61 seconds")
+          yield* settle
+          expect(yield* fs.exists(old)).toBe(true)
+
+          ElasticState.request("active")
+          yield* TestClock.adjust("61 minutes")
+          yield* settle
+          expect(yield* fs.exists(old)).toBe(false)
+        }),
+      )
+    })
   })
 })

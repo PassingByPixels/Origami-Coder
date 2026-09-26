@@ -103,6 +103,17 @@ describe('SubagentTranscriptView: the jump pill hides whenever the reader is at 
     expect(body.scrollTop, 'following again').toBe(2200);
   });
 
+  // t-xtim9n: the transcript's CONTENT gets shorter (a row folded in place) and puts the reader on the
+  // bottom with scrollTop unchanged: no scroll event, no resize of the body's own box.
+  it('CONTENT SHRINK: a child box gets shorter and brings the reader onto the bottom; the pill goes', async () => {
+    const { body, pill } = await readingUp();
+    grow(body, 702);                  // bottom = 302, the reader at 300
+    for (const child of Array.from(body.children)) FakeResizeObserver.fire(child);
+    await settle();
+    expect(body.scrollTop).toBe(300);
+    expect(pill()).toBeNull();
+  });
+
   it('SCROLL: back on the bottom with no poll in between hides the pill', async () => {
     const { body, pill } = await readingUp();
     body.scrollTop = 1900;

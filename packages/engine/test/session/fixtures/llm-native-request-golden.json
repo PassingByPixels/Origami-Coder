@@ -1,0 +1,56 @@
+{
+  "openai-compatible": {
+    "body": "8fab03c3294af81ffc02ebc206ba2c94d3b9c9e6291d3d784f0a8f1fec5768e7",
+    "bodyBytes": 1408,
+    "wire": "8fab03c3294af81ffc02ebc206ba2c94d3b9c9e6291d3d784f0a8f1fec5768e7",
+    "tools": 2
+  },
+  "anthropic": {
+    "body": "a8ec2f686d0709976ee05a1e91569279979d7fd2cef2e7f0e5bd96d9a105600c",
+    "bodyBytes": 1640,
+    "wire": "a8ec2f686d0709976ee05a1e91569279979d7fd2cef2e7f0e5bd96d9a105600c",
+    "tools": 2
+  },
+  "openai-responses": {
+    "body": "45b8730b2e1578042db40223dae34598a2e21bfc1ec2f6f53aa6b612362d1b0a",
+    "bodyBytes": 1533,
+    "wire": "45b8730b2e1578042db40223dae34598a2e21bfc1ec2f6f53aa6b612362d1b0a",
+    "tools": 2
+  },
+  "copilot-chat": {
+    "body": "5aa9992cbdefc634ba7bc63de78ca47fb18158a3c329d11c1d12227bc203530e",
+    "bodyBytes": 1368,
+    "wire": "5aa9992cbdefc634ba7bc63de78ca47fb18158a3c329d11c1d12227bc203530e",
+    "tools": 2
+  },
+  "copilot-responses": {
+    "body": "22f780b881256b298d55ce2f70b60049f2682a4f198ea343a50b1ff8d663be3f",
+    "bodyBytes": 1437,
+    "wire": "22f780b881256b298d55ce2f70b60049f2682a4f198ea343a50b1ff8d663be3f",
+    "tools": 2
+  },
+  "copilot-anthropic": {
+    "body": "57c3345cf2b81fe91680f72fe183bf27d1b23b7a9bc79afd8f8e3436eabb4ed7",
+    "bodyBytes": 1640,
+    "wire": "57c3345cf2b81fe91680f72fe183bf27d1b23b7a9bc79afd8f8e3436eabb4ed7",
+    "tools": 2
+  },
+  "openrouter": {
+    "body": "01331011c04906b4c3badf2e31cae9623b32c888936c461cc351def75fd36b95",
+    "bodyBytes": 1402,
+    "wire": "01331011c04906b4c3badf2e31cae9623b32c888936c461cc351def75fd36b95",
+    "tools": 2
+  },
+  "xai": {
+    "body": "9c15aee418d20a18a7e832098824c86fd38b2d8935803ec3abcb5dba84938b12",
+    "bodyBytes": 1535,
+    "wire": "9c15aee418d20a18a7e832098824c86fd38b2d8935803ec3abcb5dba84938b12",
+    "tools": 2
+  },
+  "claude-cli": {
+    "body": "a8ec2f686d0709976ee05a1e91569279979d7fd2cef2e7f0e5bd96d9a105600c",
+    "bodyBytes": 1640,
+    "wire": null,
+    "tools": 2
+  }
+}

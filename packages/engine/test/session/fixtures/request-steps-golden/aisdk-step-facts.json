@@ -1,0 +1,125 @@
+[
+  {
+    "reason": "tool-calls",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#2"
+    },
+    "cache": {
+      "cause": "cold"
+    }
+  },
+  {
+    "reason": "tool-calls",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#3"
+    },
+    "cache": {
+      "cause": "provider",
+      "preserved": true
+    }
+  },
+  {
+    "reason": "stop",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#4"
+    },
+    "cache": {
+      "cause": "provider",
+      "preserved": true
+    }
+  },
+  {
+    "reason": "tool-calls",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#5"
+    },
+    "cache": {
+      "cause": "history",
+      "preserved": false,
+      "divergence": {
+        "message": 82,
+        "role": "user",
+        "source": "unknown"
+      }
+    }
+  },
+  {
+    "reason": "tool-calls",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#6"
+    },
+    "cache": {
+      "cause": "history",
+      "preserved": false,
+      "divergence": {
+        "message": 47,
+        "role": "tool",
+        "source": "tool-aging"
+      }
+    }
+  },
+  {
+    "reason": "stop",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#7"
+    },
+    "cache": {
+      "cause": "provider",
+      "preserved": true
+    }
+  },
+  {
+    "reason": "stop",
+    "prefix": null,
+    "cache": {
+      "cause": "provider",
+      "preserved": true
+    }
+  },
+  {
+    "reason": "stop",
+    "prefix": {
+      "system": "#0",
+      "tools": "#1",
+      "history": "#8"
+    },
+    "cache": {
+      "cause": "compaction",
+      "preserved": false,
+      "divergence": {
+        "message": 1,
+        "role": "user",
+        "source": "unknown"
+      }
+    }
+  },
+  {
+    "reason": "stop",
+    "prefix": {
+      "system": "#9",
+      "tools": "#1",
+      "history": "#10"
+    },
+    "cache": {
+      "cause": "model",
+      "preserved": false,
+      "divergence": {
+        "message": 0,
+        "role": "system",
+        "source": "unknown"
+      }
+    }
+  }
+]

@@ -49,7 +49,7 @@
 
   let open = $state(false);
   // Broadcasts (fanned out to this webview by the shared host).
-  let modelOptions = $state<Array<{ value: string; name: string; configured?: boolean; visionState?: string; group?: string; groupDetail?: string }>>([]);
+  let modelOptions = $state<Array<{ value: string; name: string; configured?: boolean; visionState?: string; group?: string; groupDetail?: string; covers?: string[] }>>([]);
   // True once the first providerStatus payload (even empty) has landed; nothing
   // in tier-1 renders before it. Gates the empty-providers message (so it never
   // flashes before the real answer) and the grouping (a section is decided by
@@ -335,7 +335,7 @@
   }
 
   function eject() {
-    vscode.postMessage({ type: 'modelPanel.unload' });
+    vscode.postMessage({ type: 'modelPanel.unload', sessionId }); // t-xsufto: the host reports the eject in this chat
     open = false;
   }
 </script>
@@ -437,7 +437,7 @@
               <ModelPickerRow
                 value={mo.value}
                 name={mo.name}
-                current={mo.value === current}
+                current={mo.value === current || !!mo.covers?.includes(current)}
                 loaded={mo.value === loadedValue}
                 visionState={mo.visionState ?? ''}
                 onSelect={selectModel}

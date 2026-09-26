@@ -11,7 +11,9 @@ import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
 import { writeSessionPermission } from "@/session/permission-write"
-import { duplicatePeerPrompt } from "@/session/peer-message"
+import { duplicatePeerPrompt, peerMessage } from "@/session/peer-message"
+import { AgentBroker } from "@/origami/agent-broker"
+import { AgentMailbox } from "@/origami/agent-mailbox"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
@@ -334,6 +336,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
+      // origami_change (t-wdybz9): an engine that is PARKING (acp/elastic.ts
+      // `_elastic_park`) is about to be stopped. A turn started now would be
+      // killed with it, after the sender was told "delivered". The body goes
+      // to the chat's mailbox instead, BEFORE the duplicate ledger below sees
+      // it (the ledger claims ids, and the later drain must still pass it): the
+      // next restore, or `_elastic_unpark`, admits it through this route. A
+      // session this engine did not park has no mailbox reader: refused.
+      const parking = AgentBroker.parking()
+      if (parking) {
+        if (!parking.includes(ctx.params.sessionID)) return yield* Effect.fail(new HttpApiError.BadRequest({}))
+        const id = ctx.payload.parts
+          .map((part) => peerMessage((part as { metadata?: unknown }).metadata)?.id)
+          .find(Boolean)
+        const kept = yield* Effect.promise(() =>
+          AgentMailbox.deposit(ctx.params.sessionID, JSON.stringify(ctx.payload), id).then(
+            () => true,
+            () => false,
+          ),
+        )
+        if (!kept) return yield* Effect.fail(new HttpApiError.BadRequest({}))
+        return HttpApiSchema.NoContent.make()
+      }
       // origami_change (t-kgu05m): this is the INJECTION point for a peer
       // handoff, and the only place that can tell one delivery of a message
       // from two. A duplicate is dropped silently and answered 204 exactly as

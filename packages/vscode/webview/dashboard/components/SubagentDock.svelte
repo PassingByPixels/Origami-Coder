@@ -34,9 +34,10 @@
   import { groupSubagents, subagentLabel, subagentRows, type SubagentRow } from '../panes/subagentRows';
   import type { SubagentDockProps } from '../panes/subagentProps';
   import { watchSubagentLimit } from '../panes/subagentLimitWire';
+  import { chatShells, watchAgentTree, type AgentTreeData } from '../panes/agentTree';
 
   // The prop SHAPE lives in subagentProps.ts — see that file's header.
-  let { messages, dismissed, open, chatTitle, onToggle, onDismiss, focusMode, onToggleFocus }: SubagentDockProps = $props();
+  let { messages, sessionId, dismissed, open, chatTitle, onToggle, onDismiss, focusMode, onToggleFocus }: SubagentDockProps = $props();
 
   const vscode = getVsCodeApi();
 
@@ -68,6 +69,9 @@
   };
   /** The agent map, opened from the pull-out's own head. */
   let mapOpen = $state(false);
+  // t-z1xlfy: the deeper tiers and sub-agents' shells, from the host (agentTree.ts); the chat's own shells off its cards.
+  let tree = $state<AgentTreeData>();
+  const chatTasks = $derived(chatShells(messages));
 
   // ONE timer: 1 s while anything is out, nothing at all otherwise. A settled
   // row has no age left to age and nothing retires it on the clock any more
@@ -89,6 +93,16 @@
     },
     onLimit: (ms) => { limitMs = ms; },
   }));
+  $effect(() => watchAgentTree({
+    sessionId,
+    post: (msg) => vscode.postMessage(msg),
+    listen: (handler) => {
+      const onMessage = (event: MessageEvent) => handler(event.data);
+      window.addEventListener('message', onMessage);
+      return () => window.removeEventListener('message', onMessage);
+    },
+    onTree: (t) => { tree = t; },
+  }));
 </script>
 
 <SubagentDrawer
@@ -104,13 +118,14 @@
 {#if mapOpen}
   <SubagentMap
     {rows}
+    {tree}
+    {chatTasks}
     title={chatTitle}
     onClose={() => (mapOpen = false)}
-    onOpen={(key) => {
-      const row = rows.find((r) => r.key === key);
+    onOpen={(row) => {
       // The map hands off to the SAME transcript path the drawer's ↗ uses, and
       // closes behind it: two stacked overlays over one chat cell is one too many.
-      if (row) { mapOpen = false; openRow(row); }
+      mapOpen = false; openRow(row);
     }}
   />
 {/if}

@@ -705,6 +705,21 @@ export function openaiCacheWindowSeconds(modelID: string): number | undefined {
   return Number.parseFloat(family.slice("gpt-".length)) >= 5.6 ? 1800 : 300
 }
 
+/**
+ * origami_change (t-w2txb2): the LONGEST an OpenAI prefix can stay cached, in
+ * seconds - the UPPER end of each published range, where the function above
+ * takes the lower: extended retention "up to 24 hours", gpt-5.6+ "30 minutes
+ * after its most recent write or reuse", in-memory "up to one hour". The park
+ * guard (elastic/idle.ts) stops an engine only after this, so it must err long.
+ * Undefined for an id of no OpenAI family.
+ */
+export function openaiLongestCacheSeconds(modelID: string): number | undefined {
+  const family = openaiFamily(modelID)
+  if (family === undefined) return undefined
+  if (RETENTION_24H_FAMILIES.has(family)) return 86_400
+  return Number.parseFloat(family.slice("gpt-".length)) >= 5.6 ? 1800 : 3600
+}
+
 /** The same window for a resolved model, and only on an OpenAI Responses endpoint. */
 export function openaiCacheSeconds(model: Provider.Model): number | undefined {
   return openaiResponses(model) ? openaiCacheWindowSeconds(model.api.id) : undefined

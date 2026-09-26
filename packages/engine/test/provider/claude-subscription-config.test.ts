@@ -80,10 +80,10 @@ const ownerConfig = {
 } as any
 
 /** Gate B answers from the fake CLI at `version`; the provider list reads that memoised answer. */
-const seedFakeCli = async (version: string) => {
+const seedFakeCli = async (version: string, picker?: Record<string, unknown>) => {
   const log = mkdtempSync(path.join(tmpdir(), "fake-claude-config-"))
   const scenario = path.join(log, "scenario.json")
-  writeFileSync(scenario, JSON.stringify({ version }))
+  writeFileSync(scenario, JSON.stringify({ version, ...picker }))
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => ClaudeCli.envConflicts({ [key]: process.env[key] }).length === 0),
   )
@@ -163,6 +163,57 @@ subscription.instance(
     // Below the floor the handshake never starts: no CLI process was spawned for a picker.
     expect(() => readFileSync(path.join(log, "pids.log"))).toThrow()
   }),
+)
+
+// t-y5ecbj. Owner UAT of 0.4.179: picker rows named `claude-fable-5-1[1m]` and
+// `opus[1m]`. A pick the chat's engine did not list is persisted with
+// `name: <the id>` (DashboardPanel setModel -> firstFold.writeModelConfig), and
+// the config pass let that name win over the catalog's. For this family such a
+// name is a persisted pick, not a label: the catalog's name stays, and a row the
+// catalog does not list gets a readable name. The ids are unchanged.
+const persistedPicks = {
+  model: "claude-subscription/fable",
+  provider: {
+    "claude-subscription": {
+      name: "LM Studio",
+      options: {},
+      models: {
+        "claude-fable-5-1[1m]": { name: "claude-fable-5-1[1m]" },
+        "opus[1m]": { name: "opus[1m]" },
+        haiku: { ...vision, name: "haiku" },
+        fable: vision,
+      },
+    },
+  },
+} as any
+const OWNER_MAX_PICKER = [
+  { value: "opus[1m]", displayName: "Opus (1M context)" },
+  { value: "claude-fable-5-1[1m]", displayName: "Fable" },
+  { value: "sonnet", displayName: "Sonnet" },
+  { value: "haiku", displayName: "Haiku" },
+]
+
+subscription.instance(
+  "a persisted pick named by its own id keeps a readable name; ids and routing are unchanged",
+  Effect.gen(function* () {
+    yield* Effect.promise(() =>
+      seedFakeCli("2.1.282 (Claude Code)", { models: OWNER_MAX_PICKER, account: { subscriptionType: "Claude Max" } }),
+    )
+    const providers = yield* Provider.use.list()
+    const names = Object.fromEntries(Object.entries(providers[ID]!.models).map(([id, m]) => [id, m.name]))
+    expect(names).toEqual({
+      "opus[1m]": "Opus (1M context)",
+      "claude-fable-5-1[1m]": "Fable (1M context)",
+      sonnet: "Sonnet",
+      haiku: "Haiku",
+      fable: "Fable",
+    })
+    const fable = yield* Provider.use.getModel(ID, ModelV2.ID.make("claude-fable-5-1[1m]"))
+    expect(fable.api.id).toBe("claude-fable-5-1[1m]")
+    expect(fable.api.npm).toBe(ClaudeSubscription.NPM)
+    expect(fetches).toBe(0)
+  }),
+  { config: persistedPicks },
 )
 
 // After Disconnect the flag is off, but origami.json still holds the block and

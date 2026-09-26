@@ -28,7 +28,7 @@
   <div class="cs-waiting" role="status">
     <span class="cs-waiting-label">Waiting on</span>
     {#each asks as a, i (a.seq)}<span class="cs-waiting-pair"
-      >{i > 0 ? ', ' : ''}{nameOf(a.to)}<span class="cs-waiting-from"> (asked by {nameOf(a.from)})</span></span
+      >{i > 0 ? ', ' : ''}{nameOf(a.to)}<span class="cs-waiting-from">{` (asked by ${nameOf(a.from)})`}</span></span
     >{/each}
   </div>
 {/if}

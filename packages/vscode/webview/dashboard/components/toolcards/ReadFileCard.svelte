@@ -20,7 +20,8 @@
   import hljs from 'highlight.js/lib/core';
   import { getVsCodeApi } from '../../../shared/vscodeApi';
   import { fitToPane } from './readImageFit';
-  import type { ToolReadImage } from '../../panes/chatToolMsg';
+  import type { ToolReadImage, ToolLines } from '../../panes/chatToolMsg';
+  import { tip } from '../../../shared/warmTip';
 
   const vscode = getVsCodeApi();
 
@@ -36,9 +37,32 @@
      *  file in the editor. Absent means no lightbox is wired up (the card
      *  falls back to the old open-in-editor click, so it is never dead). */
     onImageClick?: (src: string, alt: string) => void;
+    /** t-yyz5yk (Round 8 F): the picture's natural size once it has loaded,
+     *  reported up so the ROW can say "460 × 300". */
+    onImageDims?: (w: number, h: number) => void;
+    /** t-yyz5yk (Round 8, "Inside each element"): the file and the clamped
+     *  range read, so the text view numbers each line as the file does and
+     *  opens the file at the first line read. */
+    path?: string;
+    toolLines?: ToolLines;
   }
 
-  let { result, readImage, onImageClick }: Props = $props();
+  let { result, readImage, onImageClick, onImageDims, path, toolLines }: Props = $props();
+  function openAtStart() {
+    if (path) vscode.postMessage({ type: 'openAbsoluteFile', path, line: toolLines?.start ?? 1 });
+  }
+  // Round 8 F: the frame opens before the picture lands; `landed` flips on
+  // load so the picture arrives from blur (CSS, off under reduced motion).
+  let landed = $state(false);
+  let dims = $state<{ w: number; h: number } | undefined>(undefined);
+  function onLoad(e: Event) {
+    const img = e.currentTarget as HTMLImageElement;
+    landed = true;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+      dims = { w: img.naturalWidth, h: img.naturalHeight };
+      onImageDims?.(dims.w, dims.h);
+    }
+  }
 
   // Whole KB, so a 3 KB icon does not read as "0 KB".
   let sizeKb = $derived(Math.max(1, Math.round((readImage?.bytes ?? 0) / 1024)));
@@ -149,22 +173,30 @@
       <!-- `use:fitToPane` keeps --readimg-cap equal to the transcript's own
            height, so the picture draws at its natural size up to the PANE and
            re-bounds on a resize. See readImageFit.ts. -->
-      <img
-        class="readfile-image"
-        use:fitToPane
-        src={pictureSrc}
-        alt={`Image read by the agent: ${picture.path}`}
-        title="Enlarge"
-        onclick={clickImage}
-      />
+      <!-- Round 8 F: a frame that exists while the picture loads (faint image
+           glyph), a 250px thumbnail, size on hover, Reveal as a hover action. -->
+      <div class="readimg-frame" class:landed>
+        <img
+          class="readfile-image"
+          use:fitToPane
+          src={pictureSrc}
+          alt={`Image read by the agent: ${picture.path}`}
+          title="Enlarge"
+          onclick={clickImage}
+          onload={onLoad}
+        />
+        {#if dims}<span class="readimg-dims">{dims.w} × {dims.h}</span>{/if}
+        {#if canReveal}
+          <!-- The control spelled out: on this card the header's path is small
+               and a long way from the picture it belongs to. -->
+          <button class="readfile-reveal" onclick={revealImage} title={`Reveal ${picture.path} in the file explorer`}>
+            {'◱'} Reveal in explorer
+          </button>
+        {/if}
+      </div>
       {#if canReveal}
         <button class="readfile-path-link" onclick={revealImage} title={`Reveal ${picture.path} in the file explorer`}>
           {picture.path}
-        </button>
-        <!-- The control spelled out: on this card the header's path is small
-             and a long way from the picture it belongs to. -->
-        <button class="readfile-reveal" onclick={revealImage} title={`Reveal ${picture.path} in the file explorer`}>
-          {'◱'} Reveal in explorer
         </button>
       {:else}
         <div class="readfile-path-text">{picture.path}</div>
@@ -194,12 +226,34 @@
       {collapsed ? `▶ Show ${lineCount} lines` : `▼ Hide ${lineCount} lines`}
     </button>
   {/if}
+  {#if !readImage && path && split_.body}
+    <div class="dbar">
+      <span class="rd-name"><bdi dir="ltr">{path.split(/[\\/]/).pop()}</bdi></span>
+      {#if toolLines}<span>· lines {toolLines.start}–{toolLines.end} read</span>{/if}
+      <span class="sp"></span>
+      <button type="button" class="rd-open" onclick={openAtStart} use:tip={`Open ${path}${toolLines ? ` at line ${toolLines.start}` : ''}`}>Open file</button>
+    </div>
+  {/if}
   {#if !collapsed}
-    <pre class="readfile-body"><code>{#if highlighted}{@html highlighted}{:else}{split_.body}{/if}</code></pre>
+    <div class="readfile-lines" class:numbered={!!toolLines}>
+      {#if toolLines}
+        <div class="rl-gutter" aria-hidden="true">{#each split_.body.split('\n') as _l, i (i)}<b class="rl-n">{toolLines.start + i}</b>{/each}</div>
+      {/if}
+      <pre class="readfile-body"><code>{#if highlighted}{@html highlighted}{:else}{split_.body}{/if}</code></pre>
+    </div>
   {/if}
 </div>
 
 <style>
+  .dbar { display: flex; align-items: center; gap: 6px; padding: 3px 8px; margin-bottom: 4px; border: 1px solid var(--og-border); border-radius: 6px; background: color-mix(in srgb, var(--og-surface) 60%, transparent); color: var(--og-text-muted); font-family: var(--vscode-font-family, sans-serif); }
+  .rd-name { color: var(--og-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp { flex: 1; }
+  .rd-open { flex: none; background: none; border: 0; padding: 0; font: inherit; color: var(--og-chat, var(--og-accent)); cursor: pointer; }
+  .rd-open:hover { text-decoration: underline; }
+  .readfile-lines.numbered { display: grid; grid-template-columns: auto 1fr; }
+  .rl-gutter { display: flex; flex-direction: column; padding: 8px 8px 0 2px; line-height: 1.4; user-select: none; }
+  .rl-n { font-weight: 400; text-align: right; color: var(--og-text-muted); opacity: 0.7; }
+  .readfile-lines.numbered .readfile-body { white-space: pre; overflow-x: auto; }
   .readfile-card {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 11px;
@@ -236,6 +290,56 @@
      the only cap. `--readimg-cap` is written by fitToPane off the live
      transcript height; the 60vh fallback is for a card with no scrolling
      ancestor to measure, never for one inside the pane. */
+  /* t-yyz5yk (Round 8 F): the frame is there before the picture, so nothing
+     jumps; the picture lands from blur(8px) and 103 % in 350 ms. */
+  .readimg-frame {
+    position: relative;
+    display: inline-block;
+    min-width: 120px;
+    min-height: 80px;
+    max-width: min(250px, 100%);
+    margin: 4px 0 0 0;
+    border: 1px solid var(--og-border);
+    border-radius: 7px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--og-surface) 70%, transparent)
+      no-repeat center / 22px url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239fb4c4' stroke-opacity='.3' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='2'/%3E%3Ccircle cx='9' cy='10' r='1.8'/%3E%3Cpath d='M21 16l-5-5-9 9'/%3E%3C/svg%3E");
+  }
+  .readimg-frame.landed { min-width: 0; min-height: 0; background: none; }
+  .readimg-frame .readfile-image {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    cursor: zoom-in;
+    opacity: 0;
+    filter: blur(8px);
+    transform: scale(1.03);
+    transition: opacity 350ms cubic-bezier(0.23, 1, 0.32, 1), filter 350ms cubic-bezier(0.23, 1, 0.32, 1), transform 350ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  .readimg-frame.landed .readfile-image { opacity: 1; filter: none; transform: none; }
+  .readimg-dims,
+  .readimg-frame .readfile-reveal {
+    position: absolute;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  .readimg-dims {
+    right: 6px;
+    bottom: 5px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #dfe8ee;
+    pointer-events: none;
+  }
+  .readimg-frame .readfile-reveal { left: 6px; top: 6px; margin: 0; }
+  .readimg-frame:hover .readimg-dims,
+  .readimg-frame:hover .readfile-reveal,
+  .readimg-frame .readfile-reveal:focus-visible { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .readimg-frame .readfile-image { transition: none; }
+  }
   .readfile-image {
     display: block;
     max-width: 100%;

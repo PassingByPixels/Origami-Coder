@@ -3,7 +3,7 @@ export * as PluginInternal from "./internal"
 import { makeLocationNode } from "../effect/app-node"
 import { httpClient } from "../effect/app-node-platform"
 import type { PluginContext } from "@origami/plugin/v2/effect"
-import { Effect, Layer, Scope } from "effect"
+import { Effect, Layer } from "effect"
 import { AgentV2 } from "../agent"
 import { Catalog } from "../catalog"
 import { CommandV2 } from "../command"
@@ -50,14 +50,9 @@ export type Requirements =
   | Reference.Service
   | SkillV2.Service
 
-export interface Plugin<R = never> {
-  readonly id: string
-  readonly effect: (context: PluginContext) => Effect.Effect<void, never, R | Scope.Scope>
-}
-
-export function define<R>(plugin: Plugin<R>) {
-  return plugin
-}
+// origami_change: Plugin + define live in the leaf ./define (see there: import cycle).
+import { define, type Plugin } from "./define"
+export { define, type Plugin }
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {

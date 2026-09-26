@@ -34,6 +34,7 @@ import { SessionPrompt } from "@/session/prompt"
 import { CollabStore } from "@/collab/store"
 import { CollabRunner } from "@/collab/runner"
 import { Instruction } from "@/session/instruction"
+import { SystemPrompt } from "@/session/system"
 import { LLM } from "@/session/llm"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
@@ -103,6 +104,9 @@ export const AppLayer = AppNodeBuilderV1.build(
     CollabStore.node,
     CollabRunner.node,
     Instruction.node,
+    // origami_change (t-woacbl): declared so `elastic/warm.ts` can build the
+    // environment block's state after a session call (already built for LLM).
+    SystemPrompt.node,
     LLM.node,
     LSP.node,
     MCP.node,

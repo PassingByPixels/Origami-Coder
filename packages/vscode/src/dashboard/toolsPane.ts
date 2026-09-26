@@ -92,11 +92,13 @@ export async function handleToolsPaneMessage(host: ToolsPaneHost, m: { type?: st
       return;
     case 'toolsSetCodeMode': {
       // Global, not workspace: this is a "how I want the agent to work" choice. The engine reads
-      // the flag once at spawn, so nothing changes until reload.
+      // the flag once at spawn. t-xtimx0: a NEW chat spawns with it at once (the warm spare is
+      // dropped on the change); an open chat keeps the env it started with (acpClient.ts
+      // spawnEnv). No reload. Short, so the collapsed toast shows all of it (~69 characters).
       await vscode.workspace.getConfiguration('origami').update(CODE_MODE_SETTING, m.on === true, vscode.ConfigurationTarget.Global);
       postCatalog(host, await catalogPayload(host));
       vscode.window.showInformationMessage(
-        `Code mode ${m.on === true ? 'on' : 'off'} — reload the window to start the engine with the new setting.`,
+        m.on === true ? 'Code mode on for new chats. Open chats keep it off until closed.' : 'Code mode off for new chats. Open chats keep it on until closed.',
       );
       return;
     }

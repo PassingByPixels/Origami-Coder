@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 232" role="img" aria-label="Plan mode. You turn on Plan. The plan agent writes a plan file. The review opens with Approve and Revise. Revise sends the plan back to the agent. If the model answers in plain text, the engine reminds it one time, and a Review as plan button turns the answer into the review.">
+  <defs>
+    <marker id="wn-pm-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="wn-pm-head-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="box" x="20" y="34" width="150" height="62" rx="8"/>
+  <text class="t-title" x="32" y="56">Plan on</text>
+  <text class="t-muted t-small" x="32" y="74">the Plan chip</text>
+  <text class="t-muted t-small" x="32" y="88">on the composer</text>
+  <rect class="box" x="230" y="34" width="170" height="62" rx="8"/>
+  <text class="t-title" x="242" y="56">Plan agent</text>
+  <text class="t-muted t-small" x="242" y="74">reads your code</text>
+  <text class="t-muted t-small" x="242" y="88">writes the plan file</text>
+  <rect class="box-hi" x="460" y="34" width="160" height="62" rx="8"/>
+  <text class="t-title" x="472" y="54">Review</text>
+  <rect class="fill-chat" x="472" y="64" width="66" height="22" rx="5"/>
+  <text class="t-on t-small" x="505" y="79" text-anchor="middle">Approve</text>
+  <rect class="box" x="546" y="64" width="62" height="22" rx="5"/>
+  <text class="t-small" x="577" y="79" text-anchor="middle">Revise</text>
+  <path class="line-hi" d="M172 65 H228" marker-end="url(#wn-pm-head-hi)"/>
+  <path class="line-hi" d="M402 65 H458" marker-end="url(#wn-pm-head-hi)"/>
+  <path class="line" d="M577 98 V116 H315 V100" marker-end="url(#wn-pm-head)"/>
+  <text class="t-muted t-small" x="330" y="132">Revise: the agent changes the plan</text>
+  <text class="t-muted t-small" x="20" y="160">If the model answers in plain text:</text>
+  <rect class="box-dim" x="20" y="170" width="170" height="40" rx="6"/>
+  <text class="t-small" x="32" y="194">Plain-text answer</text>
+  <rect class="box" x="230" y="170" width="170" height="40" rx="6"/>
+  <text class="t-small" x="242" y="194">One reminder to finish</text>
+  <rect class="box-hi" x="460" y="170" width="160" height="40" rx="6"/>
+  <text class="t-small" x="472" y="194">Review as plan button</text>
+  <path class="line" d="M192 190 H228" marker-end="url(#wn-pm-head)"/>
+  <path class="line" d="M402 190 H458" marker-end="url(#wn-pm-head)"/>
+</svg>

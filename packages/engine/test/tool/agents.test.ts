@@ -283,7 +283,7 @@ describe("list_agents", () => {
 describe("send_message", () => {
   // Incident: during a real session the lead agent and its subagents sent
   // unsolicited peer messages asking OTHER agents to do work; the receiver had
-  // no context for the request and Passing had to intervene twice. The tool's
+  // no context for the request and the owner had to intervene twice. The tool's
   // published DESCRIPTION is the one place every caller — lead or subagent —
   // reads before deciding to call it, so the guard has to live there, not in a
   // parameter's prose where a model skimming for `to`/`message` could miss it.
@@ -538,6 +538,174 @@ describe("send_message", () => {
       expect(result.metadata.delivered).toBe(false)
       expect(result.output).toContain("not registered for peer messaging")
       expect(peer.received).toHaveLength(0)
+    }))
+})
+
+// t-w2txb2: a chat whose engine the extension stopped after a long idle.
+describe("send_message to a parked chat", () => {
+  async function writeStandIn(input: { sessionId: string; hostPid: number; name?: string }) {
+    const file = path.join(home, ".origami", "agents", "parked", `${input.sessionId}.json`)
+    await fsp.mkdir(path.dirname(file), { recursive: true })
+    await fsp.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        parked: true,
+        name: input.name ?? "napper",
+        cwd: "/work",
+        kind: "interactive",
+        sessionId: input.sessionId,
+        hostPid: input.hostPid,
+        parkedAt: Date.now() - 3 * 60 * 60_000,
+      }),
+    )
+    return file
+  }
+  const mailbox = (sessionId: string) =>
+    fsp.readdir(path.join(home, ".origami", "agents", "mailbox", sessionId)).catch(() => [] as string[])
+
+  it.instance("keeps the message in the chat's mailbox and tells the sender the chat starts again to read it", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => writeStandIn({ sessionId: "ses_nap", hostPid: peerPid }))
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const result = yield* (yield* tools).send.execute({ to: "napper#ses_nap", message: "schema is frozen" }, ctx)
+
+      expect(result.metadata.delivered).toBe(true)
+      expect(result.output).toContain("stopped to save memory")
+      expect(result.output).toContain("starts again")
+      const files = yield* Effect.promise(() => mailbox("ses_nap"))
+      expect(files).toHaveLength(1)
+      const body = JSON.parse(
+        yield* Effect.promise(() =>
+          fsp.readFile(path.join(home, ".origami", "agents", "mailbox", "ses_nap", files[0]), "utf8"),
+        ),
+      ) as { parts: Array<{ text: string; metadata: unknown }> }
+      // The exact body a live engine's prompt_async would have received.
+      expect(body.parts[0].text).toBe(
+        renderPeerMessage({ from: "sender", replyTo: "sender#ses_mine", text: "schema is frozen" }),
+      )
+      expect(peerMessage(body.parts[0].metadata)?.replyTo).toBe("sender#ses_mine")
+    }))
+
+  it.instance("a bare name reaches a parked chat too", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => writeStandIn({ sessionId: "ses_nap", hostPid: peerPid }))
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const result = yield* (yield* tools).send.execute({ to: "napper", message: "hi" }, ctx)
+
+      expect(result.metadata.delivered).toBe(true)
+      expect(yield* Effect.promise(() => mailbox("ses_nap"))).toHaveLength(1)
+    }))
+
+  it.instance("a live engine that holds the address wins over a stand-in", () =>
+    Effect.gen(function* () {
+      const peer = startPeer()
+      yield* Effect.addFinalizer(() => Effect.sync(() => peer.server.stop(true)))
+      yield* Effect.promise(() => writePeerEntry({ pid: peerPid, name: "reviewer", httpBase: peer.base }))
+      yield* Effect.promise(() => writeStandIn({ sessionId: "ses_peer", hostPid: peerPid, name: "reviewer" }))
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const result = yield* (yield* tools).send.execute({ to: "reviewer#ses_peer", message: "hi" }, ctx)
+
+      expect(result.metadata.delivered).toBe(true)
+      expect(peer.received).toHaveLength(1)
+      expect(yield* Effect.promise(() => mailbox("ses_peer"))).toEqual([])
+    }))
+
+  it.instance("a stand-in whose host is gone is removed and the message is refused", () =>
+    Effect.gen(function* () {
+      const corpse = spawnIdle()
+      corpse.kill()
+      yield* Effect.promise(() => corpse.exited)
+      const file = yield* Effect.promise(() => writeStandIn({ sessionId: "ses_nap", hostPid: corpse.pid }))
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const result = yield* (yield* tools).send.execute({ to: "napper#ses_nap", message: "hi" }, ctx)
+
+      expect(result.metadata.delivered).toBe(false)
+      expect(yield* Effect.promise(() => mailbox("ses_nap"))).toEqual([])
+      const stillThere = yield* Effect.promise(() =>
+        fsp
+          .stat(file)
+          .then(() => true)
+          .catch(() => false),
+      )
+      expect(stillThere).toBe(false)
+    }))
+
+  it.instance("list_agents lists a parked chat, marked stopped, with its reply address", () =>
+    Effect.gen(function* () {
+      yield* Effect.promise(() => writeStandIn({ sessionId: "ses_nap", hostPid: peerPid }))
+
+      const result = yield* (yield* tools).list.execute({}, ctx)
+
+      expect(result.output).toContain("napper#ses_nap")
+      expect(result.output).toContain("stopped")
+      expect(result.output).not.toContain("No other agent sessions are reachable")
+    }))
+
+  // t-wdybz9 (review finding 7): the outgoing id was claimed before the POST,
+  // so the model's retry after a failed POST was refused as "already went".
+  it.instance("a retry after a POST that failed is sent, not refused as already delivered", () =>
+    Effect.gen(function* () {
+      let accept = false
+      const received: unknown[] = []
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        async fetch(request) {
+          if (!accept) return new Response(null, { status: 503 })
+          received.push(await request.json())
+          return new Response(null, { status: 204 })
+        },
+      })
+      yield* Effect.addFinalizer(() => Effect.sync(() => server.stop(true)))
+      yield* Effect.promise(() =>
+        writePeerEntry({ pid: peerPid, name: "reviewer", httpBase: `http://127.0.0.1:${server.port}` }),
+      )
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const first = yield* (yield* tools).send.execute({ to: "reviewer#ses_peer", message: "ping" }, ctx)
+      accept = true
+      const retry = yield* (yield* tools).send.execute({ to: "reviewer#ses_peer", message: "ping" }, ctx)
+
+      expect(first.metadata.delivered).toBe(false)
+      expect(retry.metadata.delivered).toBe(true)
+      expect(received).toHaveLength(1)
+    }))
+
+  // t-wdybz9 (review finding 2, second half): the peer parked between the
+  // sender's read of its entry and the POST. Its stand-in is the address now.
+  it.instance("a POST refused because the peer parked in between goes to the stand-in's mailbox", () =>
+    Effect.gen(function* () {
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        async fetch() {
+          // What `_elastic_park` leaves behind, then the process is gone.
+          await fsp.rm(path.join(home, ".origami", "agents", `${peerPid}.json`), { force: true })
+          await writeStandIn({ sessionId: "ses_peer", hostPid: peerPid, name: "reviewer" })
+          return new Response(null, { status: 503 })
+        },
+      })
+      yield* Effect.addFinalizer(() => Effect.sync(() => server.stop(true)))
+      yield* Effect.promise(() =>
+        writePeerEntry({ pid: peerPid, name: "reviewer", httpBase: `http://127.0.0.1:${server.port}` }),
+      )
+      const broker = AgentBroker.start({ httpBase: "http://127.0.0.1:1", cwd: "/repos/cortex" })
+      yield* Effect.addFinalizer(() => Effect.promise(() => broker.stop()))
+
+      const result = yield* (yield* tools).send.execute({ to: "reviewer#ses_peer", message: "hand-off" }, ctx)
+
+      expect(result.metadata.delivered).toBe(true)
+      expect(yield* Effect.promise(() => mailbox("ses_peer"))).toHaveLength(1)
     }))
 })
 

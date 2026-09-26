@@ -152,6 +152,9 @@ interface FakeHost extends ManagerHost {
    *  `crossDiffs` records openCrossDiff calls (the race A-vs-B compare). */
   anySessionModes: Array<{ id: string; name: string; default?: boolean }> | null;
   crossDiffs: Array<{ leftFsPath: string; rightFsPath: string; title: string }>;
+  /** t-w2txb2: sessions whose engine was parked, and chats opened. */
+  parked: string[];
+  opened: string[];
 }
 
 function makeHost(repo: string | undefined): FakeHost {
@@ -170,7 +173,7 @@ function makeHost(repo: string | undefined): FakeHost {
     reopened: [], reopenEntered: [],
     diffOpened: [], infos: [], conflictOpened: [],
     sessionModes: null, agentTypesStore: [], agentModeSet: [],
-    anySessionModes: null, crossDiffs: [],
+    anySessionModes: null, crossDiffs: [], parked: [], opened: [],
     resolvePrompt: (r) => { promptResolvers.shift()?.(r); },
     releaseCreate: () => { createResolve?.(); createResolve = undefined; },
     releaseSetModel: () => { setModelResolve?.(); setModelResolve = undefined; },
@@ -199,7 +202,8 @@ function makeHost(repo: string | undefined): FakeHost {
     cancelSession: async (sessionId) => { host.cancelled.push(sessionId); },
     closeSession: (sessionId) => { host.closed.push(sessionId); host.live.delete(sessionId); },
     sessionAlive: (sessionId) => host.live.has(sessionId),
-    openChat: () => undefined,
+    parkSession: async (sessionId) => { host.parked.push(sessionId); return null; },
+    openChat: (sessionId) => { host.opened.push(sessionId); },
     post: (msg) => { host.posts.push(msg as Record<string, unknown>); },
     openTerminal: () => undefined,
     setSessionModel: async (sessionId, modelId) => {
@@ -1206,6 +1210,27 @@ describe('AgentManager S3.6 kanban (fake host, real git)', () => {
     expect(loadState(repo).worktrees.find((r) => r.name === 'eng-queue')!.engineSessionId).toBe(`engine-${sess2}`);
     host.resolvePrompt('end_turn');
     await done2;
+    mgr.dispose();
+  }, 30_000);
+
+  it('(d9) t-w2txb2: a finished fold parks its engine at completion; Chat opens that same session (no reopen)', async () => {
+    const repo = await makeGitRepo();
+    const host = makeHost(undefined);
+    host.known = [repo];
+    const mgr = new AgentManager(host);
+    const done = mgr.handle({ type: 'amCreate', root: repo, name: 'parkme', agentName: 'tsuru', prompt: 'do it' });
+    await waitFor(() => host.prompted.length === 1);
+    const sess = host.prompted[0].sessionId;
+    expect(host.parked).toEqual([]); // not while the turn runs
+    host.resolvePrompt('end_turn');
+    await done;
+    expect(host.parked).toEqual([sess]); // the engine closes at completion...
+    expect(host.closed).toEqual([]); // ...the session (its transcript, its tab) stays
+    const id = String(rowsOf(host, repo).find((r) => r.name === 'parkme')!.id);
+    expect(rowsOf(host, repo).find((r) => r.id === id)!.state).toBe('idle');
+    await mgr.handle({ type: 'amOpenChat', root: repo, id });
+    expect(host.opened).toEqual([sess]); // the parked session itself; its next message starts the engine
+    expect(host.reopened).toEqual([]);
     mgr.dispose();
   }, 30_000);
 

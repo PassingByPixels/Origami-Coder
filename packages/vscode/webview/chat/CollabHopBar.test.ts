@@ -205,7 +205,7 @@ describe('CollabHopBar — the controls survived the move', () => {
 
 // W7-L2. A COUNCIL round dispatches every member's turn at once, by
 // construction — there is no "how many run at once" for the width control to
-// answer there, and drawing it anyway is what sent Passing asking what it
+// answer there, and drawing it anyway is what sent the owner asking what it
 // was for. The other half of that same complaint: even where the control DOES
 // mean something, it said only "turns: serial 1 [Set width]" with no
 // explanation of what it sets or what raising it costs.

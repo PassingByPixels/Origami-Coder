@@ -17,8 +17,10 @@ import { Database } from "@origami/core/database/database"
 import { SessionV1 } from "@origami/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MessageID, PartID } from "@/session/schema"
+import { SessionRequestMemoryRows } from "@/session/request-memory-rows"
 import { StorageNests } from "../../src/storage/nests"
 import { StorageNestsHandover } from "../../src/storage/nests-handover"
+import { ElasticIdle } from "@/elastic/idle"
 import {
   DESK_A,
   DESK_B,
@@ -406,6 +408,20 @@ describe("the run lease (t-tc2b6c)", () => {
       }),
     ))
 
+  // t-w2qlop: a held run lease keeps the engine unparkable - a stop would leave
+  // another engine's release waiting out RUN_TTL_MS for a turn nobody runs.
+  test("a held run lease is a reason in the elastic idle report, and dropping it clears the reason", () =>
+    withStores((_a, b) =>
+      Effect.gen(function* () {
+        yield* on(b, StorageNestsHandover.markActive())
+        const turn = yield* leased(b)
+        yield* held(b)
+        expect(ElasticIdle.report().reasons).toContain("nest-lease")
+        yield* Fiber.interrupt(turn)
+        expect(ElasticIdle.report().reasons).not.toContain("nest-lease")
+      }),
+    ))
+
   test("Nests turned on mid-turn in this process starts the lease of the running turn", () =>
     withStores((_a, b) =>
       Effect.gen(function* () {
@@ -525,6 +541,39 @@ describe("reconcile on a returning owner", () => {
             }),
           ),
         ).toMatchObject({ result: "clean" })
+      }),
+    ))
+
+  // t-wdyp7r (review F4): the rebuild deletes the session row, and the cascade
+  // took the request memory with it while the engine that holds the chat kept
+  // its copy: disk and memory disagreed, and "always allow" answers were lost.
+  test("the rebuild keeps the chat's request memory and always-allow rows", () =>
+    withStores((a, b) =>
+      Effect.gen(function* () {
+        const A = { store: a, desk: DESK_A }
+        const B = { store: b, desk: DESK_B }
+        yield* on(a, write())
+        yield* pull(A, B)
+        const shared = (yield* on(b, journal())).at(-1)!.seq
+        yield* on(a, turn({ tag: "offline", at: 40_000 }))
+        yield* on(b, StorageNestsHandover.continueHere({ deviceId: DESK_B, sessionId: SESSION, ownerRunning: false }))
+        const rowsOfB = yield* on(
+          b,
+          StorageNests.index({ deviceId: DESK_B, deskName: "Surface", running: new Set(), open: new Set() }),
+        )
+        yield* on(a, StorageNests.applyIndex({ deviceId: DESK_A, desk: DESK_B, rows: [...rowsOfB], replace: true }))
+        const memory: SessionRequestMemoryRows.Row[] = [
+          { kind: "aging.rewrite", key: `prt_${40_000}_offline`, data: { output: "[aged]" } },
+          { kind: "window_fit", key: "", data: 1.25 },
+          { kind: "permission.always", key: "bash\u0000git *", data: { permission: "bash", pattern: "git *" } },
+        ]
+        const held = Database.Service.use(({ db }) => SessionRequestMemoryRows.load(db, SESSION)).pipe(Effect.orDie)
+        yield* on(a, Database.Service.use(({ db }) => SessionRequestMemoryRows.write(db, SESSION, memory)).pipe(Effect.orDie))
+        expect(yield* on(a, held)).toEqual(memory)
+
+        const result = yield* on(a, StorageNestsHandover.reconcile({ deviceId: DESK_A, sessionId: SESSION, remoteSeq: shared }))
+        expect(result).toMatchObject({ result: "forked" })
+        expect(yield* on(a, held)).toEqual(memory)
       }),
     ))
 })

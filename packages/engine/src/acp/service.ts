@@ -34,6 +34,7 @@ import { AppNodeBuilder } from "@origami/core/effect/app-node-builder"
 import { AppRuntime } from "@/effect/app-runtime"
 // origami_change (t-kgu05m): peer discovery reads the ACP session store.
 import { AgentBroker } from "@/origami/agent-broker"
+import { AgentMailbox } from "@/origami/agent-mailbox"
 import type { AssistantMessage, Message, OrigamiClient, Part, SessionMessageResponse } from "@origami/sdk/v2"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import * as ACPError from "./error"
@@ -52,6 +53,7 @@ import { ACPProviderUsage } from "./provider-usage"
 import { ACPSecondOpinion } from "./second-opinion"
 import { SessionCacheState } from "@/session/cache-state"
 import { SessionPromptCapture } from "@/session/prompt-capture"
+import { EngineProcessMemory } from "@/engine-process-memory" // origami_change (t-w2u5vf): free a closed chat's memory
 import { StorageRetention } from "@/storage/retention" // origami_change: the Insights Storage card's two ext methods
 import { StorageJournal } from "@/storage/journal" // origami_change: journal compaction and the one-time VACUUM
 import { ACPNests } from "./nests" // origami_change (t-s9jgzh): Nests L4a ext methods
@@ -96,6 +98,7 @@ import { Config } from "@/config/config" // origami_change: provider_refresh re-
 import { InstanceRef } from "@/effect/instance-ref" // origami_change
 import { InstanceState } from "@/effect/instance-state" // origami_change: session_append_foreign stamps the real cwd/root
 import { InstanceStore } from "@/project/instance-store" // origami_change
+import { ElasticSpare } from "@/elastic/spare" // origami_change (t-w2u2ki)
 import { BackgroundJob } from "@/background/job"
 
 export const AuthMethodID = "origami-login"
@@ -810,6 +813,15 @@ export function make(input: {
         // t-tc2rlo #8: read GlobalBus in-process instead of looping this
         // engine's own events back through its own HTTP server.
         events: input.events ?? ACPEvent.globalBusEventSource,
+        // t-z1xlfy: the live roster for the agent map. Called after a debounce, so
+        // `readRoster` (declared below) exists by then. No context reads: the map
+        // shows none, and a big fan-out would pay one per row per change.
+        roster: (sessionId, cwd) =>
+          Effect.runPromise(
+            readRoster(cwd, sessionId, false).pipe(
+              Effect.flatMap((roster) => (roster ? notify("origami/subagentRoster", roster) : Effect.void)),
+            ),
+          ),
       })
     : undefined
   if (events) input.eventSubscription?.(events)
@@ -818,6 +830,28 @@ export function make(input: {
   // session is never registered here - so "interactive only" is a property of the
   // source. A reader, not data: the broker's own heartbeat decides when to read it.
   AgentBroker.attachSessions(() => Effect.runSync(session.list()).map((info) => info.id))
+  // origami_change (t-w2txb2): a chat whose engine was PARKED may have messages
+  // kept in its mailbox. Called once the session is registered on load/resume:
+  // each body goes through this engine's own prompt_async route (the same
+  // duplicate-peer check a live POST meets) and its file is deleted only after
+  // it was admitted. Never fails the load.
+  const admitInto =
+    (cwd: string, sessionID: string): AgentMailbox.Admit =>
+    async (body) => {
+      type Params = Parameters<OrigamiClient["session"]["promptAsync"]>[0]
+      await input.sdk.session.promptAsync(
+        { ...(body as Partial<Params>), sessionID, directory: cwd },
+        { throwOnError: true },
+      )
+    }
+  const wakeMailbox = (cwd: string, sessionID: string) =>
+    Effect.promise(() => AgentMailbox.restore(sessionID, admitInto(cwd, sessionID)))
+  // origami_change (t-wdybz9): `_elastic_unpark` drains the same way, for each
+  // session this connection holds (its directory is the one it was opened in).
+  AgentMailbox.attachAdmitter((sessionID) => {
+    const info = Effect.runSync(session.list()).find((item) => item.id === sessionID)
+    return info ? admitInto(info.cwd, sessionID) : undefined
+  })
   // origami_change (t-s9jgzh): Nests L4a. Inert until the host calls a nest method
   // with `enabled: true` (see ACPNests.dispatch).
   const nests = ACPNests.make({ sdk: input.sdk, session, request })
@@ -845,7 +879,7 @@ export function make(input: {
     // engine that never registered, so the key is left off rather than sent empty. This
     // is the name send_message and list_agents address this session by, not the
     // archetype/mode label the UI calls "agentName".
-    const peerName = AgentBroker.self()?.name
+    const peerName = AgentBroker.self()?.name ?? ElasticSpare.pendingName() // t-w2u2ki: a warm spare registers at adoption, under this name
     const response = {
       protocolVersion: 1,
       agentCapabilities: {
@@ -1169,7 +1203,11 @@ export function make(input: {
   /** Every sub-agent of the chat, from the rows: its descendants and, for a fork, the
    *  source's up to the fork point (t-uhxos2, the store's `roster`). undefined when the
    *  read failed. */
-  const readRoster = Effect.fn("ACP.readRoster")(function* (cwd: string | undefined, sessionId: string) {
+  const readRoster = Effect.fn("ACP.readRoster")(function* (
+    cwd: string | undefined,
+    sessionId: string,
+    withContext = true,
+  ) {
     const reader = input.history
     if (!reader) return { sessionId, rows: [], truncated: false } satisfies ACPHistory.SubagentRoster
     const tree = yield* Effect.tryPromise(() =>
@@ -1185,7 +1223,9 @@ export function make(input: {
       Effect.map((value) => (value ?? {}) as Record<string, { type?: string } | undefined>),
       Effect.catch(() => Effect.succeed({} as Record<string, { type?: string } | undefined>)),
     )
-    const contexts = yield* Effect.forEach(tree.rows, (row) => childContext(cwd, row.id), { concurrency: 8 })
+    const contexts = withContext
+      ? yield* Effect.forEach(tree.rows, (row) => childContext(cwd, row.id), { concurrency: 8 })
+      : []
     return {
       sessionId,
       rows: tree.rows.map(
@@ -1349,6 +1389,8 @@ export function make(input: {
     // After the replay: the transcript can carry an older todowrite frame, and
     // the stored list is the one that should have the last word.
     yield* replayTodos(params.cwd, state.id).pipe(Effect.ignore)
+    // After the replay too, so a kept message's turn follows the history.
+    yield* wakeMailbox(params.cwd, state.id) // origami_change (t-w2txb2)
 
     return {
       configOptions: configOptions(snapshot, {
@@ -2303,6 +2345,7 @@ export function make(input: {
     // `resume` replays no messages at all, so this is the ONLY thing that tells
     // a resumed chat what its task list is.
     yield* replayTodos(params.cwd, state.id).pipe(Effect.ignore)
+    yield* wakeMailbox(params.cwd, state.id) // origami_change (t-w2txb2)
 
     return {
       configOptions: configOptions(snapshot, {
@@ -2326,6 +2369,33 @@ export function make(input: {
     )
   })
 
+  // origami_change (t-w2u5vf): a closed chat's per-session memory in this process
+  // (prompt capture, tool aging, cache warm ...) is freed, with its sub-agents'. Only
+  // sessions that are not open here and not running: the abort spares detached
+  // background sub-agents, and a failed abort leaves the turn running. A status that
+  // cannot be read frees nothing (the old behaviour).
+  const freeClosedMemory = Effect.fn("ACP.freeClosedMemory")(function* (closed: ACPSession.Info) {
+    const reader = input.history
+    const tree = reader
+      ? yield* Effect.tryPromise(() => reader.descendants(closed.id, null)).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
+      : undefined
+    const status = yield* request(
+      () => input.sdk.session.status({ directory: closed.cwd }, { throwOnError: true }),
+      "session",
+    ).pipe(
+      Effect.map((value) => (value ?? {}) as Record<string, { type?: string } | undefined>),
+      Effect.catch(() => Effect.succeed(undefined)),
+    )
+    if (!status) return
+    for (const id of [closed.id, ...(tree?.rows ?? []).map((row) => row.id)]) {
+      if (status[id]?.type && status[id]?.type !== "idle") continue
+      if (yield* session.tryGet(id)) continue
+      EngineProcessMemory.evictSession(id)
+    }
+  })
+
   const closeSession = Effect.fn("ACP.closeSession")(function* (params: CloseSessionRequest) {
     const removed = yield* session.remove(params.sessionId)
     registeredMcp.delete(params.sessionId)
@@ -2333,6 +2403,7 @@ export function make(input: {
     if (!removed) return {}
 
     yield* abortBackingSession(removed)
+    yield* freeClosedMemory(removed)
     return {}
   })
 

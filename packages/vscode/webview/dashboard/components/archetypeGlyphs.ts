@@ -11,7 +11,7 @@
 //
 // One glyph per agent-type id: tsuru=crane (the brand default wears the crane
 // sigil itself), architect=elephant, ask=cat, debug=fox, orchestrator=wolf,
-// plan=dragon (Passing's call after the Kami retirement - the dragon moved to
+// plan=dragon (the owner's call after the Kami retirement - the dragon moved to
 // the engine's built-in plan mode), cartographer=deer (S15). Everything else
 // (the engine default / an unharvested type) maps to null - no glyph, since a
 // mystery animal on an unknown type would only mislead.

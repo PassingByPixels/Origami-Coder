@@ -540,7 +540,7 @@ describe('apply-to-main (real git fixtures)', () => {
     const { wt, baseSha } = await freshRepoWt({ 'old.txt': 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n' });
     // Real agent flow: rename on disk + append ONE line. numstat rename-detects ->
     // header is +1/-0. The TEXT must agree (rename hunk + the single appended line),
-    // NOT all 13 lines as freshly added — the exact contradiction Passing saw.
+    // NOT all 13 lines as freshly added — the exact contradiction the owner saw.
     fs.rmSync(path.join(wt, 'old.txt'));
     fs.writeFileSync(path.join(wt, 'new.txt'), 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13appended\n');
     const rec = (await fileDiffs(wt, baseSha)).find((f) => f.path === 'new.txt')!;

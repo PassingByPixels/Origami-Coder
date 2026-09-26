@@ -1,6 +1,8 @@
 import { Context, Effect, Layer } from "effect"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { Config } from "@/config/config"
+import { Database } from "@origami/core/database/database"
+import { SessionRequestMemoryRows } from "@/session/request-memory-rows"
 
 /**
  * Deferred tool catalog for the primary tool list.
@@ -359,15 +361,17 @@ export function report(
   ].join("\n\n")
 }
 
-/** Session-scoped loaded-tool state. In memory rather than on the session row:
- *  a context-budget decision for a live conversation, not user data, and an
- *  engine restart costs one extra `tool_search` call. */
+/** Session-scoped loaded-tool state. Held in memory and persisted per session
+ *  (t-w2qb1x, session/request-memory-rows.ts): the loaded set decides which
+ *  tools the request declares, the head of every provider's cached prefix, so
+ *  an engine that forgot it on a restart sent a different tool block and lost
+ *  the whole cache. A session this service does not hold is read back from
+ *  the database on first use. */
 export interface Interface {
   /** `experimental.tool_search` from config, defaults applied. Read per turn, so an edit takes effect without a restart. */
   readonly settings: () => Effect.Effect<Settings>
   readonly loaded: (sessionID: string) => Effect.Effect<ReadonlySet<string>>
   readonly load: (sessionID: string, ids: readonly string[]) => Effect.Effect<void>
-  readonly clear: (sessionID: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@origami/ToolSearch") {}
@@ -376,23 +380,58 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const config = yield* Config.Service
+    const { db } = yield* Database.Service
     const state = new Map<string, Set<string>>()
+
+    /** The session's set, read from the database when this service does not
+     *  hold it. A failed read answers empty and is not kept, so the next call
+     *  reads again. */
+    const held = Effect.fnUntraced(function* (sessionID: string) {
+      const existing = state.get(sessionID)
+      if (existing) return existing
+      const rows = yield* SessionRequestMemoryRows.load(db, sessionID, "tool_search").pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("tool_search loaded set not read", { "session.id": sessionID, cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      )
+      if (!rows) return new Set<string>()
+      // Another fiber may have filled it while the read ran.
+      const set = state.get(sessionID) ?? new Set(rows.map((row) => row.key))
+      state.set(sessionID, set)
+      return set
+    })
+
     return Service.of({
       settings: Effect.fn("ToolSearch.settings")(function* () {
         return settings((yield* config.get()).experimental?.tool_search)
       }),
-      loaded: (sessionID) => Effect.sync(() => (state.get(sessionID) ?? new Set()) as ReadonlySet<string>),
+      loaded: (sessionID) => held(sessionID).pipe(Effect.map((set) => set as ReadonlySet<string>)),
       load: (sessionID, ids) =>
-        Effect.sync(() => {
-          const set = state.get(sessionID) ?? new Set<string>()
-          for (const id of ids) set.add(id)
+        Effect.gen(function* () {
+          const set = yield* held(sessionID)
+          const added = [...new Set(ids)].filter((id) => !set.has(id))
+          if (added.length === 0) return
+          // Written before the set changes, and so before the next request
+          // declares the tools. A failed write still loads them for this
+          // process; only a restart of this session would forget them.
+          yield* SessionRequestMemoryRows.write(
+            db,
+            sessionID,
+            added.map((id) => ({ kind: "tool_search" as const, key: id, data: true })),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("tool_search loaded set not written", { "session.id": sessionID, cause }),
+            ),
+          )
+          for (const id of added) set.add(id)
           state.set(sessionID, set)
         }),
-      clear: (sessionID) => Effect.sync(() => void state.delete(sessionID)),
     })
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer, deps: [Config.node] })
+export const node = LayerNode.make({ service: Service, layer, deps: [Config.node, Database.node] })
 
 export * as ToolSearch from "./tool-search"

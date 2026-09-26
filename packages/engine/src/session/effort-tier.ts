@@ -98,6 +98,13 @@ export function notice(from: string, to: string): string {
   return `${from} reasoning effort is not supported by this model - retried at ${to}.`
 }
 
+/** The chat closed (t-w2u5vf). A reopened chat starts from what a restarted
+ *  engine knows: the demoted tier per model is in `ProviderEffortDemotion`. */
+export function evict(sessionID: string): void {
+  lastSent.delete(sessionID)
+  demotedOnce.delete(sessionID)
+}
+
 /** Test seam - both stores are module state, so a test must be able to empty them. */
 export function reset(): void {
   lastSent.clear()

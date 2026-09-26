@@ -3,6 +3,7 @@ import { Cause, Duration, Effect, Layer, Schedule, Schema, Semaphore, Context } 
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { formatPatch, structuredPatch } from "diff"
 import path from "path"
+import { statSync } from "fs"
 import { AppProcess } from "@origami/core/process"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@origami/core/fs-util"
@@ -10,6 +11,8 @@ import { Hash } from "@origami/core/util/hash"
 import { Config } from "@/config/config"
 import { Global } from "@origami/core/global"
 import { Info } from "@origami/schema/file-diff"
+import { SnapshotGit } from "./git-runner"
+import { ElasticState } from "@/elastic/state"
 
 export const Patch = Schema.Struct({
   hash: Schema.String,
@@ -32,7 +35,11 @@ const LOCK_RETRY_MS = 25
 const LOCK_RETRY_MAX_MS = 400
 // Retries of one add after a listed path vanished before git read it.
 const VANISHED_RETRIES = 5
+// origami_change (t-woacbl): how long a written tree is reused while its index
+// file is unchanged. Well under the 7-day gc prune, so the tree object still exists.
+const TREE_REUSE_MS = 60 * 60 * 1000
 const UNMATCHED = /pathspec ':\(top,literal\)(.*)' did not match any files/
+const utf8 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8")
 interface GitResult {
   readonly code: ChildProcessSpawner.ExitCode
   readonly text: string
@@ -134,20 +141,39 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
         const args = (cmd: string[]) => ["--git-dir", state.gitdir, "--work-tree", state.worktree, ...cmd]
 
+        // origami_change-start (t-woacbl): the tree the last write-tree gave, and
+        // the index file it was written from. Every git command that changes the
+        // index (add, rm --cached, read-tree, another engine's add on this shared
+        // gitdir) replaces the file through index.lock, so a new file id, size or
+        // time means the index moved. While it has not, the tree is the same, and
+        // write-tree (one more git process on the step's path) is not needed.
+        const indexStamp = () => {
+          const info = statSync(path.join(state.gitdir, "index"), { bigint: true, throwIfNoEntry: false })
+          return info ? `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}` : undefined
+        }
+        let written: { hash: string; stamp: string; at: number } | undefined
+        // origami_change-end
+
         const encodeNulTerminatedPaths = (files: string[]) => files.join("\0") + "\0"
         const encodeTopLevelLiteralPathspecs = (files: string[]) =>
           encodeNulTerminatedPaths(files.map((file) => `:(top,literal)${file}`))
 
         const git = Effect.fnUntraced(
           function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string>; stdin?: string }) {
-            const result = yield* appProcess.run(
-              ChildProcess.make("git", cmd, { cwd: opts?.cwd, env: opts?.env, extendEnv: true }),
-              { stdin: opts?.stdin },
+            // t-w2r1kf: the git process starts on the snapshot Worker, not on
+            // this thread; the inline run is the fallback.
+            const result = yield* SnapshotGit.run(
+              { args: cmd, cwd: opts?.cwd, env: opts?.env, stdin: opts?.stdin },
+              appProcess
+                .run(ChildProcess.make("git", cmd, { cwd: opts?.cwd, env: opts?.env, extendEnv: true }), {
+                  stdin: opts?.stdin,
+                })
+                .pipe(Effect.map((run) => ({ code: run.exitCode, stdout: run.stdout, stderr: run.stderr }))),
             )
             return {
-              code: ChildProcessSpawner.ExitCode(result.exitCode),
-              text: result.stdout.toString("utf8"),
-              stderr: result.stderr.toString("utf8"),
+              code: ChildProcessSpawner.ExitCode(result.code),
+              text: utf8(result.stdout),
+              stderr: utf8(result.stderr),
             } satisfies GitResult
           },
           Effect.catch((err) =>
@@ -461,8 +487,16 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 })
                 return
               }
+              const stamp = indexStamp()
+              if (written && stamp === written.stamp && Date.now() - written.at < TREE_REUSE_MS) {
+                yield* Effect.logInfo("tracking", { hash: written.hash, cwd: state.directory, git: state.gitdir })
+                return written.hash
+              }
               const result = yield* git(args(["write-tree"]), { cwd: state.directory })
               const hash = result.text.trim()
+              // write-tree may store its cache in the index: stamp after it.
+              const after = indexStamp()
+              written = result.code === 0 && hash && after ? { hash, stamp: after, at: Date.now() } : undefined
               yield* Effect.logInfo("tracking", { hash, cwd: state.directory, git: state.gitdir })
               return hash
             }),
@@ -686,6 +720,10 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
         })
 
         const diffFull = Effect.fnUntraced(function* (from: string, to: string) {
+          // origami_change (t-woacbl): a tree compared with itself has no
+          // difference; a text-only turn's summary asked git anyway (two
+          // processes, holding the lock the next step's track waits for).
+          if (from === to) return []
           return yield* locked(
             Effect.gen(function* () {
               type Row = {
@@ -743,18 +781,22 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   })
                   if (!refs.length) return new Map<string, { before: string; after: string }>()
 
-                  const batch = yield* appProcess.run(
-                    ChildProcess.make("git", [...cfg, ...args(["cat-file", "--batch"])], {
-                      cwd: state.directory,
-                      extendEnv: true,
-                    }),
-                    { stdin: refs.map((item) => item.ref).join("\n") + "\n" },
+                  const batchArgs = [...cfg, ...args(["cat-file", "--batch"])]
+                  const batchStdin = refs.map((item) => item.ref).join("\n") + "\n"
+                  // t-w2r1kf: on the snapshot Worker too, with the inline run as fallback.
+                  const batch = yield* SnapshotGit.run(
+                    { args: batchArgs, cwd: state.directory, stdin: batchStdin },
+                    appProcess
+                      .run(ChildProcess.make("git", batchArgs, { cwd: state.directory, extendEnv: true }), {
+                        stdin: batchStdin,
+                      })
+                      .pipe(Effect.map((run) => ({ code: run.exitCode, stdout: run.stdout, stderr: run.stderr }))),
                   )
-                  if (batch.exitCode !== 0) {
+                  if (batch.code !== 0) {
                     yield* Effect.logInfo(
                       "git cat-file --batch failed during snapshot diff, falling back to per-file git show",
                       {
-                        stderr: batch.stderr.toString("utf8"),
+                        stderr: utf8(batch.stderr),
                         refs: refs.length,
                       },
                     )
@@ -907,7 +949,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        yield* cleanup().pipe(
+        // origami_change (t-w2qlop): the HOURLY pass is skipped while the engine rests
+        // (background / idle). An active engine of the same folder or store runs it;
+        // a hidden chat's engine doing heavy disk work once an hour is what option D
+        // takes away. The on-demand `cleanup` is unchanged.
+        yield* Effect.suspend(() => (ElasticState.resting() ? Effect.void : cleanup())).pipe(
           Effect.catchCause((cause) => Effect.logError("cleanup loop failed", { cause: Cause.pretty(cause) })),
           Effect.repeat(Schedule.spaced(Duration.hours(1))),
           Effect.delay(Duration.minutes(1)),

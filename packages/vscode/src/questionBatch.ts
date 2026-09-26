@@ -12,10 +12,12 @@
 export type QuestionAsk = {
   title: string;
   options: ReadonlyArray<{ optionId: string; name: string; kind: string }>;
+  /** t-xum9v2: "tick all that apply". Absent on a single-choice question. */
+  multiple?: true;
 };
 
 /** One answer in a batch reply, positionally matched to its question. */
-export type QuestionAnswer = { optionId: string; answerText?: string };
+export type QuestionAnswer = { optionId: string; answerText?: string; optionIds?: string[] };
 
 /** The questions a permission ask carries, or `undefined` when it carries none.
  *  `undefined` is the BACK-COMPAT signal as well as the malformed one: an engine
@@ -28,7 +30,7 @@ export function questionsFromMeta(meta: unknown): QuestionAsk[] | undefined {
   const out: QuestionAsk[] = [];
   for (const item of raw) {
     if (typeof item !== 'object' || item === null) return undefined;
-    const q = item as { question?: unknown; options?: unknown };
+    const q = item as { question?: unknown; options?: unknown; multiple?: unknown };
     if (typeof q.question !== 'string' || !Array.isArray(q.options) || q.options.length === 0) return undefined;
     out.push({
       title: q.question,
@@ -36,9 +38,19 @@ export function questionsFromMeta(meta: unknown): QuestionAsk[] | undefined {
         const opt = (typeof o === 'object' && o !== null ? o : {}) as { optionId?: unknown; name?: unknown; kind?: unknown };
         return { optionId: String(opt.optionId ?? ''), name: String(opt.name ?? ''), kind: String(opt.kind ?? 'reject_once') };
       }),
+      ...(q.multiple === true ? { multiple: true as const } : {}),
     });
   }
   return out;
+}
+
+/** The `questions` field of a webview `requestPermission` post: the whole batch, each
+ *  question's `multiple` flag kept (t-xum9v2). `{}` when the ask carried none, so the
+ *  webview falls back to title + options. Shared by the live forward and the replay of
+ *  a buffered ask, so the two cannot drift. */
+export function questionsPost(questions: ReadonlyArray<QuestionAsk> | undefined): { questions?: QuestionAsk[] } {
+  if (!questions) return {};
+  return { questions: questions.map((q) => ({ title: q.title, options: q.options.map((o) => ({ ...o })), ...(q.multiple ? { multiple: true as const } : {}) })) };
 }
 
 /** The `_meta` bag a SELECTED permission outcome replies with, or `undefined` when
@@ -52,7 +64,7 @@ export function replyMeta(
 ): Record<string, unknown> | undefined {
   const meta: Record<string, unknown> = {};
   if (answerText) meta['answerText'] = answerText;
-  if (answers && answers.length > 0) meta['answers'] = answers.map((a) => ({ ...a }));
+  if (answers && answers.length > 0) meta['answers'] = answers.map((a) => ({ ...a, ...(a.optionIds ? { optionIds: [...a.optionIds] } : {}) }));
   return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
@@ -66,9 +78,16 @@ export function questionAnswers(raw: unknown): QuestionAnswer[] | undefined {
   const out: QuestionAnswer[] = [];
   for (const item of raw) {
     if (typeof item !== 'object' || item === null) return undefined;
-    const entry = item as { optionId?: unknown; answerText?: unknown };
+    const entry = item as { optionId?: unknown; answerText?: unknown; optionIds?: unknown };
     const optionId = typeof entry.optionId === 'string' ? entry.optionId : '';
     const text = typeof entry.answerText === 'string' ? entry.answerText.trim() : '';
+    // t-xum9v2: a multi-select answer. The tick list is the answer, so an empty one
+    // ("none apply") is kept; only string ids go on.
+    if (Array.isArray(entry.optionIds)) {
+      const optionIds = entry.optionIds.filter((id): id is string => typeof id === 'string');
+      out.push(text ? { optionId, optionIds, answerText: text } : { optionId, optionIds });
+      continue;
+    }
     // An empty `answerText` is the same as absent: telling the engine the user
     // answered with nothing is not what happened (the M4.4 rule, per entry).
     if (!optionId && !text) return undefined;

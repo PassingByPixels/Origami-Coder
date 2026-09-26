@@ -125,7 +125,15 @@ describe('DashboardPanel S7.1 wiring — source guards for the untestable glue',
   });
 
   it('buffers with the ASK\'s real options/kind, not a wrong shape (a mis-passed arg would replay a garbled modal)', () => {
-    expect(src).toMatch(/bufferAgentQuestion\(session, sessionId, toolCallId, title, kind, target, options\)/);
+    expect(src).toMatch(/bufferAgentQuestion\(session, sessionId, toolCallId, title, kind, target, options, questions\)/);
+  });
+
+  // t-xum9v2: the buffer kept the head question only, so a replayed batch lost its other
+  // questions and a replayed "tick all that apply" came back as single choice.
+  it('a replayed ask carries the WHOLE batch (and each multiple flag), as the live forward does', () => {
+    expect(src).toMatch(/pendingQuestionPermissions\.set\(sessionId, \{[^\n]*questions[^\n]*\}\)/);
+    expect(src).toMatch(/qpAct === 'post'[^\n]*\.\.\.questionsPost\(qp!\.questions\)/);
+    expect(src).toMatch(/type: 'requestPermission', toolCallId, title, kind, sessionId, target,[\s\S]{0,800}\.\.\.questionsPost\(questions\)/);
   });
 
   it('engine death (onClose AND onError) drops the buffer, drains the orphaned respond, and clears the chip', () => {

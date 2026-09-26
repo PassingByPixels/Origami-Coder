@@ -334,10 +334,12 @@
   .row.is-live .text:not(:has(*))::after {
     content: '';
     display: inline-block;
-    width: 0.5em;
-    height: 1em;
-    margin-left: 2px;
-    vertical-align: text-bottom;
+    /* t-yyz5yk (Round 8 C): a 2px caret in the chat colour, not a block. */
+    width: 2px;
+    height: 1.05em;
+    margin-left: 1px;
+    vertical-align: -2px;
+    border-radius: 1px;
     background: var(--og-chat);
     animation: og-caret 1s steps(1, end) infinite;
   }

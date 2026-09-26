@@ -2,7 +2,7 @@ import { expect } from "bun:test"
 import { CrossSpawnSpawner } from "@origami/core/cross-spawn-spawner"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { $ } from "bun"
-import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer, References, Tracer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { InstanceState } from "@/effect/instance-state"
 import {
@@ -554,5 +554,36 @@ it.live("InstanceState survives deferred resume outside ALS when InstanceRef is 
       expect(Exit.isSuccess(exit)).toBe(true)
       if (Exit.isSuccess(exit)) expect(exit.value).toBe(dir)
     }).pipe(Effect.provide(Test.layer))
+  }),
+)
+
+// t-w2u5vf: the heap snapshot of a closed chat's engine showed MCP.state keeping
+// 80 MB of a turn's messages. The folder's state is made by whichever turn reads
+// it first; a bridge made in `init` keeps the fiber context, and in it the
+// turn's span (whose ended parents keep their exit values) and the Effect.fn
+// stack frames (which keep the call's arguments). The state lives as long as
+// the folder, so it must not keep the reader's span or frames.
+it.live("InstanceState does not keep the span or call frames of the turn that read it first", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    const state = yield* InstanceState.make(() => Effect.map(Effect.context<never>(), (kept) => ({ kept })))
+    const step = Effect.fn("turn.step")(function* (_request: { readonly messages: readonly string[] }) {
+      return yield* access(state, dir)
+    })
+
+    const value = yield* step({ messages: ["a big request"] }).pipe(Effect.withSpan("turn"))
+
+    const spans: string[] = []
+    let span = Context.getOption(value.kept, Tracer.ParentSpan)
+    while (span._tag === "Some" && span.value._tag === "Span") {
+      spans.push(span.value.name)
+      span = span.value.parent
+    }
+    const frames: string[] = []
+    for (let frame = Context.get(value.kept, References.CurrentStackFrame); frame; frame = frame.parent)
+      frames.push(frame.name)
+    expect(spans).not.toContain("turn")
+    expect(spans).not.toContain("turn.step")
+    expect(frames).not.toContain("turn.step")
   }),
 )

@@ -85,6 +85,7 @@ export type RunStepCacheCause =
   | "cold"
   | "model"
   | "compaction"
+  | "stopped"
   | "idle"
   | "system"
   | "tools"
@@ -104,7 +105,11 @@ export type RunStepCache = {
   readonly idleMs?: number
   readonly ttlSeconds?: number
   readonly warmed?: boolean
+  /** The halves that changed while the engine was stopped (t-w2txb2). */
+  readonly stopped?: readonly RunStepStoppedHalf[]
 }
+
+export type RunStepStoppedHalf = "system" | "tools" | "history"
 
 export type RunStepsResult = {
   readonly steps: readonly RunStep[]
@@ -234,6 +239,7 @@ const CACHE_CAUSES = new Set<string>([
   "cold",
   "model",
   "compaction",
+  "stopped",
   "idle",
   "system",
   "tools",
@@ -242,6 +248,7 @@ const CACHE_CAUSES = new Set<string>([
   "small",
 ])
 const DIVERGENCE_SOURCES = new Set<string>(["tool-aging", "reminder", "plugin", "unknown"])
+const STOPPED_HALVES = new Set<string>(["system", "tools", "history"])
 
 /** What one stored `step-finish` part says about its cached prefix, in the
  *  projected shape. Read defensively: these rows outlive the build that wrote
@@ -256,6 +263,7 @@ function stepCacheFacts(part: unknown): Pick<RunStep, "cache" | "prefix"> | unde
       idleMs?: unknown
       ttlSeconds?: unknown
       warmed?: unknown
+      stopped?: unknown
     }
     prefix?: { system?: unknown; tools?: unknown; history?: unknown }
   }
@@ -287,10 +295,20 @@ function stepCacheFacts(part: unknown): Pick<RunStep, "cache" | "prefix"> | unde
         ...(finite(raw.cache.idleMs) === undefined ? {} : { idleMs: raw.cache.idleMs as number }),
         ...(finite(raw.cache.ttlSeconds) === undefined ? {} : { ttlSeconds: raw.cache.ttlSeconds as number }),
         ...(typeof raw.cache.warmed === "boolean" ? { warmed: raw.cache.warmed } : {}),
+        ...(stoppedHalves(raw.cache.stopped) ? { stopped: stoppedHalves(raw.cache.stopped) } : {}),
       }
     : undefined
   if (!cache && !digests) return undefined
   return { ...(cache ? { cache } : {}), ...(digests ? { prefix: digests } : {}) }
+}
+
+/** The known halves of a stored `stopped` list, or undefined when none is known. */
+function stoppedHalves(value: unknown): RunStepStoppedHalf[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const halves = value.filter(
+    (item): item is RunStepStoppedHalf => typeof item === "string" && STOPPED_HALVES.has(item),
+  )
+  return halves.length > 0 ? halves : undefined
 }
 
 /** A cause this build has a sentence for, or undefined. */

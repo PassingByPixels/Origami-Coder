@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 214" role="img" aria-label="Drop files from the VS Code explorer on the composer. An image is attached as an image. A text file is attached as a file chip. Any other type of file adds its full path to the message as text.">
+  <defs>
+    <marker id="wn-da-head-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="box" x="20" y="30" width="170" height="140" rx="8"/>
+  <text class="t-title" x="32" y="50">VS Code explorer</text>
+  <rect class="box-dim" x="32" y="62" width="146" height="26" rx="4"/>
+  <text class="t-small" x="42" y="79">photo.png</text>
+  <rect class="box-dim" x="32" y="98" width="146" height="26" rx="4"/>
+  <text class="t-small" x="42" y="115">notes.md</text>
+  <rect class="box-dim" x="32" y="134" width="146" height="26" rx="4"/>
+  <text class="t-small" x="42" y="151">build.zip</text>
+  <path class="line-hi" d="M180 75 H272" marker-end="url(#wn-da-head-hi)"/>
+  <path class="line-hi" d="M180 111 H272" marker-end="url(#wn-da-head-hi)"/>
+  <path class="line-hi" d="M180 147 H272" marker-end="url(#wn-da-head-hi)"/>
+  <text class="t-muted t-small" x="226" y="68" text-anchor="middle">drop</text>
+  <rect class="box-hi" x="276" y="30" width="344" height="140" rx="8"/>
+  <text class="t-title" x="288" y="50">Composer</text>
+  <rect class="fill-muted" x="288" y="63" width="30" height="24" rx="3"/>
+  <text class="t-small" x="328" y="79">Image: attached as an image</text>
+  <rect class="box" x="288" y="100" width="70" height="22" rx="11"/>
+  <text class="t-small" x="323" y="115" text-anchor="middle">notes.md</text>
+  <text class="t-small" x="368" y="115">Text: attached as a file chip</text>
+  <text class="t-muted t-small" x="288" y="151">…/build.zip</text>
+  <text class="t-small" x="368" y="151">Other type: full path as text</text>
+  <text class="t-muted t-small" x="20" y="200">The drop overlay goes away when a drag ends, wherever it ends.</text>
+</svg>

@@ -10,7 +10,7 @@
  *  the next reader sees what the table is FOR. Not consulted at runtime —
  *  default-deny needs no deny-list — and it holds panes a solo-mounted phone
  *  chat cannot reach, so a route added tomorrow cannot reopen the gate. */
-import { GROUP_REFUSALS } from './groupRefusals';
+import { GROUP_REFUSALS } from './groupRefusals'; import { DESK_REFUSALS } from './deskRefusals'; // t-x3a89j
 
 export const NAMED_REFUSALS: readonly string[] = [
   // `/auto`, `/bypass` and the ChatPane YOLO button all post THIS, so refusing it
@@ -28,7 +28,7 @@ export const NAMED_REFUSALS: readonly string[] = [
   'remoteRequest',
   // t-rz1b14 — the device group's seven, in groupRefusals.ts: this file is at
   // its cap and its own header says extract rather than raise.
-  ...GROUP_REFUSALS,
+  ...GROUP_REFUSALS, ...DESK_REFUSALS,
   // t-q910fo: stopping ONE sub-agent. Unlike `cancel` and `stopBackgroundShell`
   // (both `watch`), this reaches INTO a chat the phone is not in: the id it
   // carries is a CHILD session the phone never renders and cannot have looked
@@ -55,6 +55,10 @@ export const NAMED_REFUSALS: readonly string[] = [
   'setBrowserReveal',
   // Desk settings write (t-ntmmvh); the read half `requestCacheWarming` is by prefix.
   'cacheWarmingSet',
+  // Desk settings write (t-xf2e9q): the Settings view's Engines group (elastic
+  // engines, warm spare, idle/park/trim minutes). Read half `requestEngineSettings`
+  // is by prefix, same shape as cacheWarmingSet above.
+  'engineSettingsSet',
   'claudeSubscriptionAdd', 'claudeSubscriptionDisconnect', // t-tsw90t: desk-only modal + a setting write, same reason as removeProvider
   'chatBackdropSet', // desk settings write (t-s9jr6u); read half `requestChatBackdrop` by prefix
   // Retention (t-dcjs40): rewrites stored tool output on the desk behind a confirm a phone
@@ -146,4 +150,5 @@ export const NAMED_REFUSALS: readonly string[] = [
   'sideQuestStart',
   'sideQuestExport',
   'sideQuestDismiss',
+  'readDroppedFiles', // t-z69b8m: reads any local file a URI names off this PC's disk
 ];

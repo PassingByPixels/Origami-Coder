@@ -1,6 +1,7 @@
 import { Cause, Context, Effect, Exit, Fiber, Layer } from "effect"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { SessionRunCoordinator } from "@origami/core/session/run-coordinator"
+import { ElasticActivity } from "@/elastic/activity"
 import { PermissionV1 } from "@origami/core/v1/permission"
 import { SessionV1 } from "@origami/core/v1/session"
 import { CollabActivity } from "./activity"
@@ -1226,6 +1227,12 @@ export const make = (deps: Deps) =>
       string,
       never
     >({ drain: (collabId: string) => drain(collabId) })
+    // origami_change (t-w2qlop): a collab with a drain or a turn in flight keeps
+    // the engine unparkable. `active` is a synchronous snapshot of a plain map.
+    yield* ElasticActivity.probeScoped("collab-run", () => [
+      ...Effect.runSync(coordinator.active),
+      ...inflight.keys(),
+    ])
 
     const post = Effect.fn("Collab.post")(function* (input: {
       collabId: string

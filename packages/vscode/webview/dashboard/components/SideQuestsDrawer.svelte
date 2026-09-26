@@ -20,6 +20,8 @@
   // own fold.
   import type { SideQuest } from '../panes/sideQuestProps';
   import SideQuestsTab from './SideQuestsTab.svelte';
+  import RailFoldHead from './RailFoldHead.svelte';
+  import SideQuestRow from './SideQuestRow.svelte';
 
   interface Props {
     quests: SideQuest[];
@@ -27,8 +29,10 @@
     onToggle: () => void;
     /** Open the popup for this quest id. */
     onOpen: (id: string) => void;
+    /** The quest open beside the drawer, or '' (t-yyz5je: its row is marked). */
+    selectedId?: string;
   }
-  let { quests, open, onToggle, onOpen }: Props = $props();
+  let { quests, open, onToggle, onOpen, selectedId = '' }: Props = $props();
 
   // Collapsed by default, on SubagentDrawer.svelte's own reasoning: a list of
   // work nobody asked for is something to consult, not something that should
@@ -41,20 +45,18 @@
 {#if quests.length > 0}
   <aside class="sq-drawer" class:collapsed={!open}>
     <div class="sq-panel">
+      <!-- t-yyz5je: the rail's folding header; folded, it keeps the newest title. -->
       <div class="sq-head-row">
-        <button class="sq-head" aria-expanded={listOpen} onclick={() => (listOpen = !listOpen)}>
-          <span class="sq-head-chevron" aria-hidden="true">{listOpen ? '▾' : '▸'}</span>
+        <RailFoldHead open={listOpen} onToggle={() => (listOpen = !listOpen)}>
           <span class="sq-title">Side quests</span>
           <span class="sq-count">{quests.length} open</span>
-        </button>
+          {#snippet peek()}<span class="rail-peek sq-peek">{quests[0].title}</span>{/snippet}
+        </RailFoldHead>
       </div>
       {#if listOpen}
         <div class="sq-rows">
           {#each quests as quest (quest.id)}
-            <button class="sq-row" title={quest.summary || quest.title} onclick={() => onOpen(quest.id)}>
-              <span class="sq-row-id">{quest.id}</span>
-              <span class="sq-row-title">{quest.title}</span>
-            </button>
+            <SideQuestRow {quest} selected={quest.id === selectedId} onOpen={() => onOpen(quest.id)} />
           {/each}
         </div>
       {/if}
@@ -111,22 +113,9 @@
   }
 
   .sq-head-row { display: flex; align-items: baseline; gap: 4px; flex: 0 0 auto; margin-bottom: 5px; min-width: 0; }
-  .sq-head {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    flex: 1 1 auto;
-    min-width: 0;
-    background: transparent;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
-  }
-  .sq-head-chevron { flex: 0 0 auto; font-size: 8px; color: var(--og-text-muted); }
-  .sq-title { font-size: 10.5px; font-weight: 600; color: var(--og-text); }
-  .sq-count { font-size: 9px; color: var(--og-text-muted); }
+  .sq-title { flex: 0 0 auto; font-size: 10.5px; font-weight: 600; color: var(--og-text); }
+  .sq-count { flex: 0 0 auto; font-size: 9px; color: var(--og-text-muted); }
+  .sq-peek { flex: 1 1 auto; min-width: 0; font-size: 9.5px; color: var(--og-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* An explicit px cap with its own scroll, INDEPENDENT of the 40% above: a
      workspace that has collected fifteen quests must not grow this panel down
@@ -139,31 +128,5 @@
     min-height: 0;
     max-height: 180px;
     overflow-y: auto;
-  }
-  .sq-row {
-    display: flex;
-    align-items: baseline;
-    gap: 5px;
-    min-width: 0;
-    padding: 3px 4px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
-  }
-  .sq-row:hover { background: var(--og-btn-bg); border-color: var(--og-border); }
-  .sq-row-id { flex: 0 0 auto; font-size: 9px; font-weight: 600; color: var(--og-accent); }
-  /* One line, clipped: the whole brief is in the popup, and a row that wraps to
-     four lines turns a list of five into a wall. */
-  .sq-row-title {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 10px;
-    color: var(--og-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>

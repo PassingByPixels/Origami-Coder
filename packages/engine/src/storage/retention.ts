@@ -1,8 +1,10 @@
 export * as StorageRetention from "./retention"
 
 import { Effect } from "effect"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 import { Database } from "@origami/core/database/database"
+import { StorageNestsMeasure } from "./nests-measure"
+import { StorageRead } from "./read-runner"
 
 /**
  * Session-store retention: measure the store, and compact old tool payloads out
@@ -89,10 +91,33 @@ export type PruneResult = {
   }
 }
 
-/** Every part the window admits, minus the tail each session keeps, minus the
- *  ones already pruned. Shared by the dry run and the write so the count a user
- *  confirms is the count that is written. */
-function candidates(cutoff: number) {
+/** The candidates of one rowid range of `part`: every part the window admits,
+ *  minus the tail each session keeps, minus the ones already pruned. The tail
+ *  is read only for the sessions of the range, which gives the same rows as a
+ *  tail of every session (the row number counts within a session). The dry run
+ *  applies the same rule with the tail (`TAIL`, read once) in JS. */
+function candidates(cutoff: number, lo: number, hi: number, huge?: number) {
+  const inRange = sql`${sql.identifier("part")}.rowid > ${lo} AND ${sql.identifier("part")}.rowid <= ${hi}`
+  const rule = huge === undefined ? admitted(cutoff) : admittedOrHuge(cutoff, huge)
+  return sql`${inRange} AND ${rule} AND ${sql.identifier("part")}.message_id NOT IN (
+    SELECT id FROM (
+      SELECT id, row_number() OVER (
+        PARTITION BY session_id ORDER BY time_created DESC, id DESC
+      ) AS rn FROM ${sql.identifier("message")}
+      WHERE session_id IN (SELECT session_id FROM ${sql.identifier("part")} WHERE ${inRange})
+    ) WHERE rn <= ${KEEP_RECENT_MESSAGES})`
+}
+
+/** The ids of the last KEEP_RECENT_MESSAGES messages of every session. */
+const TAIL = sql`
+  SELECT id FROM (
+    SELECT id, row_number() OVER (
+      PARTITION BY session_id ORDER BY time_created DESC, id DESC
+    ) AS rn FROM ${sql.identifier("message")}
+  ) WHERE rn <= ${KEEP_RECENT_MESSAGES}`
+
+/** The candidate rule without the tail. */
+function admitted(cutoff: number) {
   return sql`
     ${sql.identifier("part")}.time_created < ${cutoff}
     AND json_extract(${sql.identifier("part")}.data, '$.type') = 'tool'
@@ -105,48 +130,179 @@ function candidates(cutoff: number) {
       coalesce(json_extract(${sql.identifier("part")}.data, '$.state.output'), '') NOT IN ('', ${MARKER})
       OR json_extract(${sql.identifier("part")}.data, '$.state.attachments') IS NOT NULL
     )
-    AND ${sql.identifier("part")}.message_id NOT IN (
-      SELECT id FROM (
-        SELECT id, row_number() OVER (
-          PARTITION BY session_id ORDER BY time_created DESC, id DESC
-        ) AS rn FROM ${sql.identifier("message")}
-      ) WHERE rn <= ${KEEP_RECENT_MESSAGES}
-    )
   `
 }
 
-const rowCounts = Effect.fnUntraced(function* () {
+/** `admitted`, except that a row above `huge` is not parsed: it is admitted
+ *  when it is old and its JSON starts with `{"type":"tool"` (the measure's rule). */
+function admittedOrHuge(cutoff: number, huge: number) {
+  return sql`CASE WHEN octet_length(${sql.identifier("part")}.data) > ${huge}
+    THEN ${sql.identifier("part")}.time_created < ${cutoff}
+      AND substr(${sql.identifier("part")}.data, 1, 14) = '{"type":"tool"'
+    ELSE ${admitted(cutoff)} END`
+}
+
+type Measured = { n: number; out_bytes: number; img_bytes: number }
+
+const partTop = Effect.fnUntraced(function* () {
   const { db } = yield* Database.Service
   const row = yield* db
-    .get<{ events: number; messages: number; parts: number }>(
-      sql`SELECT
-        (SELECT count(*) FROM ${sql.identifier("event")}) AS events,
-        (SELECT count(*) FROM ${sql.identifier("message")}) AS messages,
-        (SELECT count(*) FROM ${sql.identifier("part")}) AS parts`,
-    )
+    .get<{ top: number | null }>(sql`SELECT max(rowid) AS top FROM ${sql.identifier("part")}`)
     .pipe(Effect.orDie)
-  return { events: row?.events ?? 0, messages: row?.messages ?? 0, parts: row?.parts ?? 0 }
+  return row?.top ?? 0
 })
 
-export const stats = Effect.fn("StorageRetention.stats")(function* () {
+/**
+ * t-vs5krz: the Apply in rowid ranges. It was one SELECT and one UPDATE over
+ * the whole part table: one 4.0 s block of the event loop on the owner-size
+ * store copy. Now each range is one IMMEDIATE transaction: it reads its
+ * candidates with their sizes, then rewrites exactly those rows, with a loop
+ * turn between the read and the rewrite and after each range.
+ *
+ * A row above `HUGE_BYTES` is read with the dry run's rule (no parse), and its
+ * UPDATE checks the full rule itself: it is rewritten only when the single
+ * statement would have rewritten it, and it counts whole as images, as in the
+ * dry run. Its rewrite still loads and parses it in one call: 268-296 ms for
+ * the 118 MB row on the owner-size store copy. One row's rewrite cannot be split.
+ */
+const applyRanged = Effect.fnUntraced(function* (
+  cutoff: number,
+  input: { readonly sliceRows?: number; readonly sliceBytes?: number; readonly hugeBytes?: number },
+) {
+  const huge = input.hugeBytes ?? StorageNestsMeasure.HUGE_BYTES
   const { db } = yield* Database.Service
-  const started = Date.now()
-  const page = yield* db
-    .get<{ page_count: number; page_size: number }>(
-      sql`SELECT (SELECT * FROM pragma_page_count()) AS page_count, (SELECT * FROM pragma_page_size()) AS page_size`,
-    )
-    .pipe(Effect.orDie)
-  const journal = yield* db
-    .get<{ b: number | null }>(sql`SELECT sum(length(data)) AS b FROM ${sql.identifier("event")}`)
-    .pipe(Effect.orDie)
-  const messages = yield* db
-    .get<{ b: number | null }>(sql`SELECT sum(length(data)) AS b FROM ${sql.identifier("message")}`)
-    .pipe(Effect.orDie)
+  const sums: Measured = { n: 0, out_bytes: 0, img_bytes: 0 }
+  const compacted = Date.now()
+  yield* StorageNestsMeasure.eachRange({
+    table: "part",
+    top: yield* partTop(),
+    read: (lo, hi) =>
+      db
+        .transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const rows = yield* tx.all<{ r: number; len: number; o: number | null; i: number | null }>(
+                sql`SELECT ${sql.identifier("part")}.rowid AS r, octet_length(${sql.identifier("part")}.data) AS len,
+                  CASE WHEN octet_length(${sql.identifier("part")}.data) > ${huge} THEN NULL
+                    ELSE length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.output'), '')) END AS o,
+                  CASE WHEN octet_length(${sql.identifier("part")}.data) > ${huge} THEN NULL
+                    ELSE length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.attachments'), '')) END AS i
+                  FROM ${sql.identifier("part")} WHERE ${candidates(cutoff, lo, hi, huge)}`,
+              )
+              if (rows.length === 0) return
+              yield* StorageNestsMeasure.turn
+              const rewrite = (where: SQL) =>
+                tx.run(
+                  sql`UPDATE ${sql.identifier("part")} SET data = json_set(
+                    json_remove(data, '$.state.attachments'),
+                    '$.state.output', ${MARKER},
+                    '$.state.time.compacted', ${compacted}
+                  ) WHERE ${where}`,
+                )
+              const small = rows.filter((row) => row.o !== null)
+              if (small.length > 0) {
+                yield* rewrite(
+                  sql`rowid IN (${sql.join(
+                    small.map((row) => sql`${row.r}`),
+                    sql`, `,
+                  )})`,
+                )
+                for (const row of small) {
+                  sums.n++
+                  sums.out_bytes += row.o ?? 0
+                  sums.img_bytes += row.i ?? 0
+                }
+              }
+              for (const row of rows.filter((row) => row.o === null)) {
+                yield* rewrite(candidates(cutoff, row.r - 1, row.r))
+                const changed = yield* tx.get<{ n: number }>(sql`SELECT changes() AS n`)
+                if (!changed?.n) continue
+                sums.n++
+                sums.out_bytes += MARKER.length
+                sums.img_bytes += row.len
+              }
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.orDie),
+    ...(input.sliceRows !== undefined ? { sliceRows: input.sliceRows } : {}),
+    ...(input.sliceBytes !== undefined ? { sliceBytes: input.sliceBytes } : {}),
+  })
+  return sums
+})
+
+/**
+ * t-vs5krz: the dry run's count in rowid ranges (`StorageNestsMeasure.eachRange`).
+ * The one statement above held the engine's event loop 1.6-2.5 s on the
+ * owner-size store copy (bun:sqlite is synchronous); the Nests Storage card runs
+ * a dry run for every Keep choice. The tail is read once (34 ms on that copy);
+ * each range returns only its admitted parts, and the tail check is done here.
+ *
+ * A part row above `HUGE_BYTES` is not parsed, the same rule as the measure
+ * (`StorageNestsMeasure`): it is a candidate when it is old and its JSON starts
+ * with `{"type":"tool"`, and all its bytes count as images. The 118 MB row on
+ * the owner's store took 175-250 ms to parse alone. The status, tool name and
+ * output of such a row are not checked, so the dry run can count a huge row the
+ * Apply keeps. On the owner-size copy: the same 22,778 parts, and 429 bytes
+ * more than the parsed sums (of 378.6 MB).
+ */
+const measureRanged = Effect.fnUntraced(function* (
+  cutoff: number,
+  input: { readonly sliceRows?: number; readonly sliceBytes?: number; readonly hugeBytes?: number },
+) {
+  const huge = input.hugeBytes ?? StorageNestsMeasure.HUGE_BYTES
+  const { db } = yield* Database.Service
+  const tail = new Set(
+    (yield* db.all<{ id: string }>(TAIL).pipe(Effect.orDie)).map((row) => row.id),
+  )
+  const sums: Measured = { n: 0, out_bytes: 0, img_bytes: 0 }
+  yield* StorageNestsMeasure.eachRange({
+    table: "part",
+    top: yield* partTop(),
+    read: (lo, hi) =>
+      db
+        .all<{ m: string; o: number; i: number }>(
+          sql`SELECT ${sql.identifier("part")}.message_id AS m,
+            CASE WHEN octet_length(${sql.identifier("part")}.data) > ${huge} THEN ${MARKER.length}
+              ELSE length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.output'), '')) END AS o,
+            CASE WHEN octet_length(${sql.identifier("part")}.data) > ${huge} THEN octet_length(${sql.identifier("part")}.data)
+              ELSE length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.attachments'), '')) END AS i
+            FROM ${sql.identifier("part")}
+            WHERE ${sql.identifier("part")}.rowid > ${lo} AND ${sql.identifier("part")}.rowid <= ${hi}
+              AND ${admittedOrHuge(cutoff, huge)}`,
+        )
+        .pipe(
+          Effect.orDie,
+          Effect.map((rows) => {
+            for (const row of rows) {
+              if (tail.has(row.m)) continue
+              sums.n++
+              sums.out_bytes += row.o
+              sums.img_bytes += row.i
+            }
+          }),
+        ),
+    ...(input.sliceRows !== undefined ? { sliceRows: input.sliceRows } : {}),
+    ...(input.sliceBytes !== undefined ? { sliceBytes: input.sliceBytes } : {}),
+  })
+  return sums
+})
+
+// t-w2r1kf: the whole-table statements of `stats` and of the prune's row
+// counts, as plain SQL text, so the Worker (`read-runner.ts`) and the inline
+// fallback run the very same statements.
+const COUNTS_SQL = `SELECT
+        (SELECT count(*) FROM "event") AS events,
+        (SELECT count(*) FROM "message") AS messages,
+        (SELECT count(*) FROM "part") AS parts`
+
+const STATS_SQL = {
+  page: `SELECT (SELECT * FROM pragma_page_count()) AS page_count, (SELECT * FROM pragma_page_size()) AS page_size`,
+  journal: `SELECT sum(length(data)) AS b FROM "event"`,
+  messages: `SELECT sum(length(data)) AS b FROM "message"`,
   // One pass over `part` for the whole split: the table is gigabytes, and three
   // passes would be three full scans for numbers that come from the same rows.
-  const parts = yield* db
-    .get<{ total: number | null; tool_output: number | null; images: number | null }>(
-      sql`SELECT
+  parts: `SELECT
         sum(length(data)) AS total,
         sum(CASE WHEN json_extract(data, '$.type') = 'tool'
           THEN length(coalesce(json_extract(data, '$.state.output'), '')) ELSE 0 END) AS tool_output,
@@ -155,13 +311,53 @@ export const stats = Effect.fn("StorageRetention.stats")(function* () {
             THEN length(coalesce(json_extract(data, '$.state.attachments'), ''))
           WHEN json_extract(data, '$.type') = 'file' THEN length(data)
           ELSE 0 END) AS images
-        FROM ${sql.identifier("part")}`,
-    )
-    .pipe(Effect.orDie)
-  const counts = yield* rowCounts()
-  const sessions = yield* db
-    .get<{ n: number }>(sql`SELECT count(*) AS n FROM ${sql.identifier("session")}`)
-    .pipe(Effect.orDie)
+        FROM "part"`,
+  counts: COUNTS_SQL,
+  sessions: `SELECT count(*) AS n FROM "session"`,
+} as const
+
+/** The file of the engine's store connection; empty for an in-memory store. */
+const storeFile = Effect.fnUntraced(function* () {
+  const { db } = yield* Database.Service
+  const rows = yield* db.all<{ name: string; file: string }>(sql`PRAGMA database_list`).pipe(Effect.orDie)
+  return rows.find((row) => row.name === "main")?.file || undefined
+})
+
+/** Run read-only statements, one row each: on the storage Worker when it can,
+ *  else on the engine's connection as before (t-w2r1kf). */
+const readRows = Effect.fnUntraced(function* (statements: ReadonlyArray<string>) {
+  const rows = yield* StorageRead.read(yield* storeFile(), statements)
+  if (rows !== undefined) return rows
+  StorageRead.noteInline()
+  const { db } = yield* Database.Service
+  const inline: unknown[] = []
+  for (const statement of statements) inline.push(yield* db.get(sql.raw(statement)).pipe(Effect.orDie))
+  return inline
+})
+
+const rowCounts = Effect.fnUntraced(function* () {
+  const [row] = (yield* readRows([COUNTS_SQL])) as [{ events: number; messages: number; parts: number } | undefined]
+  return { events: row?.events ?? 0, messages: row?.messages ?? 0, parts: row?.parts ?? 0 }
+})
+
+export const stats = Effect.fn("StorageRetention.stats")(function* () {
+  const started = Date.now()
+  const [page, journal, messages, parts, counted, sessions] = (yield* readRows([
+    STATS_SQL.page,
+    STATS_SQL.journal,
+    STATS_SQL.messages,
+    STATS_SQL.parts,
+    STATS_SQL.counts,
+    STATS_SQL.sessions,
+  ])) as [
+    { page_count: number; page_size: number } | undefined,
+    { b: number | null } | undefined,
+    { b: number | null } | undefined,
+    { total: number | null; tool_output: number | null; images: number | null } | undefined,
+    { events: number; messages: number; parts: number } | undefined,
+    { n: number } | undefined,
+  ]
+  const counts = { events: counted?.events ?? 0, messages: counted?.messages ?? 0, parts: counted?.parts ?? 0 }
   const total = parts?.total ?? 0
   const toolOutput = parts?.tool_output ?? 0
   const images = parts?.images ?? 0
@@ -188,12 +384,9 @@ export const stats = Effect.fn("StorageRetention.stats")(function* () {
  * runs only at commit time (`core/session/projector.ts`), never as a replay, so
  * nothing re-derives these rows from the journal afterwards.
  *
- * It is ONE statement, so it holds the write lock for as long as it runs: the
- * measuring scan over 345k parts took ~6 s on the owner's store, and the engine
- * opens the database with `busy_timeout = 5000`. A turn writing a part during a
- * large prune can therefore wait, and a very large one could make it wait too
- * long. That is why this is a manual, confirmed action and not a schedule; if it
- * ever becomes automatic, batch it by rowid first.
+ * t-vs5krz: it is batched by rowid (`applyRanged`): one short transaction per
+ * range, so the write lock and the event loop are held for one range at a time,
+ * not for the whole table.
  *
  * VACUUM is NOT run: it rewrites the entire file (15.6 GB on the owner's box)
  * into a new one, needs that much free space again, and locks the store while it
@@ -203,33 +396,17 @@ export const stats = Effect.fn("StorageRetention.stats")(function* () {
 export const prune = Effect.fn("StorageRetention.prune")(function* (input: {
   olderThanDays: number
   dryRun: boolean
+  /** Tests only: smaller ranges and a smaller huge-row bound. */
+  sliceRows?: number
+  sliceBytes?: number
+  hugeBytes?: number
 }) {
-  const { db } = yield* Database.Service
   const olderThanDays = Math.max(MIN_WINDOW_DAYS, Math.floor(input.olderThanDays))
   const cutoff = Date.now() - olderThanDays * MS_IN_DAY
-  const measured = yield* db
-    .get<{ n: number; out_bytes: number | null; img_bytes: number | null }>(
-      sql`SELECT
-        count(*) AS n,
-        sum(length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.output'), ''))) AS out_bytes,
-        sum(length(coalesce(json_extract(${sql.identifier("part")}.data, '$.state.attachments'), ''))) AS img_bytes
-        FROM ${sql.identifier("part")} WHERE ${candidates(cutoff)}`,
-    )
-    .pipe(Effect.orDie)
-  const parts = measured?.n ?? 0
-  const toolOutputBytes = Math.max(0, (measured?.out_bytes ?? 0) - parts * MARKER.length)
-  const imageBytes = measured?.img_bytes ?? 0
-  if (!input.dryRun && parts > 0) {
-    yield* db
-      .run(
-        sql`UPDATE ${sql.identifier("part")} SET data = json_set(
-          json_remove(data, '$.state.attachments'),
-          '$.state.output', ${MARKER},
-          '$.state.time.compacted', ${Date.now()}
-        ) WHERE ${candidates(cutoff)}`,
-      )
-      .pipe(Effect.orDie)
-  }
+  const measured = input.dryRun ? yield* measureRanged(cutoff, input) : yield* applyRanged(cutoff, input)
+  const parts = measured.n
+  const toolOutputBytes = Math.max(0, measured.out_bytes - parts * MARKER.length)
+  const imageBytes = measured.img_bytes
   return {
     dryRun: input.dryRun,
     olderThanDays,

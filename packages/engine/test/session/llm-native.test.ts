@@ -1249,7 +1249,7 @@ describe("session.llm-native.openai-compatible wire", () => {
 describe("session.llm-native.openai-compatible sampling knobs", () => {
   it.effect("a configured sampling knob reaches the wire instead of failing the request", () =>
     Effect.gen(function* () {
-      // Passing's vLLM blocks set `frequency_penalty: 0` on the model options.
+      // The owner's vLLM blocks set `frequency_penalty: 0` on the model options.
       // The AI SDK path spread such keys verbatim; the first native cutover
       // refused them as protocol-owned and took the whole lane down.
       const options = LLMNativeRuntime.nativeOptions(compatModel("vllm"), {

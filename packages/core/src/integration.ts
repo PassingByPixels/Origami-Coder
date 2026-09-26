@@ -9,7 +9,6 @@ import {
   Effect,
   Exit,
   Layer,
-  Schedule,
   Schema,
   Scope,
   SynchronizedRef,
@@ -361,7 +360,29 @@ export const locationLayer = Layer.effect(
       yield* Effect.forEach(expired, close, { discard: true })
     })
 
-    yield* scrub().pipe(Effect.repeat(Schedule.spaced(scrubInterval)), Effect.forkIn(scope))
+    // origami_change (t-w2qlop): the scrub runs ONLY while an attempt is in the
+    // map, armed by the attempt that fills it. Forked at build it woke every
+    // engine every 30 s for as long as the location layer lived, to scan an
+    // empty map. The emptiness check and the flag clear are one synchronous
+    // step, so an attempt added in between always finds a loop or arms one.
+    let scrubbing = false
+    const scrubLoop = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(scrubInterval)
+        yield* scrub()
+        const done = yield* Effect.sync(() => {
+          if (SynchronizedRef.getUnsafe(attempts).size > 0) return false
+          scrubbing = false
+          return true
+        })
+        if (done) return
+      }
+    }).pipe(Effect.onInterrupt(() => Effect.sync(() => (scrubbing = false))))
+    const armScrub = Effect.suspend(() => {
+      if (scrubbing) return Effect.void
+      scrubbing = true
+      return scrubLoop.pipe(Effect.forkIn(scope), Effect.asVoid)
+    })
 
     return Service.of({
       transform: state.transform,
@@ -440,6 +461,7 @@ export const locationLayer = Layer.effect(
               time,
             }),
           )
+          yield* armScrub
           if (authorization.mode === "auto") {
             yield* authorization.callback.pipe(
               Effect.exit,

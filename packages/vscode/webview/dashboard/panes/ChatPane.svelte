@@ -3,6 +3,7 @@
   import { applyEngineStatus } from '../../shared/engineStatus';
   import PermissionBar from '../components/PermissionBar.svelte';
   import QuestionModal from '../components/QuestionModal.svelte';
+  import ReviewAsPlan from './ReviewAsPlan.svelte'; // t-xsufpe
   import InputBar from '../components/InputBar.svelte'; import NestReadOnlyGate from '../../chat/NestReadOnlyGate.svelte'; import NestAwayBlock from '../../chat/NestAwayBlock.svelte'; import { isAway } from '../../shared/nestWriteGate'; // t-sc093o: a chat another desk owns shows a read-only line in the composer's place; t-t7lfho: a chat this desk gave away ends its transcript with "Continued on <desk>"
   import type { VisionState } from '../components/visionPinState';
   import PlanPanel from '../components/PlanPanel.svelte';
@@ -22,11 +23,11 @@
   import { hasConversation } from './chatEmptyGate';
   import { anchorLabel } from './scrollAnchor';
   import { pinSessionCell } from './chatPin';
-  import { rearmOnGrowth, rearmOnScroll } from './chatScrollRearm'; import { noteSeen } from './chatScrollSeen'; import { followOnResize, watchResize, wheelUnsticks } from './chatScrollInput';
+  import { rearmOnGrowth, rearmOnScroll } from './chatScrollRearm'; import { noteSeen } from './chatScrollSeen'; import { followOnResize, watchResize, wheelUnsticks } from './chatScrollInput'; import { rearmOnContent, watchContent } from './chatScrollContent';
   import { applyToolCall, applyToolResult } from './chatToolMsg';
   import { replacesRestored, restoreLog, type RestoredEntry } from './chatRestore';
   import { applyHistory, changesFor, composerHint, loadAllFirst, pinnedFor, rewindAcross, shownMessages, subagentSource, type ChatHistory } from './chatHistory'; import ChatHistoryBar from '../components/ChatHistoryBar.svelte'; // t-ucnp7t lazy loading: older pages live beside `messages`, never in it
-  import { asStreamDropNotice, foldStreamDrop, lastUserText, settleStreamDrop } from './streamDropNotice'; import { asEngineNotice, foldEngineNotice, opensEngineCard, type EngineNotice } from './engineNotice'; // t-v5qn37: the chat's engine state, on the same card
+  import { asStreamDropNotice, foldStreamDrop, lastUserText, settleStreamDrop } from './streamDropNotice'; import { asEngineNotice, foldEngineNotice, opensEngineCard, type EngineNotice } from './engineNotice'; import { reportSidebarChat, watchSidebarFocus } from './sidebarFocus'; // t-v5qn37: the chat's engine state, on the same card; t-x3a89j: sidebar focus; t-xp0dzr: the chat the sidebar displays
   import { cardForChild, cappedStream, childId, makeDropLog, settleChild } from './subagentInbox';
   import { appendThinking } from './subagentThinking';
   import { forwardPaneDropToComposer } from './paneDrop';
@@ -409,6 +410,9 @@
   $effect(() => {
     if (!soloSessionId) vscode.postMessage({ type: 'chatGridMode', grid: chatLayout === 'grid' });
   });
+  // t-x3a89j: the sidebar's keyboard focus decides which grid tile is the chat you work in (sidebarFocus.ts).
+  $effect(() => (soloSessionId ? undefined : watchSidebarFocus(window, document, (focused) => vscode.postMessage({ type: 'chatFocus', focused }))));
+  $effect(() => (soloSessionId ? undefined : reportSidebarChat(activeSessionId, (id) => vscode.postMessage({ type: 'sidebarChat', sessionId: id })))); // t-xp0dzr: what this sidebar DISPLAYS is its on-screen chat (not the host's activeSessionId)
 
   // Broadcast active-session changes so DashboardPanel can stash the id in
   // workspaceState and restore it after a reload. Skip the initial null so we
@@ -1701,7 +1705,7 @@
               onblur={() => commitRenameTab(s)}
               aria-label="Rename chat" />
           {:else}
-            <span class="tab-label">#{s.number} {s.agentName}{s.title ? ': ' + s.title : ''}{#if s.peerName}<span class="peer-name"> · {s.peerName}</span>{/if}</span>
+            <span class="tab-label">#{s.number} {s.agentName}{s.title ? ': ' + s.title : ''}{#if s.peerName}<span class="peer-name">{` · ${s.peerName}`}</span>{/if}</span>
           {/if}
           <button class="tab-popout" onclick={(e) => { e.stopPropagation(); popOutSession(s.id); }} use:tip={'Open this chat in its own movable tab'}>⤢</button>
           {#if sessions.length > 1}
@@ -1856,7 +1860,7 @@
              the bar's own text; it claims the key for itself (ChatFind.svelte). -->
         <ChatFind sessionId={cellSession.id} history={cellSession.history} revealFolded={() => { const was = !!cellSession.focusMode; cellSession.focusMode = false; return was; }} />
         <div class="cell-messages" data-session-id={cellSession.id} bind:this={messagesEl}
-          use:watchResize={(el) => onMessagesResize(cellSession, el)} onwheel={(ev) => onMessagesWheel(cellSession, ev)}
+          use:watchResize={(el) => onMessagesResize(cellSession, el)} use:watchContent={(el) => { if (cellSession.stuckToBottom === false && rearmOnContent(el, false)) { cellSession.stuckToBottom = true; cellSession.unseenFromId = null; } }} onwheel={(ev) => onMessagesWheel(cellSession, ev)}
           onscroll={(ev) => onMessagesScroll(cellSession, ev)}>
           <!-- Mirrors the most-recent user message as a sticky header. Not
                gated on inFlight: it persists until a new user message replaces
@@ -1880,6 +1884,7 @@
             onRetryTurn={retryTurn}
             focusMode={cellSession.focusMode ?? false} passthrough={isPassthrough(cellSession.kind)}
           />
+          <ReviewAsPlan sessionId={cellSession.id} rows={cellSession.messages} inFlight={cellSession.inFlight} onSend={(text) => handleSendForSession(cellSession, text)} /> <!-- t-xsufpe -->
           {#if cellSession.revertStash && cellSession.revertStash.length > 0 && capabilityOn(cellSession.kind, 'rewind')}
             <!-- Staged-rewind banner: the working tree is restored; the dropped
                  turns are gone on the next message. Undo (unrevert) until then. -->
@@ -1917,7 +1922,7 @@
               target={cellSession.permission.target}
               action={cellSession.permission.action}
               command={cellSession.permission.command}
-              waiting={cellSession.permissionQueue.length}
+              waiting={cellSession.permissionQueue.length} keys={cellSession.id === activeSessionId && !activeAsk}
               onChoice={(optionId, reviseText, answerText) => handlePermissionChoiceForSession(cellSession, cellSession.permission!.toolCallId, optionId, reviseText, answerText)}
               onYolo={() => handleYoloForSession(cellSession)}
             />
@@ -1984,7 +1989,7 @@
     <!-- The sub-agents this chat has out, derived from the transcript's own
          `task` cards — no second wire to disagree with (SubagentDock.svelte). -->
     <SubagentDock
-      messages={subagentSource(dock)}
+      messages={subagentSource(dock)} sessionId={dock.id}
       dismissed={dock.subagentsDismissed ?? []}
       open={dock.subagentsOpen ?? false}
       chatTitle={`${dock.agentName} ${dock.number}${dock.title ? ': ' + dock.title : ''}`}

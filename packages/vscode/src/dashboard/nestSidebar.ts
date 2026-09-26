@@ -25,6 +25,8 @@ export interface NestSidebarHost {
   /** The panel's engine client and its chat opener (recallSession). Absent in a unit test. */
   engine?: () => NestEngine | undefined;
   open?: (sessionId: string) => void | Promise<void>;
+  /** t-xsrtml: the panel's own open-chat engine session ids (incl. parked). */
+  openSessionIds?: () => string[];
 }
 
 /** Where the index and Continue come from. `selfId` = this desk's device id:
@@ -90,7 +92,7 @@ export async function handleNestSidebarMessage(
   enabled: () => boolean = nestsEnabled,
 ): Promise<void> {
   lastHost = host;
-  if (host.engine) nestHub.attachView({ engine: host.engine, post: (x) => host.post(x), open: host.open ?? (() => undefined) });
+  if (host.engine) nestHub.attachView({ engine: host.engine, post: (x) => host.post(x), open: host.open ?? (() => undefined), openSessionIds: host.openSessionIds });
   if (m.type === 'requestNestIndex') {
     watchSetting();
     host.post(await nestIndexPayload(enabled()));

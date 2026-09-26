@@ -29,6 +29,7 @@
 import type { ModelMessage } from "ai"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
+import { SessionCachePolicy } from "./cache-policy"
 
 /** The env var the VS Code shell writes when the setting is OFF. Mirrored in
  *  `vscode/src/cacheWarming.ts`, with a drift guard that reads THIS file. */
@@ -107,6 +108,27 @@ export function ttlSeconds(model: Provider.Model, options: Record<string, unknow
   return ProviderTransform.openaiCacheSeconds(model)
 }
 
+/**
+ * origami_change (t-w2txb2): the LONGEST a prefix this request wrote can stay in
+ * the provider's cache, in seconds, or undefined where the provider publishes no
+ * window (local servers, DeepSeek, OpenRouter ... - cache-policy.ts). The upper
+ * end of each published range: Anthropic's TTL is exact (5 min, or 1 h on the
+ * opt-in form), OpenAI's is a range per family (transform.ts). The park guard
+ * (elastic/idle.ts) stops an engine only after this has passed, so it errs long.
+ */
+export function lifeSeconds(model: Provider.Model, options: Record<string, unknown>): number | undefined {
+  const window = SessionCachePolicy.windowSeconds({
+    providerID: model.providerID,
+    modelID: model.api.id,
+    hintTtlSeconds: ttlSeconds(model, options),
+  })
+  if (window === undefined) return undefined
+  const id = model.providerID.toLowerCase()
+  // An OpenAI id of no known family keeps the longest published end, 24 h.
+  if (id === "openai" || id === "azure") return ProviderTransform.openaiLongestCacheSeconds(model.api.id) ?? 86_400
+  return window
+}
+
 /** Milliseconds from the last real request to its warm. */
 export function warmDelayMs(ttl: number): number {
   return Math.round(ttl * WARM_AT * 1000)
@@ -164,9 +186,21 @@ type Entry = {
   /** Epoch ms of the last warm the provider ACCEPTED. Undefined until one
    *  succeeds - a warm that was armed, or that failed, refreshed nothing. */
   warmedAt: number | undefined
+  /** origami_change (t-w2qlop): epoch ms the armed warm fires. Set with `timer`. */
+  dueAt?: number
+  /** origami_change (t-w2txb2): epoch ms of this session's last real request, and
+   *  the longest life of the prefix it wrote (`lifeSeconds`; null = no published
+   *  window). Set by every real request, warming on or off. */
+  lastAt?: number
+  life?: number | null
+  /** origami_change (t-z6ytkw): the armed warm's whole stream input, for a park to
+   *  hand over (elastic/park-warm.ts). Set and cleared with `timer`. */
+  recipe?: () => unknown
 }
 
 const sessions = new Map<string, Entry>()
+/** origami_change (t-w2qlop): epoch ms of the last real request, any session. */
+let lastRequest: number | undefined
 
 const entry = (sessionID: string): Entry => {
   const found = sessions.get(sessionID)
@@ -180,6 +214,8 @@ const clearTimer = (e: Entry): void => {
   if (e.timer === undefined) return
   clock.clearTimeout(e.timer)
   e.timer = undefined
+  e.dueAt = undefined
+  e.recipe = undefined
 }
 
 export type ArmInput = {
@@ -196,6 +232,9 @@ export type ArmInput = {
    *  caller drains its stream instead of handing it to the session processor. */
   readonly log?: (message: string, fields: Record<string, unknown>) => void
   readonly env?: Record<string, string | undefined>
+  /** origami_change (t-z6ytkw): the stream input this warm re-sends (all but the
+   *  trailing message), for a park to persist. A woken engine sends it again. */
+  readonly recipe?: () => unknown
 }
 
 /**
@@ -205,7 +244,10 @@ export type ArmInput = {
  * request" fall out of the design rather than needing its own rule.
  */
 export function armed(input: ArmInput): void {
+  lastRequest = Date.now()
   const e = entry(input.sessionID)
+  e.lastAt = lastRequest
+  e.life = lifeSeconds(input.model, input.options) ?? null
   clearTimer(e)
   // A real request rebuilt the prefix, so whatever a compaction threw away is
   // back and the session is warmable again.
@@ -221,6 +263,8 @@ export function armed(input: ArmInput): void {
     const current = sessions.get(input.sessionID)
     if (!current || current.timer === undefined) return
     current.timer = undefined
+    current.dueAt = undefined
+    current.recipe = undefined
     // Re-checked AT FIRE TIME, not only when armed: a compaction between the
     // two would otherwise send a warm against a prefix that no longer exists.
     if (current.blocked) return
@@ -256,6 +300,8 @@ export function armed(input: ArmInput): void {
   }
 
   e.timer = clock.setTimeout(fire, delay)
+  e.dueAt = Date.now() + delay
+  e.recipe = input.recipe
 }
 
 /**
@@ -268,10 +314,19 @@ export function compacted(sessionID: string): void {
   e.blocked = true
 }
 
+/** The chat closed (t-w2u5vf): no warm for it. A pending timer holds the whole
+ *  message array, so it is cancelled, not left to fire. */
+export function evict(sessionID: string): void {
+  const e = sessions.get(sessionID)
+  if (e) clearTimer(e)
+  sessions.delete(sessionID)
+}
+
 /** Test seam: module state is process-wide, so a suite needs a way back to zero. */
 export function reset(): void {
   for (const e of sessions.values()) clearTimer(e)
   sessions.clear()
+  lastRequest = undefined
   clock = realClock
 }
 
@@ -279,6 +334,70 @@ export function reset(): void {
  *  the request layer so a step-finish can say the gap before it was warmed. */
 export function warmedAt(sessionID: string): number | undefined {
   return sessions.get(sessionID)?.warmedAt
+}
+
+/** origami_change (t-w2qlop): the sessions with a warm armed, and the earliest
+ *  moment one fires. Read by the elastic idle report and the trim guard: a
+ *  trim just before a warm pulls every page straight back in. */
+export function pendingSessions(): string[] {
+  return [...sessions.entries()].filter(([, e]) => e.timer !== undefined).map(([id]) => id)
+}
+
+export function nextDueAt(): number | undefined {
+  let due: number | undefined
+  for (const e of sessions.values()) {
+    if (e.timer === undefined || e.dueAt === undefined) continue
+    if (due === undefined || e.dueAt < due) due = e.dueAt
+  }
+  return due
+}
+
+/** origami_change (t-w2qlop): when the last real request went out, any session. */
+export function lastRequestAt(): number | undefined {
+  return lastRequest
+}
+
+/**
+ * origami_change (t-w2txb2): the park guard's cache facts for this whole process.
+ * `coldAt` = the epoch ms after which no prefix a session here wrote or warmed
+ * can still be cached (each session: max(last real request, last accepted warm)
+ * + its longest life). `untimed` = some session's provider publishes no window,
+ * so no time makes its stop cache-neutral. Both absent when no real request went
+ * out from this process.
+ */
+export function cacheLife(): { coldAt?: number; untimed?: true } {
+  let coldAt: number | undefined
+  let untimed = false
+  for (const e of sessions.values()) {
+    if (e.lastAt === undefined) continue
+    if (e.life === null || e.life === undefined) {
+      untimed = true
+      continue
+    }
+    const at = Math.max(e.lastAt, e.warmedAt ?? 0) + e.life * 1000
+    if (coldAt === undefined || at > coldAt) coldAt = at
+  }
+  return { ...(coldAt === undefined ? {} : { coldAt }), ...(untimed ? { untimed: true as const } : {}) }
+}
+
+/** origami_change (t-z6ytkw): the armed warms a park hands over: when each is due
+ *  and its stream input. Only warms armed with a recipe. */
+export function pendingWarms(): { sessionID: string; dueAt: number; recipe: () => unknown }[] {
+  const out: { sessionID: string; dueAt: number; recipe: () => unknown }[] = []
+  for (const [sessionID, e] of sessions)
+    if (e.timer !== undefined && e.dueAt !== undefined && e.recipe) out.push({ sessionID, dueAt: e.dueAt, recipe: e.recipe })
+  return out
+}
+
+/** origami_change (t-z6ytkw): did this process send a real request for the session?
+ *  A woken engine that did has its own prefix and its own warm; the handed-over one is stale. */
+export function requested(sessionID: string): boolean {
+  return sessions.get(sessionID)?.lastAt !== undefined
+}
+
+/** origami_change (t-z6ytkw): the sessions this process sent a real request for. */
+export function requestedSessions(): string[] {
+  return [...sessions.entries()].filter(([, e]) => e.lastAt !== undefined).map(([id]) => id)
 }
 
 /** Whether a warm is pending. For tests and the debug log only. */

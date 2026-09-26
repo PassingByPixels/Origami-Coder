@@ -36,9 +36,14 @@ export const COLLAB_ORDER_KEY = 'origami.collabOrder';
 export interface CollabManagerHost extends BotsManagerHost {
   post(msg: Record<string, unknown>): void;
   cwd(): string;
-  /** The client the `collab_*` ext-methods ride. Collabs are WORKSPACE-scoped
-   *  (keyed by cwd), not session-scoped, so any live client answers for them. */
+  /** The client the `collab_*` ext-methods ride. Collabs are WORKSPACE-scoped (keyed by cwd), but
+   *  the runner's live state (statuses, hop budget) is in ONE process: t-w2qv3o, the host engine. */
   collabClient(): CollabSource | undefined;
+  /** t-w2qv3o: the LIST is a store read, so any awake engine answers it (the sidebar sends it on
+   *  every mount; it must not start one). Absent = collabClient. */
+  collabListClient?(): CollabSource | undefined;
+  /** t-w2qv3o: what the 5 s watch reads (collabWatch.ts). Absent = collabClient. */
+  collabWatchClient?(): CollabSource | undefined;
   collabOrder(): string[];
   saveCollabOrder(order: string[]): void;
   /** Open a collab's stream in its own editor tab (ensures the shared host,
@@ -70,7 +75,7 @@ export const COLLAB_MESSAGE_TYPES = new Set([
 /** rankEntries owns the never-lose-a-collab rule reorderSessions relies on: no saved order (or one
  *  gone wholly stale) returns null, leaving the engine's own order untouched. */
 async function rankedCollabList(host: CollabManagerHost): Promise<CollabListPayload> {
-  const payload = await collabList(host.collabClient(), host.cwd());
+  const payload = await collabList(host.collabListClient?.() ?? host.collabClient(), host.cwd());
   // Every list is also the host WATCH's input (collabWatch.ts): an archived or deleted room leaves
   // the watched set and a new one joins it, with no wire call of its own.
   watchCollabs(host, payload.collabs.filter((c) => !c.archivedAt).map((c) => c.id));

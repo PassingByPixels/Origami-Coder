@@ -1,4 +1,3 @@
-import { AgentBroker } from "@/origami/agent-broker"
 import { AgentPost } from "@/session/agent-post"
 import { peerMessageId, peerMessageMetadata } from "@/session/peer-message"
 import { FlockEnvelopeText } from "./envelope-text"
@@ -73,45 +72,43 @@ export async function deliver(
   if ((thread.deliveredTo ?? []).includes(sessionID)) {
     return { ok: false, reason: `thread ${thread.id} is already in session ${sessionID}` }
   }
-  const entry = await (deps.locate ?? AgentPost.locateSession)(sessionID)
-  if (!entry) {
-    return { ok: false, reason: `session ${sessionID} is not attached to an open chat, so nobody would read it` }
-  }
-  if (!AgentBroker.isLoopback(entry.httpBase)) {
-    return { ok: false, reason: `session ${sessionID} is not on a loopback address` }
-  }
-
   const contact = contactOf(store, thread.contact)
   const text = textFor(store, thread, input.askedFrom)
   // Derived, not random, for the reason `peer-message.ts` gives: the id has to be
   // recognisable as the SAME message when one thread is delivered twice.
   const id = peerMessageId({ from: `flock:${thread.contact}`, to: sessionID, text })
-  const posted = await (deps.post ?? AgentPost.postPrompt)({
-    url: AgentPost.promptUrl(entry, sessionID),
-    body: JSON.stringify({
-      parts: [
-        {
-          type: "text",
-          text,
-          // The peer rider is what an existing client already badges from; the
-          // `flock` field beside it says WHICH contact and which thread. The shape
-          // is extended rather than replaced, so an older client still renders it.
-          metadata: peerMessageMetadata({
-            from: contact.name,
-            replyTo: thread.contact,
-            id,
-            flock: {
-              contact: contact.name,
-              thread: thread.id,
-              kind: FlockEnvelopeText.kindOf(thread),
-              ...(contact.icon ? { icon: contact.icon } : {}),
-            },
-          }),
-        },
-      ],
-    }),
+  const body = JSON.stringify({
+    parts: [
+      {
+        type: "text",
+        text,
+        // The peer rider is what an existing client already badges from; the
+        // `flock` field beside it says WHICH contact and which thread. The shape
+        // is extended rather than replaced, so an older client still renders it.
+        metadata: peerMessageMetadata({
+          from: contact.name,
+          replyTo: thread.contact,
+          id,
+          flock: {
+            contact: contact.name,
+            thread: thread.id,
+            kind: FlockEnvelopeText.kindOf(thread),
+            ...(contact.icon ? { icon: contact.icon } : {}),
+          },
+        }),
+      },
+    ],
   })
-  if (!posted) return { ok: false, reason: `session ${sessionID} did not accept the message` }
+  // t-w2txb2: a live engine first; a PARKED chat keeps it in its mailbox.
+  const sent = await AgentPost.send({ sessionID, messageId: id, body }, deps)
+  if (!sent.ok) {
+    if (sent.reason === "unattached") {
+      return { ok: false, reason: `session ${sessionID} is not attached to an open chat, so nobody would read it` }
+    }
+    if (sent.reason === "not-loopback")
+      return { ok: false, reason: `session ${sessionID} is not on a loopback address` }
+    return { ok: false, reason: `session ${sessionID} did not accept the message` }
+  }
   store.noteDelivered(thread.id, sessionID)
   return { ok: true, sessionID }
 }

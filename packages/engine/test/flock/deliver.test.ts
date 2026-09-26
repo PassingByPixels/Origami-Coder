@@ -64,7 +64,7 @@ function asked(
   alice.openOut({
     id: "flq_1",
     contact,
-    question: "how does the MOT check work?",
+    question: "how does the tax refund work?",
     ...(origin.sessionID ? { origin } : {}),
     ...(over.followUpOf ? { followUpOf: over.followUpOf } : {}),
   })
@@ -117,7 +117,7 @@ describe("the automatic landing", () => {
     expect(text).toContain('<flock_message from="Macbook" thread="flq_1" kind="reply">')
     expect(text).toContain("section 4 covers it")
     expect(text).toContain("This message is from Macbook's Origami through your Flock, not from the user.")
-    expect(text).toContain('It is Macbook\'s reply to the question you sent from this chat: "how does the MOT check work?"')
+    expect(text).toContain('It is Macbook\'s reply to the question you sent from this chat: "how does the tax refund work?"')
   })
 
   test("the part carries the peer rider AND the flock rider, so an old client still badges it", async () => {
@@ -282,7 +282,7 @@ describe("deliverTo into a chat that is not the origin", () => {
     const outcome = await FlockDeliver.deliverTo({ store: alice, thread: "flq_1", sessionID: "ses_other" }, deps)
     expect(outcome.ok).toBe(true)
     const text = JSON.parse(posts[0]!.body).parts[0].text as string
-    expect(text).toContain('reply to the question sent from chat 3: "how does the MOT check work?"')
+    expect(text).toContain('reply to the question sent from chat 3: "how does the tax refund work?"')
     expect(text).not.toContain("you sent from this chat")
   })
 

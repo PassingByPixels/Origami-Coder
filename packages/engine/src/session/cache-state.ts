@@ -203,6 +203,13 @@ export function modelChanged(sessionID: string): void {
   goCold(sessionID, "model")
 }
 
+/** The chat closed (t-w2u5vf): its badge has no reader left. */
+export function evict(sessionID: string): void {
+  const e = sessions.get(sessionID)
+  if (e) clearExpiry(e)
+  sessions.delete(sessionID)
+}
+
 /** Test seam: module state is process-wide, so a suite needs a way back to zero. */
 export function reset(): void {
   for (const e of sessions.values()) clearExpiry(e)

@@ -293,14 +293,17 @@ export const StepFinishPart = Schema.Struct({
   cache: Schema.optional(
     Schema.Struct({
       /** Present only on a MISS, and then exactly one: the precedence is fixed
-       *  at cold > compaction > model > system > tools > history > idle > small
-       *  > provider. `provider` is the residue - the prefix was byte-identical,
-       *  inside the window, on the same model, and the provider missed anyway. */
+       *  at cold > compaction > model > stopped > system > tools > history >
+       *  idle > small > provider. `provider` is the residue - the prefix was
+       *  byte-identical, inside the window, on the same model, and the provider
+       *  missed anyway. `stopped` is the first request after an engine restart
+       *  whose prefix changed against the last one persisted (see `stopped`). */
       cause: Schema.optional(
         Schema.Literals([
           "cold",
           "model",
           "compaction",
+          "stopped",
           "idle",
           "system",
           "tools",
@@ -329,6 +332,11 @@ export const StepFinishPart = Schema.Struct({
       ttlSeconds: Schema.optional(Schema.Finite),
       /** A cache warm succeeded inside the gap before this request. */
       warmed: Schema.optional(Schema.Boolean),
+      /** Only on the first request after an engine restart: the halves of the
+       *  prefix that changed against the last request persisted before it.
+       *  ABSENT when nothing changed or the previous request was in the same
+       *  process. */
+      stopped: Schema.optional(Schema.Array(Schema.Literals(["system", "tools", "history"]))),
     }),
   ),
   /**

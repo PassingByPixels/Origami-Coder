@@ -301,12 +301,40 @@ export namespace LLMRequest {
     metadata: request.metadata,
   })
 
+  // t-w2r1kf: the constructor parses every field it is given again, and makes a
+  // new Message for every message. `compile` updates each request twice (option
+  // merge, cache policy), so a big chat's window was parsed three times per step
+  // (20-30 ms each). An element of `system`, `messages` or `tools` that is
+  // already in `request` was validated when `request` was built, so it is kept
+  // as it is; only new elements and the other fields go through the constructor.
+  const ARRAY_FIELDS = ["system", "messages", "tools"] as const
+
   export const update = (request: LLMRequest, patch: Partial<Input>) => {
     if (Object.keys(patch).length === 0) return request
-    return new LLMRequest({
+    const merged: Input = {
       ...input(request),
       ...patch,
       model: patch.model ?? request.model,
+    }
+    if (!(request instanceof LLMRequest)) return new LLMRequest(merged)
+    const plans = ARRAY_FIELDS.flatMap((field) => {
+      const next: unknown = merged[field]
+      if (!Array.isArray(next)) return []
+      const own = new Set<unknown>(request[field])
+      const fresh = next.filter((item) => !own.has(item))
+      return [{ field, next, own, fresh }]
     })
+    const built = new LLMRequest({
+      ...merged,
+      ...Object.fromEntries(plans.map((plan) => [plan.field, plan.fresh])),
+    })
+    const target = built as { -readonly [K in (typeof ARRAY_FIELDS)[number]]: ReadonlyArray<unknown> }
+    for (const plan of plans) {
+      const parsed = built[plan.field]
+      let i = 0
+      target[plan.field] =
+        plan.fresh.length === 0 ? plan.next : plan.next.map((item) => (plan.own.has(item) ? item : parsed[i++]))
+    }
+    return built
   }
 }

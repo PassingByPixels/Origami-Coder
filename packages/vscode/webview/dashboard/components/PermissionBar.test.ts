@@ -35,6 +35,15 @@ describe('PermissionBar — command block + target de-dupe', () => {
     expect(container.querySelector('.perm-target')?.textContent).toBe('C:/work/repo');
     expect(container.querySelector('pre.perm-command')?.textContent).toBe('npm test');
   });
+
+  // t-vikozs: the target row is `direction: rtl` (ellipsis at the front). Without an
+  // LTR isolate the bidi algorithm moves a POSIX path's leading "/" to the end.
+  it('a POSIX target sits in an LTR isolate, so its leading slash stays first', () => {
+    const { container } = render(PermissionBar, {
+      props: { title: 'bash', options: OPTS, target: '/home/u/repo', command: 'npm test', onChoice: () => {} },
+    });
+    expect(container.querySelector('.perm-target bdi[dir="ltr"]')?.textContent).toBe('/home/u/repo');
+  });
 });
 
 // --- M4.4. Two controls land on this bar, and each is gated on WHICH KIND of

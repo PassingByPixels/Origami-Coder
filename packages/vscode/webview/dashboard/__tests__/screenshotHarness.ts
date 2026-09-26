@@ -30,25 +30,25 @@ import type { MailRow } from '../panes/flockMail';
 // threads cover the three row kinds the mail redesign has to draw: a
 // question waiting on a decision, an answered reply, and a declined one.
 
-const CHRIS = 'chris@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
+const ROBIN = 'robin@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
 const DANA = 'dana@YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5MDE';
 const REN = 'ren@MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6QUJD';
-const PASSING = 'passing@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5';
+const JANE = 'jane@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5';
 
 const STATE = {
   transport: 'relay' as const,
   identity: {
-    handle: PASSING,
-    handleShort: 'passing@QUJDREVG',
-    name: 'passing',
+    handle: JANE,
+    handleShort: 'jane@QUJDREVG',
+    name: 'jane',
     icon: 'fox',
-    fingerprint: PASSING.split('@')[1],
+    fingerprint: JANE.split('@')[1],
     signPublicKey: 'sign-pub',
     boxPublicKey: 'box-pub',
   },
   friends: [
     {
-      handle: CHRIS, handleShort: 'chris@Zm9vYmFy', name: 'chris', icon: 'wolf',
+      handle: ROBIN, handleShort: 'robin@Zm9vYmFy', name: 'robin', icon: 'wolf',
       addedAt: '2026-08-30T11:00:00.000Z',
       // An override on purpose: the Edit popover's whole job is drawing what
       // ONE contact may see against the desk default, so a contact who follows
@@ -70,21 +70,21 @@ const STATE = {
     autoAnswer: false,
   },
   frontDeskPath: 'C:\\Users\\dev\\.config\\origami\\origami.json',
-  specialties: ['WordPress', 'UK MOT rules'],
+  specialties: ['WordPress', 'UK tax rules'],
   availability: 'answers on approval, up to 5000 tokens/day',
-  answers: [{ at: '2026-09-02T08:15:00.000Z', from: CHRIS, question: 'how do I read a VIN?', tokens: 830, ok: true }],
+  answers: [{ at: '2026-09-02T08:15:00.000Z', from: ROBIN, question: 'how do I read a payslip?', tokens: 830, ok: true }],
 };
 
 const THREADS: MailRow[] = [
   {
     id: 'thr_pending', contact: DANA, direction: 'in',
-    question: { text: 'which MOT rules changed in 2026?', sentAt: '2026-09-05T08:00:00.000Z' },
+    question: { text: 'which tax rules changed in 2026?', sentAt: '2026-09-05T08:00:00.000Z' },
     state: 'pending', unread: true, name: 'dana', icon: 'crane', handleShort: 'dana@YWJjZGVm…',
   },
   {
-    id: 'thr_answered', contact: CHRIS, direction: 'out',
-    question: { text: 'what does the MOT check on the underside?', sentAt: '2026-09-05T07:00:00.000Z', tokens: 120 },
-    state: 'answered', unread: true, name: 'chris', icon: 'crane', handleShort: 'chris@MDEyMzQ1…',
+    id: 'thr_answered', contact: ROBIN, direction: 'out',
+    question: { text: 'what does the tax form cover for freelancers?', sentAt: '2026-09-05T07:00:00.000Z', tokens: 120 },
+    state: 'answered', unread: true, name: 'robin', icon: 'crane', handleShort: 'robin@MDEyMzQ1…',
     reply: { text: 'section 4 covers it — corrosion, fuel and exhaust', at: '2026-09-05T07:05:00.000Z', tokens: 120, signatureOk: true },
   },
   {
@@ -116,27 +116,27 @@ const at = (day: number, hour: number) => `2026-09-0${day}T0${hour}:00:00.000Z`;
 
 const MESSENGER_THREADS: MailRow[] = [
   {
-    id: 'm1', contact: CHRIS, direction: 'out',
-    question: { text: 'what does the MOT check on the underside?', sentAt: at(3, 9), tokens: 120 },
-    state: 'answered', unread: false, name: 'chris', icon: 'wolf', handleShort: 'chris@Zm9vYmFy…',
+    id: 'm1', contact: ROBIN, direction: 'out',
+    question: { text: 'what does the tax form cover for freelancers?', sentAt: at(3, 9), tokens: 120 },
+    state: 'answered', unread: false, name: 'robin', icon: 'wolf', handleShort: 'robin@Zm9vYmFy…',
     origin: { sessionID: 'ses_1', title: 'Cortex-0156' },
-    reply: { text: 'section 4 covers it \u2014 corrosion, fuel and exhaust, and the whole of the braking system underneath', at: at(3, 9), tokens: 120, signatureOk: true },
+    reply: { text: 'section 4 covers it \u2014 invoices, expenses and mileage, and the whole of the pension relief section', at: at(3, 9), tokens: 120, signatureOk: true },
   },
   {
-    id: 'm2', contact: CHRIS, direction: 'in',
-    question: { text: 'do you still have the 2019 service schedule?', sentAt: at(4, 8) },
-    state: 'answered', unread: false, name: 'chris', icon: 'wolf', handleShort: 'chris@Zm9vYmFy…',
-    reply: { text: 'yes — it is in the wiki under vehicles/servicing', at: at(4, 8), tokens: 60, signatureOk: true },
+    id: 'm2', contact: ROBIN, direction: 'in',
+    question: { text: 'do you still have the 2019 tax return?', sentAt: at(4, 8) },
+    state: 'answered', unread: false, name: 'robin', icon: 'wolf', handleShort: 'robin@Zm9vYmFy…',
+    reply: { text: 'yes — it is in the wiki under finance/returns', at: at(4, 8), tokens: 60, signatureOk: true },
   },
   {
-    id: 'm3', contact: CHRIS, direction: 'out',
-    question: { text: 'and the 2026 rule change — does it touch the emissions test?', sentAt: at(5, 7), tokens: 90 },
-    state: 'answered', unread: true, name: 'chris', icon: 'wolf', handleShort: 'chris@Zm9vYmFy…',
-    reply: { text: 'it does: the particulate limit dropped and a visible-smoke fail is now automatic', at: at(5, 7), tokens: 90, signatureOk: true },
+    id: 'm3', contact: ROBIN, direction: 'out',
+    question: { text: 'and the 2026 rule change — does it touch the expenses rules?', sentAt: at(5, 7), tokens: 90 },
+    state: 'answered', unread: true, name: 'robin', icon: 'wolf', handleShort: 'robin@Zm9vYmFy…',
+    reply: { text: 'it does: the mileage rate dropped and a late-filing fine is now automatic', at: at(5, 7), tokens: 90, signatureOk: true },
   },
   {
     id: 'm4', contact: DANA, direction: 'in',
-    question: { text: 'which MOT rules changed in 2026?', sentAt: at(5, 8) },
+    question: { text: 'which tax rules changed in 2026?', sentAt: at(5, 8) },
     state: 'pending', unread: true, name: 'dana', icon: 'crane', handleShort: 'dana@YWJjZGVm…',
   },
   {
@@ -147,9 +147,9 @@ const MESSENGER_THREADS: MailRow[] = [
   },
   {
     id: 'm6', contact: REN, direction: 'in',
-    question: { text: 'is the relay host still on the Helsinki box?', sentAt: at(5, 9) },
+    question: { text: 'is the relay still up?', sentAt: at(5, 9) },
     state: 'answering', unread: false, name: 'ren', icon: 'owl', handleShort: 'ren@MDEyMzQ1…',
-    reply: { text: 'yes, relay.origamilabs.nl, and it has been up since the 26th', at: at(5, 9), tokens: 44, signatureOk: true },
+    reply: { text: 'yes, it has been up since the 26th', at: at(5, 9), tokens: 44, signatureOk: true },
   },
   {
     id: 'm7', contact: REN, direction: 'out',
@@ -275,12 +275,12 @@ function installFixtureHost(scene: string, long: boolean, remoteState: string): 
   // three-row fixture the tray and sidebar checks were written against.
   const messenger = scene === 'flock-messenger';
   const state = messenger ? MESSENGER_STATE : STATE;
-  // `?long=1`: chris's three turns become thirty — the scroll-container /
+  // `?long=1`: robin's three turns become thirty — the scroll-container /
   // pin-to-bottom proof. Dana's and ren's rows are untouched, so the rail and
   // "All mail" trays still show three contacts, not one.
   const threads = messenger
     ? long
-      ? [...MESSENGER_THREADS.filter((row) => row.contact !== CHRIS), ...longThread(CHRIS, 'chris', 'wolf', 'chris@Zm9vYmFy…')]
+      ? [...MESSENGER_THREADS.filter((row) => row.contact !== ROBIN), ...longThread(ROBIN, 'robin', 'wolf', 'robin@Zm9vYmFy…')]
       : MESSENGER_THREADS
     : THREADS;
   const respond = (msg: Record<string, unknown>) => queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', { data: msg })));
@@ -292,7 +292,7 @@ function installFixtureHost(scene: string, long: boolean, remoteState: string): 
         case 'flockScopeOptions':
           return respond({
             type: 'flockScopeOptions',
-            repos: [{ root: 'C:/Repos/work/api', name: 'work/api' }, { root: 'C:/Repos/Projects/learning-apps', name: 'Learning apps' }],
+            repos: [{ root: 'C:/Repos/work/api', name: 'work/api' }, { root: 'C:/Repos/Projects/demo-app', name: 'Demo app' }],
             wiki: ['wiki/pages', 'wiki/drafts'],
           });
         case 'requestModels': return respond({ type: 'modelOptions', options: [] });

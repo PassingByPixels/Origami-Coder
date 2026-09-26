@@ -50,6 +50,10 @@ export type RequestInput = {
   /** Free-form body fields overlaid on the protocol body (OpenAI-compatible extras). */
   readonly http?: { readonly body: Record<string, unknown> }
   readonly headers?: Record<string, string>
+  /** Tool definitions the caller has already built (the native runtime's own
+   *  tools), declared after `tools`. Passed here so the request is constructed
+   *  once: a second construction to add them re-validates every message. */
+  readonly definitions?: readonly ToolDefinition[]
 }
 
 const providerMetadata = (value: unknown): ProviderMetadata | undefined => {
@@ -314,7 +318,7 @@ export const request = (input: RequestInput) => {
     model: model(input, input.headers),
     system: [...(input.system ?? []).map(SystemPart.make), ...converted.system],
     messages: converted.messages,
-    tools: tools(input.tools),
+    tools: [...tools(input.tools), ...(input.definitions ?? [])],
     toolChoice: input.toolChoice,
     generation: generation(input),
     // The engine already placed every breakpoint above; AUTO would add a third

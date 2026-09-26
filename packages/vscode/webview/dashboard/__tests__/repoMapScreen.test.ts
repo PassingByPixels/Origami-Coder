@@ -7,7 +7,7 @@
 //
 // jsdom has NO layout engine, so nothing here can claim a rail is 214px wide or
 // that folding it gave the map the space. Those are real-browser facts; the
-// gesture itself needs Passing's eyes. What jsdom CAN prove is that the rail
+// gesture itself needs the owner's eyes. What jsdom CAN prove is that the rail
 // leaves the DOM, that the box really disappears, and that the message is posted.
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';

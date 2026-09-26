@@ -27,6 +27,9 @@ import { ACPNests } from "./nests" // origami_change (t-s9jgzh): Nests L4a
 import { ACPNestArtifacts } from "./nest-artifacts" // origami_change (t-sj39jx)
 import { ACPHistory } from "./history" // origami_change (t-ucnjwp)
 import { ACPHistoryStore } from "./history-store" // origami_change (t-ucnjwp)
+import { ACPElastic } from "./elastic" // origami_change (t-w2qlop)
+import { ElasticSpare } from "@/elastic/spare" // origami_change (t-w2u2ki): a session call adopts a warm spare first
+import { ElasticWarm } from "@/elastic/warm" // origami_change (t-woacbl): a session call warms its folder for the first prompt
 
 export function init({ sdk: _sdk }: { sdk: OrigamiClient }) {
   return {
@@ -51,6 +54,33 @@ export function init({ sdk: _sdk }: { sdk: OrigamiClient }) {
   }
 }
 
+/**
+ * origami_change (t-xnvp72): ONE `adoption timings` line per adopted warm spare,
+ * written by the session call that adopted it once that call has answered (or
+ * failed). `adoptMs` = the call's wait for the held work; `sessionMs` = the
+ * session call itself; `readyMs` = adoption start to answer;
+ * `mainThreadMaxBlockMs` = the longest the main thread did not run meanwhile.
+ * The instance boots of the same window log `boot step` / `boot timings`
+ * (project/instance-store.ts). Every later call gets the same report: no line.
+ */
+function logAdoption(report: ElasticSpare.AdoptionReport | undefined, call: string, sessionStarted: number): void {
+  if (!report || report.logged) return
+  report.logged = true
+  const now = performance.now()
+  const fields = {
+    call,
+    readyMs: Math.round(now - report.startedAt),
+    adoptMs: Math.round(sessionStarted - report.startedAt),
+    disposeMs: report.disposeMs ?? "unfinished",
+    disposeLimitHit: report.disposeLimitHit ?? false,
+    peersMs: report.peersMs ?? "unfinished",
+    adoptLimitHit: report.limitHit ?? false,
+    sessionMs: Math.round(now - sessionStarted),
+    mainThreadMaxBlockMs: report.lag.stop(),
+  }
+  AppRuntime.runPromise(Effect.logInfo("adoption timings", fields)).catch(() => undefined)
+}
+
 export class Agent implements ACPAgent {
   constructor(private readonly service: ACPService.Interface) {}
 
@@ -62,28 +92,64 @@ export class Agent implements ACPAgent {
     return run(this.service.authenticate(params))
   }
 
-  newSession(params: NewSessionRequest) {
-    return run(this.service.newSession(params))
+  async newSession(params: NewSessionRequest) {
+    const adoption = await ElasticSpare.adopt()
+    // origami_change (t-xnvp72): a new chat warms WHILE its session starts (instance
+    // boot, MCP connects), not after the answer: the first message waits for less.
+    ElasticWarm.atOpen(params.cwd)
+    const started = performance.now()
+    try {
+      return await run(this.service.newSession(params))
+    } finally {
+      logAdoption(adoption, "session/new", started)
+    }
   }
 
-  loadSession(params: LoadSessionRequest) {
-    return run(this.service.loadSession(params))
+  async loadSession(params: LoadSessionRequest) {
+    const adoption = await ElasticSpare.adopt()
+    const started = performance.now()
+    try {
+      const result = await run(this.service.loadSession(params))
+      ElasticWarm.afterSession(params.cwd)
+      return result
+    } finally {
+      logAdoption(adoption, "session/load", started)
+    }
   }
 
   listSessions(params: ListSessionsRequest) {
+    // origami_change (t-y4x518): not before a running adoption has dropped the old instances.
+    const adopting = ElasticSpare.inFlight()
+    if (adopting) return adopting.then(() => run(this.service.listSessions(params)))
     return run(this.service.listSessions(params))
   }
 
-  resumeSession(params: ResumeSessionRequest) {
-    return run(this.service.resumeSession(params))
+  async resumeSession(params: ResumeSessionRequest) {
+    const adoption = await ElasticSpare.adopt()
+    const started = performance.now()
+    try {
+      const result = await run(this.service.resumeSession(params))
+      ElasticWarm.afterSession(params.cwd)
+      return result
+    } finally {
+      logAdoption(adoption, "session/resume", started)
+    }
   }
 
   closeSession(params: CloseSessionRequest) {
     return run(this.service.closeSession(params))
   }
 
-  unstable_forkSession(params: ForkSessionRequest) {
-    return run(this.service.forkSession(params))
+  async unstable_forkSession(params: ForkSessionRequest) {
+    const adoption = await ElasticSpare.adopt()
+    const started = performance.now()
+    try {
+      const result = await run(this.service.forkSession(params))
+      ElasticWarm.afterSession(params.cwd)
+      return result
+    } finally {
+      logAdoption(adoption, "session/fork", started)
+    }
   }
 
   setSessionConfigOption(params: SetSessionConfigOptionRequest) {
@@ -111,12 +177,20 @@ export class Agent implements ACPAgent {
    *  wire, so both `run_steps` and `_run_steps` must land on the same handler. */
   extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const name = method.startsWith("_") ? method.slice(1) : method
+    // origami_change (t-y4x518): a chat's call that arrives while its spare is being
+    // adopted runs after the adoption, so it boots the chat's instance (once) against
+    // the disk as it is now, not one the adoption disposes. The elastic methods answer
+    // from process state and never wait.
+    const adopting = name.startsWith("elastic_") ? undefined : ElasticSpare.inFlight()
+    if (adopting) return adopting.then(() => this.extMethod(method, params))
     // origami_change (t-s9jgzh): the six nest_* methods, gated on the host's
     // `enabled` flag before anything runs.
     const nest = ACPNests.dispatch(name, params, this.service)
     if (nest) return run(nest) as Promise<Record<string, unknown>>
     const nestArtifact = ACPNestArtifacts.dispatch(name, params) // origami_change (t-sj39jx): artifacts in the nest
     if (nestArtifact) return run(nestArtifact) as Promise<Record<string, unknown>>
+    const elastic = ACPElastic.dispatch(name, params) // origami_change (t-w2qlop): class, trim, idle report
+    if (elastic) return elastic
     switch (name) {
       case "run_steps": {
         const sessionId = typeof params?.["sessionId"] === "string" ? (params["sessionId"] as string) : undefined

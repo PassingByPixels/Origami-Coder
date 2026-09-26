@@ -55,12 +55,12 @@ describe("the frame", () => {
       keys: aliceKeys,
       role: FlockEnvelope.ROLE_ASK,
       seq: 1,
-      payload: { type: "flock/ask", question: "what does the MOT check?" },
+      payload: { type: "flock/ask", question: "what does the tax form cover?" },
     })
     const opened = FlockEnvelope.open({ keys: bobKeys, frame })
     expect(opened.role).toBe(FlockEnvelope.ROLE_ASK)
     expect(opened.seq).toBe(1)
-    expect(opened.payload).toEqual({ type: "flock/ask", question: "what does the MOT check?" })
+    expect(opened.payload).toEqual({ type: "flock/ask", question: "what does the tax form cover?" })
   })
 
   test("lays its header out exactly as the shared wire spec draws it", () => {

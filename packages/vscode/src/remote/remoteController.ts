@@ -45,9 +45,11 @@ export interface RemoteControllerOptions {
   onStatus?: (status: string) => void;
   /** OWNERSHIP, asked with the rid before ANY socket opens (`ownerLease.ts`).
    *  False means another window has it, so this one stays idle. */
-  claim?: (rid: string) => Promise<boolean>;
+  claim?: (rid: string, onFree?: () => void) => Promise<boolean>;
   deviceName?: string;
   now?: () => number;
+  /** t-w2qv3o: the chat the phone is on while it is present, else null (elastic/elasticWindow.ts). */
+  onPhoneFocus?: (sessionId: string | null) => void;
 }
 
 export class RemoteController {
@@ -121,7 +123,8 @@ export class RemoteController {
     const active = await this.pairing.load();
     if (!active) return;
     await this.auth.load();
-    if (this.opts.claim && !(await this.opts.claim(active.rid))) {
+    // t-xum9r8: ask again once the other window's record lapses (a restart's lost release), unless the pairing changed meanwhile.
+    if (this.opts.claim && !(await this.opts.claim(active.rid, () => void (this.rid === active.rid && this.restore())))) {
       this.status('remote: this pairing is active in another window');
       return;
     }
@@ -176,13 +179,13 @@ export class RemoteController {
       afterSeq: () => codec.afterSeq,
       deps: this.opts.deps,
       onFrame: (frame) => { this.recvTail = this.recvTail.then(() => this.onFrame(frame)).catch(() => {}); },
-      onControl: (text) => this.greeter.onControl(text),
+      onControl: (text) => { this.greeter.onControl(text); this.tellFocus(); }, // presence moves the phone's focus in or out
       onStatus: (s, detail) => this.greeter.onTransportStatus(s, detail),
     });
     this.pipe = new InboundPipe(codec);
     const out = new OutboundPipe(codec, transport, (text) => this.status(`remote: ${text}`));
     this.out = out;
-    this.shaper = new RemoteOutbound({ clock: this.opts.deps, send: (m) => out.send(this.privilege.outbound(m)) });
+    this.shaper = new RemoteOutbound({ clock: this.opts.deps, send: (m) => out.send(this.privilege.outbound(m)), onFocus: () => this.tellFocus() });
     this.view = view; this.transport = transport;
     this.peer.reset();
     this.greeter.reset();
@@ -209,6 +212,12 @@ export class RemoteController {
     this.shaper = null;
     this.peer.reset(); this.auth.reset(); this.gate.reset();
     this.greeter.reset();
+    this.tellFocus();
+  }
+
+  /** The phone's chat counts only while the relay says the phone is there ('unknown' does not count). */
+  private tellFocus(): void {
+    this.opts.onPhoneFocus?.(this.shaper && this.peer.presence === 'present' ? this.shaper.focus : null);
   }
 
   /** Host -> phone. The promise lets revoke flush `remote/revoked` first. */

@@ -33,7 +33,7 @@ const toggle = (c: HTMLElement) => c.querySelector('.dock-item[aria-label="Front
 const badge = (c: HTMLElement) => toggle(c).querySelector('.dock-badge');
 
 const DANA = 'dana@YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5MDE';
-const CHRIS = 'chris@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
+const ROBIN = 'robin@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
 
 const question = (id: string, contact: string, name: string, text: string) => ({
   id,
@@ -48,8 +48,8 @@ const question = (id: string, contact: string, name: string, text: string) => ({
 });
 
 const QUESTIONS = [
-  question('thr_1', DANA, 'dana', 'which MOT rules changed in 2026?'),
-  question('thr_2', CHRIS, 'chris', 'how do I read a VIN?'),
+  question('thr_1', DANA, 'dana', 'which tax rules changed in 2026?'),
+  question('thr_2', ROBIN, 'robin', 'how do I read a payslip?'),
 ];
 
 beforeEach(() => {
@@ -128,7 +128,7 @@ describe('SidebarLauncher — the Front Desk section', () => {
 
     const rows = Array.from(container.querySelectorAll('.fd-row'));
     expect(rows).toHaveLength(2);
-    expect(rows[0]!.querySelector('.mk-bubble')!.textContent).toBe('which MOT rules changed in 2026?');
+    expect(rows[0]!.querySelector('.mk-bubble')!.textContent).toBe('which tax rules changed in 2026?');
     // The FULL handle is on the tooltip; the row shows the contact's name.
     expect(rows[0]!.querySelector('.fd-from')!.getAttribute('title')).toBe(QUESTIONS[0].contact);
 

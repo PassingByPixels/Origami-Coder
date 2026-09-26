@@ -269,7 +269,7 @@ describe('LoopsPane — reopening the chat of a loop that has none', () => {
 
 describe('LoopsPane — the persistence control announces itself as a control', () => {
   // The defect this replaces: a <button> whose caption WAS the current fact
-  // ("Dies with chat"). Passing looked straight at it and did not see a toggle
+  // ("Dies with chat"). The owner looked straight at it and did not see a toggle
   // — nothing said it was clickable, and the one word on screen named a state
   // rather than the setting, so you could only learn what it did by pressing it
   // and watching something change.

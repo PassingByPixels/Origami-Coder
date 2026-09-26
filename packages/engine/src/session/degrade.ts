@@ -1,5 +1,6 @@
 import { SessionV1 } from "@origami/core/v1/session"
 import type { Err } from "./retry"
+import { SessionRequestMemoryRows } from "./request-memory-rows"
 
 /**
  * Knob rejection: an endpoint refusing one request field rather than failing.
@@ -7,9 +8,13 @@ import type { Err } from "./retry"
  * The engine derives some request fields from the model name, which holds for
  * hosted vendor APIs but not for a self-hosted endpoint. When the guess is wrong
  * the endpoint names the field, and retrying the identical request cannot change
- * that — so drop the field, retry once, and remember it for the session. The
- * store is process-local: a cache surviving a restart would have to be keyed on
- * something that moves when the server does (vLLM's `system_fingerprint`).
+ * that — so drop the field, retry once, and remember it for the session.
+ *
+ * Remembered for the SESSION, not for the endpoint: nothing is keyed on the
+ * server, so a server that moves is not tracked here (that would need something
+ * like vLLM's `system_fingerprint`). The session's set is persisted
+ * (t-w2qb1x, session/request-memory.ts) so a restarted engine sends what this
+ * process would have sent; it forgets nothing a long-lived process would not.
  */
 
 export type Knob = {
@@ -97,6 +102,7 @@ const rejected = new Map<string, Set<string>>()
 export function record(sessionID: string, knob: Knob): void {
   const current = rejected.get(sessionID) ?? new Set<string>()
   current.add(knob.label)
+  SessionRequestMemoryRows.stage(sessionID, [{ kind: "degrade", key: knob.label, data: true }])
   // Re-insert so iteration order is write order, then trim the front.
   rejected.delete(sessionID)
   rejected.set(sessionID, current)
@@ -127,6 +133,28 @@ export function strip(sessionID: string, options: Record<string, any>): Record<s
 /** The one-line notice the user reads in the chat when a knob is dropped. */
 export function notice(knob: Knob): string {
   return `${knob.label} not supported by this endpoint — used the default.`
+}
+
+/** True while this process holds the session's set (an empty set counts). */
+export function has(sessionID: string): boolean {
+  return rejected.has(sessionID)
+}
+
+/** Put back the refused knobs the database holds for a session this process
+ *  does not hold (t-w2qb1x). No rows restores an empty set. */
+export function restore(sessionID: string, rows: readonly SessionRequestMemoryRows.Row[]): void {
+  if (rejected.has(sessionID)) return
+  const labels = new Set(rows.filter((row) => row.kind === "degrade").map((row) => row.key))
+  rejected.set(sessionID, labels)
+  for (const key of rejected.keys()) {
+    if (rejected.size <= LIMIT) break
+    rejected.delete(key)
+  }
+}
+
+/** The chat closed (t-w2u5vf). Persisted, so a reopen loads it back on a miss. */
+export function evict(sessionID: string): void {
+  rejected.delete(sessionID)
 }
 
 /** Test seam — the store is module state, so a test must be able to empty it. */

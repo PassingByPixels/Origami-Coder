@@ -2,7 +2,7 @@
   "name": "origamicoder",
   "displayName": "Origami Code",
   "description": "Origami Code - Model Agnostic AI Coding Harness focused on VS Code",
-  "version": "0.4.175",
+  "version": "0.4.184",
   "publisher": "OrigamiLabs",
   "icon": "media/icon.png",
   "license": "Origami-Proprietary",
@@ -309,33 +309,33 @@
         "origami.devEngineSource": {
           "type": "string",
           "default": "",
-          "description": "DEV ONLY. Absolute path to a checked-out packages/engine source tree. When set, the extension runs the engine straight from source via Bun (bun run --conditions=browser <path>/src/index.ts acp) instead of the compiled ~/.origami/bin/origami.exe, so engine edits take effect on a window reload with no binary rebuild. Requires Bun installed (~/.bun/bin). Leave empty for the normal compiled-binary path."
+          "description": "DEV ONLY. Absolute path to a checked-out packages/engine source tree. When set, the extension runs the engine straight from source via Bun (bun run --conditions=browser <path>/src/index.ts acp) instead of the compiled ~/.origami/bin/origami.exe, so engine edits take effect in new chats with no binary rebuild; open chats keep the engine they started with. Requires Bun installed (~/.bun/bin). Leave empty for the normal compiled-binary path."
         },
         "origami.agentName": {
           "type": "string",
           "default": "",
-          "description": "The name other Origami agent sessions on this machine see for this window, in list_agents and on the messages it sends. Leave empty to use the folder name. Set it per workspace when two windows share a folder name, or when you want a role name (\"reviewer\", \"docs\") instead. Takes effect when the engine next starts — reload the window after changing it."
+          "description": "The name other Origami agent sessions on this machine see for this window, in list_agents and on the messages it sends. Leave empty to use the folder name. Set it per workspace when two windows share a folder name, or when you want a role name (\"reviewer\", \"docs\") instead. New chats use the new name at once; open chats keep the name they started with."
         },
         "origami.experimentalCodeMode": {
           "type": "boolean",
           "default": false,
-          "description": "EXPERIMENTAL. Replace the individual MCP tools with one `execute` tool that runs a confined JavaScript program: the model writes a short script that calls several MCP tools, including in parallel, and returns a structured result. It changes how the model reaches MCP tools, so it is off until you have tried it. Takes effect when the engine next starts — reload the window after changing it."
+          "description": "EXPERIMENTAL. Replace the individual MCP tools with one `execute` tool that runs a confined JavaScript program: the model writes a short script that calls several MCP tools, including in parallel, and returns a structured result. It changes how the model reaches MCP tools, so it is off until you have tried it. New chats use the change at once; open chats keep the value they started with until you close and reopen them."
         },
         "origami.subagentTimeLimitHours": {
           "type": "number",
           "default": 4,
           "minimum": 0.5,
-          "description": "Wall-clock ceiling on ONE sub-agent, in hours. A sub-agent that is still running after this long is stopped, so a fan-out cannot leave an agent working unnoticed overnight. Read by the engine when it STARTS — reload the window after changing it. Below 0.5 is ignored and the engine's own 4-hour default is used."
+          "description": "Wall-clock ceiling on ONE sub-agent, in hours. A sub-agent that is still running after this long is stopped, so a fan-out cannot leave an agent working unnoticed overnight. Read when a chat's engine STARTS: new chats use the new value at once; open chats keep the value they started with. Below 0.5 is ignored and the engine's own 4-hour default is used."
         },
         "origami.experimentalSideQuests": {
           "type": "boolean",
           "default": true,
-          "description": "ON by default. Lets the model raise a side quest — a suggested follow-up task it did not do — into the Side quests drawer instead of only proposing it in prose. Turn this off to remove the `side_quest` tool and the drawer entirely. The drawer, folder watcher and popup pick up a change to this setting immediately; the engine's own `side_quest` tool needs a NEW chat, because the engine reads it only at spawn."
+          "description": "ON by default. Lets the model raise a side quest — a suggested follow-up task it did not do — into the Side quests drawer instead of only proposing it in prose. Turn this off to remove the `side_quest` tool and the drawer entirely. The drawer, folder watcher and popup pick up a change to this setting immediately; the engine's own `side_quest` tool changes only in NEW chats, because the engine reads it only at spawn; open chats keep the value they started with."
         },
         "origami.experimentalClaudeSubscription": {
           "type": "boolean",
           "default": false,
-          "description": "EXPERIMENTAL, OFF by default. Runs an Origami chat on your Claude subscription instead of an API key, through the Claude Code program's engine, at the Agent SDK rate against your plan's allowance. Turning this on shows a one-time disclosure you must confirm — declining turns the setting back off. Adds a separate 'Claude (subscription, experimental)' group to the model picker. Takes effect when the engine next starts — reload the window after changing it."
+          "description": "EXPERIMENTAL, OFF by default. Runs an Origami chat on your Claude subscription instead of an API key, through the Claude Code program's engine, at the Agent SDK rate against your plan's allowance. Turning this on shows a one-time disclosure you must confirm — declining turns the setting back off. Adds a separate 'Claude (Sub)' group to the model picker. New chats use the change at once; open chats keep the value they started with."
         },
         "origami.browser.viewportWidth": {
           "type": "number",
@@ -473,12 +473,52 @@
         "origamicoder.flock.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Flock: ask a contact's Origami a question, and answer theirs. OFF by default: no relay connection is opened for Flock, no owner lease is taken, the Flock view and the sidebar Front Desk are not shown, and questions from contacts are not received. Turn this on to open a relay connection for Flock, take an owner lease, and start receiving your contacts' questions. Takes effect when the window reloads."
+          "description": "Flock: ask a contact's Origami a question, and answer theirs. OFF by default: no relay connection is opened for Flock, no owner lease is taken, the Flock view and the sidebar Front Desk are not shown, and questions from contacts are not received. Turn this on to open a relay connection for Flock, take an owner lease, and start receiving your contacts' questions. New chats use the change at once; open chats and the window's background engine keep the value they started with, so to switch Flock off in all of them at once, reload the window."
         },
         "origamicoder.cacheWarming.enabled": {
           "type": "boolean",
+          "default": false,
+          "description": "OFF by default. Keeps a long session's prompt cache alive: while a chat sits idle, the engine re-reads the same cached prefix at about 80% of the cache lifetime, so the next message is a cheap cache read instead of a full cold one. Each re-read is billed as a cache read of the whole cached prompt, so turn this on only if you often come back to idle chats within the cache life. It costs nothing else - it never appears in the transcript or the token totals. A parked chat (see 'Park idle chats after') wakes one minute before its re-read is due, sends it and parks again. Turn this off to send no re-reads at all. Read when a chat's engine STARTS: new chats use the new value at once; open chats keep the value they started with."
+        },
+        "origamicoder.elastic.enabled": {
+          "type": "boolean",
           "default": true,
-          "description": "ON by default. Keeps a long session's prompt cache alive: while a chat sits idle, the engine re-reads the same cached prefix at about 80% of the cache lifetime, so the next message is a cheap cache read instead of a full cold one. Each re-read costs a few input tokens and nothing else - it never appears in the transcript or the token totals. Turn this off to send no re-reads at all. Read by the engine when it STARTS - reload the window after changing it."
+          "description": "ON by default. Each chat's engine gets an activity class: 'active' while the chat is on screen (or open on the paired phone), 'background' while it is hidden or runs work you cannot see, and 'idle' when it is hidden and quiet. The engine uses the class to lower its own OS priority, and an idle engine is asked to give back unused memory. Nothing in a chat is lost. Turn this off to keep every engine at normal priority. Takes effect at once."
+        },
+        "origamicoder.elastic.idleAfterMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "Minutes a chat must be hidden AND quiet (no turn, no open question or permission, no running sub-agent, no /loop) before its engine is classed 'idle'. The engine is asked first and stays 'background' while it still runs a background job."
+        },
+        "origamicoder.elastic.trimAfterMinutes": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Minutes an engine stays 'idle' before it is asked to give back unused memory (trim its working set). 0 (the default) asks as soon as it turns idle. A trim is never asked for within 2 minutes of the engine's last turn, and the engine refuses while a turn runs or a prompt-cache warm is due soon. Not available on macOS (no working-set equivalent); parking ('Park idle chats after') is what frees memory there."
+        },
+        "origamicoder.elastic.retrimMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Minutes between two memory trims of the same idle engine. After a refusal the wait doubles each time, up to one hour, so a refusing engine is never asked in a loop."
+        },
+        "origamicoder.elastic.parkAfterMinutes": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "description": "Minutes a chat's engine must be hidden and quiet before it is parked to free its memory. Default: 20. The chat stays; the next message (or a peer handoff, a Folds prompt or any other call) starts the engine again in about 2 seconds, for the same chat, with the same settings and byte-identical requests, so a cache the provider still holds still hits. The park comes at this time whatever the provider's cache life: a park does not clear the provider's cache. With cache warming on, a parked chat wakes one minute before its warm is due, sends the warm and parks again. It is parked only when it runs no work. A chat on screen or on the phone is never parked. 0 turns this off."
+        },
+        "origamicoder.elastic.parkUntimedAfterMinutes": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "description": "The same park for a chat whose provider publishes no prompt-cache lifetime (local servers such as LM Studio or vLLM, DeepSeek, OpenRouter). Default: 20. No clock says when their cache is gone; the restored chat sends byte-identical requests, so a server that still holds the prefix reuses it. Never shorter than parkAfterMinutes."
+        },
+        "origamicoder.elastic.warmSpare": {
+          "type": "boolean",
+          "default": true,
+          "description": "ON by default. The window keeps one spare engine running for its workspace folder, so a new chat starts on an engine that is already up instead of waiting for a process start. The spare starts no MCP servers, is not listed to other agents and waits at the lowest priority with its memory trimmed. Only a new chat in the workspace folder uses it, and only while the engine settings are unchanged since it started. It replaces the chat the window used to open and close at start. Turn this off to start every chat's engine when the chat opens."
         }
       }
     }

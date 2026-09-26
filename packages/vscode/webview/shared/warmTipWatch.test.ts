@@ -64,6 +64,51 @@ describe('warmTipWatch — a tip never outlives its control', () => {
     expect(shown).toBeNull();
   });
 
+  // t-xtim9n, owner UAT 0.4.179: the pill's tooltip stayed on screen while
+  // switching between Origami editor tabs (each its own webview) and only
+  // went away once focus left this webview panel entirely and came back.
+  // Neither a hidden nor an unfocused webview ever fires pointermove or
+  // scroll — the two signals this watchdog used to rely on — so the tip
+  // outlives the tab switch. A VS Code webview implements the Page
+  // Visibility API, so `document.hidden` + `visibilitychange` and the
+  // window's own `blur` are the two extra signals that exist regardless.
+  it('closes when the document becomes hidden (a hidden editor tab)', () => {
+    document.body.innerHTML = '<button id="b">jump</button>';
+    const btn = document.getElementById('b') as HTMLElement;
+    openTipOn(btn);
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(shown).toBeNull();
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+  });
+
+  it('does NOT close on a visibilitychange while still visible', () => {
+    document.body.innerHTML = '<button id="b">jump</button>';
+    const btn = document.getElementById('b') as HTMLElement;
+    openTipOn(btn);
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(shown).toContain('Jump');
+  });
+
+  it('closes when the window (webview) loses focus', () => {
+    document.body.innerHTML = '<button id="b">jump</button>';
+    const btn = document.getElementById('b') as HTMLElement;
+    openTipOn(btn);
+    window.dispatchEvent(new Event('blur'));
+    expect(shown).toBeNull();
+  });
+
+  it('a suspension holds off hidden/blur too, same as pointermove and scroll', () => {
+    document.body.innerHTML = '<button id="b">jump</button>';
+    const btn = document.getElementById('b') as HTMLElement;
+    openTipOn(btn);
+    const release = suspendTipWatch();
+    window.dispatchEvent(new Event('blur'));
+    expect(shown, 'the pinned surface holds the watchdog off').toContain('Jump');
+    release();
+  });
+
   // t-ru13hb item 5: the context breakdown card can be PINNED open. The pointer
   // is then meant to travel over it and its rows to scroll — both of which this
   // watchdog reads as "the user has moved on". It is held off while a pinned

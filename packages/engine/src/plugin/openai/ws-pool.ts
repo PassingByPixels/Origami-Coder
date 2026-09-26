@@ -35,9 +35,24 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
   const maxConnectionAge = options?.maxConnectionAge ?? DEFAULT_MAX_CONNECTION_AGE
   const streamRetries = options?.streamRetries ?? 5
-  const pruneTimer = setInterval(() => prune(), Math.min(idleTimeout, 60_000))
-  if (typeof pruneTimer === "object" && "unref" in pruneTimer && typeof pruneTimer.unref === "function") {
-    pruneTimer.unref()
+  // origami_change (t-w2qlop): armed by the first entry, disarmed when no entry
+  // is left that `prune` could remove. Armed at creation it woke the engine
+  // every minute for its whole life once ChatGPT OAuth had been used at all.
+  let pruneTimer: ReturnType<typeof setInterval> | undefined
+  function armPrune() {
+    if (pruneTimer !== undefined) return
+    pruneTimer = setInterval(() => prune(), Math.min(idleTimeout, 60_000))
+    if (typeof pruneTimer === "object" && "unref" in pruneTimer && typeof pruneTimer.unref === "function") {
+      pruneTimer.unref()
+    }
+  }
+  /** A fallback entry is never pruned (it keeps the session on HTTP), so a pool
+   *  of only those needs no timer either. */
+  function disarmPruneIfIdle() {
+    if (pruneTimer === undefined) return
+    for (const entry of pool.values()) if (!entry.fallback) return
+    clearInterval(pruneTimer)
+    pruneTimer = undefined
   }
 
   async function websocketFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -71,6 +86,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
 
     const entry = pool.get(key) ?? { lastUsedAt: Date.now(), busy: false, fallback: false, streamFailures: 0 }
     pool.set(key, entry)
+    armPrune()
 
     if (entry.fallback) {
       return httpFetch(input, httpInit)
@@ -175,10 +191,12 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
       invalidate(entry)
       pool.delete(key)
     }
+    disarmPruneIfIdle()
   }
 
   function close() {
     clearInterval(pruneTimer)
+    pruneTimer = undefined
     for (const entry of pool.values()) invalidate(entry)
     pool.clear()
   }
@@ -189,6 +207,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     if (!entry) return
     invalidate(entry)
     pool.delete(key)
+    disarmPruneIfIdle()
   }
 
   return Object.assign(websocketFetch, { close, remove })

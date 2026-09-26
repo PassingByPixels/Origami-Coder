@@ -1,0 +1,40 @@
+<!-- Bars to scale, each pair on its own scale: the "before" bar is 320 px, the "now" bar is 320 * now / before.
+     Sources: memory and CPU: CHANGELOG 0.4.176 + soak_elastic.md section 4 (CPU = top of range 28-51 -> 5-14 ms/s);
+     freeze: CHANGELOG 0.4.176 + soak_elastic.md section 3.1 (worst run 468 -> 51 ms); ready: soak_elastic.md "Warm spare" (medians). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 278" role="img" aria-label="Before and now, lower is better. Idle memory of 6 big chats: 2.63 GB before, 0.57 GB now. Idle CPU of 6 chats: 51 before, 14 now, in ms per second. Longest freeze of the chat on screen with 5 busy chats: 468 ms before, 51 ms now. New chat ready: 1,331 ms before, 495 ms now.">
+  <text class="t-title" x="20" y="22">Before and now (lower is better)</text>
+  <rect class="fill-muted" x="486" y="12" width="12" height="12" rx="2"/>
+  <text class="t-small" x="504" y="22">before</text>
+  <rect class="fill-chat" x="554" y="12" width="12" height="12" rx="2"/>
+  <text class="t-small" x="572" y="22">now</text>
+
+  <text class="t-title" x="20" y="56">Idle memory</text>
+  <text class="t-muted t-small" x="20" y="72">6 big chats, in use</text>
+  <rect class="fill-muted" x="200" y="44" width="320" height="14" rx="3"/>
+  <text class="t-small" x="528" y="55">2.63 GB</text>
+  <rect class="fill-chat" x="200" y="62" width="69.3" height="14" rx="3"/>
+  <text class="t-small" x="277" y="73">0.57 GB</text>
+
+  <text class="t-title" x="20" y="110">Idle CPU</text>
+  <text class="t-muted t-small" x="20" y="126">6 chats, ms per second</text>
+  <rect class="fill-muted" x="200" y="98" width="320" height="14" rx="3"/>
+  <text class="t-small" x="528" y="109">51</text>
+  <rect class="fill-chat" x="200" y="116" width="87.8" height="14" rx="3"/>
+  <text class="t-small" x="296" y="127">14</text>
+
+  <text class="t-title" x="20" y="164">Longest freeze</text>
+  <text class="t-muted t-small" x="20" y="180">chat on screen, 5 busy</text>
+  <rect class="fill-muted" x="200" y="152" width="320" height="14" rx="3"/>
+  <text class="t-small" x="528" y="163">468 ms</text>
+  <rect class="fill-chat" x="200" y="170" width="34.9" height="14" rx="3"/>
+  <text class="t-small" x="243" y="181">51 ms</text>
+
+  <text class="t-title" x="20" y="218">New chat ready</text>
+  <text class="t-muted t-small" x="20" y="234">with the warm spare</text>
+  <rect class="fill-muted" x="200" y="206" width="320" height="14" rx="3"/>
+  <text class="t-small" x="528" y="217">1,331 ms</text>
+  <rect class="fill-chat" x="200" y="224" width="119" height="14" rx="3"/>
+  <text class="t-small" x="327" y="235">495 ms</text>
+
+  <text class="t-muted t-small" x="20" y="266">Each pair has its own scale. CPU and freeze show the top of each measured range.</text>
+</svg>

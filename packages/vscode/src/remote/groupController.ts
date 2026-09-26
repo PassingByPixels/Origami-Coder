@@ -37,8 +37,9 @@ export interface GroupControllerOptions {
   deps: TransportDeps;
   /** This machine's name in the roster others see. The workspace name. */
   deviceName: string;
-  /** The owner lease, asked with the PAIRWISE rid before any socket opens. */
-  claim?: (rid: string) => Promise<boolean>;
+  /** The owner lease, asked with the PAIRWISE rid before any socket opens.
+   *  On a refusal it calls `onFree` once the other window's record is free. */
+  claim?: (rid: string, onFree?: () => void) => Promise<boolean>;
   onStatus?: (text: string) => void;
   os?: DeskOs; // announced in every hello (t-s9jr6u)
   /** A desk joined, said hello or dropped off: the pane pushes a new snapshot. */
@@ -55,6 +56,8 @@ export class GroupController {
   private readonly group: DeviceGroup;
   private readonly links = new Map<string, GroupLink>();
   private readonly online = new Set<string>();
+  /** Peers whose link waits for another window's lease to lapse (t-xum9r8). */
+  private readonly waiting = new Set<string>();
   private readonly handshake: JoinHandshake;
 
   private readonly roster: GroupRosterStore;
@@ -136,8 +139,13 @@ export class GroupController {
     const self = identity?.deviceId;
     if (!identity || !self || peerId === self || this.links.has(peerId)) return;
     const rid = await derivePairRid(identity.kg, self, peerId);
-    if (this.opts.claim && !(await this.opts.claim(rid))) {
-      this.opts.onStatus?.('group: this device is linked in another window');
+    // t-xum9r8: a refusal is a WAIT, not an end. At an extension-host restart
+    // the old window's record outlives it by up to STALE_MS; the lease calls
+    // back on the first heartbeat that finds it free, and this asks again.
+    const retry = (): void => void (this.waiting.delete(peerId) && this.openPair(peerId));
+    if (this.opts.claim && !(await this.opts.claim(rid, retry))) {
+      this.waiting.add(peerId);
+      this.opts.onStatus?.('group: waiting for the previous window to let go of this desk link');
       return;
     }
     const key = await derivePairKey(identity.kg, self, peerId);
@@ -235,6 +243,7 @@ export class GroupController {
     this.links.get(id)?.stop('removed from the group');
     this.links.delete(id);
     this.online.delete(id);
+    this.waiting.delete(id);
   }
 
   /** Forget the group. Every pairwise rid is derived from Kg, so a new group
@@ -255,5 +264,6 @@ export class GroupController {
     for (const link of this.links.values()) link.stop('window closed');
     this.links.clear();
     this.online.clear();
+    this.waiting.clear();
   }
 }

@@ -181,7 +181,7 @@ describe('SubagentDock — the agent map', () => {
     expect(container.querySelector('.sm-scrim')).toBeNull();
     await fireEvent.click(container.querySelector('.sa-map-btn') as HTMLElement);
     await tick();
-    expect(container.querySelector('.sm-hub-name')?.textContent).toBe('#1 coder');
+    expect(container.querySelector('.am-hub-name')?.textContent).toBe('#1 coder');
     await fireEvent.click(container.querySelector('.sm-close') as HTMLElement);
     await tick();
     expect(container.querySelector('.sm-scrim')).toBeNull();
@@ -193,7 +193,7 @@ describe('SubagentDock — the agent map', () => {
     const { container } = render(SubagentDock, dockProps([live]));
     await fireEvent.click(container.querySelector('.sa-map-btn') as HTMLElement);
     await tick();
-    await fireEvent.click(container.querySelector('.sm-card') as HTMLElement);
+    await fireEvent.click(container.querySelector('.am-card') as HTMLElement);
     await tick();
     expect(container.querySelector('.sm-scrim')).toBeNull();
     expect(container.querySelector('.sat-overlay')).not.toBeNull();

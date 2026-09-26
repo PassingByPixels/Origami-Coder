@@ -126,10 +126,13 @@ const escapeSystemUpdateText = (text: string) =>
 export const wrapSystemUpdate = (parts: ReadonlyArray<{ readonly text: string }>) =>
   `<system-update>\n${escapeSystemUpdateText(joinText(parts))}\n</system-update>`
 
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
 /** Chronological system updates deliberately accept text only. Do not insert
  *  raw retrieved, tool, or web content into privileged updates: keep untrusted
  *  data in ordinary user/tool messages instead. */
-export const systemUpdateText = Effect.fn("ProviderShared.systemUpdateText")(function* (
+export const systemUpdateText = Effect.fnUntraced(function* (
   route: string,
   message: LLMRequest["messages"][number],
 ) {
@@ -142,7 +145,7 @@ export const systemUpdateText = Effect.fn("ProviderShared.systemUpdateText")(fun
 })
 
 /** Lower an unsupported privileged update into visible, in-order user text. */
-export const wrappedSystemUpdate = Effect.fn("ProviderShared.wrappedSystemUpdate")(function* (
+export const wrappedSystemUpdate = Effect.fnUntraced(function* (
   route: string,
   message: LLMRequest["messages"][number],
 ) {
@@ -214,7 +217,7 @@ const canonicalBase64 = (base64: string) => {
   return bytes.toString("base64") === base64 ? bytes : undefined
 }
 
-export const validateMedia = Effect.fn("ProviderShared.validateMedia")(function* (
+export const validateMedia = Effect.fnUntraced(function* (
   route: string,
   part: MediaPart,
   supportedMimes: ReadonlySet<string>,

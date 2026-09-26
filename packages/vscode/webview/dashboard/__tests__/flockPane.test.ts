@@ -55,26 +55,26 @@ import FlockPane from '../panes/FlockPane.svelte';
 
 // A 43-character base64url fingerprint, as `FlockIdentity.fingerprint` now
 // produces. The pane never truncates it itself — the engine sends both forms.
-const CHRIS = 'chris@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
+const ROBIN = 'robin@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
 const DANA = 'dana@YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXowMTIzNDU2Nzg5MDE';
-const PASSING = 'passing@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5';
+const JANE = 'jane@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5';
 
 const STATE = {
   transport: 'relay' as const,
   identity: {
-    handle: PASSING,
-    handleShort: 'passing@QUJDREVG',
-    name: 'passing',
+    handle: JANE,
+    handleShort: 'jane@QUJDREVG',
+    name: 'jane',
     icon: 'fox',
-    fingerprint: PASSING.split('@')[1],
+    fingerprint: JANE.split('@')[1],
     signPublicKey: 'sign-pub',
     boxPublicKey: 'box-pub',
   },
   friends: [
     {
-      handle: CHRIS,
-      handleShort: 'chris@Zm9vYmFy',
-      name: 'chris',
+      handle: ROBIN,
+      handleShort: 'robin@Zm9vYmFy',
+      name: 'robin',
       icon: 'wolf',
       addedAt: '2026-08-30T11:00:00.000Z',
       policy: { autoAnswer: true },
@@ -97,10 +97,10 @@ const STATE = {
   ],
   frontDesk: { model: 'anthropic/claude-sonnet', dailyBudgetTokens: 5000, scope: { repos: ['work/api'] }, autoAnswer: false },
   frontDeskPath: 'C:\\Users\\dev\\.config\\origami\\origami.json',
-  specialties: ['WordPress', 'UK MOT rules'],
+  specialties: ['WordPress', 'UK tax rules'],
   availability: 'answers on approval, up to 5000 tokens/day',
   answers: [
-    { at: '2026-09-02T08:15:00.000Z', from: CHRIS, question: 'how do I read a VIN?', tokens: 830, ok: true },
+    { at: '2026-09-02T08:15:00.000Z', from: ROBIN, question: 'how do I read a payslip?', tokens: 830, ok: true },
     { at: '2026-09-02T09:02:00.000Z', from: DANA, question: 'budget question', tokens: 0, ok: false },
   ],
 };
@@ -110,7 +110,7 @@ const QUESTION = {
   id: 'thr_in_1',
   contact: DANA,
   direction: 'in',
-  question: { text: 'which MOT rules changed in 2026?', sentAt: '2026-09-05T08:00:00.000Z' },
+  question: { text: 'which tax rules changed in 2026?', sentAt: '2026-09-05T08:00:00.000Z' },
   state: 'pending',
   unread: true,
   name: 'dana',
@@ -121,15 +121,15 @@ const QUESTION = {
 /** One reply of theirs, unread: the other kind of row, with four other doors. */
 const REPLY = {
   id: 'thr_out_1',
-  contact: CHRIS,
+  contact: ROBIN,
   direction: 'out',
-  question: { text: 'what does the MOT check?', sentAt: '2026-09-05T07:00:00.000Z', tokens: 120 },
+  question: { text: 'what does the tax form cover?', sentAt: '2026-09-05T07:00:00.000Z', tokens: 120 },
   state: 'answered',
   reply: { text: 'section 4 covers it', at: '2026-09-05T07:05:00.000Z', tokens: 120, signatureOk: true },
   unread: true,
-  name: 'chris',
+  name: 'robin',
   icon: 'crane',
-  handleShort: 'chris@MDEyMzQ1…',
+  handleShort: 'robin@MDEyMzQ1…',
 };
 
 // ----------------------------------------------------------------- host --
@@ -229,7 +229,7 @@ describe('flockPane host — the message table', () => {
     // The trailing `flockEnabled` is how a pane mounting late learns the
     // switch state without a second read of the window global.
     expect(posts.map((p) => p['type'])).toEqual(['flockData', 'flockMailbox', 'flockEnabled']);
-    expect((posts[0] as { state: unknown }).state).toMatchObject({ identity: { handle: PASSING } });
+    expect((posts[0] as { state: unknown }).state).toMatchObject({ identity: { handle: JANE } });
     expect(posts.at(-1)).toEqual({ type: 'flockEnabled', enabled: false });
   });
 
@@ -314,7 +314,7 @@ describe('flockPane host — the message table', () => {
     };
     await handleFlockPaneMessage(host, { type: 'flockRequest' });
     expect((posts.find((p) => p['type'] === 'flockData') as { state: { transport: string } }).state.transport).toBe('relay');
-    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: CHRIS });
+    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: ROBIN });
     expect(hostCalls.some((c) => c.method === 'flock_revoke')).toBe(true);
   });
 
@@ -362,9 +362,9 @@ describe('flockPane host — the message table', () => {
     activeCalls.length = 0;
     holderCalls.length = 0;
 
-    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: CHRIS });
+    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: ROBIN });
     // The revoke itself went to the HOLDER's client...
-    expect(holderCalls[0]).toEqual({ method: 'flock_revoke', params: { handle: CHRIS } });
+    expect(holderCalls[0]).toEqual({ method: 'flock_revoke', params: { handle: ROBIN } });
     // ...and the active client was never asked to do it (only re-read after).
     expect(activeCalls.some((c) => c.method === 'flock_revoke')).toBe(false);
   });
@@ -427,11 +427,11 @@ describe('flockPane host — the message table', () => {
 
   it('MUTATION PROOF — revoke names the handle and the list is re-read from the engine after it', async () => {
     const { host, calls, posts } = fakeHost();
-    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: CHRIS });
+    await handleFlockPaneMessage(host, { type: 'flockRevoke', handle: ROBIN });
 
     // The FULL handle, never the label the row shows: a write addressed by the
     // short form would name nobody the engine holds.
-    expect(calls[0]).toEqual({ method: 'flock_revoke', params: { handle: CHRIS } });
+    expect(calls[0]).toEqual({ method: 'flock_revoke', params: { handle: ROBIN } });
     // The re-read is the half that makes the row disappear. A revoke that only
     // called the engine would leave the removed friend on screen until the next
     // manual refresh, and the owner would believe they were still shared with.
@@ -486,8 +486,8 @@ describe('flockPane host — the message table', () => {
 
   it('specialties are filtered to strings; a non-array never reaches the engine', async () => {
     const { host, calls } = fakeHost();
-    await handleFlockPaneMessage(host, { type: 'flockSetSpecialties', specialties: ['WordPress', 7, 'MOT'] });
-    expect(calls[0]!.params).toEqual({ specialties: ['WordPress', 'MOT'] });
+    await handleFlockPaneMessage(host, { type: 'flockSetSpecialties', specialties: ['WordPress', 7, 'tax'] });
+    expect(calls[0]!.params).toEqual({ specialties: ['WordPress', 'tax'] });
 
     const bad = fakeHost();
     await handleFlockPaneMessage(bad.host, { type: 'flockSetSpecialties', specialties: 'WordPress' });
@@ -531,13 +531,13 @@ describe('flockPane host — the message table', () => {
     const { host, calls } = fakeHost();
     await handleFlockPaneMessage(host, {
       type: 'flockFollowUp',
-      to: CHRIS,
+      to: ROBIN,
       question: 'and what about 2027?',
       thread: 'thr_out_1',
     });
     expect(calls[0]).toEqual({
       method: 'flock_post',
-      params: { to: CHRIS, question: 'and what about 2027?', followUpOf: 'thr_out_1' },
+      params: { to: ROBIN, question: 'and what about 2027?', followUpOf: 'thr_out_1' },
     });
   });
 
@@ -756,8 +756,8 @@ function send(msg: Record<string, unknown>): Promise<void> {
 const SCOPE_OPTIONS = {
   type: 'flockScopeOptions',
   repos: [
-    { root: 'C:/Repos/Origami Labs/site', name: 'site' },
-    { root: 'C:/Repos/Projects/learning-apps', name: 'learning-apps' },
+    { root: 'C:/Repos/acme/site', name: 'site' },
+    { root: 'C:/Repos/Projects/demo-app', name: 'demo-app' },
   ],
   wiki: ['wiki/pages', 'wiki/drafts'],
 };
@@ -885,7 +885,7 @@ describe('FlockPane (webview) — the messenger', () => {
     expect(Array.from(container.querySelectorAll('.rail .crow .fk-name')).map((el) => el.textContent)).toEqual([
       'All mail',
       'Dana from the gym',
-      'chris',
+      'robin',
     ]);
 
     // The right rail is the desk CARD - never folded, because a desk with no
@@ -901,11 +901,11 @@ describe('FlockPane (webview) — the messenger', () => {
     expect(container.querySelector('.rail .crow')!.classList.contains('sel')).toBe(true);
     expect(container.querySelector('.thread')!.textContent).toContain('All mail');
 
-    const chris = await openThread(container, 'chris');
-    expect(chris.querySelector('.thread-head .fk-name')!.textContent).toBe('chris');
+    const robin = await openThread(container, 'robin');
+    expect(robin.querySelector('.thread-head .fk-name')!.textContent).toBe('robin');
     // ONE contact's mail, not everybody's: dana's question is not in here.
-    expect(chris.textContent).toContain('what does the MOT check?');
-    expect(chris.textContent).not.toContain('which MOT rules changed in 2026?');
+    expect(robin.textContent).toContain('what does the tax form cover?');
+    expect(robin.textContent).not.toContain('which tax rules changed in 2026?');
     // And the rail says which row is showing.
     expect(railRows(container)[1]!.classList.contains('sel')).toBe(true);
     expect(railRows(container)[0]!.classList.contains('sel')).toBe(false);
@@ -913,17 +913,17 @@ describe('FlockPane (webview) — the messenger', () => {
 
   it('the thread reads oldest-first, under a day divider, with the state chip and the time', async () => {
     const { container } = await mount();
-    const chris = await openThread(container, 'chris');
-    expect(Array.from(chris.querySelectorAll('.day')).map((el) => el.textContent)).toEqual(['2026-09-05']);
+    const robin = await openThread(container, 'robin');
+    expect(Array.from(robin.querySelectorAll('.day')).map((el) => el.textContent)).toEqual(['2026-09-05']);
     // The owner asked, they answered: two bubbles, the owner's in the accent.
-    const bubbles = Array.from(chris.querySelectorAll('.mk-bubble'));
-    expect(bubbles[0]!.textContent!.trim()).toBe('what does the MOT check?');
+    const bubbles = Array.from(robin.querySelectorAll('.mk-bubble'));
+    expect(bubbles[0]!.textContent!.trim()).toBe('what does the tax form cover?');
     expect(bubbles[0]!.classList.contains('mine')).toBe(true);
     expect(bubbles[1]!.textContent!.trim()).toBe('section 4 covers it');
     expect(bubbles[1]!.classList.contains('mine')).toBe(false);
     // The state chip is prose, not a state id, and the time sits beside it.
-    expect(chris.querySelector('.foot .fk-chip')!.textContent).toBe('they answered');
-    expect(chris.querySelector('.foot .fk-meta')!.textContent).toMatch(/^\d{2}:\d{2}$/);
+    expect(robin.querySelector('.foot .fk-chip')!.textContent).toBe('they answered');
+    expect(robin.querySelector('.foot .fk-meta')!.textContent).toMatch(/^\d{2}:\d{2}$/);
   });
 
   // jsdom has no layout engine, so `scrollHeight`/`clientHeight` are stubbed
@@ -932,8 +932,8 @@ describe('FlockPane (webview) — the messenger', () => {
   // itself. The geometry is proven in Chromium by the screenshot harness.
   it('scrolled up from the bottom shows "jump to newest"; clicking it re-pins', async () => {
     const { container } = await mount();
-    const chris = await openThread(container, 'chris');
-    const body = chris.querySelector('.thread-body') as HTMLElement;
+    const robin = await openThread(container, 'robin');
+    const body = robin.querySelector('.thread-body') as HTMLElement;
     Object.defineProperty(body, 'scrollHeight', { configurable: true, value: 1000 });
     Object.defineProperty(body, 'clientHeight', { configurable: true, value: 400 });
 
@@ -958,8 +958,8 @@ describe('FlockPane (webview) — the messenger', () => {
 
   it('the composer posts flock_post to the SELECTED contact, and clears itself', async () => {
     const { container } = await mount();
-    const chris = await openThread(container, 'chris');
-    const box = chris.querySelector('textarea[aria-label="Ask chris"]') as HTMLTextAreaElement;
+    const robin = await openThread(container, 'robin');
+    const box = robin.querySelector('textarea[aria-label="Ask robin"]') as HTMLTextAreaElement;
     const ask = () =>
       Array.from(container.querySelectorAll('.composer .fk-btn')).find(
         (b) => b.textContent!.trim() === 'Ask',
@@ -974,10 +974,10 @@ describe('FlockPane (webview) — the messenger', () => {
     await fireEvent.click(ask());
     // The SAME message Follow up posts (ACP `flock_post`), minus the thread it
     // follows - asking and following up are one act with one wire.
-    expect(lastPost()).toEqual({ type: 'flockFollowUp', to: CHRIS, question: 'and what about 2027?' });
+    expect(lastPost()).toEqual({ type: 'flockFollowUp', to: ROBIN, question: 'and what about 2027?' });
 
     await tick();
-    expect((container.querySelector('textarea[aria-label="Ask chris"]') as HTMLTextAreaElement).value).toBe('');
+    expect((container.querySelector('textarea[aria-label="Ask robin"]') as HTMLTextAreaElement).value).toBe('');
 
     // MUTATION PROOF - it addresses the contact the RAIL picked, not the first.
     const dana = await openThread(container, 'Dana from the gym');
@@ -1067,14 +1067,14 @@ describe('FlockPane (webview) — the messenger', () => {
     // The name is a FIELD now: it is the owner's to change, and it is what
     // every contact sees.
     const name = id.querySelector('input[aria-label="Your display name"]') as HTMLInputElement;
-    expect(name.value).toBe('passing');
+    expect(name.value).toBe('jane');
     // The label under it is the HANDLE's own, not `name@`: the handle was
     // minted once and does not follow a rename, and a tile that composed the
     // two would show a string nobody stored.
-    expect(id.querySelector('.fk-mono')!.textContent!.trim()).toBe('passing@QUJDREVG…');
+    expect(id.querySelector('.fk-mono')!.textContent!.trim()).toBe('jane@QUJDREVG…');
     // A pane that only ever showed eight characters would teach that they were
     // the identity. The whole 43-character digest is on its own line.
-    expect(id.querySelector('.fk-fp')!.textContent).toBe(PASSING.split('@')[1]);
+    expect(id.querySelector('.fk-fp')!.textContent).toBe(JANE.split('@')[1]);
   });
 
   it('MUTATION PROOF — Save posts only what changed, and posts nothing while nothing has', async () => {
@@ -1089,19 +1089,19 @@ describe('FlockPane (webview) — the messenger', () => {
     expect(save().disabled).toBe(true);
 
     const name = id().querySelector('input[aria-label="Your display name"]') as HTMLInputElement;
-    await fireEvent.input(name, { target: { value: '  Passing by Pixels  ' } });
+    await fireEvent.input(name, { target: { value: '  Jane Doe  ' } });
     await tick();
     await fireEvent.click(save());
     // The ICON is absent, not repeated: an absent field means "leave it", and a
     // patch that echoed the unchanged one would make every rename a re-pick.
-    expect(lastPost()).toEqual({ type: 'flockSetIdentity', name: 'Passing by Pixels' });
+    expect(lastPost()).toEqual({ type: 'flockSetIdentity', name: 'Jane Doe' });
 
     // And the other way round: pick a sigil, send only that.
     const wolf = id().querySelector('button[aria-label="wolf"]') as HTMLButtonElement;
     await fireEvent.click(wolf);
     await tick();
     await fireEvent.click(save());
-    expect(lastPost()).toEqual({ type: 'flockSetIdentity', name: 'Passing by Pixels', icon: 'wolf' });
+    expect(lastPost()).toEqual({ type: 'flockSetIdentity', name: 'Jane Doe', icon: 'wolf' });
   });
 
   it('the icon picker offers the drawn set, marks the one in force, and offers no upload', async () => {
@@ -1171,14 +1171,14 @@ describe('FlockPane (webview) — the messenger', () => {
     const { container } = await mount();
     const rows = railRows(container);
     expect(rows).toHaveLength(2);
-    // Newest thread first: dana asked at 08:00, chris's reply landed at 07:05.
-    // chris has no label of the owner's, so the name he uses leads; dana has
+    // Newest thread first: dana asked at 08:00, robin's reply landed at 07:05.
+    // robin has no label of the owner's, so the name he uses leads; dana has
     // one, and it leads instead.
-    expect(rows.map((r) => r.querySelector('.fk-name')!.textContent)).toEqual(['Dana from the gym', 'chris']);
+    expect(rows.map((r) => r.querySelector('.fk-name')!.textContent)).toEqual(['Dana from the gym', 'robin']);
 
     // The second line is what was said LAST, whoever said it. A rail that led
     // with the owner's own question would hide the answer they waited for.
-    expect(rows[0]!.querySelector('.last')!.textContent).toBe('which MOT rules changed in 2026?');
+    expect(rows[0]!.querySelector('.last')!.textContent).toBe('which tax rules changed in 2026?');
     expect(rows[1]!.querySelector('.last')!.textContent).toBe('section 4 covers it');
 
     // Both rows have something wanting the owner, so both carry the dot.
@@ -1196,9 +1196,9 @@ describe('FlockPane (webview) — the messenger', () => {
     // chip: it is who signed the envelope, and a surface showing only a local
     // nickname would let an owner believe they had answered someone they
     // had not.
-    expect(rows[1]!.getAttribute('title')).toBe(CHRIS);
-    const chris = await openThread(container, 'chris');
-    expect(chris.querySelector('.thread-head .fk-chip')!.getAttribute('title')).toBe(CHRIS);
+    expect(rows[1]!.getAttribute('title')).toBe(ROBIN);
+    const robin = await openThread(container, 'robin');
+    expect(robin.querySelector('.thread-head .fk-chip')!.getAttribute('title')).toBe(ROBIN);
     // GONE: the row never repeated the name they call themselves under a label.
     expect(container.querySelector('.rail')!.textContent).not.toContain('calls themselves');
   });
@@ -1220,8 +1220,8 @@ describe('FlockPane (webview) — the messenger', () => {
 
     // And the handle, from the START. A pass-through filter that returned every
     // contact would satisfy each assertion above except this pair.
-    await fireEvent.input(box, { target: { value: 'chris@Zm9v' } });
-    expect(names()).toEqual(['chris']);
+    await fireEvent.input(box, { target: { value: 'robin@Zm9v' } });
+    expect(names()).toEqual(['robin']);
     await fireEvent.input(box, { target: { value: 'Zm9vYmFy' } });
     expect(names()).toEqual([]);
     expect(container.querySelector('.rail .fk-empty')!.textContent).toContain('No contact matches');
@@ -1232,14 +1232,14 @@ describe('FlockPane (webview) — the messenger', () => {
     // Cleared, the whole flock is back: a box that hid the list until it was
     // typed in would be a list that had been lost.
     await fireEvent.input(box, { target: { value: '   ' } });
-    expect(names()).toEqual(['Dana from the gym', 'chris']);
+    expect(names()).toEqual(['Dana from the gym', 'robin']);
     // The head count is the WHOLE flock, not the filtered view.
     expect(container.querySelector('.rail .fk-pill b')!.textContent).toBe('2');
   });
 
   it('MUTATION PROOF - Edit in the thread head posts the display name for THAT full handle, and empty clears it', async () => {
     const { container } = await mount();
-    const head = async () => (await openThread(container, 'chris')).querySelector('.thread-head') as HTMLElement;
+    const head = async () => (await openThread(container, 'robin')).querySelector('.thread-head') as HTMLElement;
     const button = (el: HTMLElement, label: string) =>
       Array.from(el.querySelectorAll('.fk-btn')).find((b) => b.textContent!.trim() === label) as HTMLButtonElement;
 
@@ -1248,56 +1248,56 @@ describe('FlockPane (webview) — the messenger', () => {
     // The rename lives IN the Edit popover now, beside what this contact may
     // read. Edit used to be the rename and nothing else, so losing it in the
     // redesign of the same control is exactly what this asserts against.
-    const input = container.querySelector('.thread-head .cs input[aria-label="Your name for chris"]') as HTMLInputElement;
-    // Seeded EMPTY, not with the declared name: pre-filling "chris" and saving
+    const input = container.querySelector('.thread-head .cs input[aria-label="Your name for robin"]') as HTMLInputElement;
+    // Seeded EMPTY, not with the declared name: pre-filling "robin" and saving
     // would pin a label identical to the fallback and the head would look
     // edited when nothing had been decided.
     expect(input.value).toBe('');
-    expect(input.placeholder).toContain('chris');
+    expect(input.placeholder).toContain('robin');
 
-    await fireEvent.input(input, { target: { value: '  Chris the mechanic  ' } });
+    await fireEvent.input(input, { target: { value: '  Robin the accountant  ' } });
     await fireEvent.click(button(container.querySelector('.thread-head .cs') as HTMLElement, 'Save name'));
     expect(lastPost()).toEqual({
       // The FULL handle. A write addressed by the label the head shows would
       // name nobody the engine holds.
       type: 'flockSetPolicy',
-      handle: CHRIS,
-      displayName: 'Chris the mechanic',
+      handle: ROBIN,
+      displayName: 'Robin the accountant',
     });
 
     // An emptied field is `null`, not '': only `null` removes the key, and a
     // stored '' would render a blank first line for ever.
     await fireEvent.click(button(container.querySelector('.thread-head') as HTMLElement, 'Edit'));
     await tick();
-    await fireEvent.input(container.querySelector('.thread-head .cs input[aria-label="Your name for chris"]')!, {
+    await fireEvent.input(container.querySelector('.thread-head .cs input[aria-label="Your name for robin"]')!, {
       target: { value: '' },
     });
     await fireEvent.click(button(container.querySelector('.thread-head .cs') as HTMLElement, 'Save name'));
-    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: CHRIS, displayName: null });
+    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: ROBIN, displayName: null });
   });
 
   it('the renamed contact leads with the label everywhere once the engine sends it back', async () => {
     const { container } = await mount();
     const renamed = {
       ...STATE,
-      friends: [{ ...STATE.friends[0], displayName: 'Chris the mechanic' }, STATE.friends[1]],
+      friends: [{ ...STATE.friends[0], displayName: 'Robin the accountant' }, STATE.friends[1]],
     };
     await send({ type: 'flockData', state: renamed });
     expect(railRows(container).map((el) => el.querySelector('.fk-name')!.textContent)).toEqual([
       'Dana from the gym',
-      'Chris the mechanic',
+      'Robin the accountant',
     ]);
-    // The name chris uses is not repeated under the label. It is still
+    // The name robin uses is not repeated under the label. It is still
     // reachable - the search matches on it - and the handle beside it in the
     // thread head is what says who actually signed.
-    const thread = await openThread(container, 'Chris the mechanic');
+    const thread = await openThread(container, 'Robin the accountant');
     expect(thread.querySelector('.thread-head')!.textContent).not.toContain('calls themselves');
-    expect(thread.querySelector('.thread-head .fk-chip')!.getAttribute('title')).toBe(CHRIS);
+    expect(thread.querySelector('.thread-head .fk-chip')!.getAttribute('title')).toBe(ROBIN);
   });
 
   it('Revoke asks for a confirmation before it posts, and posts the full handle', async () => {
     const { container } = await mount();
-    await openThread(container, 'chris');
+    await openThread(container, 'robin');
     const button = (label: string) =>
       Array.from(container.querySelectorAll('.thread-head .fk-btn')).find(
         (b) => b.textContent!.trim() === label,
@@ -1310,7 +1310,7 @@ describe('FlockPane (webview) — the messenger', () => {
     );
 
     await fireEvent.click(button('Confirm revoke'));
-    expect(lastPost()).toEqual({ type: 'flockRevoke', handle: CHRIS });
+    expect(lastPost()).toEqual({ type: 'flockRevoke', handle: ROBIN });
   });
 
   // -------------------------------------------------------------- invite --
@@ -1397,7 +1397,7 @@ describe('FlockPane (webview) — the messenger', () => {
     await openAllMail(container);
     const rows = mailRows(container);
     expect(rows).toHaveLength(2);
-    expect(rows[0]!.querySelector('.mk-bubble')!.textContent).toBe('which MOT rules changed in 2026?');
+    expect(rows[0]!.querySelector('.mk-bubble')!.textContent).toBe('which tax rules changed in 2026?');
     // The state chip is prose, not a state id: "pending" is not a sentence a
     // person can act on and "waiting on you" is.
     expect(rows[0]!.textContent).toContain('waiting on you');
@@ -1480,7 +1480,7 @@ describe('FlockPane (webview) — the messenger', () => {
     await fireEvent.click(mailRows(container)[0]!.querySelector('.fk-btn.primary')!);
     expect(lastPost()).toEqual({
       type: 'flockFollowUp',
-      to: CHRIS,
+      to: ROBIN,
       question: 'and what about 2027?',
       followUpOf: 'thr_out_1',
     });
@@ -1522,7 +1522,7 @@ describe('FlockPane (webview) — the messenger', () => {
     // but absent from this machine's registry survives as its own row. NO
     // skills: they were a third checklist until the owner ruled that a set of
     // instructions is not a secret, so there was never a meaningful "no".
-    expect(labels).toEqual(['site', 'learning-apps', 'work/api', 'wiki/pages', 'wiki/drafts']);
+    expect(labels).toEqual(['site', 'demo-app', 'work/api', 'wiki/pages', 'wiki/drafts']);
   });
 
   it('the chip\'s shut line counts folders — a folders-only desk does not read as "Nothing shared"', async () => {
@@ -1602,7 +1602,7 @@ describe('FlockPane (webview) — the messenger', () => {
       ...STATE,
       frontDesk: { ...STATE.frontDesk, scope: { repos: ['work/api'], wiki: ['wiki/pages'], folders: ['D:/notes'] } },
     });
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
     await fireEvent.click(pill(popover, 'wiki/pages'));
     expect(() => structuredClone(lastPost())).not.toThrow();
   });
@@ -1627,7 +1627,7 @@ describe('FlockPane (webview) — the messenger', () => {
     // impossible path.
     expect(lastPost()).toEqual({
       type: 'flockFrontDesk',
-      scope: { repos: ['work/api', 'C:/Repos/Origami Labs/site'], wiki: [], folders: [] },
+      scope: { repos: ['work/api', 'C:/Repos/acme/site'], wiki: [], folders: [] },
     });
   });
 
@@ -1649,11 +1649,11 @@ describe('FlockPane (webview) — the messenger', () => {
     // would take the same folder and the owner would have shared it with
     // everybody while meaning to share it with one person.
     const { container } = await mount();
-    await editPopover(container, 'chris');
-    await send({ type: 'flockScopePicked', kind: 'folders', path: 'D:/notes', target: CHRIS });
+    await editPopover(container, 'robin');
+    await send({ type: 'flockScopePicked', kind: 'folders', path: 'D:/notes', target: ROBIN });
     expect(lastPost()).toEqual({
       type: 'flockSetPolicy',
-      handle: CHRIS,
+      handle: ROBIN,
       scope: { repos: ['work/api'], wiki: [], folders: ['D:/notes'] },
     });
   });
@@ -1666,8 +1666,8 @@ describe('FlockPane (webview) — the messenger', () => {
     expect(perms.textContent).not.toContain('override the defaults');
     expect(perms.querySelector('.ov')).toBeNull();
     // ...and the Edit popover in a contact's own thread head is where it went.
-    const popover = await editPopover(container, 'chris');
-    expect(popover.getAttribute('data-contact-scope')).toBe(CHRIS);
+    const popover = await editPopover(container, 'robin');
+    expect(popover.getAttribute('data-contact-scope')).toBe(ROBIN);
   });
 
   it('the popover overlays the desk list with THIS contact\'s, and marks what differs', async () => {
@@ -1676,16 +1676,16 @@ describe('FlockPane (webview) — the messenger', () => {
       frontDesk: { ...STATE.frontDesk, scope: { repos: ['work/api'], wiki: ['wiki/pages', 'wiki/drafts'] } },
       friends: [{ ...STATE.friends[0], policy: { autoAnswer: true, scope: { wiki: ['wiki/drafts'] } } }, STATE.friends[1]],
     });
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
 
-    // work/api and wiki/pages are desk defaults chris has been cut off from, so
+    // work/api and wiki/pages are desk defaults robin has been cut off from, so
     // they still RENDER — off, and marked. Without the mark, a reduced list is
     // indistinguishable from the default it replaced.
     expect(pill(popover, 'api').checked).toBe(false);
     expect(pill(popover, 'api').closest('.fk-tick')!.classList.contains('differs')).toBe(true);
     expect(pill(popover, 'wiki/drafts').checked).toBe(true);
     expect(pill(popover, 'wiki/drafts').closest('.fk-tick')!.classList.contains('differs')).toBe(false);
-    // chris holds `autoAnswer: true` against a desk default of off.
+    // robin holds `autoAnswer: true` against a desk default of off.
     expect(pill(popover, 'Answer without asking').checked).toBe(true);
     expect(pill(popover, 'Answer without asking').closest('.fk-tick')!.classList.contains('differs')).toBe(true);
   });
@@ -1698,7 +1698,7 @@ describe('FlockPane (webview) — the messenger', () => {
         scope: { repos: ['work/api'], wiki: ['wiki/pages', 'wiki/drafts'], folders: [] },
       },
     });
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
 
     // A contact with no scope of their own opens on the DESK's list, every pill
     // on: the control has to show what applies to them, or reducing one entry
@@ -1711,19 +1711,19 @@ describe('FlockPane (webview) — the messenger', () => {
     // list minus the one entry. wiki/pages is gone; the other two are not.
     expect(lastPost()).toEqual({
       type: 'flockSetPolicy',
-      handle: CHRIS,
+      handle: ROBIN,
       scope: { repos: ['work/api'], wiki: ['wiki/drafts'], folders: [] },
     });
   });
 
   it('the auto-answer pill overrides that one contact, and Reset gives every default back', async () => {
     const { container } = await mount();
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
 
-    // chris holds `autoAnswer: true` of his own; clicking it turns it off for
+    // robin holds `autoAnswer: true` of his own; clicking it turns it off for
     // him while the desk default stands for everyone else.
     await fireEvent.click(pill(popover, 'Answer without asking'));
-    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: CHRIS, autoAnswer: false });
+    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: ROBIN, autoAnswer: false });
 
     // `null` on all three, not an empty scope: an empty one is "share nothing
     // with them", which is a different and much quieter answer than "use the
@@ -1735,7 +1735,7 @@ describe('FlockPane (webview) — the messenger', () => {
     await fireEvent.click(reset);
     expect(lastPost()).toEqual({
       type: 'flockSetPolicy',
-      handle: CHRIS,
+      handle: ROBIN,
       scope: null,
       autoAnswer: null,
       dailyBudgetTokens: null,
@@ -1753,7 +1753,7 @@ describe('FlockPane (webview) — the messenger', () => {
 
   it('a per-contact budget posts a number, and an emptied one posts null', async () => {
     const { container } = await mount();
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
     const box = popover.querySelector('.budget') as HTMLInputElement;
     // The desk's own cap is the PLACEHOLDER, never the value: a pre-filled
     // inherited number becomes an override the moment anyone touches the box.
@@ -1762,21 +1762,21 @@ describe('FlockPane (webview) — the messenger', () => {
 
     await fireEvent.input(box, { target: { value: '250' } });
     await fireEvent.blur(box);
-    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: CHRIS, dailyBudgetTokens: 250 });
+    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: ROBIN, dailyBudgetTokens: 250 });
 
     await fireEvent.input(box, { target: { value: '  ' } });
     await fireEvent.blur(box);
-    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: CHRIS, dailyBudgetTokens: null });
+    expect(lastPost()).toEqual({ type: 'flockSetPolicy', handle: ROBIN, dailyBudgetTokens: null });
   });
 
   it('Browse… inside the popover names the contact it was opened for', async () => {
     const { container } = await mount();
-    const popover = await editPopover(container, 'chris');
+    const popover = await editPopover(container, 'robin');
     const browse = Array.from(popover.querySelectorAll('.fk-btn')).find(
       (b) => b.textContent!.trim() === 'Browse…',
     ) as HTMLButtonElement;
     await fireEvent.click(browse);
-    expect(lastPost()).toEqual({ type: 'flockBrowseFolder', kind: 'folders', target: CHRIS });
+    expect(lastPost()).toEqual({ type: 'flockBrowseFolder', kind: 'folders', target: ROBIN });
   });
 
   it('the All mail head has no Edit — there is no one contact to edit', async () => {
@@ -1795,7 +1795,7 @@ describe('FlockPane (webview) — the messenger', () => {
     // "the first .fk-inp" — which is the owner's display name now.
     const card = chip(container, 'identity').querySelector('.fc-card')!;
     const input = card.querySelector('input[aria-label="Specialties"]') as HTMLInputElement;
-    expect(input.value).toBe('WordPress, UK MOT rules');
+    expect(input.value).toBe('WordPress, UK tax rules');
 
     await fireEvent.input(input, { target: { value: ' WordPress , , vehicle diagnostics ' } });
     await fireEvent.click(card.querySelector('.fk-btn')!);

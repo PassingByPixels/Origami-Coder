@@ -6,7 +6,7 @@
 // Error row. The posts below are the exact shapes engineGate.ts's `tell` produces, spread by
 // DashboardPanel.ts into `{ type: 'engineState', sessionId, stage, reason, held }`.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ChatPane from '../panes/ChatPane.svelte';
@@ -98,5 +98,34 @@ describe('the chat engine state is drawn on the reconnect card, not the red Erro
     engineState(sid, 'starting', '', 0);
     await tick();
     expect(cards(c)).toEqual([]);
+  });
+});
+
+describe('t-x3a89j: the failed card says when, and offers Copy details and Open engine log', () => {
+  it('a failed restore shows the time; Copy details copies the host text; Open engine log asks the host', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const { c, sid } = await mountStarting();
+    const at = new Date(2026, 8, 25, 9, 5, 1).getTime();
+    const details = 'Origami: The engine did not start again (restore of a stopped chat)\nWhen: x\nWhy: origami-acp exited (code=3, signal=null)';
+    post({ type: 'engineState', sessionId: sid, stage: 'failed', reason: 'origami-acp exited (code=3, signal=null)', held: 1, retry: true, at, details });
+    await tick();
+    const card = cards(c)[0]!;
+    expect(card.textContent).toContain('at 09:05:01');
+    const copy = [...card.querySelectorAll('button')].find((b) => b.textContent === 'Copy details')!;
+    const open = [...card.querySelectorAll('button')].find((b) => b.textContent === 'Open engine log')!;
+    await fireEvent.click(copy);
+    expect(writeText).toHaveBeenCalledWith(details);
+    await fireEvent.click(open);
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'openEngineLog' });
+    expect(c.querySelector('.alert-retry')).not.toBeNull(); // Retry stays
+  });
+
+  it('a card with no details (an old host, or a start still running) shows neither button', async () => {
+    const { c, sid } = await mountStarting();
+    engineState(sid, 'failed', 'spawn origami.exe ENOENT', 1);
+    await tick();
+    const labels = [...cards(c)[0]!.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).toEqual(['Retry']);
   });
 });

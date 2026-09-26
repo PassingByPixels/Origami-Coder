@@ -147,7 +147,7 @@ describe('CronsPane — says plainly what a cron IS', () => {
   });
 
   it('states that crons run unattended and auto-approved, as standing fact', async () => {
-    // Passing chose full auto-approve knowingly. The pane must not hide that,
+    // The owner chose full auto-approve knowingly. The pane must not hide that,
     // and must not turn it into a confirm dialog on every edit either.
     const { container } = render(CronsPane);
     cronsData({ crons: [row()] });

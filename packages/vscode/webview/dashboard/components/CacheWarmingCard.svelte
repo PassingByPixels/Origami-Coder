@@ -17,13 +17,13 @@
 
   // ON until the host says otherwise — the same default both halves ship with,
   // so the box never flickers to the wrong state on first paint.
-  let enabled = $state(true);
+  let enabled = $state(false);
   let error: string | null = $state(null);
 
   window.addEventListener('message', (event: MessageEvent) => {
     const msg = event.data || {};
     if (msg.type !== 'cacheWarmingData') return;
-    enabled = msg.enabled !== false;
+    enabled = msg.enabled === true;
     error = typeof msg.error === 'string' ? msg.error : null;
   });
 

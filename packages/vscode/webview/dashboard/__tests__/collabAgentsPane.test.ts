@@ -268,7 +268,7 @@ describe('CollabAgentsPane — the card CRUD wires still fire', () => {
   });
 
   // UAT round 1 item 7: Edit/Delete crowded the head next to the name, which
-  // is what turned names into "Ar…"/"Ca…" on Passing's screenshot — they now
+  // is what turned names into "Ar…"/"Ca…" on the owner's screenshot — they now
   // live in a footer row, and the head is buttons-free.
   it('Edit and Delete live in the card FOOTER, not beside the name in the head', async () => {
     const { container } = await withDefs();

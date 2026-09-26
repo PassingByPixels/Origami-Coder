@@ -18,10 +18,11 @@
 // named `restoreZ`, and every other phone gets the plain 80-row tail. Both
 // roads are measured here.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
 
 vi.mock('vscode', () => ({
   Uri: { joinPath: (...parts: unknown[]) => ({ toString: () => parts.join('/') }) },
@@ -31,6 +32,23 @@ vi.mock('vscode', () => ({
   },
   window: { activeTextEditor: undefined },
 }));
+
+// t-ysud6n: a fake homedir under a fixed, made-up path (`C:/fakehome-remote-hydrate`)
+// is still a REAL path to fs.mkdirSync/writeFileSync — the DashboardPanel session
+// store (SESSIONS_DIR, ensureSessionsDir()) is not mocked here, only existsSync/
+// readFileSync are, so a saved session created that directory on the real C: drive
+// root every run and never cleaned it up. A real mkdtemp'd folder, removed in
+// afterAll, keeps the same "no settings.toml lives under it" property without
+// leaking a directory outside the OS temp folder.
+const FAKE_HOME = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const os = require('node:os');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const path = require('node:path');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const fs = require('node:fs');
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'origami-remote-hydrate-'));
+});
 
 // broadcastModelStatus's `engineUrl` is `resolveEngineUrl() ?? settings.apiBase`
 // (DashboardPanel.ts:5001). resolveEngineUrl() reads process.env.ORIGAMI_API_BASE
@@ -44,7 +62,7 @@ vi.mock('vscode', () => ({
 // the SAME code path (the apiBase fallback) is still exercised.
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
-  return { ...actual, homedir: () => 'C:/fakehome-remote-hydrate' };
+  return { ...actual, homedir: () => FAKE_HOME };
 });
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -80,6 +98,9 @@ beforeEach(() => { delete process.env.ORIGAMI_API_BASE; });
 afterEach(() => {
   if (savedApiBase === undefined) delete process.env.ORIGAMI_API_BASE;
   else process.env.ORIGAMI_API_BASE = savedApiBase;
+});
+afterAll(() => {
+  rmSync(FAKE_HOME, { recursive: true, force: true });
 });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -133,6 +154,14 @@ function attachPhone(
   harness.panel.attachView(view.host, 'chat');
   return sent;
 }
+
+describe('t-ysud6n: the fake homedir is a real temp dir, not a fixed C:\\ path', () => {
+  it('lives under the OS temp folder, not the drive root', () => {
+    expect(FAKE_HOME.toLowerCase().startsWith(os.tmpdir().toLowerCase())).toBe(true);
+    expect(FAKE_HOME).not.toContain('fakehome-remote-hydrate');
+    expect(existsSync(FAKE_HOME)).toBe(true);
+  });
+});
 
 describe('the SIDEBAR replay is not what changed', () => {
   it('posts exactly the message sequence the pre-change tree posted', () => {

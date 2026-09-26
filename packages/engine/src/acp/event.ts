@@ -27,6 +27,7 @@ import { ACPArtifacts } from "./artifacts"
 import { ACPFlock } from "./flock"
 import { ACPSession } from "./session"
 import { ACPAncestor } from "./ancestor"
+import { ACPAgentTree } from "./agent-tree"
 import { ACPPermission } from "./permission"
 import { ACPQuestion } from "./question"
 import { UsageService } from "./usage"
@@ -73,6 +74,8 @@ export function start(input: {
    * `globalBusEventSource` for the real one, wired in `acp/service.ts`.
    */
   events?: (options?: { signal?: AbortSignal }) => Promise<GlobalEventStream>
+  /** t-z1xlfy: see the Subscription field of the same name. */
+  roster?: (sessionId: string, cwd: string) => Promise<void>
 }) {
   const subscription = new Subscription(input)
   subscription.start()
@@ -219,11 +222,18 @@ export class Subscription {
       now?: () => number
       /** t-tc2rlo #8: see `start()`'s field of the same name. */
       events?: (options?: { signal?: AbortSignal }) => Promise<GlobalEventStream>
+      /** t-z1xlfy: read and send the chat's roster (acp/agent-tree.ts). Wired in acp/service.ts. */
+      roster?: (sessionId: string, cwd: string) => Promise<void>
     },
   ) {
     this.permission = new ACPPermission.Handler(input)
     this.question = new ACPQuestion.Handler(input)
+    this.rosterSend = input.roster ? new ACPAgentTree.RosterDebounce(input.roster) : undefined
   }
+  /** t-z1xlfy. Coalesced roster sends; undefined when nothing is wired to read one. */
+  private readonly rosterSend?: ACPAgentTree.RosterDebounce
+  /** t-z1xlfy. Last status sent per descendant background job, so an output tick sends nothing. */
+  private readonly backgroundSent = new Map<string, string>()
 
   start() {
     if (this.started) return
@@ -261,6 +271,7 @@ export class Subscription {
     this.unsubscribeArtifacts = undefined
     this.queuePending.clear()
     this.queueChains.clear()
+    this.rosterSend?.stop()
     this.abort.abort()
   }
 
@@ -451,19 +462,28 @@ export class Subscription {
     // Coalesced here and not earlier: an unregistered session must not seed the
     // map, and coalescing after the send would race.
     const registered = await Effect.runPromise(this.input.session.tryGet(sessionId)).catch(() => undefined)
-    if (!registered) return
+    if (!registered) return this.descendantStatus(sessionId)
     if (this.lastStatus.get(sessionId) === status) return
     this.lastStatus.set(sessionId, status)
     // The LABEL, not the variant object: "idle means the chat is yours again,
     // anything else means it is still going" holds for an unknown variant too.
     await send(SESSION_STATUS_METHOD, { sessionId, status }).catch(() => {})
   }
+  /** t-z1xlfy. A sub-agent at any depth started or stopped: its chat's roster is
+   *  sent again, so the map learns parent and tier of every descendant. */
+  private async descendantStatus(sessionId: string) {
+    if (!this.rosterSend) return
+    const target = await this.resolveTarget(sessionId).catch(() => undefined)
+    if (!target?.childSessionId) return
+    this.rosterSend.schedule(target.session.id, target.session.cwd)
+  }
+
   /** Last label forwarded per session - see `handleSessionStatus`. */
   private readonly lastStatus = new Map<string, string>()
 
   private async handleShellTelemetry(data: EventV2.Data<typeof ShellTelemetry.Event.Updated>) {
     const session = await Effect.runPromise(this.input.session.tryGet(data.sessionId))
-    if (!session) return
+    if (!session) return this.descendantBackground(data)
     await this.input.connection.sessionUpdate({
       sessionId: data.sessionId,
       update: {
@@ -487,6 +507,22 @@ export class Subscription {
         _meta: { origami_tool_name: "bash" },
       },
     }).catch(() => {})
+  }
+
+  /** t-z1xlfy. A sub-agent's background shell, on its chat as `origami/backgroundTask`.
+   *  Sent on a status CHANGE only: a running shell publishes telemetry per output tick. */
+  private async descendantBackground(data: EventV2.Data<typeof ShellTelemetry.Event.Updated>) {
+    const send = this.input.connection.extNotification?.bind(this.input.connection)
+    if (!send || data.state === "foreground") return
+    const key = data.jobId || data.toolCallId
+    if (this.backgroundSent.get(key) === data.status) return
+    const target = await this.resolveTarget(data.sessionId).catch(() => undefined)
+    if (!target?.childSessionId) return
+    const task = ACPAgentTree.backgroundTaskOf(target.session.id, data.sessionId, data, this.input.now?.() ?? Date.now())
+    if (!task) return
+    if (task.status === "running") this.backgroundSent.set(key, task.status)
+    else this.backgroundSent.delete(key)
+    await send(ACPAgentTree.BACKGROUND_TASK_METHOD, { ...task }).catch(() => {})
   }
 
   // Assistant messages flagged summary:true (the /compact turn). Tracked from

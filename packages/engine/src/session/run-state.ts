@@ -6,6 +6,7 @@ import { BackgroundJob } from "@/background/job"
 import { Effect, Latch, Layer, Scope, Context } from "effect"
 import { Database } from "@origami/core/database/database"
 import { StorageNestsHandover } from "@/storage/nests-handover"
+import { ElasticActivity } from "@/elastic/activity"
 import { Session } from "./session"
 import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
@@ -39,6 +40,11 @@ const layer = Layer.effect(
       Effect.fn("SessionRunState.state")(function* () {
         const scope = yield* Scope.Scope
         const runners = new Map<SessionID, Runner.Runner<SessionV1.WithParts>>()
+        // origami_change (t-w2qlop): a runner is busy from the moment a turn is
+        // admitted, before the first step writes a status.
+        yield* ElasticActivity.probeScoped("session-busy", () =>
+          [...runners].filter(([, runner]) => runner.busy).map(([id]) => id),
+        )
         yield* Effect.addFinalizer(
           Effect.fnUntraced(function* () {
             yield* Effect.forEach(runners.values(), (runner) => runner.cancel, {

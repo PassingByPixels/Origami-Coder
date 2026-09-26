@@ -5,7 +5,6 @@
 
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { createHold, HOLD_MS, TAP_MS } from './holdToStop';
-import { isDropping, nextDepth } from './composerDrop';
 import { columnOffsets, digitAt, placesOf } from './gaugeCounter';
 
 afterEach(() => vi.useRealTimers());
@@ -83,32 +82,6 @@ describe('holdToStop — a click must not kill a running turn', () => {
     hold.dispose();
     vi.advanceTimersByTime(HOLD_MS * 2);
     expect(onStop).not.toHaveBeenCalled();
-  });
-});
-
-describe('composerDrop — the hint must not strobe as the pointer crosses a child', () => {
-  it('entering a child before leaving the parent keeps the hint up', () => {
-    // enter composer, enter textarea, leave composer — the real Chrome order.
-    let d = 0;
-    d = nextDepth(d, 'enter');
-    expect(isDropping(d)).toBe(true);
-    d = nextDepth(d, 'enter');
-    d = nextDepth(d, 'leave');
-    expect(isDropping(d)).toBe(true);
-    d = nextDepth(d, 'leave');
-    expect(isDropping(d)).toBe(false);
-  });
-
-  it('a drop clears the hint outright — no closing dragleave arrives', () => {
-    const d = nextDepth(nextDepth(nextDepth(0, 'enter'), 'enter'), 'drop');
-    expect(d).toBe(0);
-    expect(isDropping(d)).toBe(false);
-  });
-
-  it('an unmatched dragleave cannot drive the depth negative', () => {
-    const d = nextDepth(nextDepth(0, 'leave'), 'leave');
-    expect(d).toBe(0);
-    expect(isDropping(nextDepth(d, 'enter'))).toBe(true);
   });
 });
 

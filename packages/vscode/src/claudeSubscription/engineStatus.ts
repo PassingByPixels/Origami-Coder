@@ -73,6 +73,10 @@ export async function fetchClaudeSubscriptionReadiness(
   return value;
 }
 
+/** t-y5ecbc: the last answer an engine gave, however old (undefined = none yet), for a
+ *  read that must not wait on a chat engine that is still starting (pickerReads.ts). */
+export const lastClaudeSubscriptionReadiness = (): ClaudeSubscriptionReadiness | undefined => cache?.value;
+
 /** Test seam: the cache is module-wide. */
 export const resetClaudeSubscriptionStatusCache = (): void => {
   cache = undefined;

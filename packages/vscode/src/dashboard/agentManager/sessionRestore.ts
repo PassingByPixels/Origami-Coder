@@ -96,7 +96,8 @@ export function planReopen(
 /** Callbacks the panel supplies to enact a plan. `reopen` returns the NEW local
  *  session id (so we can activate the right one after the loop). */
 export interface RestoreHost {
-  reopen: (engineId: string) => Promise<string>;
+  /** `title` = the stored title from the probe's listing (t-wypna7: a chat reopened without its engine shows it). */
+  reopen: (engineId: string, title?: string) => Promise<string>;
   setGrid: (grid: boolean) => void;
   activate: (localId: string) => void;
 }
@@ -106,13 +107,16 @@ export interface RestoreHost {
  *  failure returns false without disturbing the persisted set. */
 export async function restoreOpenSet(
   persisted: OpenSetState | null,
-  client: { listSessions: () => Promise<Array<{ sessionId: string }>> } | null | undefined,
+  client: { listSessions: () => Promise<Array<{ sessionId: string; title?: string }>> } | null | undefined,
   host: RestoreHost,
 ): Promise<boolean> {
   if (!persisted || !client) return false;
   let existing: Set<string>;
+  const titles = new Map<string, string>();
   try {
-    existing = new Set((await client.listSessions()).map((s) => s.sessionId));
+    const rows = await client.listSessions();
+    existing = new Set(rows.map((s) => s.sessionId));
+    for (const s of rows) if (typeof s.title === 'string' && s.title) titles.set(s.sessionId, s.title);
   } catch {
     return false;
   }
@@ -121,7 +125,7 @@ export async function restoreOpenSet(
   host.setGrid(plan.grid);
   const localByEngine = new Map<string, string>();
   for (const engineId of plan.reopen) {
-    localByEngine.set(engineId, await host.reopen(engineId));
+    localByEngine.set(engineId, await host.reopen(engineId, titles.get(engineId)));
   }
   const activeLocal = plan.active ? localByEngine.get(plan.active) : undefined;
   if (activeLocal) host.activate(activeLocal);

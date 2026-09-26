@@ -13,7 +13,10 @@ import { CLAUDE_PATH_SETTING } from './claudeCode/discoveryProbes';
 import { ensureGlobalSeeds, ensureSubagentToolDefaults } from './dashboard/seedGlobal';
 import { activateRemote } from './remote/activate';
 import { maybeShowChangelog, previewWhatsNew } from './dashboard/changelogActivate';
-import { activateHostEngine } from './dashboard/hostEngineWindow';
+import { activateHostEngine, hostEngine } from './dashboard/hostEngineWindow';
+import { activateElastic, elasticLog } from './elastic/elasticWindow';
+import { migrateParkDefaults, PARK_DEFAULTS_MARKER, vscodeParkScopes } from './elastic/parkDefaults';
+import { activateWarmSpare } from './elastic/warmSpareWindow';
 import { ensureClaudeSubscriptionConsent, watchClaudeSubscriptionSetting } from './claudeSubscriptionConsent';
 import { ensureClaudeSubscriptionBlockCleanup } from './dashboard/firstFold';
 
@@ -28,6 +31,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // t-sh7cog: host features read the engine with no chat open. Nothing spawns here;
   // this gives the Nests hub its engine and closes that engine with the window.
   activateHostEngine(context);
+  // t-w2qv3o: engine activity classes (active / background / idle) and idle trims; the host engine is tracked too.
+  activateElastic(context, hostEngine);
+  activateWarmSpare(context); // t-w2u2ki: one warm spare engine per window
   // t-vd9s7z: find Claude Code now, in the background; the engine reads the result from a file. No spawn waits.
   probeClaudeCliInBackground();
 
@@ -76,6 +82,17 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   } catch (e) {
     console.warn('[origami] claude-subscription block clean-up skipped:', e instanceof Error ? e.message : e);
+  }
+
+  // t-ze0hwh: the park defaults are now 20 min. Once per install, a stored OLD default (60 timed, 120
+  // untimed) moves to 20 at each scope where it is set; any other value stays. Never blocks activation.
+  try {
+    void migrateParkDefaults({
+      get: () => context.globalState.get<boolean>(PARK_DEFAULTS_MARKER),
+      set: (v) => void context.globalState.update(PARK_DEFAULTS_MARKER, v),
+    }, vscodeParkScopes(), elasticLog).catch((e) => elasticLog(`park defaults skipped: ${e instanceof Error ? e.message : String(e)}`));
+  } catch (e) {
+    elasticLog(`park defaults skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   // Claude (subscription, experimental): the setting's one-time disclosure

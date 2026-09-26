@@ -16,6 +16,7 @@ import { CollabSystem } from "@/collab/collab-system"
 import { FlockTools } from "@/collab/flock-tools"
 import { SessionVision } from "./vision"
 import { SessionToolAging } from "./tool-aging"
+import { SessionRequestMemory } from "./request-memory"
 import { usable } from "./overflow"
 import { VisionRequest } from "@/tool/vision-request"
 import { FlockHealth } from "@/flock/health"
@@ -46,6 +47,7 @@ import { NamedError } from "@origami/core/util/error"
 import { SessionProcessor } from "./processor"
 import { SessionContinueNudge } from "./continue-nudge" // origami_change (t-3mxbyh)
 import { SessionChildTodoNudge } from "./child-todo-nudge" // origami_change (t-v4qvq1)
+import { SessionPlanExitNudge } from "./plan-exit-nudge" // origami_change (t-xsufpe)
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { writeSessionPermission } from "./permission-write"
@@ -1531,6 +1533,31 @@ const layer = Layer.effect(
     })
     // origami_change-end
 
+    // origami_change-start (t-xsufpe: plan exit nudge)
+    /** The plan exit nudge's turn. Same shape as `childTodoNudge` below. */
+    const planExitNudge = Effect.fn("SessionPrompt.planExitNudge")(function* (lastUser: SessionV1.User, text: string) {
+      const message: SessionV1.User = {
+        id: MessageID.ascending(),
+        sessionID: lastUser.sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent: lastUser.agent,
+        model: lastUser.model,
+      }
+      yield* sessions.updateMessage(message)
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: message.sessionID,
+        type: "text",
+        text,
+        synthetic: true,
+        metadata: { [SessionPlanExitNudge.METADATA_KEY]: "1" },
+      } satisfies SessionV1.TextPart)
+      yield* Effect.logInfo("plan exit nudge injected", { "session.id": message.sessionID })
+    })
+    // origami_change-end
+
     // origami_change-start (t-v4qvq1: child todo nudge)
     /** The child todo nudge's turn. Same shape as `continueNudge` above: a new
      *  synthetic user message appended at the end, agent and model copied. */
@@ -1669,6 +1696,9 @@ const layer = Layer.effect(
         // origami_change (t-v4qvq1): child todo nudges sent in this turn.
         let childNudges = 0
         let sawToolCall = false
+        // origami_change (t-xsufpe): plan exit nudges sent, and tools called, in this turn.
+        let planNudges = 0
+        const turnTools: string[] = []
         // origami_change (t-tc20mj): the last step was refused for size and
         // compacted; cleared by the next step that is not refused.
         let overflowCompacted = false
@@ -1712,6 +1742,9 @@ const layer = Layer.effect(
           // turn's assistant message - which is what `lastAssistantMsg` holds on
           // the first pass, before any step has run - can never seed it.
           if (hasToolCalls && lastAssistant && lastUser.id < lastAssistant.id) sawToolCall = true
+          // origami_change (t-xsufpe): the tool names this step called, for the plan exit nudge.
+          if (hasToolCalls && lastAssistant && lastUser.id < lastAssistant.id)
+            for (const part of lastAssistantMsg?.parts ?? []) if (part.type === "tool") turnTools.push(part.tool)
           // origami_change-end
 
           // origami_change-start (bounded unknown-continue)
@@ -1785,6 +1818,25 @@ const layer = Layer.effect(
               yield* continueNudge(lastUser, nudges, verdict.kind)
               continue
             }
+            // origami_change-start (t-xsufpe: plan exit nudge)
+            // A plan turn that ends in text without plan_exit is asked once to
+            // write the plan file and call plan_exit. Conditions: plan-exit-nudge.ts.
+            const planVerdict = SessionPlanExitNudge.decide({
+              agent: lastUser.agent,
+              planMode: flags.experimentalPlanMode,
+              finish: lastAssistant.finish,
+              hasToolCallThisStep: hasToolCalls,
+              summaryOrError: lastAssistant.summary === true || lastAssistant.error !== undefined,
+              prose: assistantProse(lastAssistantMsg),
+              toolsThisTurn: turnTools,
+              nudges: planNudges,
+            })
+            if (planVerdict.nudge) {
+              planNudges++
+              yield* planExitNudge(lastUser, SessionPlanExitNudge.text(Session.plan(session, ctx)))
+              continue
+            }
+            // origami_change-end
             // origami_change-start (t-v4qvq1: child todo nudge)
             // A sub-agent that stops with its own list open. The list is read
             // only for a child, so a primary turn end costs no extra query.
@@ -1854,6 +1906,11 @@ const layer = Layer.effect(
           const { finished: lastFinished, tasks } = MessageV2.latest(msgs)
 
           step++
+          // t-w2qb1x: the session's request memory (tool aging, refused knobs,
+          // image cap, window-fit ratio) is read below by compaction and by the
+          // step itself; load it if this process does not hold it (a restart,
+          // or an LRU that dropped it). One map lookup per store when it does.
+          yield* SessionRequestMemory.ensure(database.db, sessionID)
           if (step === 1)
             yield* title({
               session,
@@ -2097,12 +2154,21 @@ const layer = Layer.effect(
               const tokens = lastFinished.tokens
               agingBoundary = limit > 0 && tokens.input + tokens.cache.read > limit / 2
             }
+            // t-w2qb1x: loaded again right before `plan`, since the tools
+            // above can run long enough for other sessions to push this one out
+            // of the aging LRU; and a commit is written at once, not at the send.
+            // t-wdyp7r: a failed read leaves the stored decisions unread. A plan
+            // then would decide from scratch and write that on top of them, a
+            // set no process ever sent; so this step sends no rewrite, keeps the
+            // store empty, and the next step reads again.
+            const held = yield* SessionRequestMemory.ensure(database.db, sessionID)
             const aging = SessionToolAging.plan({
               sessionID,
               messages: msgs,
               boundary: agingBoundary,
-              enabled: !flags.disableToolAging,
+              enabled: !flags.disableToolAging && held,
             })
+            yield* SessionRequestMemory.flush(database.db, sessionID)
             if (agingBoundary && !flags.disableToolAging)
               yield* Effect.logInfo("tool aging", {
                 "session.id": sessionID,
@@ -2343,7 +2409,13 @@ const layer = Layer.effect(
       const result = yield* state.ensureRunning(
         input.sessionID,
         lastAssistant(input.sessionID),
-        runLoop(input.sessionID).pipe(Effect.ensuring(summarizeTurn(input.sessionID))),
+        runLoop(input.sessionID).pipe(
+          // t-wdyp7r: what the turn decided and did not write yet (a refused knob
+          // or an image cap learned by a retry that never ran) is written at the
+          // turn end, so an idle session has nothing queued when it is parked.
+          Effect.ensuring(SessionRequestMemory.flush(database.db, input.sessionID)),
+          Effect.ensuring(summarizeTurn(input.sessionID)),
+        ),
       )
       yield* goalDeps(input.sessionID)
         .pipe(

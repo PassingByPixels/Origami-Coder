@@ -16,6 +16,8 @@ import { overflowCheck, fixedFloor } from "./overflow"
 import { PartID } from "./schema"
 import { SessionPromptCapture } from "./prompt-capture"
 import { SessionWindowFit } from "./window-fit"
+import { SessionRequestMemory } from "./request-memory"
+import { SessionRestorePrefix } from "./restore-prefix"
 import { SessionCachePolicy } from "./cache-policy"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
@@ -657,9 +659,16 @@ const layer = Layer.effect(
               tokens: usage.tokens,
               model: ctx.model,
             })
+            // t-w2txb2: a restore that changed the prefix, named in the log too.
+            if (cache?.cause === "stopped")
+              yield* Effect.logInfo("restore-drift", {
+                "session.id": ctx.sessionID,
+                halves: (cache.stopped ?? []).join(","),
+              })
             // origami_change-end
+            const finishID = PartID.ascending()
             yield* session.updatePart({
-              id: PartID.ascending(),
+              id: finishID,
               reason: value.reason,
               snapshot: completedSnapshot,
               messageID: ctx.assistantMessage.id,
@@ -679,6 +688,12 @@ const layer = Layer.effect(
               ...(cache ? { cache } : {}),
               ...(ctx.ttftMs === undefined ? {} : { ttftMs: ctx.ttftMs }),
             })
+            // t-wdyp7r: the step end writes what the step taught (the window-fit
+            // ratio `observe` queued above) and the mark that makes this part the
+            // restore seed, so a turn that ends here leaves nothing unwritten: a
+            // park, a crash or a close right after the reply loses no decision.
+            if (prefix) SessionRestorePrefix.mark(ctx.sessionID, finishID)
+            yield* SessionRequestMemory.flush(database.db, ctx.sessionID)
             yield* session.updateMessage(ctx.assistantMessage)
             // The composer's warm badge (t-rylyhm). The RAW count, not
             // `usage.tokens.cache.read`: `getUsage` floors an absent figure to
@@ -1137,6 +1152,7 @@ function cacheBlock(input: {
     ...(facts.idleMs === undefined ? {} : { idleMs: facts.idleMs }),
     ...(facts.ttlSeconds === undefined ? {} : { ttlSeconds: facts.ttlSeconds }),
     ...(facts.warmed === undefined ? {} : { warmed: facts.warmed }),
+    ...(facts.stopped === undefined ? {} : { stopped: [...facts.stopped] }),
   }
 }
 // origami_change-end

@@ -4,7 +4,7 @@
   // this slim header; it carries the count, a Compare button, and — once any
   // sibling has been merged (a clean apply-to-main) — "Prune rest" to discard the
   // losing siblings. S6d: Compare no longer toggles an in-column numbers table
-  // (Passing's UAT: it didn't let him SEE the difference); it posts amOpenCompare,
+  // (the owner's UAT: it didn't let him SEE the difference); it posts amOpenCompare,
   // which opens a real side-by-side diff SCREEN in its own editor tab (one per
   // group, reused on re-click). The member CARDS still render in the pane.
 

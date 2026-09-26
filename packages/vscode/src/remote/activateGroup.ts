@@ -29,7 +29,7 @@ export interface DeviceGroupDeps {
   nestsEnabled: () => boolean;
   os: DeskOs;
   deps: TransportDeps;
-  claim: (rid: string) => Promise<boolean>;
+  claim: (rid: string, onFree?: () => void) => Promise<boolean>;
   /** This machine's name in the roster the other desks draw. */
   deviceName: string;
   onStatus: (text: string) => void;

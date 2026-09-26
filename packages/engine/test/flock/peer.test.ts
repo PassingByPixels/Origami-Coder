@@ -53,7 +53,7 @@ const echo = (store: FlockStore.Store, text = "the answer", tokens = 120): Flock
     const identity = store.identity()
     return FlockCard.build({
       identity,
-      specialties: ["MOT rules"],
+      specialties: ["tax rules"],
       policy: FlockPolicy.resolve({ config: { model: "test/fake", dailyBudgetTokens: 200_000 } }),
       signPrivateKey: identity.sign.privateKey,
     })
@@ -80,7 +80,7 @@ describe("a question crossing between two Origamis", () => {
     alice.peer.start()
     bob.peer.start()
 
-    const answer = await alice.peer.ask(bobStore.identity().handle, "what does the MOT check?", 5000)
+    const answer = await alice.peer.ask(bobStore.identity().handle, "what does the tax form cover?", 5000)
 
     expect(answer.ok).toBe(true)
     expect(answer.from).toBe(bobStore.identity().handle)
@@ -293,7 +293,7 @@ describe("flock_who", () => {
 
     const card = await alice.peer.who("bob", 5000)
     expect(card.handle).toBe(bobStore.identity().handle)
-    expect(card.specialties).toEqual(["MOT rules"])
+    expect(card.specialties).toEqual(["tax rules"])
     expect(card.availability).toBe("answers on approval, up to 200000 tokens/day")
     expect(FlockCard.verify(card, bobStore.identity().signPublicKey)).toBe(true)
   })

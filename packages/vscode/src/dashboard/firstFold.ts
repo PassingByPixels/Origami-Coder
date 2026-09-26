@@ -210,7 +210,7 @@ export function needsFirstFold(cwd: string): boolean {
   return !fs.existsSync(path.join(cwd, 'AGENTS.md'));
 }
 
-/** Seeded wiki/index.md — explains the wiki concept (Passing asked for this primer). */
+/** Seeded wiki/index.md — explains the wiki concept (the owner asked for this primer). */
 function wikiIndexMd(): string {
   return `# Wiki Index
 

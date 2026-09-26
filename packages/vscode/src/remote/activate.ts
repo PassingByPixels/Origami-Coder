@@ -17,6 +17,7 @@ import { syncRemoteEnabledContext } from './remoteEnabledContext';
 import { RemoteController, type RemoteConfig } from './remoteController'; import { readCapability } from './remoteVerbs';
 import { registerRemoteSeq } from './seqStore';
 import type { RemoteSocket, TransportDeps } from './transport';
+import { setPhoneFocus } from '../elastic/elasticWindow';
 
 export function readRemoteConfig(): RemoteConfig {
   const c = vscode.workspace.getConfiguration('origamicoder.remote');
@@ -60,8 +61,9 @@ export function activateRemote(context: vscode.ExtensionContext): vscode.Disposa
       // No dashboard yet = no hydration; the phone's next remote/snapshot picks it up.
       attach: (host) => DashboardPanel.current?.attachView(host, 'chat'),
       onStatus: (text) => { noteRemoteStatus(text); if (text === 'remote: phone paired') notifyRemotePaired(); },
-      claim: (rid) => claimLease(rid),
+      claim: claimLease, // t-xum9r8: with the retry callback
       deviceName: vscode.workspace.name ?? 'Origami Code',
+      onPhoneFocus: setPhoneFocus, // t-w2qv3o: a chat open on the phone is active
     });
     return controller;
   };
@@ -91,7 +93,8 @@ export function activateRemote(context: vscode.ExtensionContext): vscode.Disposa
   // relay allows one socket per role per rid, so they evicted each other. The
   // lease lives in globalState; the beat is a no-op in a window holding nothing.
   registerOwnerLease(context.globalState, `${process.pid}-${Math.random().toString(36).slice(2, 8)}`, {
-    onLost: () => {
+    onLost: (rid) => {
+      if (rid !== controller?.rid) return; // t-xum9r8: the lease holds desk-link rids too; only the phone's is this
       noteRemoteStatus('remote: this pairing is active in another window');
       controller?.dispose();
     },

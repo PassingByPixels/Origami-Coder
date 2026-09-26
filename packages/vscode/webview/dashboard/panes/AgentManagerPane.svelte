@@ -208,6 +208,7 @@
           details = { ...details, [root]: {
             worktrees: Array.isArray(msg.worktrees) ? msg.worktrees : [],
             branches: Array.isArray(msg.branches) ? msg.branches : [],
+            loaded: true,
           } };
         }
       } else if (msg.type === 'modelOptions') {

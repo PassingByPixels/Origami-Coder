@@ -2,6 +2,7 @@ export * as FlockBoot from "./boot"
 
 import { Effect } from "effect"
 import { AppRuntime } from "@/effect/app-runtime"
+import { ElasticState } from "@/elastic/state"
 import { InstanceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { SessionPrompt } from "@/session/prompt"
@@ -133,17 +134,28 @@ export function waitForFile(deps: WaitDeps): FlockService.Handle {
     inner = deps.begin()
   }
 
+  // origami_change (t-w2qlop): on the heartbeat cadence while the engine is
+  // active, every ElasticState.REST_MIN_MS while it rests. This poll runs in
+  // EVERY engine of a machine with no `flock.json` - the default - so at the
+  // heartbeat it was one of the two 5 s wake-ups of every idle engine.
+  const pollMs = (): number => ElasticState.period(FlockOwnerLease.HEARTBEAT_MS)
+
   const tick = (): void => {
     check()
     // The poll STOPS once the service exists — it owns the beat from there, and
     // a second timer asking "is the file there" for ever would be work done to
     // reach an answer that can no longer change.
     if (inner || stopped) return
-    timer = deps.setTimer(tick, FlockOwnerLease.HEARTBEAT_MS)
+    timer = deps.setTimer(tick, pollMs())
   }
 
   const idle = FlockService.idleHandle("no-flock-file")
-  timer = deps.setTimer(tick, FlockOwnerLease.HEARTBEAT_MS)
+  timer = deps.setTimer(tick, pollMs())
+  const unfollow = ElasticState.onChange(() => {
+    if (inner || stopped) return
+    deps.clearTimer(timer)
+    timer = deps.setTimer(tick, pollMs())
+  })
 
   return {
     get active() {
@@ -172,6 +184,7 @@ export function waitForFile(deps: WaitDeps): FlockService.Handle {
     },
     stop: () => {
       stopped = true
+      unfollow()
       deps.clearTimer(timer)
       timer = null
       inner?.stop()

@@ -22,15 +22,18 @@ export function toPermissionMode(modeId: string | undefined): PermissionMode {
   }
 }
 
-/** Phase C2 (bypass) + t-dih1p7 (auto) — banner copy. Empty for `default`,
- *  `bypass` and now `auto` too: `/auto` and `/bypass` ride `MODE_COMMANDS`
+/** Phase C2 (bypass) + t-dih1p7 (auto) + t-y5ec3s (plan) — banner copy. Empty
+ *  for every mode: `/plan`, `/auto` and `/bypass` all ride `MODE_COMMANDS`
  *  (DashboardPanel.ts) through `setSessionMode`, which posts `modeUpdate` and
  *  lands in InputBar.svelte's `permissionMode`, rendering its own
- *  `mode-badge` (InputBar.svelte ~819) — so that badge is already the
- *  on-screen signal and a full-width banner saying the same thing was a
- *  duplicate. Only `plan` has no other chrome, so it still renders. */
-export function permBannerCopy(mode: PermissionMode): string {
-  return mode === 'plan' ? '🟦 PLAN MODE — sticky. Every turn enters plan-mode. Type /default to exit.' : '';
+ *  `mode-badge` (InputBar.svelte ~893, the "Plan: on" toggle at ~495) — so
+ *  that badge is already the on-screen signal and a full-width banner saying
+ *  the same thing was a duplicate (8f56fec784 dropped bypass and auto this
+ *  way; plan's last-remaining case had the same duplicate, plus it painted
+ *  on views that do not display the session it is for — the sidebar showing
+ *  a background chat's plan mode). */
+export function permBannerCopy(_mode: PermissionMode): string {
+  return '';
 }
 /** Per-session mode tracking. Per-session because the banner must follow the
  *  FOCUSED tab — a workspace singleton would show a background chat's plan

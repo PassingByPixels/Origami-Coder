@@ -15,14 +15,13 @@
   // act worth remembering. `listOpen` (the row list) is plain local $state
   // and no longer resets between fan-outs, so settled rows persist.
   //
-  // Two groups, Running and Complete, so a settled agent still gets a row
-  // instead of vanishing from the roster; an empty band draws nothing. The
-  // Complete band is a HISTORY (t-h8gv8w): nothing sweeps it and there is no
-  // bulk clear, only the per-row × the owner presses on purpose.
+  // Bands Running / Failed / Done (t-yyz57i; Done was "Complete"); an empty band
+  // draws nothing. Done is a HISTORY (t-h8gv8w): only the per-row × clears it.
   //
   // The EDGE HANDLE left for SubagentTab.svelte (t-dclj7z) when the panel head
   // gained the agent-map button.
-  import { rosterSummary } from '../panes/subagentFormat';
+  import { isFailedState } from '../panes/subagentCard';
+  import SubagentCounts from './SubagentCounts.svelte';
   import { groupSubagents } from '../panes/subagentRows';
   import type { SubagentDrawerProps } from '../panes/subagentProps';
   import SubagentGroup from './SubagentGroup.svelte';
@@ -35,7 +34,8 @@
 
   const groups = $derived(groupSubagents(rows));
   const running = $derived(rows.filter((r) => r.state === 'running').length); // not the band: it holds queued too
-  const summary = $derived(rosterSummary(rows));
+  const failed = $derived(groups.complete.filter((r) => isFailedState(r.state)));
+  const done = $derived(groups.complete.filter((r) => !isFailedState(r.state)));
 
   // Collapsed by default — see the header comment above.
   let listOpen = $state(false);
@@ -74,7 +74,7 @@
         <button class="sa-head" aria-expanded={listOpen} onclick={() => (listOpen ? userCollapse(() => (listOpen = false)) : (listOpen = true))}>
           <span class="sa-head-chevron" aria-hidden="true">{listOpen ? '▾' : '▸'}</span>
           <span class="sa-title">Sub-agents</span>
-          <span class="sa-count">{summary}</span>
+          <SubagentCounts {rows} />
         </button>
         <!-- The map is offered from the PULL-OUT rather than from the chat's
              own chrome: it is a view OF this roster, so it belongs to the
@@ -89,9 +89,10 @@
           <!-- Stop reaches the RUNNING band only; the Complete band below gets no
                `onStop`, so a settled row cannot draw a control over a dead job. -->
           <SubagentGroup label="Running" rows={groups.running} {onDismiss} {onOpen} {onStop} {limitMs} />
+          <SubagentGroup label="Failed" rows={failed} {onDismiss} {onOpen} {limitMs} />
           <SubagentGroup
-            label="Complete"
-            rows={groups.complete}
+            label="Done"
+            rows={done}
             collapsed={!completeOpen}
             onToggleCollapse={() => (completeOpen = !completeOpen)}
             {onDismiss}
@@ -161,7 +162,6 @@
   }
   .sa-head-chevron { flex: 0 0 auto; font-size: 8px; color: var(--og-text-muted); }
   .sa-title { font-size: 10.5px; font-weight: 600; color: var(--og-text); }
-  .sa-count { font-size: 9px; color: var(--og-text-muted); }
   .sa-map-btn {
     flex: 0 0 auto;
     background: none; border: none; padding: 0 2px; border-radius: 3px;

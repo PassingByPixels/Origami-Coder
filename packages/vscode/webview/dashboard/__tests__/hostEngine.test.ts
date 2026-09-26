@@ -227,22 +227,32 @@ describe('the skills pane with no chat open', () => {
 // invariant a plausible edit breaks, with the bug it would let through.
 describe('DashboardPanel wiring (source guards)', () => {
   const src = read('src/dashboard/DashboardPanel.ts');
-  it('exactly ONE place starts the host engine: the request gate, after boot, with no engine at all', () => {
+  // t-w2qv3o: host reads (hostReads.ts) may also start it, but only with a chat open (elasticHostReads.test.ts).
+  it('exactly ONE place in the panel starts the host engine directly: the request gate, after boot, with no engine at all', () => {
     expect(src.match(/hostEngine\.ensure\(/g)).toHaveLength(1);
     expect(src).toMatch(/if \(this\.booted && !this\.engineClient\(\) && typeof m\.type === 'string' && HOST_ENGINE_MESSAGE_TYPES\.has\(m\.type\)\) await hostEngine\.ensure\(\);/);
     // Boot is flagged only once initialize() has made (and maybe retired) its boot chat.
     expect(src).toMatch(/this\.restoring = false; this\.saveOpen\(\); this\.booted = true;/);
   });
   it('no host read resolves the chat inline any more (a site left on the old pick answers "Open a chat first" with no chat)', () => {
-    expect(src.match(/getActiveSession\(\) \?\? \[\.\.\.this\.sessions\.values\(\)\]\[0\]/g)).toHaveLength(3); // chatClient + the two per-chat reads
-    expect(src).toMatch(/private chatClient\(\): AcpClient \| undefined \{ return \(this\.getActiveSession\(\) \?\? \[\.\.\.this\.sessions\.values\(\)\]\[0\]\)\?\.client; \}/);
+    expect(src.match(/getActiveSession\(\) \?\? \[\.\.\.this\.sessions\.values\(\)\]\[0\]/g)).toHaveLength(2); // the two per-chat reads
+    // t-w2txb2: the active chat, else any chat, whose engine is not PARKED (a parked one is not woken for a host read)
+    expect(src).toMatch(/private chatClient\(\): AcpClient \| undefined \{ const up = \(s\?: Session\) => \(s && s\.gate\?\.current !== 'parked' \? s\.client : undefined\); return up\(this\.getActiveSession\(\)\) \?\? \[\.\.\.this\.sessions\.values\(\)\]\.map\(up\)\.find\(Boolean\); \}/);
     expect(src).toMatch(/cacheStatsPayload\(session\?\.client\)/);
     expect(src).toMatch(/promptCapturePayload\(session\?\.client\)/);
   });
-  it('the background sampler reads without spawning; the nest route hands the hub the host adapter', () => {
-    expect(src).toMatch(/startUsageSampling\(glidepathHost\(this\.context, \(\) => this\.engineArg\(\)/);
+  // t-w2qv3o: host timers and store scans never read a HIDDEN chat's engine (hostReads.ts); collabs use the host engine only.
+  it('the background sampler and storage read through hostReadArg; collabs through the host engine; the hub keeps the host adapter', () => {
+    expect(src).toMatch(/startUsageSampling\(glidepathHost\(this\.context, \(\) => this\.hostReadArg\(\)/);
+    expect(src).toMatch(/handleGlidepathMessage\(glidepathHost\(this\.context, \(\) => this\.hostReadArg\(\)/); // the view's own trigger, same rule
+    expect(src).toMatch(/private hostReadArg\(\): \{ client\?: ReadClient \} \{ return hostReadArg\(hostEngine, \(\) => this\.sessions\.size > 0, pokeElastic\); \}/);
+    expect(src).toMatch(/handleStorageMessage\(\{ \.\.\.this\.hostReadArg\(\), post:/);
+    expect(src).toMatch(/collabClient: \(\) => hostOnlyClient\(hostEngine, pokeElastic\),/);
+    expect(src).toMatch(/collabListClient: \(\) => this\.hostReadArg\(\)\.client,/);
+    expect(src).toMatch(/collabWatchClient: \(\) => hostEngine\.ownClient\(\) \?\? hostEngine\.current\(\),/);
+    expect(src).toMatch(/promptCaptureFor: \(sessionId\) => promptCaptureForSession\(hostOnlyClient\(hostEngine\), sessionId\)/);
     expect(src).toMatch(/engine: \(\) => hostEngine\.nestEngine,/);
-    expect(src).toMatch(/hostEngine\.setChats\(this, \(\) => this\.chatClient\(\)\);/);
+    expect(src).toMatch(/hostEngine\.setChats\(this, \(\) => onScreenClient\(elasticPanel, windowSignals\)\);/);
     expect(src).toMatch(/hostEngine\.releaseChats\(this\);/);
   });
   it('the Flock host offers the host engine as a route (t-vbj03h: without it the pane shows "another window" for this one)', () => {

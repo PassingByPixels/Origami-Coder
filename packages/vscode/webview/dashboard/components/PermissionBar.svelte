@@ -1,6 +1,7 @@
 <script lang="ts">
   import PermissionTextEntry from './PermissionTextEntry.svelte';
   import { isQuestionShaped, otherOption } from './permissionOptions';
+  import { enterOption, escOption, trayKeyAnswer } from './trayKeys';
 
   interface Props {
     title: string;
@@ -26,9 +27,13 @@
      *  not care) means no button at all — this is a control, not a decoration,
      *  and one that renders without a handler is a lie about what a click does. */
     onYolo?: () => void;
+    /** t-yyz5qi: Enter = Allow once, Esc = Reject (trayKeys.ts). Only the chat in
+     *  focus takes keys — in the grid every cell has a tray, and one key press
+     *  must answer one ask. Off by default. */
+    keys?: boolean;
   }
 
-  let { title, options, action, target, command, waiting = 0, onChoice, onYolo }: Props = $props();
+  let { title, options, action, target, command, waiting = 0, onChoice, onYolo, keys = false }: Props = $props();
 
   // When the target IS the command (the workdir-less fallback populated it),
   // don't render it twice — the command block below carries it.
@@ -53,9 +58,25 @@
     else if (entry === 'other' && other) onChoice(other.optionId, undefined, text);
     entry = null;
   }
+
+  const enterId = $derived(enterOption(options)?.optionId);
+  const escId = $derived(escOption(options)?.optionId);
+  function onKey(e: KeyboardEvent) {
+    if (!keys || entry) return;
+    const id = trayKeyAnswer(e, options);
+    if (id === null) return;
+    e.preventDefault();
+    onChoice(id);
+  }
 </script>
 
-<div class="permission-bar">
+<svelte:window onkeydown={onKey} />
+
+<!-- t-yyz5qi (mockup B): the ask rises as one tray out of the composer's top
+     edge, amber, with a slow travelling line: waiting on you, not working. -->
+<div class="permission-bar tray" role="alertdialog" aria-label="Permission request">
+  {#if waiting > 0}<span class="tray-stack" aria-hidden="true"></span>{/if}
+  <span class="tray-travel" aria-hidden="true"></span>
   <div class="permission-title">
     <span>{title || 'Approve tool call?'}</span>
     {#if waiting > 0}<span class="perm-queue" title="{waiting} more waiting behind this one">1 of {waiting + 1}</span>{/if}
@@ -63,7 +84,7 @@
   {#if action || showTarget}
     <div class="permission-context">
       {#if action}<span class="perm-action">{action}</span>{/if}
-      {#if showTarget}<span class="perm-target" title={target}>{target}</span>{/if}
+      {#if showTarget}<span class="perm-target" title={target}><bdi dir="ltr">{target}</bdi></span>{/if}
     </div>
   {/if}
   {#if command}
@@ -85,7 +106,9 @@
         <button
           class="perm-btn"
           class:deny={opt.kind === 'reject_once' && opt.name !== 'Revise'}
+          class:yes={opt.kind === 'allow_once' && !isQuestion}
           class:revise={opt.name === 'Revise'}
+          data-key={keys && !isQuestion ? (opt.optionId === enterId ? 'Enter' : opt.optionId === escId ? 'Esc' : null) : null}
           onclick={() => {
             if (opt.name === 'Revise') entry = 'revise';
             else if (other && opt.optionId === other.optionId) entry = 'other';
@@ -111,130 +134,77 @@
 </div>
 
 <style>
+  /* The tray. It sits under the composer's stacking layer (.input-area is
+     z-index 3), so the rise reads as coming out of the composer's top edge. */
   .permission-bar {
-    padding: 10px 12px;
-    background: var(--og-surface);
-    border-top: 2px solid var(--og-warning);
-    flex-shrink: 0;
+    position: relative; z-index: 2; flex-shrink: 0;
+    margin: 0 12px -1px; padding: 10px 12px 9px;
+    border: 1px solid color-mix(in srgb, var(--og-warning) 50%, var(--og-border)); border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    background: color-mix(in srgb, var(--og-warning) 6%, var(--og-surface));
+    box-shadow: 0 -8px 24px -12px rgba(0, 0, 0, 0.6);
+    animation: tray-rise 420ms cubic-bezier(0.23, 1, 0.32, 1);
   }
+  @keyframes tray-rise { from { transform: translateY(100%); clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+  /* Half-speed travelling line along the top edge (3.6 s): waiting, not working. */
+  .tray-travel { position: absolute; left: 10px; right: 10px; top: 0; height: 1px; overflow: hidden; }
+  .tray-travel::after {
+    content: ''; position: absolute; inset: 0 auto 0 0; width: 34%; background: var(--og-warning);
+    animation: tray-travel 3.6s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  }
+  @keyframes tray-travel { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  /* Queued asks: a thin card edge behind the tray. */
+  .tray-stack {
+    position: absolute; left: 10px; right: 10px; top: -5px; height: 5px; border-radius: 8px 8px 0 0;
+    border: 1px solid var(--og-border); border-bottom: 0; background: var(--og-surface);
+  }
+  @media (prefers-reduced-motion: reduce) { .permission-bar, .tray-travel::after { animation: none; } }
 
   .permission-title {
-    font-weight: 600;
-    font-size: 12px;
-    margin-bottom: 8px;
-    color: var(--og-text);
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
+    display: flex; align-items: baseline; gap: 6px; margin-bottom: 7px;
+    font-weight: 500; font-size: 12px; color: var(--og-text);
   }
-
   .perm-queue {
-    flex-shrink: 0;
-    font-weight: 600;
-    font-size: 9.5px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    color: var(--og-warning);
-    border: 1px solid var(--og-warning);
+    flex-shrink: 0; font-weight: 600; font-size: 9.5px; padding: 1px 6px; border-radius: 3px;
+    color: var(--og-warning); border: 1px solid var(--og-warning);
   }
-
-  .permission-context {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
-    font-size: 11px;
-    min-width: 0;
-  }
-
+  .permission-context { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; font-size: 11px; min-width: 0; }
   .perm-action {
-    flex-shrink: 0;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    font-weight: 600;
-    font-size: 9.5px;
-    padding: 1px 6px;
-    border-radius: 3px;
-    background: var(--og-btn-bg);
-    color: var(--og-text-muted);
-    border: 1px solid var(--og-border);
+    flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; font-size: 9.5px;
+    padding: 1px 6px; border-radius: 3px; background: var(--og-btn-bg); color: var(--og-text-muted); border: 1px solid var(--og-border);
   }
-
   .perm-target {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
-    color: var(--og-text);
-    font-family: var(--vscode-editor-font-family, monospace);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+    color: var(--og-text); font-family: var(--vscode-editor-font-family, monospace);
   }
-
   /* The literal command — shown in full: wraps, and scrolls if it's very long,
      rather than being truncated to a useless single line. */
   .perm-command {
-    margin: 0 0 8px 0;
-    padding: 6px 8px;
-    max-height: 96px;
-    overflow: auto;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 11.5px;
-    line-height: 1.4;
-    color: var(--og-text);
-    background: var(--og-input-bg);
-    border: 1px solid var(--og-border);
-    border-radius: 4px;
-    white-space: pre-wrap;
-    word-break: break-word;
+    margin: 0 0 8px 0; padding: 6px 8px; max-height: 96px; overflow: auto;
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; line-height: 1.4;
+    color: var(--og-text); background: var(--og-bg); border: 1px solid var(--og-border); border-radius: 6px;
+    white-space: pre-wrap; word-break: break-word;
   }
-
-  .permission-buttons {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
+  .permission-buttons { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .perm-btn {
-    padding: 5px 12px;
-    font-size: 12px;
-    cursor: pointer;
-    border: 1px solid var(--og-border);
-    background: var(--og-btn-bg);
-    color: var(--og-btn-text);
-    border-radius: 3px;
-    font-family: inherit;
+    padding: 2px 10px; font: inherit; font-size: 11.5px; cursor: pointer; border-radius: 6px;
+    border: 1px solid var(--og-border); background: var(--og-bg); color: var(--og-text-secondary);
+    transition: transform 160ms ease, border-color 160ms ease;
   }
-
-  .perm-btn:hover {
-    background: var(--og-btn-hover);
-  }
-
-  .perm-btn.deny {
-    background: rgba(248, 113, 113, 0.15);
-    color: var(--og-error);
-    border-color: var(--og-error);
-  }
-
-  .perm-btn.deny:hover {
-    background: rgba(248, 113, 113, 0.25);
-  }
-
-  .perm-btn.revise {
-    border-color: var(--og-chat);
-    color: var(--og-chat);
-  }
-
+  .perm-btn:hover { border-color: var(--og-text-muted); color: var(--og-text); }
+  .perm-btn:active { transform: scale(0.97); }
+  .perm-btn.yes { border-color: color-mix(in srgb, var(--og-warning) 60%, transparent); color: var(--og-warning); }
+  .perm-btn.deny { color: var(--og-error); border-color: color-mix(in srgb, var(--og-error) 50%, var(--og-border)); }
+  .perm-btn.revise { border-color: var(--og-chat); color: var(--og-chat); }
+  /* The key hint, outside the button's text so its label stays exact. */
+  .perm-btn[data-key]::after { content: attr(data-key); font-size: 9.5px; opacity: 0.6; margin-left: 5px; }
   /* Pushes YOLO to the far right, away from the option the user actually came
      here to press. The row wraps, so this is `flex: 1` on a spacer rather than
      `margin-left: auto` — a wrapped row would otherwise strand the button
      alone at the top. */
   .perm-spacer { flex: 1 1 auto; min-width: 8px; }
-
   .perm-btn.yolo {
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    font-weight: 600; letter-spacing: 0.04em; color: var(--og-error);
+    background: color-mix(in srgb, var(--og-error) 14%, var(--og-bg)); border-color: var(--og-error);
   }
-
-  /* .perm-btn.primary, .revise-input and .revise-hint went to
-     PermissionTextEntry.svelte with the markup they dressed. */
 </style>

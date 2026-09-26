@@ -43,7 +43,7 @@ function makeDesk(input: {
   const desk = FlockFrontDesk.make({
     store,
     ...(input.config ? { config: input.config } : {}),
-    specialties: ["MOT rules"],
+    specialties: ["tax rules"],
     runner,
     notifyModelUnset: notify,
   })
@@ -62,7 +62,7 @@ function answered(served: Awaited<ReturnType<FlockFrontDesk.Runner>> | { deferre
 describe("the model is required and has no default", () => {
   test("refuses with 'front desk model not set' and never runs a model", async () => {
     const { ask, runner } = makeDesk({ config: {} })
-    const answer = answered(await ask("what does the MOT check?"))
+    const answer = answered(await ask("what does the tax form cover?"))
 
     expect(answer.ok).toBe(false)
     expect(answer.text).toBe("front desk model not set")
@@ -77,7 +77,7 @@ describe("the model is required and has no default", () => {
   // would be a silent one.
   test("files an UNREAD mailbox row so the owner sees why their desk refused", async () => {
     const { ask, store, friend } = makeDesk({ config: {} })
-    const answer = answered(await ask("what does the MOT check?", "q-nomodel"))
+    const answer = answered(await ask("what does the tax form cover?", "q-nomodel"))
     expect(answer.ok).toBe(false)
 
     const row = store.thread("q-nomodel")
@@ -85,7 +85,7 @@ describe("the model is required and has no default", () => {
     expect(row?.state).toBe("declined")
     expect(row?.unread).toBe(true)
     expect(row?.contact).toBe(friend.handle)
-    expect(row?.question.text).toBe("what does the MOT check?")
+    expect(row?.question.text).toBe("what does the tax form cover?")
     expect(row?.reply?.declined?.reason ?? row?.reply?.text).toContain("front desk model not set")
   })
 
@@ -226,13 +226,13 @@ describe("the scope cage", () => {
   })
 
   test("a shared folder covers what is inside it, and nothing beside it", () => {
-    const rules = FlockPolicy.scopeRuleset({ repos: ["chris_website"], wiki: ["wiki/public"] })
-    expect(evaluate(rules, "chris_website")).toBe("allow")
-    expect(evaluate(rules, "chris_website/wp-content/theme.php")).toBe("allow")
-    expect(evaluate(rules, "wiki/public/mot.md")).toBe("allow")
+    const rules = FlockPolicy.scopeRuleset({ repos: ["acme_website"], wiki: ["wiki/public"] })
+    expect(evaluate(rules, "acme_website")).toBe("allow")
+    expect(evaluate(rules, "acme_website/wp-content/theme.php")).toBe("allow")
+    expect(evaluate(rules, "wiki/public/tax.md")).toBe("allow")
     // The whole point of the cage.
     expect(evaluate(rules, "wiki/private/salary.md")).toBe("deny")
-    expect(evaluate(rules, "chris_website_backup/dump.sql")).toBe("deny")
+    expect(evaluate(rules, "acme_website_backup/dump.sql")).toBe("deny")
     expect(evaluate(rules, ".env")).toBe("deny")
     expect(evaluate(rules, "packages/engine/src/auth/index.ts")).toBe("deny")
   })
@@ -243,8 +243,8 @@ describe("the scope cage", () => {
     // slashes in a config file that has to be portable. `Wildcard.match`
     // normalises both sides — asserted here rather than assumed, because the
     // failure mode is a cage that quietly allows nothing on one platform.
-    const rules = FlockPolicy.scopeRuleset({ repos: ["chris_website"] })
-    expect(evaluate(rules, "chris_website\\wp-content\\theme.php")).toBe("allow")
+    const rules = FlockPolicy.scopeRuleset({ repos: ["acme_website"] })
+    expect(evaluate(rules, "acme_website\\wp-content\\theme.php")).toBe("allow")
     expect(evaluate(rules, "other\\secret.php")).toBe("deny")
   })
 
@@ -261,7 +261,7 @@ describe("the scope cage", () => {
     // has to be the one they already understand.
     const rules = FlockPolicy.scopeRuleset({ folders: ["D:/notes"] })
     expect(evaluate(rules, "D:/notes")).toBe("allow")
-    expect(evaluate(rules, "D:/notes/2026/mot.md")).toBe("allow")
+    expect(evaluate(rules, "D:/notes/2026/tax.md")).toBe("allow")
     expect(evaluate(rules, "D:/private/salary.md")).toBe("deny")
   })
 
@@ -287,14 +287,14 @@ describe("the scope cage", () => {
       config: { model: "test/fake", scope: { wiki: ["wiki/public"] } },
       overrides: { autoAnswer: true },
     })
-    await ask("what does the MOT check?")
+    await ask("what does the tax form cover?")
 
     const call = runner.mock.calls[0]![0]
     expect(call.model).toBe("test/fake")
     expect(call.agent).toBe(FlockFrontDesk.AGENT)
     expect(call.from).toBe(friend.handle)
-    expect(call.question).toBe("what does the MOT check?")
-    expect(Permission.evaluate("read", "wiki/public/mot.md", call.permission).action).toBe("allow")
+    expect(call.question).toBe("what does the tax form cover?")
+    expect(Permission.evaluate("read", "wiki/public/tax.md", call.permission).action).toBe("allow")
     expect(Permission.evaluate("read", "wiki/private/x.md", call.permission).action).toBe("deny")
   })
 })
@@ -302,11 +302,11 @@ describe("the scope cage", () => {
 describe("the card the desk publishes", () => {
   test("advertises the scope and the availability the policy actually produces", async () => {
     const { desk, friend } = makeDesk({
-      config: { model: "test/fake", dailyBudgetTokens: 200_000, scope: { repos: ["chris_website"] } },
+      config: { model: "test/fake", dailyBudgetTokens: 200_000, scope: { repos: ["acme_website"] } },
     })
     const card = await desk.card({ friend })
-    expect(card.specialties).toEqual(["MOT rules"])
-    expect(card.shareable).toEqual(["chris_website"])
+    expect(card.specialties).toEqual(["tax rules"])
+    expect(card.shareable).toEqual(["acme_website"])
     expect(card.availability).toBe("answers on approval, up to 200000 tokens/day")
     expect(card.model).toBe("test/fake")
   })

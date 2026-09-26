@@ -787,7 +787,7 @@ describe('ChatPane — the sub-agent drawer', () => {
     // Still listed — under Complete now, not gone.
     const bandOf = (name: string) => [...container.querySelectorAll('.sa-group')]
       .find((g) => g.textContent?.includes(name))?.querySelector('.sa-group-label')?.textContent;
-    expect(bandOf('audit the bundle')).toBe('Complete');
+    expect(bandOf('audit the bundle')).toBe('Done'); // t-yyz57i: "Complete" is "Done"
     expect(bandOf('check the tests')).toBe('Running');
 
     postFromHost({
@@ -796,7 +796,7 @@ describe('ChatPane — the sub-agent drawer', () => {
     });
     await waitFor(() => expect(container.querySelector('.sa-drawer')?.textContent).toContain('0 running'));
     await expandComplete(container);
-    expect(bandOf('check the tests')).toBe('Complete');
+    expect(bandOf('check the tests')).toBe('Done');
     expect(container.querySelectorAll('.sa-group')).toHaveLength(1);
   });
 
@@ -823,7 +823,8 @@ describe('ChatPane — the sub-agent drawer', () => {
     if (!container.querySelector('.sa-groups')) await fireEvent.click(await need(container, '.sa-head')); // t-ru13hb: a running row may have unfolded it
     await waitFor(() => expect(drawer.textContent).toContain('1 running'));
     // WHICH model — a sub-agent routinely runs on a different one from the chat.
-    expect(drawer.textContent).toContain('openrouter/qwen3-coder');
+    // t-yyz57i: named in the row's tooltip now, not on its face.
+    expect(drawer.querySelector('.sa-row')?.getAttribute('data-tip')).toContain('openrouter/qwen3-coder');
 
     // Live activity from the child lands in ITS row, so "is it stuck?" has an
     // answer without opening the transcript — behind the fold, since t-f9jxl1
@@ -841,22 +842,28 @@ describe('ChatPane — the sub-agent drawer', () => {
     // launcher's tool call: a background spawn's call completed at line 810
     // above and the engine can write nothing onto it after that. Latest wins.
     // t-f9jxl1: the row prints the single `<X> tokens` total, not in/out.
+    // t-yyz57i: while it runs with output, line 2 is its activity; the spend
+    // is in the row's tooltip until it settles.
     postFromHost({
       type: 'subagentTokens', sessionId: ACP_UUID, childSessionId: 'child-a',
       tokens: { input: 16_077, output: 46, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     });
-    await waitFor(() => expect(container.querySelector('.sa-tokens')?.textContent).toBe('16.1k tokens'));
+    const rowTip = () => container.querySelector('.sa-row')?.getAttribute('data-tip') ?? '';
+    await waitFor(() => expect(rowTip()).toContain('Input 16,077'));
     postFromHost({
       type: 'subagentTokens', sessionId: ACP_UUID, childSessionId: 'child-a',
       tokens: { input: 46_724, output: 96, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
     });
-    await waitFor(() => expect(container.querySelector('.sa-tokens')?.textContent).toBe('46.8k tokens'));
+    await waitFor(() => expect(rowTip()).toContain('Input 46,724'));
 
     // Only the engine's terminal marker ends it — and ending it means moving to
     // Complete, not disappearing (see the contract note above).
     postFromHost({ type: 'subagentDone', sessionId: ACP_UUID, taskSessionId: 'child-a', state: 'completed' });
     await waitFor(() => expect(drawer.textContent).toContain('0 running'));
-    expect(container.querySelector('.sa-group-label')?.textContent).toBe('Complete');
+    expect(container.querySelector('.sa-group-label')?.textContent).toBe('Done');
+    // Settled: the totals are back on the face.
+    if (container.querySelector('.sa-group-fold')?.getAttribute('aria-expanded') === 'false') await fireEvent.click(container.querySelector('.sa-group-fold') as HTMLElement);
+    await waitFor(() => expect(container.querySelector('.sa-tokens')?.textContent).toBe('46.8k tokens'));
   });
 
   // A spawn the user DENIED, or one naming an agent type that does not exist:
@@ -1066,7 +1073,8 @@ describe('ChatPane — YOLO answers the ask AND stops the asking', () => {
     });
     await need(container, '.qm-frame');
 
-    const box = await need<HTMLInputElement>(container, 'input.free-text-input');
+    await fireEvent.click(await need(container, '.opt-other')); // t-yyz5qi: "Other…" opens the text box
+    const box = await need<HTMLTextAreaElement>(container, 'textarea.free-text-input');
     await fireEvent.input(box, { target: { value: 'neither, revert it' } });
     await clickLabel(container, 'Submit');
 
@@ -1190,7 +1198,8 @@ describe('ChatPane — YOLO answers the ask AND stops the asking', () => {
     await fireEvent.click(container.querySelectorAll('.opt-btn')[0]!);
     await clickLabel(container, 'Next');
     // Q3 -> free text, which must win over any option
-    const box = await need<HTMLInputElement>(container, 'input.free-text-input');
+    await fireEvent.click(await need(container, '.opt-other')); // t-yyz5qi: "Other…" opens the text box
+    const box = await need<HTMLTextAreaElement>(container, 'textarea.free-text-input');
     await fireEvent.input(box, { target: { value: 'solarised, actually' } });
     await clickLabel(container, 'Submit');
 

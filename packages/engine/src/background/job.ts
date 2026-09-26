@@ -2,6 +2,8 @@ import { LayerNode } from "@origami/core/effect/layer-node"
 import { BackgroundJob as CoreBackgroundJob } from "@origami/core/background-job"
 import { InstanceState } from "@/effect/instance-state"
 import { Effect, Layer } from "effect"
+import { ElasticActivity } from "@/elastic/activity"
+import { ShellID } from "@/tool/shell/id"
 
 export {
   cancelTree,
@@ -25,7 +27,21 @@ export {
 const layer = Layer.effect(
   CoreBackgroundJob.Service,
   Effect.gen(function* () {
-    const state = yield* InstanceState.make(() => CoreBackgroundJob.make)
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        const jobs = yield* CoreBackgroundJob.make
+        // origami_change (t-w2qlop): the running jobs, for the elastic idle
+        // report. A sub-agent is a job whose type is its agent; a background
+        // shell is the shell tool's type.
+        const running = (shell: boolean) => () =>
+          Effect.runSync(jobs.list())
+            .filter((job) => job.status === "running" && (job.type === ShellID.ToolID) === shell)
+            .map((job) => job.id)
+        yield* ElasticActivity.probeScoped("subagent-running", running(false))
+        yield* ElasticActivity.probeScoped("background-job", running(true))
+        return jobs
+      }),
+    )
     return CoreBackgroundJob.Service.of({
       list: () => InstanceState.useEffect(state, (jobs) => jobs.list()),
       get: (id) => InstanceState.useEffect(state, (jobs) => jobs.get(id)),

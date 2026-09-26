@@ -19,13 +19,21 @@
   import FileListCard from './toolcards/FileListCard.svelte';
   import TaskCard from './toolcards/TaskCard.svelte';
   import TaskParallelCard from './toolcards/TaskParallelCard.svelte';
+  import SendMessageCard from './toolcards/SendMessageCard.svelte';
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import { parseSpec } from '../../shared/chartBlock';
   import { stuckState } from './toolcards/stuckCall';
   import StatusMark from './StatusMark.svelte';
   import ArtifactCard from './ArtifactCard.svelte';
+  import ArtifactReadCard from './ArtifactReadCard.svelte';
   import { findArtifactLinks } from './artifactLink';
+  import ToolIcon from './ToolIcon.svelte';
+  import { toolIconName, browserActionIcon } from './toolIcon';
+  import { siteParts, formatBytes, artifactFacts } from './toolRowMeta';
   import type { ToolShell, ToolLines, ToolBrowser, ToolReadImage } from '../panes/chatToolMsg';
+  import { activityTail } from '../panes/subagentFormat';
+  import { lineDiff, diffStat, ratioBlocks } from './toolcards/lineDiff';
+  import { tokensTotalText, type SubagentTokens } from '../panes/subagentTokens';
 
   const vscode = getVsCodeApi();
   // Open the tool's file in the editor. The header path is the actionable
@@ -105,12 +113,16 @@
     /** t-l1sovi — a read-image card's picture click, forwarded to
      *  ReadFileCard; every other card ignores it. */
     onImageClick?: (src: string, alt: string) => void;
+    /** `task` only (t-yyz5yk, Round 8 J): the sub-agent's spend and model,
+     *  for the row's result once it is done. */
+    taskTokens?: SubagentTokens;
+    taskModel?: string;
   }
 
   // The age + Kill controls live in the header, not the card body, since the
   // body only mounts once the card is expanded — and a card starts collapsed.
 
-  let { title, kind, toolName = '', status, result, diff, path, stream, resumed = false, shell, toolLines, images, readImage, browser, sessionId, startedAt, readOnly = false, onImageClick }: Props = $props();
+  let { title, kind, toolName = '', status, result, diff, path, stream, resumed = false, shell, toolLines, images, readImage, browser, sessionId, startedAt, readOnly = false, onImageClick, taskTokens, taskModel }: Props = $props();
   // A chart's body is the answer, so it opens by default rather than behind a
   // click; a `read` that produced a picture (t-ffk0qi) is the same case — the
   // owner asked for "no point hiding the image in the collapse". Set once at
@@ -130,24 +142,12 @@
     expanded = true;
   });
 
-  const kindIcons: Record<string, string> = {
-    filesystem: '\u{1F4C1}',
-    bash: '\u{1F4BB}',
-    network: '\u{1F310}',
-    edit: '✏️',
-    other: '⚙️',
-    read: '\u{1F4C4}',
-    search: '\u{1F50D}',
-    execute: '\u{1F4BB}',
-    move: '\u{1F4E4}',
-    fetch: '\u{1F310}',
-    think: '\u{1F9E0}',
-  };
-
   // A `task`/`task_parallel` call delegates to a sub-agent; give it a distinct
   // icon + "sub-agent" badge in the header.
   let isTask = $derived(toolName === 'task' || toolName === 'task_parallel');
-  let icon = $derived(isTask ? '\u{1F91D}' : (kindIcons[kind] || kindIcons.other));
+  // t-yyz5yk (Round 8 rule 3): a line icon keyed on the tool, then the ACP kind
+  // (toolIcon.ts), in place of the per-OS emoji that stood here.
+  let icon = $derived(toolIconName(toolName, kind, !!readImage));
   // Honest status mapping: `completed` is the only green, `failed` is red,
   // pending/in_progress is the spinner. Status alone decides, never "has any
   // result text" — a failed tool's error text also lands in `result`.
@@ -174,6 +174,25 @@
   // capture all come back completed, so only the metadata flag distinguishes
   // them from a page that loaded.
   let browserFail = $derived(isBrowser && browser?.ok === false);
+  // t-yyz5yk (Round 8 G): the action glyph beside the globe, and host + path.
+  let browserAct = $derived(isBrowser ? browserActionIcon(browser?.action) : undefined);
+  let site = $derived(isBrowser ? siteParts(browser?.url) : undefined);
+  // t-yyz5yk (Round 8 F): the read image's size, and its pixel size once the
+  // picture has loaded in the body (ReadFileCard reports it up).
+  let imageDims = $state<string | undefined>(undefined);
+  let imageMeta = $derived(readImage ? [formatBytes(readImage.bytes), imageDims].filter(Boolean).join(' · ') : '');
+  // t-yyz5yk (Round 8 J): a single sub-agent's row. While it runs, the line
+  // under the row is its latest step (the stream's last line, the same tail
+  // the drawer reads); done, the row carries tokens · steps · model.
+  let taskTail = $derived(toolName === 'task' && markStatus === 'running' ? activityTail(stream).split('\n').pop() ?? '' : '');
+  let taskMeta = $derived(toolName === 'task' && markStatus !== 'running' ? [tokensTotalText(taskTokens), taskModel].filter(Boolean).join(' · ') : '');
+  // t-yyz5yk (Round 8 L): what an artifact_get read, on the row and the card.
+  let artFacts = $derived(toolName === 'artifact_get' && done ? artifactFacts(result) : undefined);
+  let artMeta = $derived(artFacts ? [`v${artFacts.version} of ${artFacts.latest}`, `${artFacts.files} files`, formatBytes(artFacts.bytes)].filter(Boolean).join(' · ') : '');
+  let rowMeta = $derived(imageMeta || taskMeta || artMeta);
+  // t-yyz5yk (Round 8 Edit/Write): "+a −d" and five ratio blocks, from the
+  // diff the card already holds. Only once the call is done: a result.
+  let stat = $derived(diff && markStatus !== 'running' && (diff.oldText || diff.newText) ? diffStat(lineDiff(diff.oldText, diff.newText)) : undefined);
   // A chart that actually drew — not the same fact as "this tool is called
   // chart". Only the renderer's own parse of the returned spec says a picture exists.
   let chartDrawn = $derived(isChart && done && !!parseSpec(result ?? ''));
@@ -209,9 +228,23 @@
     const timer = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(timer);
   });
+  // t-vikozs: the end is stamped when THIS card sees the run stop. A card
+  // mounted already finished never saw it, so "now - start" there is not the
+  // duration (it grew on every remount): it states no elapsed. Foreground only:
+  // a background / promoted job outlives its call, so its age stays an age.
+  let sawRunning = false;
+  let endedAt = $state<number | undefined>(undefined);
+  $effect(() => {
+    if (shellRunning) sawRunning = true;
+    else if (sawRunning && endedAt === undefined) endedAt = now = Date.now();
+  });
   // Read off `now`, seeded at construction, so a card mounted onto an
   // already-old call is correct on its first frame.
-  let elapsed = $derived(shellStartedAt ? Math.max(0, Math.floor((now - shellStartedAt) / 1000)) : undefined);
+  let elapsed = $derived(
+    shellStartedAt && (shellRunning || endedAt !== undefined || shellState !== 'foreground')
+      ? Math.max(0, Math.floor(((endedAt ?? now) - shellStartedAt) / 1000))
+      : undefined,
+  );
   let outputAge = $derived(shell?.lastOutputAt ? Math.max(0, Math.floor((now - shell.lastOutputAt) / 1000)) : undefined);
   let age = $derived(stuckState({ running: shellRunning && shellState === 'foreground', startedAt: shellStartedAt, now }));
   // CHANGES.md change 18b — a card showing ONLY its header is not a card, it is
@@ -248,7 +281,8 @@
     | typeof MultiEditCard
     | typeof FileListCard
     | typeof TaskCard
-    | typeof TaskParallelCard;
+    | typeof TaskParallelCard
+    | typeof SendMessageCard;
   const TOOLCARD_REGISTRY: Record<string, CardComponent> = {
     edit: EditCard,
     multi_edit: MultiEditCard,
@@ -277,14 +311,30 @@
     : isShell ? BashCard
     : isBrowser ? BrowserCard
     : isChart ? ChartCard
+    // Round 8 open views: a write with no diff block (the engine sends none for
+    // a new file) gets the file bar, not EditCard's raw success sentence.
+    : toolName === 'write' && !diff ? WriteFileCard
+    : toolName === 'send_message' ? SendMessageCard
     : (KIND_REGISTRY[kind] || GenericCard),
   );
 </script>
 
-<div class="tool-card og-spotlight" class:done class:failed class:task={isTask} class:strip use:spotlight>
+<div class="tool-card og-spotlight" class:done class:failed class:task={isTask} class:strip data-status={markStatus} use:spotlight>
   <button class="tool-header" onclick={() => expanded = !expanded}>
-    <span class="tool-icon">{icon}</span>
+    <!-- t-yyz5yk (Round 8i): the icon stays; the verdict is a badge on its
+         corner. ONE mark, not one element per state (change 21): the same
+         StatusMark, honest classes and tooltip that sat at the right edge, so
+         the tick still DRAWS. While running it is hidden and the travelling
+         line below carries the motion (rule 2: one moving thing). -->
+    <span class="tool-icon">
+      <ToolIcon name={icon} />
+      <span class="tool-status tool-badge-mark" use:tip={markTip}>
+        <StatusMark status={markStatus} />
+      </span>
+    </span>
+    {#if browserAct}<span class="tool-act"><ToolIcon name={browserAct} size={12} /></span>{/if}
     <span class="tool-title">{title}</span>
+    {#if site}<span class="tool-site" use:tip={browser?.url ?? ''}>{#if site.host}<b>{site.host}</b>{/if}<span class="tool-site-path">{site.path}</span></span>{/if}
     {#if isTask}<span class="tool-badge" use:tip={'Delegated to a sub-agent'}>sub-agent</span>{/if}
     {#if isTask && resumed}<span class="tool-resumed" use:tip={'Continues a sub-agent session already used in this chat — not a fresh agent'}>resumed</span>{/if}
     <!-- Keyed on `result`, not `hasBody`: a live stream counts as a body, but a
@@ -304,7 +354,7 @@
           if (e.key !== 'Enter' && e.key !== ' ') return;
           e.preventDefault(); e.stopPropagation(); revealPath(path);
         }}
-      >{path}</span>
+      ><bdi dir="ltr">{path}</bdi></span>
       {#if toolLines}
         <!-- The clamped range a read tool returned, and the control that opens
              the file AT it. stopPropagation on both handlers for the same
@@ -324,20 +374,25 @@
         >(lines {toolLines.start}-{toolLines.end})</span>
       {/if}
     {/if}
-    <!-- ONE mark, not one element per state (CHANGES.md change 21): the svg node
-         survives the verdict landing, so the tick DRAWS instead of appearing
-         already finished. The tooltip stays out here, where each kind of failure
-         still says which failure it was. -->
-    <span class="tool-status" use:tip={markTip}>
-      <StatusMark status={markStatus} />
-    </span>
     {#if hasBody}
       <span class="expand-arrow" class:open={expanded}>{'▶'}</span>
     {/if}
+    {#if rowMeta}<span class="tool-meta">{rowMeta}</span>{/if}
+    {#if stat}
+      <span class="tool-stat"><span class="add">+{stat.add}</span> <span class="del">−{stat.del}</span></span>
+      <span class="tool-blocks" aria-hidden="true">{#each ratioBlocks(stat.add, stat.del) as b, i (i)}<i class={b} style="--i: {i}"></i>{/each}</span>
+    {/if}
+    <!-- Round 8 rules 1-2: the one moving thing, present only while running. -->
+    {#if markStatus === 'running'}<span class="tool-travel" aria-hidden="true"></span>{/if}
   </button>
+  {#if taskTail}
+    <!-- Keyed, so each new step slides in (Round 8 J). -->
+    {#key taskTail}<div class="tool-tail">{taskTail}</div>{/key}
+  {/if}
   {#each artifactLinks as link (`${link.artifactId}?v=${link.version}`)}
     <div class="tool-artifact">
-      <ArtifactCard artifactId={link.artifactId} version={link.version} title={link.title ?? ''} />
+      {#if artFacts}<ArtifactReadCard artifactId={link.artifactId} version={link.version} title={link.title ?? ''} facts={artFacts} />
+      {:else}<ArtifactCard artifactId={link.artifactId} version={link.version} title={link.title ?? ''} />{/if}
     </div>
   {/each}
   {#if isShell && shellStartedAt}
@@ -368,7 +423,7 @@
   {/if}
   {#if expanded && hasBody}
     <div class="tool-result" class:chart={chartDrawn} class:image={!!readImage}>
-      <CardComponent result={result ?? ''} {diff} {path} {title} {stream} {status} {shell} {images} {readImage} {browser} {onImageClick} />
+      <CardComponent result={result ?? ''} {diff} {path} {title} {stream} {status} {shell} {images} {readImage} {browser} {toolLines} {onImageClick} onImageDims={(w: number, h: number) => (imageDims = `${w} × ${h}`)} />
     </div>
   {/if}
 </div>
@@ -436,9 +491,95 @@
     font-size: 10px;
   }
 
+  /* t-yyz5yk (Round 8): the icon slot, with the verdict as a 10px badge cut
+     out of the row by a ring on its lower-right corner (8i). */
   .tool-icon {
-    font-size: 12px;
+    position: relative;
+    display: inline-flex;
     flex-shrink: 0;
+    color: var(--og-text-secondary);
+    transition: color 240ms ease;
+  }
+  .tool-card[data-status='running'] .tool-icon,
+  .tool-card[data-status='running'] .tool-act { color: var(--og-chat); }
+  .tool-badge-mark {
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--og-bg);
+    box-shadow: 0 0 0 1.5px var(--og-bg);
+  }
+  .tool-badge-mark :global(.status-mark) { width: 10px; height: 10px; }
+  .tool-card[data-status='running'] .tool-badge-mark { display: none; }
+  .tool-act { display: inline-flex; flex-shrink: 0; margin-left: -2px; color: var(--og-text-muted); }
+  .tool-site {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--og-text-muted);
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .tool-site b { color: var(--og-text); font-weight: 500; }
+  .tool-stat { flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .tool-stat .add { color: var(--og-success); }
+  .tool-stat .del { color: var(--og-error); }
+  .tool-blocks { display: inline-flex; gap: 2px; flex-shrink: 0; }
+  .tool-blocks i { width: 6px; height: 6px; border-radius: 1.5px; animation: og-block-in 240ms cubic-bezier(0.23, 1, 0.32, 1) backwards; animation-delay: calc(var(--i) * 40ms); }
+  .tool-blocks i.a { background: var(--og-success); }
+  .tool-blocks i.d { background: var(--og-error); }
+  @keyframes og-block-in { from { transform: scale(0.4); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .tool-blocks i { animation: none; } }
+  .tool-tail {
+    padding: 0 8px 3px 30px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--og-text-muted);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 10.5px;
+    animation: og-tail-in 240ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  @keyframes og-tail-in { from { opacity: 0; transform: translateY(6px); filter: blur(2px); } }
+  @media (prefers-reduced-motion: reduce) { .tool-tail { animation: none; } }
+  .tool-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+    color: var(--og-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  /* The ThoughtLine's travelling line on the running row's bottom edge. */
+  .tool-header { position: relative; }
+  .tool-travel {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--og-border) 70%, transparent);
+    pointer-events: none;
+  }
+  .tool-travel::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 34%;
+    background: var(--og-chat);
+    animation: og-tool-travel 1.8s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  }
+  @keyframes og-tool-travel { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  /* Rule 8: reduced motion stops the loop; the line stays as a still mark. */
+  @media (prefers-reduced-motion: reduce) {
+    .tool-travel::after { animation: none; }
+    .tool-icon { transition: none; }
   }
 
   .tool-title {

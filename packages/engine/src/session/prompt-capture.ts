@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import { asSchema, type ModelMessage, type Tool } from "ai"
+import type { StoppedHalf } from "./cache-policy"
 
 /**
  * What the engine actually sent the model, beyond the user's own messages. A
@@ -354,8 +355,8 @@ export type Divergence = {
  * cost a per-step instrument may not add.
  *
  * Every member is a measurement. `first` means "no previous request of this
- * session in THIS PROCESS" - a resumed session's first request after a restart
- * reads as cold, which is what it is for every fact this module holds.
+ * session, in this process or persisted before it" - after a restart the last
+ * persisted request stands in for the previous one (`seed`, t-w2txb2).
  */
 export type RequestFacts = {
   /** Epoch ms the request was prepared. */
@@ -374,12 +375,46 @@ export type RequestFacts = {
   readonly ttlSeconds?: number
   readonly warmed?: boolean
   /**
+   * Only on the first request after a restore (t-w2txb2): the halves that moved
+   * against the last PERSISTED request of the session - see `seed`.
+   */
+  readonly stopped?: readonly StoppedHalf[]
+  /**
    * Digest of the engine's OWN labeled parts. Kept so a moved `system` digest
    * can be attributed: when the final system text moved and these did not, the
    * `experimental.chat.system.transform` plugin hook moved it.
    */
   readonly labeled: string
+  /**
+   * t-wdyp7r: the system digest with the date line masked. The date moves at
+   * midnight whether or not the engine stopped, so a restore compares this one
+   * to decide whether the system half changed WHILE STOPPED.
+   */
+  readonly stable: string
+  /** t-wdyp7r: the agent the request ran under, when the request layer said. */
+  readonly agent?: string
 }
+
+/**
+ * The last request of a session as the database holds it: the prefix digests
+ * its step-finish part persisted, when that part was written, and the model.
+ * The seed of the comparison for the first request a new process sends.
+ */
+export type Seed = {
+  readonly prefix: PrefixDigest
+  /** Epoch ms the step-finish part was written: the END of that request, so
+   *  an idle gap measured from it is never longer than the real one. */
+  readonly at: number
+  /** `providerID/modelID`. */
+  readonly model: string
+  /** t-wdyp7r: `RequestFacts.stable` of that request. Absent: compare the full system digest. */
+  readonly stable?: string | undefined
+  /** t-wdyp7r: the agent that request ran under. Absent: not compared. */
+  readonly agent?: string | undefined
+}
+
+/** How many sessions keep a seed entry (see `restored`). */
+const SEED_LIMIT = LIMIT * 16
 
 const drafts = new Map<string, readonly Part[]>()
 const captures = new Map<string, Capture>()
@@ -389,6 +424,19 @@ const requests = new Map<string, RequestFacts>()
 /** Set between two requests, consumed by the next `record`. */
 const rewrites = new Map<string, RewriteSource>()
 const compactions = new Set<string>()
+/**
+ * t-w2txb2: the last PERSISTED request of a session this process has not sent
+ * one for yet, read once from the database (`needsSeed`, `seed`). `null` means
+ * "read, and nothing to compare with": either none was stored or the seed was
+ * used. Bounded more loosely than the other maps because an entry is a few
+ * short strings, and a session evicted from here AND from `requests` is read
+ * again, which would name an in-process change as a change while stopped.
+ */
+const restored = new Map<string, Seed | null>()
+/** t-vs5p1y: recorded requests whose digests are not computed yet, in order.
+ *  Tagged by session so a closed chat's record can be dropped (t-w2u5vf). */
+const pending: { readonly sessionID: string; readonly run: () => void }[] = []
+let settleScheduled = false
 
 /**
  * Fold one step's outbound array into the session's rolling step history and
@@ -545,13 +593,45 @@ function digestPrefix(
     // cache turns on. Absent, not empty, when no array was handed over.
     ...(messages
       ? {
-          history: createHash("sha256")
-            .update(messages.map((item) => `${item.role}:${item.hash}`).join("\n"), "utf8")
-            .digest("hex")
-            .slice(0, 16),
+          history: createHash("sha256").update(messages.map(historyLine).join("\n"), "utf8").digest("hex").slice(0, 16),
         }
       : {}),
   }
+}
+
+/** The line the engine writes the date on (session/system.ts `environment`). */
+const DATE_LINE = /^([ \t]*Today's date:).*$/gm
+
+/**
+ * t-wdyp7r: the system digest with the date line masked, the way the request
+ * goldens mask it. Hashed over the same text as `PrefixDigest.system`.
+ */
+function stableDigest(finalSystem: readonly string[]): string {
+  return createHash("sha256")
+    .update(finalSystem.join("\n").replace(DATE_LINE, "$1 <DATE>"), "utf8")
+    .digest("hex")
+    .slice(0, 16)
+}
+
+function historyLine(item: MessageDigest): string {
+  return `${item.role}:${item.hash}`
+}
+
+/**
+ * Whether `history` (a `PrefixDigest.history`) is the history digest of some
+ * leading run of `messages`: the previous array survived as a prefix of this
+ * one. One incremental SHA-256 over the same text `digestPrefix` hashes, read
+ * after each message, so the cost is linear in the array.
+ */
+function historyPrefix(history: string, messages: readonly MessageDigest[]): boolean {
+  const hash = createHash("sha256")
+  const matches = () => hash.copy().digest("hex").slice(0, 16) === history
+  if (matches()) return true
+  for (const [index, item] of messages.entries()) {
+    hash.update((index === 0 ? "" : "\n") + historyLine(item), "utf8")
+    if (matches()) return true
+  }
+  return false
 }
 
 export function toolEntries(tools: Record<string, Tool>): CapturedTool[] {
@@ -599,18 +679,84 @@ export function record(input: {
   readonly ttlSeconds?: number | undefined
   /** Epoch ms of this session's last SUCCESSFUL cache warm, if any. */
   readonly warmedAt?: number | undefined
+  /** t-wdyp7r: the agent the request runs under (`RequestFacts.agent`). */
+  readonly agent?: string | undefined
 }): Capture | undefined {
-  const staged = drafts.get(input.sessionID)
+  settle()
+  const taken = take(input.sessionID)
+  return taken ? commit(input, taken) : undefined
+}
+
+/**
+ * t-vs5p1y: `record`, with the digests computed after the request is sent.
+ *
+ * Hashing every message of a big chat costs 23-43 ms per step, all of it on the
+ * path from the step start to the request leaving. Everything that can change
+ * between now and the deferred work is taken now: the draft and this session's
+ * rewrite and compaction marks. The messages and tools are not written after the
+ * request is prepared. Pending work runs in order: before the next record, before
+ * any reader (`get`, `lastRequest`, `prefixDigest`), or when the request layer
+ * calls `settleSoon` after the send. So every reader sees the values `record`
+ * would have given.
+ */
+export function recordAfterSend(input: Parameters<typeof record>[0]): void {
+  settle()
+  const taken = take(input.sessionID)
+  if (!taken) return
+  pending.push({ sessionID: input.sessionID, run: () => commit(input, taken) })
+}
+
+/** Run every deferred record now, in order. */
+export function settle(): void {
+  while (pending.length > 0) {
+    const next = pending.shift()!
+    // A capture that cannot be computed is dropped, as the stream it measures
+    // has already left; it must not stop the records queued behind it.
+    try {
+      next.run()
+    } catch {}
+  }
+}
+
+/** Run the deferred records from the next turn of the event loop, ONE per turn:
+ *  with several big chats busy, their records must not add up to one block. */
+export function settleSoon(): void {
+  if (settleScheduled || pending.length === 0) return
+  settleScheduled = true
+  setImmediate(() => {
+    settleScheduled = false
+    const next = pending.shift()
+    try {
+      next?.run()
+    } catch {}
+    settleSoon()
+  })
+}
+
+/** What must be read when the request is prepared: the draft and the marks.
+ *  Undefined for a request that staged no draft. */
+function take(sessionID: string) {
+  const staged = drafts.get(sessionID)
   if (!staged) {
     // A prepared request that staged no draft is compaction or summarisation,
     // whose prompt is its own. Leaving the last turn's digest in place would let
     // that call's `step-finish` parts claim a prefix they never carried, so the
     // reading is dropped rather than reused.
-    prefixes.delete(input.sessionID)
+    prefixes.delete(sessionID)
     return undefined
   }
-  drafts.delete(input.sessionID)
+  drafts.delete(sessionID)
+  const marked = rewrites.get(sessionID)
+  rewrites.delete(sessionID)
+  const compacted = compactions.delete(sessionID)
+  return { staged, marked, compacted }
+}
 
+function commit(
+  input: Parameters<typeof record>[0],
+  taken: { readonly staged: readonly Part[]; readonly marked: RewriteSource | undefined; readonly compacted: boolean },
+): Capture {
+  const { staged } = taken
   const steps = input.messages
     ? recordStep({ sessionID: input.sessionID, capturedAt: input.capturedAt, messages: input.messages })
     : []
@@ -628,7 +774,10 @@ export function record(input: {
 
   // Computed BEFORE the map is rewritten: the facts are a comparison against
   // this session's previous request, which the re-insert below evicts.
-  const facts = requestFacts({ ...input, prefix, staged, step: steps.at(-1) })
+  const facts = requestFacts({ ...input, ...taken, prefix, stable: stableDigest(input.finalSystem), step: steps.at(-1) })
+  // A seed is compared with once: from here on the previous request is in
+  // this process. Kept as `null` so the database is not read again.
+  if (restored.get(input.sessionID)) restored.set(input.sessionID, null)
   requests.delete(input.sessionID)
   requests.set(input.sessionID, facts)
   for (const key of requests.keys()) {
@@ -683,17 +832,57 @@ function requestFacts(input: {
   readonly step: StepCapture | undefined
   readonly ttlSeconds?: number | undefined
   readonly warmedAt?: number | undefined
+  /** The marks, consumed when the request was prepared (`take`). */
+  readonly marked: RewriteSource | undefined
+  readonly compacted: boolean
+  readonly stable: string
+  readonly agent?: string | undefined
 }): RequestFacts {
   const previous = requests.get(input.sessionID)
+  // t-w2txb2: with no previous request in this process, the last PERSISTED one
+  // (`seed`) stands in for it, so a restore that changed nothing reads as a
+  // continuation and one that changed the prefix says which half moved.
+  const seeded = previous === undefined ? (restored.get(input.sessionID) ?? undefined) : undefined
+  const before = previous ?? seeded
   const at = Date.parse(input.capturedAt)
-  const marked = rewrites.get(input.sessionID)
-  rewrites.delete(input.sessionID)
-  const compacted = compactions.delete(input.sessionID)
+  const { marked, compacted } = input
   const labeled = createHash("sha256")
     .update(input.staged.map((item) => `${item.label}\u0000${item.text}`).join("\n"), "utf8")
     .digest("hex")
     .slice(0, 16)
-  const systemChanged = previous !== undefined && previous.prefix.system !== input.prefix.system
+  const systemChanged = before !== undefined && before.prefix.system !== input.prefix.system
+  const toolsChanged = before !== undefined && before.prefix.tools !== input.prefix.tools
+  // t-wdyp7r: a half moved WHILE STOPPED only if the same move cannot happen
+  // without a stop. The date line moves at midnight either way, so the system
+  // half is judged on the date-masked digest. An agent switch sent with the
+  // message that woke the chat moves the persona and the tool set either way,
+  // so it leaves those halves to the ordinary causes, as it would without a stop.
+  const switched = seeded?.agent !== undefined && input.agent !== undefined && seeded.agent !== input.agent
+  const systemStopped =
+    seeded !== undefined && !switched && (seeded.stable === undefined ? systemChanged : seeded.stable !== input.stable)
+  const toolsStopped = seeded !== undefined && !switched && toolsChanged
+  // No previous array in this process, so the stored history digest is matched
+  // against every leading run of this one instead of diffed message by message.
+  const preserved =
+    seeded === undefined
+      ? (input.step?.prefixPreserved ?? undefined)
+      : seeded.prefix.history !== undefined && input.step !== undefined
+        ? historyPrefix(seeded.prefix.history, input.step.messages)
+        : undefined
+  // A history rewrite an engine rewriter named is that rewriter's, restart or
+  // not; only an unexplained one is put down to the stop. Where the array opens
+  // with the system text (the providers that take it as a message), a changed
+  // system prompt moves the history digest too, so that move is the system's.
+  const historyMoved =
+    preserved === false && marked === undefined && !(systemChanged && input.step?.messages[0]?.role === "system")
+  const stopped: StoppedHalf[] =
+    seeded === undefined
+      ? []
+      : [
+          ...(systemStopped ? (["system"] as const) : []),
+          ...(toolsStopped ? (["tools"] as const) : []),
+          ...(historyMoved ? (["history"] as const) : []),
+        ]
   // Only where content already SENT came back different. `recordStep` also
   // reports the index where a grown array starts, which is an append: the
   // prefix held, nothing was rewritten, and calling that a divergence would put
@@ -722,18 +911,19 @@ function requestFacts(input: {
     model: input.model,
     prefix: input.prefix,
     labeled,
-    first: previous === undefined,
+    first: before === undefined,
     compacted,
-    modelChanged: previous !== undefined && previous.model !== input.model,
+    modelChanged: before !== undefined && before.model !== input.model,
     systemChanged,
-    toolsChanged: previous !== undefined && previous.prefix.tools !== input.prefix.tools,
-    ...(input.step?.prefixPreserved === null || input.step === undefined
-      ? {}
-      : { preserved: input.step.prefixPreserved }),
+    toolsChanged,
+    ...(preserved === undefined ? {} : { preserved }),
     ...(divergence ? { divergence } : {}),
-    ...(previous === undefined || !Number.isFinite(at) ? {} : { idleMs: Math.max(0, at - previous.at) }),
+    ...(before === undefined || !Number.isFinite(at) ? {} : { idleMs: Math.max(0, at - before.at) }),
     ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds }),
-    ...(previous === undefined || input.warmedAt === undefined ? {} : { warmed: input.warmedAt > previous.at }),
+    ...(before === undefined || input.warmedAt === undefined ? {} : { warmed: input.warmedAt > before.at }),
+    ...(stopped.length > 0 ? { stopped } : {}),
+    stable: input.stable,
+    ...(input.agent === undefined ? {} : { agent: input.agent }),
   }
 }
 
@@ -766,16 +956,44 @@ export function markCompacted(sessionID: string): void {
 }
 
 /**
+ * t-w2txb2: whether the request path must read this session's last persisted
+ * request from the database before its next request - true only while this
+ * process has neither sent a request for the session nor read it already. So
+ * the read happens once per session per process, off every later request.
+ */
+export function needsSeed(sessionID: string): boolean {
+  if (restored.has(sessionID)) return false
+  settle()
+  return !requests.has(sessionID)
+}
+
+/**
+ * Hand over what the database holds for `sessionID` (see `Seed`), or undefined
+ * when it holds nothing or could not be read. The next recorded request of the
+ * session is compared with it as if it were the previous request.
+ */
+export function seed(sessionID: string, value: Seed | undefined): void {
+  restored.delete(sessionID)
+  restored.set(sessionID, value ?? null)
+  for (const key of restored.keys()) {
+    if (restored.size <= SEED_LIMIT) break
+    restored.delete(key)
+  }
+}
+
+/**
  * The cached-prefix facts of this session's last prepared request, or undefined
  * when it has prepared none (or only a compaction). Absent means UNMEASURED:
  * the step-finish part then carries no `cache` block at all.
  */
 export function lastRequest(sessionID: string): RequestFacts | undefined {
+  settle()
   return requests.get(sessionID)
 }
 
 /** The latest capture for a session, or null when it has not sent a turn yet. */
 export function get(sessionID: string): Capture | null {
+  settle()
   return captures.get(sessionID) ?? null
 }
 
@@ -786,11 +1004,33 @@ export function get(sessionID: string): Capture | null {
  * was measured when it was not.
  */
 export function prefixDigest(sessionID: string): PrefixDigest | undefined {
+  settle()
   return prefixes.get(sessionID)
+}
+
+/**
+ * The chat closed (t-w2u5vf): drop everything held for it, the full prompt
+ * text and the step history included, and its records not computed yet (their
+ * closures hold the whole outbound array). Diagnostics only: a reopened chat's
+ * first request is compared with the last one it persisted (`seed`), as after
+ * a restart, so it reads as a continuation or as `stopped`, not as `first`.
+ */
+export function evict(sessionID: string): void {
+  for (let index = pending.length - 1; index >= 0; index--)
+    if (pending[index]!.sessionID === sessionID) pending.splice(index, 1)
+  drafts.delete(sessionID)
+  captures.delete(sessionID)
+  history.delete(sessionID)
+  prefixes.delete(sessionID)
+  requests.delete(sessionID)
+  rewrites.delete(sessionID)
+  compactions.delete(sessionID)
+  restored.delete(sessionID) // t-w2txb2 seed: a reopened chat compares with what it last persisted, like a restore
 }
 
 /** Test seam — the store is module state, so a test must be able to empty it. */
 export function reset(): void {
+  pending.length = 0
   drafts.clear()
   captures.clear()
   history.clear()
@@ -798,6 +1038,7 @@ export function reset(): void {
   requests.clear()
   rewrites.clear()
   compactions.clear()
+  restored.clear()
 }
 
 export * as SessionPromptCapture from "./prompt-capture"

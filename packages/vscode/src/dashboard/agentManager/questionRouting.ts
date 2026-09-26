@@ -5,6 +5,8 @@
 // question must never be auto-answered (an earlier incident misfired the user's choice by
 // auto-picking the first option).
 
+import type { QuestionAsk } from '../../questionBatch';
+
 /** A buffered, unanswered question-permission for a background agent with no view mounted;
  *  holds only what a later-mounting view needs to re-render. */
 export interface BufferedQuestionPerm {
@@ -13,6 +15,8 @@ export interface BufferedQuestionPerm {
   kind: string;
   target?: string;
   options: Array<{ optionId: string; name: string; kind: string }>;
+  /** The whole batch (t-xum9v2), so a replay is not cut to the head question. */
+  questions?: ReadonlyArray<QuestionAsk>;
 }
 
 /** A requestPermission ask is question-shaped when it offers no allow_always option —

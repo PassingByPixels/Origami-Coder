@@ -3,7 +3,7 @@
 
 import * as vscode from 'vscode';
 import { AcpClient, type AcpEventHandlers, type ContextComposition, resolveOrigamiBinary } from '../acpClient';
-import { questionAnswers, type QuestionAnswer } from '../questionBatch';
+import { questionAnswers, questionsPost, type QuestionAnswer, type QuestionAsk } from '../questionBatch';
 import { execFile } from 'node:child_process';
 import { findWorkspacePath, readSettings, readWorkspaceData, readWikiPagesFromDir, resolveDefaultWikiPages, readAgentArt, displayAgentName } from '../workspace/WorkspaceReader';
 import type { StatusBarController } from '../statusBar/StatusBarController';
@@ -14,8 +14,10 @@ import { runFirstFold, writeModelConfig, persistModelPick, resolveModelPickProvi
 import { isSelfHostedBaseUrl } from './selfHosted';
 import { claudeSubscriptionEnabled } from '../claudeSubscriptionFlag';
 import { claudeSubscriptionModelRows, claudeSubscriptionPickRefusal, mergeClaudeSubscriptionRows, isClaudeSubscriptionModel, CLAUDE_SUBSCRIPTION_PROVIDER } from '../claudeSubscription/models';
-import { readinessFromCli } from '../claudeSubscription/readiness';
-import { fetchClaudeSubscriptionReadiness } from '../claudeSubscription/engineStatus';
+import { readinessFromCli, type ClaudeSubscriptionReadiness } from '../claudeSubscription/readiness';
+import { fetchClaudeSubscriptionReadiness, lastClaudeSubscriptionReadiness } from '../claudeSubscription/engineStatus';
+import { engineAnswered, engineStarting, lastKnownOauthIds, pickerModelOption, rememberOauthIds } from './pickerReads'; // t-y5ecbc
+import { boundedReadiness, CLAUDE_SUBSCRIPTION_LABEL, livenessOf } from '../claudeSubscription/liveness';
 import { CLAUDE_SUBSCRIPTION_CARD_MESSAGE_TYPES, handleClaudeSubscriptionCardMessage } from './claudeSubscriptionCard';
 import { resolveCardPath } from './revealPath';
 // The self-hosted HTTP probes live in localProbe.ts; each takes an optional apiKey.
@@ -81,7 +83,7 @@ import { SECOND_OPINION_MESSAGE_TYPES, handleSecondOpinionMessage } from './seco
 import { liveActiveSessionId } from './activeSession';
 import { configSelectorMessages, allConfigSelectorMessages } from './configSelectors';
 import { startThenAnnounce } from './sessionAnnounce';
-import { EngineGate, forkRetryRefusal, routeTurnMessage } from './engineGate';
+import { EngineGate, forkRetryRefusal, routeTurnMessage } from './engineGate'; import { engineDescribe, openEngineLog } from './engineLog'; import { engineWho } from '../elastic/engineLabel'; import { startWithin } from '../elastic/park'; // t-x3a89j: the Retry card says why and when
 import { rewireView } from './viewWiring';
 import { DeltaFanout } from './deltaFanout';
 import { PLUGINS_PANE_MESSAGE_TYPES, handlePluginsPaneMessage } from './pluginsPane';
@@ -89,7 +91,8 @@ import { ARTIFACTS_PANE_MESSAGE_TYPES, handleArtifactsPaneMessage } from './arti
 import { openArtifactUrl } from '../artifactsOpen';
 import { autoOpenArtifact } from './artifactAutoOpen';
 import { LABYRINTH_PRICES_MESSAGE_TYPES, LABYRINTH_PRICES_KEY, handleLabyrinthPricesMessage } from './labyrinthPrices'; import { SESSION_DELETE_MESSAGE_TYPES, handleSessionDeleteMessage } from './sessionDelete'; import { COLLABS_SECTION_MESSAGE_TYPES, handleCollabsSectionMessage } from './collabsSection'; import { FORK_CHAT_MESSAGE_TYPES, forkChat, sessionLabel, startSystemLine, type ForkHost } from './sessionFork'; import { boundCell } from './claudeCodeCells'; import { makeSessionStatusHandler } from './sessionStatusRoute'; import { postApproveModeFailure } from './approveModeFailure'; import { CHAT_BACKDROP_MESSAGE_TYPES, chatBackdropEnabled, handleChatBackdropMessage } from './chatBackdropSetting'; import { CHAT_DENSITY_MESSAGE_TYPES, chatDensityCompact, handleChatDensityMessage } from './chatDensity'; import { SCHEDULE_TAB_MESSAGE_TYPES, scheduleTab, handleScheduleTabMessage } from './scheduleTab'; // panel is at its cap; implementations stay in leaves
-import { MCP_PANE_MESSAGE_TYPES, handleMcpPaneMessage } from './mcpPane'; import { WEBMCP_PANE_MESSAGE_TYPES, handleWebMcpPaneMessage } from './webmcpPane'; import { FLOCK_PANE_MESSAGE_TYPES, handleFlockPaneMessage } from './flockPane'; import { flockMailboxPush } from './flockMailbox'; import { flockEnabled } from '../flockEnabled'; import { REMOTE_PANE_MESSAGE_TYPES, handleRemotePaneMessage } from './remotePane'; import { SUBAGENT_LIMIT_MESSAGE_TYPES, handleSubagentLimitMessage } from './subagentLimitPane'; import { CACHE_WARMING_MESSAGE_TYPES, handleCacheWarmingMessage } from './cacheWarmingPane'; import { STORAGE_PANE_MESSAGE_TYPES, handleStorageMessage } from './storagePane'; import { SIDE_QUESTS_MESSAGE_TYPES, handleSideQuestMessage, stopSideQuestWatchers } from './sideQuestsPane'; import { saveSideQuestFile } from './sideQuestExport'; import { sideQuestsEnabled } from '../sideQuestsFlag'; import { notifyQuestionWaiting, notifyOnPost } from '../notify/notifyEvents'; import { REPO_PICKER_MESSAGE_TYPES, handleRepoPickerMessage } from './repoPicker'; import { NEST_SIDEBAR_MESSAGE_TYPES, handleNestSidebarMessage } from './nestSidebar'; import { nestHub } from './nestHubWindow'; // panel is at its cap; implementations stay in leaves
+import { MCP_PANE_MESSAGE_TYPES, handleMcpPaneMessage } from './mcpPane'; import { WEBMCP_PANE_MESSAGE_TYPES, handleWebMcpPaneMessage } from './webmcpPane'; import { FLOCK_PANE_MESSAGE_TYPES, handleFlockPaneMessage } from './flockPane'; import { flockMailboxPush } from './flockMailbox'; import { flockEnabled } from '../flockEnabled'; import { REMOTE_PANE_MESSAGE_TYPES, handleRemotePaneMessage } from './remotePane'; import { adoptTreeRoster, agentTreePost, newAgentTree, noteBackgroundTask, type AgentTree } from './agentTreeHost'; import { SUBAGENT_LIMIT_MESSAGE_TYPES, handleSubagentLimitMessage } from './subagentLimitPane'; import { CACHE_WARMING_MESSAGE_TYPES, handleCacheWarmingMessage } from './cacheWarmingPane'; import { STORAGE_PANE_MESSAGE_TYPES, handleStorageMessage } from './storagePane'; import { SIDE_QUESTS_MESSAGE_TYPES, handleSideQuestMessage, stopSideQuestWatchers } from './sideQuestsPane'; import { saveSideQuestFile } from './sideQuestExport'; import { sideQuestsEnabled } from '../sideQuestsFlag'; import { notifyQuestionWaiting, notifyOnPost } from '../notify/notifyEvents'; import { REPO_PICKER_MESSAGE_TYPES, handleRepoPickerMessage } from './repoPicker'; import { NEST_SIDEBAR_MESSAGE_TYPES, handleNestSidebarMessage } from './nestSidebar'; import { nestHub } from './nestHubWindow'; // panel is at its cap; implementations stay in leaves
+import { ENGINES_MESSAGE_TYPES, handleEnginesMessage } from './enginesPane'; // t-xf2e9q: Settings' Engines group reads/writes SETTINGS only, never the engine
 import { modelStatusReason, parseModelRef } from './modelStatusReason';
 import { PROVIDER_AUTH_MESSAGE_TYPES, handleProviderAuthMessage, openExternalUrl, offerReload, oauthConnectedIds } from './providerAuthPane';
 import { PROVIDER_USAGE_MESSAGE_TYPES, handleProviderUsageMessage } from './providerUsage';
@@ -110,6 +113,7 @@ import { engineSessionId } from './engineSessionId'; import { parseImageDataUrls
 import { openPermissionPreview } from './agentManager/permissionPreview'; import { permissionCommand } from './agentManager/permissionCommand'; import { TURN_MESSAGE_TYPES, handleTurnMessage } from './turnMessages'; import { postPeerName } from './peerNamePost'; import { CLAUDE_CODE_RESUME_KEY, claudeCli, claudeCodeKind, claudeCodeModelOf, claudeCodeOwns, handleClaudeCodeMessage, isEngineEchoOnBoundCell, refreshAllPlanUsage } from './claudeCodeManager'; import { claudeCodeModelRows } from '../claudeCode/models'; import { nodePlanUsageDeps } from '../claudeCode/planUsage'; import { noteTodoSnapshot, replaySessionTo, type TodoSnapshot } from './replaySession'; import { isRemoteWebview } from '../remote/phoneView'; import { remoteAcceptsZ } from '../remote/phoneCaps'; import { remoteCursor } from '../remote/remoteDelta'; import { scanClaudeHistoryReport } from './claudeHistory'; import { claudeStepsPayload, isClaudeRunId } from './claudeLabyrinth'; // panel is at its cap; implementations stay in leaves
 import { permissionTarget, replayDecision, notePersistablePermission, commitPersistablePermission, loadPersistentPermissions } from './agentManager/persistentPermissions';
 import { loadOpenSet, saveOpenSet, restoreOpenSet, type OpenSetState } from './agentManager/sessionRestore';
+import { deferAtReload, deferChat } from '../elastic/reloadDefer'; // t-wypna7: a reload reopens hidden chats without their engine
 import { rankEntries } from './agentManager/sessionOrder';
 import { loadPersistedLoops, savePersistedLoop, removePersistedLoop, splitPersistedLoops, armRestoredLoops, isPersistent, setPersistedLoopPersistence, type PersistedLoop } from './agentManager/loopPersistence';
 import { planLoopReopen, reopenLoopChat } from './agentManager/loopReopen';
@@ -124,6 +128,9 @@ import { CHAT_SECTION_MESSAGE_TYPES, handleChatSectionMessage, type ChatSections
 import { CronService } from './crons/cronService';
 import { defaultBackend } from './crons/schedulerBackend';
 import { cronLogPath, cronLogRelPath } from './crons/cronCommand';
+import { readDroppedFiles } from './droppedFiles'; // t-z69b8m
+import { warmSpare } from '../elastic/warmSpareWindow'; import { bootWindow } from '../elastic/warmSpare'; // t-w2u2ki: the window's warm spare engine
+import { attachPanelElastic, elasticLog, noteEngineStatus, pokeElastic, setSidebarChat, setSidebarFocus, windowSignals } from '../elastic/elasticWindow'; import { ParkHost } from '../elastic/parkHost'; import { cacheWarmingEnabled } from '../cacheWarming'; import { onScreenClient } from '../elastic/sessionSignals'; import { hostOnlyClient, hostReadArg, type ReadClient } from './hostReads'; // t-w2qv3o: engine activity classes + host reads that never wake a hidden chat
 
 /** Module-level ref so DashboardPanel can update the status bar. */
 let statusBarRef: StatusBarController | undefined;
@@ -325,6 +332,7 @@ interface Session {
   /** 'agent' = an Agent Manager worktree session: never steals focus, never
    *  auto-opens an editor tab. Unset/'chat' = an ordinary user chat. */
   kind?: 'chat' | 'agent';
+  headlessLoop?: boolean; // t-xoenz1: a persistent /loop recalled with no chat tab (recallLoopHeadless); the log names its kind (elastic/engineLabel.ts)
   /** The bot glyph this chat was created AS — the creature its empty state opens under. */
   botGlyph?: string;
   client: AcpClient;
@@ -338,6 +346,7 @@ interface Session {
   /** BACKGROUND `task` children still out (the sidebar ring's 4th state). Dies with
    *  this Session object — no separate registry to clean up. */
   runningChildren: Set<string>;
+  agentTree: AgentTree; // t-z1xlfy: every descendant + sub-agents' background shells, for the agent map (agentTreeHost.ts)
   estimatedTokens: number;
   messageLog: SessionMessage[];
   /** t-ucnp7t: a recalled/forked chat's older pages, cursor and roster (historyHost.ts). */
@@ -581,13 +590,15 @@ export class DashboardPanel {
     return {
       post: (msg) => this.post(msg),
       cwd: () => this.cwd,
-      // Collabs are WORKSPACE-scoped (keyed by cwd), not session-scoped, so any live
-      // client answers for them.
-      collabClient: () => this.engineClient(),
+      // Collabs are WORKSPACE-scoped (keyed by cwd), but the runner's live state lives in ONE engine,
+      // so every collab call goes to the host engine (t-w2qv3o, hostReads.ts).
+      collabClient: () => hostOnlyClient(hostEngine, pokeElastic),
+      collabListClient: () => this.hostReadArg().client, // a store read: an on-screen chat answers it, so a sidebar mount starts no engine
+      collabWatchClient: () => hostEngine.ownClient() ?? hostEngine.current(), // the 5 s watch: the host engine when it runs (no host engine = no room runs here), else an on-screen chat; never a spawn
       collabOrder: () => this.context.workspaceState.get<string[]>(COLLAB_ORDER_KEY) ?? [],
       saveCollabOrder: (order) => void this.context.workspaceState.update(COLLAB_ORDER_KEY, order),
       openCollab: (id, title) => DashboardPanel.openCollabInEditor(this.context, { id, title }),
-      promptCaptureFor: (sessionId) => promptCaptureForSession(this.engineClient(), sessionId),
+      promptCaptureFor: (sessionId) => promptCaptureForSession(hostOnlyClient(hostEngine), sessionId), // a collab agent's capture is held by the engine that ran it
       startBotSession: (slug, displayName, glyph) => startBotSession({ create: (n, agent) => this.createSession(n, undefined, undefined, { engineAgent: agent, botGlyph: glyph }), clientOf: (sid) => this.sessions.get(sid)?.client }, slug, displayName),
     };
   }
@@ -779,7 +790,9 @@ export class DashboardPanel {
       applyTabIcon(panel, (name) => vscode.Uri.joinPath(context.extensionUri, 'media', name));
       panel.title = waitingTitleFor(panel.title, session.pendingPermissions.size);
       DashboardPanel.sessionPanels.set(sessionId, panel);
+      pokeElastic(); panel.onDidChangeViewState(() => pokeElastic()); // t-w2qv3o: this tab shown or hidden changes its chat's class. t-wy2jj3: a new tab is on screen now (a parked chat starts again)
       panel.onDidDispose(() => {
+        pokeElastic();
         if (DashboardPanel.sessionPanels.get(sessionId) !== panel) return;
         DashboardPanel.sessionPanels.delete(sessionId);
         // Closing this popped view unanswered would hang a FORWARDED ask; if no surface remains,
@@ -1118,8 +1131,11 @@ export class DashboardPanel {
     );
 
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    hostEngine.setChats(this, () => this.chatClient()); // t-sh7cog: host features prefer this panel's chats (hostEngine.ts)
-    this.disposables.push(startUsageSampling(glidepathHost(this.context, () => this.engineArg(), (x) => this.post(x)))); // trigger one of three: a dashboard exists — a glide path needs readings taken over time, so the first cannot wait for the view to be opened
+    const elasticPanel = { sessions: () => this.sessions.values(), activeId: () => this.activeSessionId, grid: () => this.sidebarGridMode, solo: (id: string) => DashboardPanel.sessionPanels.get(id), question: (id: string) => this.pendingQuestionPermissions.has(id), park: (id: string) => this.parking.park(id), parkSoon: (id: string) => this.parking.parkSoon(id), booting: () => this.restoring }; // t-wypna7: booting = the reload's reopen loop runs; t-w2qv3o: what the tracker reads (elastic/sessionSignals.ts); t-w2txb2: how it parks one; t-wdyi2t: a finished fold parks once hidden
+    this.disposables.push(this.parking);
+    hostEngine.setChats(this, () => onScreenClient(elasticPanel, windowSignals)); // t-sh7cog + t-w2qv3o: host features prefer an ON-SCREEN chat; a hidden one is never woken (hostReads.ts)
+    this.disposables.push(attachPanelElastic(elasticPanel));
+    this.disposables.push(startUsageSampling(glidepathHost(this.context, () => this.hostReadArg(), (x) => this.post(x)))); // trigger one of three: a dashboard exists — a glide path needs readings taken over time, so the first cannot wait for the view to be opened
   }
 
   private get cwd(): string {
@@ -1275,13 +1291,12 @@ export class DashboardPanel {
     this.broadcastModelStatus();
 
     // Create the first session automatically. Feature 2 — reopen every chat that was open (engine ids + order + active + grid) via the recall path; missing ids skip; a clean restore retires the boot tab. `restoring` suppresses the premature empty/partial saves the boot connect + reopen-loop echoes would otherwise persist; one authoritative saveOpen flushes after. No open-set -> the single-active fallback above stands.
-    this.restoring = true; await this.createSession();
-    const boot = this.sessions.values().next().value as Session | undefined;
-    if (await restoreOpenSet(persistedOpen, boot?.client, {
-      reopen: (id) => this.createSession(undefined, undefined, id),
+    // t-w2u2ki: with a persisted open set the window's warm spare is the probe, not a throw-away boot chat (elastic/warmSpare.ts bootWindow).
+    this.restoring = true; await bootWindow({ spare: warmSpare, cwd: this.cwd, hasOpenSet: !!persistedOpen, newChat: () => this.createSession(), clientOf: (id) => this.sessions.get(id)?.client, close: (id) => this.closeSession(id), restore: (probe) => restoreOpenSet(persistedOpen, probe, {
+      reopen: (id, title) => this.createSession(undefined, undefined, id, { defer: deferAtReload(), title: title && !DashboardPanel.isDefaultEngineTitle(title) ? title : undefined }), // t-wypna7: no engine until focus, a message, peer mail or a /loop run
       setGrid: (g) => { this.sidebarGridMode = g; if (g) this.post({ type: 'setChatLayout', grid: true }); },
       activate: (localId) => { this.activeSessionId = localId; this.post({ type: 'restoreActiveSession', sessionId: localId }); },
-    }) && boot) this.closeSession(boot.id); this.restoring = false; this.saveOpen(); this.booted = true;
+    }) }); this.restoring = false; this.saveOpen(); this.booted = true; pokeElastic(); // t-wypna7: now the tracker starts the reopened chats that are in focus
     // Re-arm persisted /loop schedules now that the restored chats' sessions are
     // live — rearmPersistedLoops needs `this.sessions` in its post-restore state.
     this.rearmPersistedLoops();
@@ -1307,7 +1322,7 @@ export class DashboardPanel {
     requestedAgent?: string,
     restoredFromMessages?: SessionMessage[],
     loadSessionId?: string,
-    opts?: { cwd?: string; kind?: 'chat' | 'agent'; engineAgent?: string; botGlyph?: string; forkFrom?: { sessionId: string; label: string } }, // forkFrom = Fork: clone that engine session instead of opening a fresh one (sessionFork.ts)
+    opts?: { cwd?: string; kind?: 'chat' | 'agent'; engineAgent?: string; botGlyph?: string; forkFrom?: { sessionId: string; label: string }; defer?: boolean; title?: string }, // defer/title: t-wypna7 (elastic/reloadDefer.ts); forkFrom = Fork: clone that engine session instead of opening a fresh one (sessionFork.ts)
   ): Promise<string> {
     sessionCounter++;
     const settings = readSettings();
@@ -1321,6 +1336,7 @@ export class DashboardPanel {
     const sessionNum = sessionCounter;
 
     const sessionId = `session-${sessionNum}`;
+    const deferred = !!(opts?.defer && loadSessionId); // t-wypna7: a reload reopens it with no engine yet
     // Pre-seed the messageLog with the restored archive transcript so the next
     // saveSession round-trip doesn't drop the history. ACP itself starts fresh —
     // there is no LLM-context replay path — but the UI restores the scrollback.
@@ -1331,13 +1347,14 @@ export class DashboardPanel {
       cwd: opts?.cwd ?? this.cwd,
       kind: opts?.kind, botGlyph: opts?.botGlyph,
       client: null as any, // set below
-      gate: new EngineGate((p) => { session.starting = p.stage === 'starting'; this.post({ type: 'engineState', sessionId, ...p }); }),
+      gate: new EngineGate((p) => { session.starting = p.stage === 'starting'; this.post({ type: 'engineState', sessionId, ...p }); }, { log: elasticLog, describe: () => engineDescribe(engineWho(session), session.client?.currentSessionId) }), // t-xoenz1: kind and pid too
       pendingPermissions: new Map(),
-      runningChildren: new Set(),
+      runningChildren: new Set(), agentTree: newAgentTree(),
       estimatedTokens: 0,
       messageLog: restoredFromMessages ? [...restoredFromMessages] : [],
       loadedFromEngineId: loadSessionId,
-      starting: true, // until start() settles — the pane opens first now (sessionAnnounce.ts)
+      starting: !deferred, // until start() settles — the pane opens first now (sessionAnnounce.ts)
+      title: opts?.title,
       ...(loadSessionId || opts?.forkFrom ? { history: newHistory() } : {}), // a reopen shows "Loading chat history…" until its window lands
     };
 
@@ -1526,7 +1543,7 @@ export class DashboardPanel {
         const mounted = isSessionMounted(sessionId, this.activeSessionId, DashboardPanel.sessionPanels, this.sidebarGridMode);
         // A background agent's QUESTION (requestPermission with NO allow_always; acp/question.ts)
         // must never be auto-answered: with no view mounted, buffer it for replay.
-        if (shouldBufferQuestion(session.kind, mounted, options)) { this.bufferAgentQuestion(session, sessionId, toolCallId, title, kind, target, options); return; }
+        if (shouldBufferQuestion(session.kind, mounted, options)) { this.bufferAgentQuestion(session, sessionId, toolCallId, title, kind, target, options, questions); return; }
         // A persisted allow_always (recalled across engine restarts) pre-approves a matching CHAT
         // ask with allow_once BEFORE the UI sees it; never a question, never a deny. Falls through
         // to the agent repo-scoped path.
@@ -1548,7 +1565,7 @@ export class DashboardPanel {
           options: options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
           // The whole batch, when the engine sent one. The modal renders it as "Question 1 of N";
           // omitted, the webview falls back to title+options.
-          ...(questions ? { questions: questions.map((q) => ({ title: q.title, options: q.options.map((o) => ({ ...o })) })) } : {}),
+          ...questionsPost(questions), // t-xum9v2: keeps each question's `multiple` flag
         });
         notePersistablePermission(session.kind, toolCallId, title, target, options); // Feature 1 — remember this ask so an allow_always reply persists (agent/target-less self-skip)
         // plan_exit / dream-review previews ride the forwarded ask (permissionPreview.ts).
@@ -1593,6 +1610,7 @@ export class DashboardPanel {
         engineSessionId: () => session.client.currentSessionId,
         localSessionId: sessionId,
         post: (message) => this.post(message),
+        record: (status) => noteEngineStatus(session.client, status), // t-w2qv3o: the host copy the elastic classes read
       }),
       // `origami/flockMailbox` — no sessionId: a mailbox belongs to the Origami, not to a chat.
       onFlockMailbox: (args) => this.post(flockMailboxPush(args)),
@@ -1650,15 +1668,17 @@ export class DashboardPanel {
       onMcpAuthUrl: ({ name, url }) => this.post({ type: 'mcpAuthUrl', name, url }),
       // t-ucnp7t: the restore replayed only the newest page (historyHost.ts); the roster names every child, loaded or not.
       onHistoryWindow: (win) => { if (session.history) { adoptWindow(session.history, win); this.post(historyStatePost(sessionId, session.history)); } },
-      onSubagentRoster: (roster) => { if (!session.history) return; if (adoptRoster(session.history, roster, session.runningChildren)) this.postSessionList(); this.post(historyStatePost(sessionId, session.history)); },
+      onBackgroundTask: (task) => { noteBackgroundTask(session.agentTree, task); this.post(agentTreePost(sessionId, session.agentTree)); },
+      onSubagentRoster: (roster) => { adoptTreeRoster(session.agentTree, roster); this.post(agentTreePost(sessionId, session.agentTree)); if (!session.history) return; if (adoptRoster(session.history, roster, session.runningChildren)) this.postSessionList(); this.post(historyStatePost(sessionId, session.history)); },
       // Engine death: drop a buffered question, drain its orphaned respond (never hang the engine),
       // clear the board chip.
       onClose: (reason) => { if (!session.gate.exited(reason)) this.post({ type: 'closed', reason, sessionId }); if (this.pendingQuestionPermissions.has(sessionId)) { this.pendingQuestionPermissions.delete(sessionId); drainPermissions(session.pendingPermissions); DashboardPanel.syncTabIcon(this.context, sessionId, 0); this.agentManagerInstance?.setAgentQuestion(sessionId, null); } },
       onError: (message) => { if (session.gate.current !== 'ready' && session.gate.exited(message)) return; this.post({ type: 'error', message, sessionId }); if (this.pendingQuestionPermissions.has(sessionId)) { this.pendingQuestionPermissions.delete(sessionId); drainPermissions(session.pendingPermissions); DashboardPanel.syncTabIcon(this.context, sessionId, 0); this.agentManagerInstance?.setAgentQuestion(sessionId, null); } },
     };
 
-    session.client = new AcpClient(handlers);
+    session.client = warmSpare.take({ cwd: session.cwd, kind: session.kind, load: !!loadSessionId, fork: !!opts?.forkFrom }, handlers) ?? new AcpClient(handlers); // t-w2u2ki: a new chat starts on the waiting spare engine
     this.sessions.set(sessionId, session);
+    nestHub.touch(); // t-xsrtml: this window's open-chat list changed; a peer desk's index should not wait 30 s
     // An Agent Manager session runs in the background: it never steals focus from the chat the user
     // is in.
     if (session.kind !== 'agent') this.activeSessionId = sessionId;
@@ -1721,6 +1741,8 @@ export class DashboardPanel {
       this.pendingRestoreSessionId = null;
     }
 
+    const settled = () => { session.starting = false; this.post({ type: 'sessionStarting', sessionId, starting: false }); const h = session.history; if (h && settleRestore(h, session.client?.restoredHistory)) this.post(historyStatePost(sessionId, h)); }; // an old engine sent no window: the whole chat is here (contract 6)
+    const begin = (run: () => Promise<void>, refusal: () => string) => deferred ? deferChat(session, loadSessionId!, { run, refusal, settled }, this.parking, elasticLog).then(() => { if (session.title) this.applySessionTitle(session, sessionId); }) : session.gate.start(run, refusal);
     // Connect ACP. Pass the resolved engine endpoint so the spawned origami-acp gets
     // ORIGAMI_API_BASE. Read at spawn — a later change requires a respawn.
     await startThenAnnounce({
@@ -1736,14 +1758,14 @@ export class DashboardPanel {
       // The engine answered (or refused): the composer stops saying it is starting. The
       // post is how an ALREADY-OPEN pane learns; the flag is how a tab attaching later
       // does, through replaySessionTo.
-      settled: () => { session.starting = false; this.post({ type: 'sessionStarting', sessionId, starting: false }); const h = session.history; if (h && settleRestore(h, session.client?.restoredHistory)) this.post(historyStatePost(sessionId, h)); }, // an old engine sent no window: the whole chat is here (contract 6)
+      settled: deferred ? undefined : settled, // t-wypna7: a deferred chat settles after its first start (engineGate.ts defer)
       start: async () => {
         // Through the gate: a prompt sent before this resolves waits for it, and a failure keeps
         // the prompt and offers Retry, which runs this same body again (engineGate.ts).
-        try { await session.gate.start(async () => {
+        try { await begin(async () => {
           // `loadSessionId` (history recall) makes start() call loadSession instead of
           // newSession — the server replays the transcript as sessionUpdate events.
-          const acpSessionId = await session.client.start(session.cwd, this.resolveEngineUrl(), loadSessionId, session.kind === 'agent', opts?.engineAgent, opts?.forkFrom?.sessionId); postPeerName(session.client.peerName, sessionId, m => this.post(m)); // "which chat is this" for send_message/list_agents
+          const acpSessionId = await startWithin(session.client.start(session.cwd, this.resolveEngineUrl(), loadSessionId, session.kind === 'agent', opts?.engineAgent, opts?.forkFrom?.sessionId), () => session.client.stopStart()); postPeerName(session.client.peerName, sessionId, m => this.post(m)); // t-x3a89j: no answer in 60 s = failed with Retry, not "Starting" for ever. postPeerName: "which chat is this" for send_message/list_agents (it sat inside this comment from t-x3a89j to 0.4.179)
           // The engine seeds a NEW session from config.model. When that is stale this chat
           // would request a model the GPU doesn't have and JIT-boot it on the first turn.
           // Align it now — ACP only, never an lms load, guarded against stomping a remote.
@@ -1794,8 +1816,8 @@ export class DashboardPanel {
 
   /** Buffer an unanswered agent question (respond already in pendingPermissions), flag the board
    *  row + toast once; replaySessionsTo re-posts it on mount. */
-  private bufferAgentQuestion(session: Session, sessionId: string, toolCallId: string, title: string, kind: string, target: string | undefined, options: ReadonlyArray<{ optionId: string; name: string; kind: string }>): void {
-    this.pendingQuestionPermissions.set(sessionId, { toolCallId, title, kind, target, options: options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })) });
+  private bufferAgentQuestion(session: Session, sessionId: string, toolCallId: string, title: string, kind: string, target: string | undefined, options: ReadonlyArray<{ optionId: string; name: string; kind: string }>, questions?: ReadonlyArray<QuestionAsk>): void {
+    this.pendingQuestionPermissions.set(sessionId, { toolCallId, title, kind, target, options: options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })), questions }); // t-xum9v2: the whole batch, or a replay is cut to the head
     const preview = questionPreview(title);
     this.agentManagerInstance?.setAgentQuestion(sessionId, preview); notifyQuestionWaiting(session.agentName, preview);
     void vscode.window.showWarningMessage(`Agent ${session.agentName} needs you: ${preview}`, 'Open chat')
@@ -1828,10 +1850,12 @@ export class DashboardPanel {
     const popped = DashboardPanel.sessionPanels.get(sessionId);
     if (popped) popped.dispose();
     saveSession(session);
-    session.gate.drop(true); // release everything held: this chat's engine will never come up
+    this.parking.closed(session); // t-w2txb2: a parked chat leaves no peer stand-in behind
+    session.gate.close(); // release everything held, log "closed" (t-xoenz1: the exit dispose() causes is not "the engine stopped")
     session.client.dispose();
     this.sessions.delete(sessionId);
     this.subagentTodoPullers.delete(sessionId); // or the map grows a dead closure per close
+    nestHub.touch(); // t-xsrtml: this window's open-chat list changed; a peer desk's index should not wait 30 s
     this.post({ type: 'sessionClosed', sessionId });
     // Drop the closed chat's section membership, or the persisted map grows a dead id
     // every close. pruneChatSections returns the SAME object when nothing changed, so
@@ -2083,10 +2107,14 @@ export class DashboardPanel {
   }
 
   /** t-sh7cog (hostEngine.ts): the engine a HOST feature reads — the active chat's, any chat's, else the window's host engine if it runs. Never spawns: only the request gate in handleWebviewMessage does. */
-  private chatClient(): AcpClient | undefined { return (this.getActiveSession() ?? [...this.sessions.values()][0])?.client; }
+  private chatClient(): AcpClient | undefined { const up = (s?: Session) => (s && s.gate?.current !== 'parked' ? s.client : undefined); return up(this.getActiveSession()) ?? [...this.sessions.values()].map(up).find(Boolean); } // t-w2txb2: a parked chat is not woken for a host read
   private engineClient(): AcpClient | undefined { return this.chatClient() ?? hostEngine.current(); }
   private engineArg(): { client?: AcpClient } { const client = this.engineClient(); return client ? { client } : {}; }
+  /** t-w2qv3o (hostReads.ts): a host TIMER's or storage read's engine — an on-screen chat's, else the host engine's. */
+  private hostReadArg(): { client?: ReadClient } { return hostReadArg(hostEngine, () => this.sessions.size > 0, pokeElastic); }
   private booted = false; // initialize() made its boot chat: a request before that must not start a host engine
+  /** t-w2txb2: parks idle chats' engines and starts them again on a peer message (elastic/parkHost.ts). */
+  private readonly parking = new ParkHost({ sessions: () => this.sessions.values(), log: elasticLog, warming: cacheWarmingEnabled, changed: () => { pokeElastic(); nestHub.touch(); } }); /* t-z6ytkw: warming = wake a parked chat to warm its cache (warmWake.ts) */ // t-xsrtml: a park or a restore changes this chat's Nest state (open <-> running)
 
   /** Every engine to tell that provider config changed — EVERY live chat, not just
    *  the active one: each holds its own AcpClient and its own caches, and an
@@ -2094,7 +2122,7 @@ export class DashboardPanel {
    *  opens, which is not a failure: the next engine start reads the file. */
   private engineRefreshTargets(): RefreshTarget[] {
     return [...this.sessions.values()]
-      .filter((session) => !!session.client)
+      .filter((session) => !!session.client && session.gate?.current !== 'parked') // t-w2txb2: a parked chat reads the file when it starts again
       .map((session) => ({ client: session.client, ...(session.cwd ? { cwd: session.cwd } : {}) }));
   }
 
@@ -2186,8 +2214,11 @@ export class DashboardPanel {
     return { post: (msg) => this.post(msg), engineIdOf: (id) => this.sessions.get(id)?.client?.currentSessionId, labelOf: (id) => { const s = this.sessions.get(id); return sessionLabel(s?.title, s?.number ?? 0); }, isPassthroughCell: (id) => !!boundCell(id), fork: (source) => this.createSession(undefined, undefined, undefined, { forkFrom: source }), send: (id, text) => void this.handleWebviewMessage({ type: 'send', text, sessionId: id }) };
   }
 
-  private async handleSlashCommand(command: string, args: string): Promise<void> {
-    const sid = this.activeSessionId;
+  /** t-xsufto: `target` = the chat the command was typed in (the composer's post carries it). Only a post
+   *  with no id (a palette command, an older webview) falls back to the sidebar's selected chat; an id
+   *  that is no longer open runs nowhere. */
+  private async handleSlashCommand(command: string, args: string, target?: string): Promise<void> {
+    const sid = target ?? this.activeSessionId;
     if (!sid) {
       this.post({ type: 'system', text: 'No active session.', sessionId: '' });
       return;
@@ -2539,7 +2570,7 @@ export class DashboardPanel {
       const localId = await this.createSession(undefined, undefined, loop.sessionId, { kind: 'agent' });
       const session = this.sessions.get(localId);
       if (!session) return;
-      session.loopSchedule = { intervalMs: loop.intervalMs, prompt: loop.prompt, runs: loop.runs, stopped: false, createdAt: loop.createdAt, persistent: true };
+      session.headlessLoop = true; session.loopSchedule = { intervalMs: loop.intervalMs, prompt: loop.prompt, runs: loop.runs, stopped: false, createdAt: loop.createdAt, persistent: true };
       // Next tick only — never a catch-up burst, exactly as on the armed path.
       this.armLoopTimer(session, localId);
     } catch (e) {
@@ -2702,7 +2733,9 @@ export class DashboardPanel {
         this.setProvisionalTitle(session, sessionId, text);
         session.turnBusy = true;
         try {
-          const stopReason = await session.client.prompt(text);
+          const turn = await session.gate.turn(() => session.client.prompt(text)); // t-w2txb2: a parked Folds session starts again here
+          if (!turn.sent) throw new Error(`the prompt was not sent (${turn.why})`);
+          const stopReason = turn.value;
           await this.pollControllerState(session, sessionId);
           this.post({ type: 'turnDone', stopReason, sessionId });
           return stopReason;
@@ -2717,6 +2750,7 @@ export class DashboardPanel {
       },
       closeSession: (sessionId) => this.closeSession(sessionId),
       sessionAlive: (sessionId) => this.sessions.has(sessionId),
+      parkSession: (sessionId) => this.parking.finished(sessionId, ['warm-pending']), // t-w2txb2: a finished fold's engine closes; Chat starts it again. t-wdyi2t: once no view shows it (elastic/parkHost.ts)
       openChat: (sessionId) => { void DashboardPanel.openSessionInEditor(this.context, sessionId); },
       engineSessionId: (uiId) => this.sessions.get(uiId)?.client.currentSessionId ?? undefined,
       reopenAgentSession: async (cwd, engineId, agentName) =>
@@ -2736,6 +2770,7 @@ export class DashboardPanel {
       setSessionModel: async (sid, modelId) => {
         const s = this.sessions.get(sid);
         if (!s) throw new Error(`no session ${sid}`);
+        if (!(await s.gate.whenUp())) throw new Error(`session ${sid} has no engine`);
         await s.client.setModel(modelId);
       },
       // Typed agents: the session's live ACP mode options (harvested into the roster),
@@ -2755,6 +2790,7 @@ export class DashboardPanel {
         if (!s) throw new Error(`no session ${sid}`);
         const ids = (s.client.getModeOption()?.options ?? []).map((o) => o.value);
         if (!ids.includes(modeId)) throw new Error(`agent type "${modeId}" not one of: ${ids.join(', ') || '(none)'}`);
+        if (!(await s.gate.whenUp())) throw new Error(`session ${sid} has no engine`);
         await s.client.setConfigOption('mode', modeId);
       },
       agentTypes: () => loadAgentTypes(this.context.globalState),
@@ -2820,6 +2856,7 @@ export class DashboardPanel {
 
   private async handleWebviewMessage(msg: unknown): Promise<void> {
     if (!msg || typeof msg !== 'object') return;
+    pokeElastic(); // t-w2qv3o: a focus or grid change from a view moves which chat is on screen
     const m = msg as { type?: string; sessionId?: string; [k: string]: unknown };
     const sid = m.sessionId as string | undefined;
     if (this.booted && !this.engineClient() && typeof m.type === 'string' && HOST_ENGINE_MESSAGE_TYPES.has(m.type)) await hostEngine.ensure(); // t-sh7cog: with no chat open, a user surface's engine read starts the window's host engine; no-op while a chat exists
@@ -2844,7 +2881,7 @@ export class DashboardPanel {
     if (typeof m.type === 'string' && FLOCK_PANE_MESSAGE_TYPES.has(m.type)) { void handleFlockPaneMessage({ ...this.engineArg(), cwd: this.cwd, post: (x) => this.post(x), openChat: async (recall) => (recall ? openTabFor(this.sessions, recall) : undefined) ?? await this.createSession(undefined, undefined, recall), hostEngine: () => { const own = hostEngine.ownClient(); return own ? { client: own, pid: own.pid } : undefined; } /* t-vbj03h: the window's host engine can hold the lease too */, sessions:() => [...this.sessions.entries()].map(([id, sn]) => ({ id, label: sessionLabel(sn.title, sn.number ?? 0), engineId: engineSessionId(sn.client, id) ?? undefined, pid: sn.client.pid })), chat: (localId) => { const sn = this.sessions.get(localId); return sn ? { client: sn.client, engineId: engineSessionId(sn.client, localId) ?? undefined, pid: sn.client.pid } : undefined; } /* a workspace runs one engine PER CHAT, each its own OS pid (acpClient.ts's `pid` getter) — `pickFlockClient` (flockRoute.ts) matches flock-owner.json's holder pid against these so a flock read/write can be routed to the SIBLING CHAT that actually holds the links, not just the active one; a flock message is injected by the engine that OWNS the chat, never by whichever one the pane read (flockMailbox.ts) */ }, m); return; } if (typeof m.type === 'string' && REMOTE_PANE_MESSAGE_TYPES.has(m.type)) { void handleRemotePaneMessage({ post: (x) => this.post(x) }, m); return; } if (typeof m.type === 'string' && SIDE_QUESTS_MESSAGE_TYPES.has(m.type)) { void handleSideQuestMessage({ cwd: this.cwd, post: (x) => this.post(x), enabled: sideQuestsEnabled, save: saveSideQuestFile, createChat: () => this.createSession() }, m); return; } // FOUR panes, ONE line: side quests (t-f89g49) read a FOLDER (.origami/sidequests) and never the engine — sideQuestsPane.ts. The panel owns exactly one half of Start — making an EMPTY chat — because sideQuestsPane.ts then PREFILLS its composer rather than prompting it: a new chat has no model yet, and the owner is prompted for the chat's model AND its sub-agent model (ModelPicker.svelte + ModelPickerFollowUp.svelte) before the first turn goes out.
     if (typeof m.type === 'string' && HISTORY_MESSAGE_TYPES.has(m.type)) { void this.handleHistoryMessage(m); return; } // t-ucnp7t: older pages + whole-chat search (historyHost.ts)
     if (typeof m.type === 'string' && REPO_PICKER_MESSAGE_TYPES.has(m.type)) { void handleRepoPickerMessage({ cwd: this.cwd, post: (x) => this.post(x), sessions: () => [...this.sessions.entries()].map(([id, sn]) => ({ id, cwd: sn.cwd, hasTurns: sn.messageLog.length > 0 })), createChat: (cwd) => this.createSession(undefined, undefined, undefined, { cwd }), closeChat: (sessionId) => this.closeSession(sessionId) }, m); return; } // the chat pane's repo/branch pills (repoPicker.ts). It gets createSession, NEVER a write to `sn.cwd`: a session's directory is fixed at creation and the pills open a new chat instead.
-    if (typeof m.type === 'string' && NEST_SIDEBAR_MESSAGE_TYPES.has(m.type)) { void handleNestSidebarMessage({ post: (x) => this.post(x), engine: () => hostEngine.nestEngine, open: async (id) => { await this.handleWebviewMessage({ type: 'recallSession', sessionId: id }); if (this.sessions.has(id)) await DashboardPanel.openSessionInEditor(this.context, id); } }, m); return; } /* t-t7lfho: recall alone leaves an already-open tab behind; the reveal brings the chat's pane forward */ /* t-s9k0q6 + t-sc093o: the sidebar's Nest view (nestSidebar.ts); the hub (nestHub.ts) reads the ENGINE through hostEngine.nestEngine (a chat's client, else the window's host engine, t-sh7cog) and opens a pulled chat by recallSession */ if (typeof m.type === 'string' && SUBAGENT_LIMIT_MESSAGE_TYPES.has(m.type)) { void handleSubagentLimitMessage({ post: (x) => this.post(x) }, m); return; } if (typeof m.type === 'string' && CACHE_WARMING_MESSAGE_TYPES.has(m.type)) { void handleCacheWarmingMessage({ post: (x) => this.post(x) }, m); return; } if (typeof m.type === 'string' && CHAT_BACKDROP_MESSAGE_TYPES.has(m.type)) { void handleChatBackdropMessage({ post: (x) => this.post(x) }, m); return; } /* t-s9jr6u: Settings' backdrop row, SETTINGS only (chatBackdropSetting.ts); the broadcast reply reaches every chat pane */ if (typeof m.type === 'string' && STORAGE_PANE_MESSAGE_TYPES.has(m.type)) { void handleStorageMessage({ ...this.engineArg(), post: (x) => this.post(x) }, m); return; } // FOUR panes, ONE line: the panel is at its cap. Insights' Storage card reads and prunes the ENGINE's session store through a chat's extMethod, else the host engine's (storagePane.ts), the same shape the tools and MCP panes take. // SAME reason: Insights' cache-warming switch reads SETTINGS only (cacheWarmingPane.ts), never the engine. // THREE panes, ONE line, same reason: Insights' sub-agent cap reads SETTINGS only (subagentLimitPane.ts), never the engine. // TWO panes, ONE line: the panel is at its cap and the ratchet never rises. Flock reads the ENGINE (flock.json + the front-desk config) via flockPane.ts; Remote reads SETTINGS + the activation-owned controller and never the engine, via remotePane.ts.
+    if (typeof m.type === 'string' && NEST_SIDEBAR_MESSAGE_TYPES.has(m.type)) { void handleNestSidebarMessage({ post: (x) => this.post(x), engine: () => hostEngine.nestEngine, open: async (id) => { await this.handleWebviewMessage({ type: 'recallSession', sessionId: id }); if (this.sessions.has(id)) await DashboardPanel.openSessionInEditor(this.context, id); }, openSessionIds: () => [...this.sessions.entries()].map(([id, sn]) => engineSessionId(sn.client, id)).filter((x): x is string => !!x) }, m); return; } /* t-t7lfho: recall alone leaves an already-open tab behind; the reveal brings the chat's pane forward */ /* t-s9k0q6 + t-sc093o: the sidebar's Nest view (nestSidebar.ts); the hub (nestHub.ts) reads the ENGINE through hostEngine.nestEngine (a chat's client, else the window's host engine, t-sh7cog) and opens a pulled chat by recallSession; t-xsrtml: openSessionIds hands the hub every chat open in THIS window (incl. a parked one, whose engine id acpClient.ts keeps through the park), so a peer desk sees it as open, not closed */ if (m.type === 'agentTreeRequest' && typeof m.sessionId === 'string') { const sn = this.sessions.get(m.sessionId); if (sn) this.post(agentTreePost(m.sessionId, sn.agentTree)); return; } /* t-z1xlfy: a map that opens late asks (agentTreeHost.ts) */ if (typeof m.type === 'string' && SUBAGENT_LIMIT_MESSAGE_TYPES.has(m.type)) { void handleSubagentLimitMessage({ post: (x) => this.post(x) }, m); return; } if (typeof m.type === 'string' && CACHE_WARMING_MESSAGE_TYPES.has(m.type)) { void handleCacheWarmingMessage({ post: (x) => this.post(x) }, m); return; } if (typeof m.type === 'string' && ENGINES_MESSAGE_TYPES.has(m.type)) { void handleEnginesMessage({ post: (x) => this.post(x) }, m); return; } /* t-xf2e9q: Settings' Engines group (enginesPane.ts) */ if (typeof m.type === 'string' && CHAT_BACKDROP_MESSAGE_TYPES.has(m.type)) { void handleChatBackdropMessage({ post: (x) => this.post(x) }, m); return; } /* t-s9jr6u: Settings' backdrop row, SETTINGS only (chatBackdropSetting.ts); the broadcast reply reaches every chat pane */ if (typeof m.type === 'string' && STORAGE_PANE_MESSAGE_TYPES.has(m.type)) { void handleStorageMessage({ ...this.hostReadArg(), post: (x) => this.post(x) }, m); return; } /* t-w2qv3o: a store scan never pages in a hidden chat's engine (hostReads.ts) */ // FOUR panes, ONE line: the panel is at its cap. Insights' Storage card reads and prunes the ENGINE's session store through a chat's extMethod, else the host engine's (storagePane.ts), the same shape the tools and MCP panes take. // SAME reason: Insights' cache-warming switch reads SETTINGS only (cacheWarmingPane.ts), never the engine. // THREE panes, ONE line, same reason: Insights' sub-agent cap reads SETTINGS only (subagentLimitPane.ts), never the engine. // TWO panes, ONE line: the panel is at its cap and the ratchet never rises. Flock reads the ENGINE (flock.json + the front-desk config) via flockPane.ts; Remote reads SETTINGS + the activation-owned controller and never the engine, via remotePane.ts.
     if (typeof m.type === 'string' && WEBMCP_PANE_MESSAGE_TYPES.has(m.type)) { handleWebMcpPaneMessage({ post: (x) => this.post(x) }, m); return; } // Web MCP section — a FILE read/write, so no session needed. webmcpPane.ts.
     // Plugins pane — list/enable-disable/add-from-folder. Everything lives in pluginsPane.ts.
     // Artifacts pane — the engine owns the artifacts; this forwards, opens the
@@ -2871,7 +2908,7 @@ export class DashboardPanel {
     // Subscription usage for an OAuth Lab fold. Read-only and lazy, so it takes
     // whichever session has a live engine rather than opening one.
     if (typeof m.type === 'string' && PROVIDER_USAGE_MESSAGE_TYPES.has(m.type)) { void handleProviderUsageMessage({ ...this.engineArg(), post: (x) => this.post(x) }, m); return; }
-    if (typeof m.type === 'string' && GLIDEPATH_MESSAGE_TYPES.has(m.type)) { void handleGlidepathMessage(glidepathHost(this.context, () => this.engineArg(), (x) => this.post(x)), m); return; } // opening the Glidepath view is one of three sampling triggers; usageHistory.ts holds the 5-minute per-provider floor that keeps three triggers from being three reads
+    if (typeof m.type === 'string' && GLIDEPATH_MESSAGE_TYPES.has(m.type)) { void handleGlidepathMessage(glidepathHost(this.context, () => this.hostReadArg(), (x) => this.post(x)), m); return; } // opening the Glidepath view is one of three sampling triggers; usageHistory.ts holds the 5-minute per-provider floor that keeps three triggers from being three reads
     // Connections "Claude (subscription, experimental)" card (t-tsw90t) — add
     // (disclosure + the ONE setting), disconnect, and its readiness, through
     // whichever engine can answer with no chat open (t-sh7cog); claudeSubscriptionCard.ts owns every reply.
@@ -2888,6 +2925,7 @@ export class DashboardPanel {
       return;
     }
     if (m.type === 'engineRetry') { if (sid) void this.sessions.get(sid)?.gate.retry(); return; } // Retry on a failed engine start's card (engineGate.ts)
+    if (m.type === 'openEngineLog') { void openEngineLog({ open: (f) => vscode.window.showTextDocument(vscode.Uri.file(f), { preview: true }), info: (t) => vscode.window.showInformationMessage(t) }); return; } // t-x3a89j: the card's Open engine log (engineLog.ts)
     // Open a race group's Compare screen in its own editor tab - a UI/tab concern, not routed to
     // the manager.
     if (m.type === 'amOpenCompare') { void DashboardPanel.openRaceCompareInEditor(this.context, m.params as RaceCompareParams); return; }
@@ -2896,6 +2934,8 @@ export class DashboardPanel {
     if (m.type === 'amOpenMap') { void DashboardPanel.openRepoMapInEditor(this.context, String(m.root ?? '')); return; }
     // The sidebar reports its grid layout; grid tiles every session visibly (forward asks,
     // never auto-decide). Entering grid MOUNTS every session, so replay any buffered question.
+    if (m.type === 'chatFocus') { setSidebarFocus(m.focused === true); return; } // t-x3a89j: the sidebar's keyboard focus (webview sidebarFocus.ts; the phone is refused it)
+    if (m.type === 'sidebarChat') { setSidebarChat(typeof m.sessionId === 'string' ? m.sessionId : null); return; } // t-xp0dzr: the chat the sidebar webview displays (null: none); the elastic "on screen" input, not activeSessionId
     if (m.type === 'chatGridMode') { const wasGrid = this.sidebarGridMode; this.sidebarGridMode = m.grid === true; if (this.sidebarGridMode && !wasGrid) for (const s of this.sessions.values()) this.replayBufferedQuestionFor(s, (msg) => this.post(msg)); this.saveOpen(); return; }
 
     switch (m.type) {
@@ -3454,10 +3494,10 @@ export class DashboardPanel {
         // re-broadcast honest status.
         await this.reprobeModel();
         // Best-effort VRAM pressure for the status bar, when a session exists.
-        const anySession = this.sessions.values().next().value;
-        if (anySession?.client) {
+        const vramClient = this.chatClient(); // t-w2txb2: never a parked chat's
+        if (vramClient) {
           try {
-            const vr = await anySession.client.extMethod('get_vram_state', {}).catch(() => ({}));
+            const vr = await vramClient.extMethod('get_vram_state', {}).catch(() => ({}));
             const vramGpu = ((vr as { gpus?: Array<{ vram_total_mb: number; vram_used_mb: number }> })?.gpus ?? [])[0];
             if (vramGpu && vramGpu.vram_total_mb > 0) statusBarRef?.setVram((vramGpu.vram_used_mb / vramGpu.vram_total_mb) * 100);
           } catch { /* best-effort */ }
@@ -3468,7 +3508,7 @@ export class DashboardPanel {
         // Eject a model (or all). Direct `lms unload` with an explicit
         // identifier / --all keeps it non-interactive.
         const identifier = typeof m.identifier === 'string' ? m.identifier : undefined;
-        const sid = this.activeSessionId ?? '';
+        const sid = m.sessionId ?? this.activeSessionId ?? ''; // t-xsufto: the chat whose model picker ejected
         const op = this.modelOps.begin(sid, `ejecting ${identifier ?? 'all models'} in ${this.sessions.get(sid)?.title || sid || 'this chat'}`);
         if (!op) { this.post({ type: 'system', text: this.modelOps.busyMessage(sid), sessionId: sid }); break; }
         try {
@@ -3764,6 +3804,12 @@ export class DashboardPanel {
         }
         break;
       }
+      case 'readDroppedFiles': { // t-z69b8m: an explorer drop names URIs; the webview has no fs (droppedFiles.ts)
+        const r = await readDroppedFiles(m.uris, { fileSize: (u) => Promise.resolve(vscode.workspace.fs.stat(vscode.Uri.parse(u))).then((st) => (st.type & vscode.FileType.File ? st.size : null)), read: (u) => Promise.resolve(vscode.workspace.fs.readFile(vscode.Uri.parse(u))) });
+        if (r.skipped.length) vscode.window.showWarningMessage(`Only the path was added (a folder, missing, or over 10 MB): ${r.skipped.join(', ')}`);
+        this.post({ type: 'droppedFiles', dropId: m.dropId, files: r.files });
+        break;
+      }
       case 'imageError': {
         // Also surface the error in-chat so the user has a record after the toast
         // dismisses. ChatPane.svelte has a matching `case 'imageError'` that renders this
@@ -3773,7 +3819,7 @@ export class DashboardPanel {
         this.post({
           type: 'imageError',
           message: errMsg,
-          sessionId: this.activeSessionId ?? '',
+          sessionId: sid ?? this.activeSessionId ?? '', // t-xsufto: the composer that hit it
         });
         break;
       }
@@ -4510,7 +4556,7 @@ export class DashboardPanel {
         const command = String(m.command || '').trim();
         const args = String(m.args || '').trim();
         if (!command) break;
-        await this.handleSlashCommand(command, args);
+        await this.handleSlashCommand(command, args, sid); // t-xsufto: the chat it was typed in
         break;
       }
       case 'closeSession': {
@@ -4933,7 +4979,7 @@ export class DashboardPanel {
     const { ok, probe } = remoteLiveness({ isRemote, known: !!ctx.providers[pid], row: prov, localOk: this.modelInfo.ok, now: Date.now() }); // probed: not offline, not queued).
     if (probe) ctx.staleRemote.add(pid);
     const reason = modelStatusReason({ ok, pid, isRemote, prov, providerCount: Object.keys(ctx.providers).length, localReason: this.modelInfo.reason ?? null });
-    const providerLabel = pid ? (String(ctx.providers[pid]?.name ?? pid)) : 'LM Studio';
+    const providerLabel = pid === CLAUDE_SUBSCRIPTION_PROVIDER ? CLAUDE_SUBSCRIPTION_LABEL : pid ? (String(ctx.providers[pid]?.name ?? pid)) : 'LM Studio'; // t-xu5oty: its block has no name
     // The cached window is only truth for the model it was probed FOR — after a model
     // switch it is a stale lie, so a mismatch reads as unknown until a re-probe.
     const windowValid = !!session.modelWindow && session.modelWindowFor === cur;
@@ -5070,8 +5116,8 @@ export class DashboardPanel {
    *  origami.json was written still appear. Live models not yet in origami.json are
    *  flagged `configured:false`. Best-effort: a dead server yields the configured list. */
   private async broadcastModelOptions(): Promise<void> {
-    const opt = this.getActiveSession()?.client.getModelOption();
-    const current = opt?.current ?? '';
+    const { own, shown: opt } = pickerModelOption(this.getActiveSession(), this.sessions.values()); // t-y5ecbc: a starting chat shows another chat's list until its own lands
+    const current = own?.current ?? '';
     const options: Array<{ value: string; name: string; configured: boolean }> =
       (opt?.options ?? []).map(o => ({ value: o.value, name: o.name, configured: true }));
     // No active session means the engine can't hand us its model list — seed the
@@ -5105,20 +5151,26 @@ export class DashboardPanel {
     // (engineStatus.ts) — the local CLI-discovery guess (readiness.ts) is only
     // the fallback for when there is no active session to ask.
     const enabled = claudeSubscriptionEnabled();
-    const readiness = !enabled ? undefined : this.getActiveSession()
-      ? await fetchClaudeSubscriptionReadiness(this.getActiveSession()!.client)
-      : readinessFromCli(cliInfo);
+    const readiness = !enabled ? undefined : await this.claudeSubscriptionReadiness();
     const subscription = readiness ? claudeSubscriptionModelRows(true, readiness) : [];
     if (merged.length === 0 && !current && passthrough.length === 0 && subscription.length === 0) return; // the Labs "Claude Code" group is OFFERED, never configured (models.ts) — it needs no provider, so it survives the empty-catalogue early return
     // Per-row vision, so the picker says which models read a picture BEFORE one is
     // picked. AFTER the merge: only the final list has every row.
     const rows = visionStatesFor(this.context.globalState, merged, detectLocalProvider()?.id, readModelVision);
     // The engine's own claude-subscription rows are not pickable while its Gate B says no (t-ty02bb).
-    const offered = readiness ? mergeClaudeSubscriptionRows([...rows, ...passthrough], subscription, readiness) : [...rows, ...passthrough];
+    const offered = readiness ? mergeClaudeSubscriptionRows([...rows, ...passthrough], subscription, readiness, new Set(Object.keys(readGlobalProviders()[CLAUDE_SUBSCRIPTION_PROVIDER]?.models ?? {}))) : [...rows, ...passthrough]; // t-y5ecbj: persisted picks tell a leftover alias row from a live one
     this.post({ type: 'modelOptions', current, options: offered, gatewayNotes: this.gatewayNotes(readGlobalProviders()) });
     // If a REMOTE single-model server had its model swapped, this session now points at
     // a model that is gone. Adopt the now-served one instead of silently mis-targeting.
     await this.maybeAdoptRemoteServedModel(current, merged);
+  }
+
+  /** Claude (subscription)'s Gate B answer from the active chat's engine, else the local CLI guess
+   *  when there is no chat to ask. t-x3a89j: never asks a parked chat (the ask would restore it).
+   *  t-xu5oty: bounded like a provider probe and never throws, so no caller waits with no end. */
+  private claudeSubscriptionReadiness(): Promise<ClaudeSubscriptionReadiness> {
+    const active = this.getActiveSession();
+    return boundedReadiness(async () => (!engineAnswered(active) ? lastClaudeSubscriptionReadiness() ?? readinessFromCli(await claudeCli()) : fetchClaudeSubscriptionReadiness(active!.client)), PROVIDER_PROBE_TIMEOUT_MS); // t-y5ecbc: nor a starting one (the last engine answer stands in)
   }
 
   /** Guards {@link maybeAdoptRemoteServedModel} against re-entrancy (its setModel
@@ -5237,6 +5289,9 @@ export class DashboardPanel {
   private async broadcastProviderStatus(force = false): Promise<void> {
     // A `claude-subscription` block is only a persisted pick (writeModelConfig): the connection draws its own tile (t-ty02bb).
     const { [CLAUDE_SUBSCRIPTION_PROVIDER]: _pick, ...providers } = readGlobalProviders();
+    // t-xu5oty: but a chat on it reads its liveness from this cache (sessionModelStatus), so its row is Gate B's answer, asked beside the probes.
+    const starting = engineStarting(this.getActiveSession()); // t-y5ecbc: a booting chat engine answers nothing yet; its rows are read when it is up
+    const subscriptionRow = _pick !== undefined && !starting ? this.claudeSubscriptionReadiness().then((r) => livenessOf(r, Date.now())) : undefined;
     const now = Date.now();
     const TTL = 20000;
     // The engine's primary local endpoint (drives ORIGAMI_API_BASE). Only its
@@ -5262,7 +5317,7 @@ export class DashboardPanel {
     // when such a block exists. `undefined` = the store COULD NOT be asked (no engine
     // yet, or the call failed) — a different answer from "nobody signed in".
     const keyless = Object.values(providers).some(b => !b?.options?.baseURL && !b?.options?.apiKey);
-    const oauthIds = keyless ? await readOauthIds(() => oauthConnectedIds(this.engineClient()), PROVIDER_PROBE_TIMEOUT_MS) : new Set<string>(); // BOUNDED: an unanswered store must not hold every probe open (oauthIdsRead.ts)
+    const oauthIds = !keyless ? new Set<string>() : starting ? lastKnownOauthIds() : rememberOauthIds(await readOauthIds(() => oauthConnectedIds(this.engineClient()), PROVIDER_PROBE_TIMEOUT_MS)); // BOUNDED: an unanswered store must not hold every probe open (oauthIdsRead.ts)
     // Spend/budget exclusion keeps its LAST KNOWN set through an unanswerable
     // beat — an engine hiccup must not start billing an OAuth provider's turns.
     if (oauthIds) this.oauthProviderIds = oauthIds;
@@ -5359,7 +5414,8 @@ export class DashboardPanel {
       }),
       PROVIDER_PROBE_TIMEOUT_MS,
     );
-    this.post({ type: 'providerStatus', providers: out });
+    this.post({ type: 'providerStatus', providers: out }); // t-y5ecbc: first; the Gate B row below is not in it
+    if (subscriptionRow) this.providerStatusCache.set(CLAUDE_SUBSCRIPTION_PROVIDER, await subscriptionRow);
     // Repaint the per-session model statuses from the FRESH cache — a remote chat's
     // ok/banner reads providerStatusCache, and without this a cache fill corrected the
     // pills but left every chat's stale banner in place until a focus switch.
@@ -5608,7 +5664,7 @@ export class DashboardPanel {
     // surface already gets, so no second wire and no second poll: the rule is
     // collabAttention.ts, the panel write is collabTab.ts. Fires for a room whose tab
     // is SHUT too — setCollabTabWaiting is a no-op with no tab.
-    const cs = msg as { type?: string; collabId?: string; sessionId?: string }; notifyOnPost(msg as Record<string, unknown>, this.sessions.get(cs.sessionId ?? '')?.agentName); noteTodoSnapshot(this.sessions, msg); nestHub.onLocalPost(cs); /* t-selspn: a new chat, retitle or turn edge sends the nest index within 2 s */
+    const cs = msg as { type?: string; collabId?: string; sessionId?: string }; notifyOnPost(msg as Record<string, unknown>, this.sessions.get(cs.sessionId ?? '')?.agentName); noteTodoSnapshot(this.sessions, msg); nestHub.onLocalPost(cs); /* t-selspn: a new chat, retitle or turn edge sends the nest index within 2 s */ pokeElastic(); /* t-w2qv3o: a turn, an ask or a sub-agent edge re-reads the engine classes (one pass per 250 ms) */
     if (cs.type === 'collabStateData' && typeof cs.collabId === 'string') {
       setCollabTabWaiting(cs.collabId, collabNeedsUser(msg as CollabAttentionState));
     }
@@ -5711,7 +5767,7 @@ export class DashboardPanel {
   private replayBufferedQuestionFor(session: Session, poster: (msg: object) => void): void {
     const qp = this.pendingQuestionPermissions.get(session.id);
     const qpAct = questionReplayAction(!!qp, session.turnBusy === true);
-    if (qpAct === 'post') { poster({ type: 'requestPermission', toolCallId: qp!.toolCallId, title: qp!.title, kind: qp!.kind, sessionId: session.id, target: qp!.target, options: qp!.options }); openPermissionPreview(session, qp!.title); }
+    if (qpAct === 'post') { poster({ type: 'requestPermission', toolCallId: qp!.toolCallId, title: qp!.title, kind: qp!.kind, sessionId: session.id, target: qp!.target, options: qp!.options, ...questionsPost(qp!.questions) }); openPermissionPreview(session, qp!.title); }
     else if (qpAct === 'drop') { this.pendingQuestionPermissions.delete(session.id); drainPermissions(session.pendingPermissions); DashboardPanel.syncTabIcon(this.context, session.id, 0); this.agentManagerInstance?.setAgentQuestion(session.id, null); }
   }
 
@@ -5762,6 +5818,7 @@ export class DashboardPanel {
     this.agentManagerInstance?.dispose(); hostEngine.releaseChats(this); // t-sh7cog: the host engine itself goes with the WINDOW (hostEngineWindow.ts), not the panel
     for (const session of this.sessions.values()) {
       saveSession(session);
+      session.gate.close('the window closed'); // t-xoenz1: a planned stop, not "the engine stopped"
       session.client.dispose();
     }
     this.sessions.clear();
@@ -5808,11 +5865,12 @@ export class DashboardPanel {
       (this.context.extension.packageJSON as { version?: unknown }).version ?? '',
     );
 
-    // Sticky permission-mode banner, mirroring the TUI's, so the user can see when
-    // plan mode is active. Auto and bypass mode surface through the InputBar's own
-    // Access chip instead (permBannerCopy, t-dih1p7 / Phase C2) — this banner renders
-    // nothing for them. The inline script listens for `permModeUpdate` postMessage
-    // events so live changes update without a reload.
+    // Sticky permission-mode banner: DEAD CHROME (t-y5ec3s). Plan, auto and bypass
+    // all surface through the InputBar's own chips instead (permBannerCopy always
+    // returns '', same as bypass/auto since 8f56fec784 and t-dih1p7 / Phase C2) — the
+    // div and its `permModeUpdate` postMessage plumbing are left in place rather than
+    // torn out (mirrors how bypass was dropped), so a future escalation with no other
+    // on-screen chrome has somewhere to render.
     // Seeded from the session THIS view speaks for — seeding from a panel-global
     // "last painted mode" made a chat popped out while another was in plan boot
     // showing plan, a banner it had never earned.
@@ -5857,7 +5915,6 @@ export class DashboardPanel {
       letter-spacing: 0.4px;
       border-bottom: 1px solid rgba(255,255,255,0.08);
     }
-    #permModeBanner[data-mode="plan"]      { display: block; background: #1e3a5f; color: #aed1ff; }
   </style>
 </head>
 <body>

@@ -15,7 +15,7 @@
   import GaugeCounter from './GaugeCounter.svelte';
   import SendStopButton from './SendStopButton.svelte';
   import InterjectSendButton from './InterjectSendButton.svelte';
-  import { isDropping, nextDepth } from './composerDrop';
+  import { createDragState, filesFromHost, hostReadable, nextDropId, planDrop } from './composerDropIntake';
   import type { SessionChanges } from '../panes/sessionChanges';
   import ModelPicker from './ModelPicker.svelte';
 
@@ -278,7 +278,7 @@
   let monthBudget = $state<number | null>(null);
   let budgetPct = $derived(monthBudget && monthBudget > 0 ? Math.round((monthSpend / monthBudget) * 100) : 0);
   function raiseBudget() {
-    vscode.postMessage({ type: 'setBudget', monthly: (monthBudget ?? 0) + 5 });
+    vscode.postMessage({ type: 'setBudget', monthly: (monthBudget ?? 0) + 5, sessionId }); // t-xsufto: the note lands in this chat
   }
 
   // Listener lives in onMount with a cleanup so closed grid cells release it
@@ -287,6 +287,7 @@
   // with no sessionId is treated as a broadcast and accepted.
   onMount(() => {
     const onMsg = (event: MessageEvent) => {
+      if (event.data?.type === 'droppedFiles' && myDrops.delete(event.data.dropId)) attachFiles(filesFromHost(event.data.files), false); // t-z69b8m
       const msg = event.data || {};
       const forThisSession = msg.sessionId == null || msg.sessionId === sessionId;
       if (msg.type === 'contextUpdate' && forThisSession) {
@@ -554,7 +555,7 @@
   async function attachImageFile(file: File) {
     const taken = await readComposerImage(file);
     if (!taken.ok) {
-      vscode.postMessage({ type: 'imageError', message: taken.error });
+      vscode.postMessage({ type: 'imageError', message: taken.error, sessionId }); // t-xsufto: reported in this chat
       return;
     }
     // Capture sessionId on the first attachment so a tab switch between
@@ -588,8 +589,8 @@
 
   /** A non-image file: the name lands at the caret, and — unless the file is
    *  binary — a chip carries the content for `foldAttachments` at send time. */
-  async function attachTextFile(file: File) {
-    insertRunAtCaret([file.name || 'attachment']);
+  async function attachTextFile(file: File, insertName = true) {
+    if (insertName) insertRunAtCaret([file.name || 'attachment']);
     const intake = await readTextAttachment(file);
     if (intake.kind === 'text') {
       textAttachments = [...textAttachments, { id: nextTextAttachmentId++, name: intake.name, content: intake.content, truncated: intake.truncated }];
@@ -599,24 +600,20 @@
     textAttachments = textAttachments.filter((a) => a.id !== id);
   }
 
-  /** Triage on a raw DataTransfer so a drop outside this composer can forward
-   *  the same payload through `receiveExternalDrop` below. A VS-Code-internal
-   *  drag carries `text/uri-list` even when `files` is also populated, so it's
-   *  checked first. */
+  /** Triage on a raw DataTransfer (rules: composerDropIntake.ts, t-z69b8m). URIs
+   *  (a VS Code explorer drag) put the path in the text and ask the host for the
+   *  bytes; the host's `droppedFiles` answer comes back through `attachFiles`. */
+  const myDrops = new Set<string>();
   function triageDrop(dt: DataTransfer) {
-    const uriList = dt.getData('text/uri-list');
-    if (uriList.trim()) {
-      const items = decodeUriList(uriList);
-      if (items.length > 0) insertRunAtCaret(items);
-      return;
-    }
-    const files = dt.files;
-    if (!files) return;
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (looksLikeImage(file)) { if (imagesOn) void attachImageFile(file); }
-      else void attachTextFile(file);
-    }
+    const plan = planDrop(dt);
+    if (plan.kind === 'files') attachFiles(plan.files, true);
+    if (plan.kind !== 'uris') return;
+    insertRunAtCaret(plan.uris.flatMap((u) => decodeUriList(u)));
+    const dropId = nextDropId(), uris = hostReadable(plan.uris);
+    if (uris.length) { myDrops.add(dropId); vscode.postMessage({ type: 'readDroppedFiles', dropId, uris }); }
+  }
+  function attachFiles(files: File[], insertName: boolean) {
+    for (const file of files) { if (!looksLikeImage(file)) void attachTextFile(file, insertName); else if (imagesOn) void attachImageFile(file); }
   }
 
   function handleDrop(e: DragEvent) {
@@ -624,19 +621,17 @@
     e.stopPropagation(); // stops ChatPane's pane-level fallback triaging it twice
     // …which is also why the hint is cleared HERE and not only on the box's
     // own `drop`: the event never reaches it.
-    onDrag('drop');
+    drag.event('drop');
     if (e.dataTransfer) triageDrop(e.dataTransfer);
   }
   /** Exposed for ChatPane: a drop outside every composer still goes somewhere
    *  rather than navigating the webview — this is that somewhere. */
   export function receiveExternalDrop(dt: DataTransfer) { triageDrop(dt); }
 
-  function handleDragOver(e: DragEvent) { e.preventDefault(); }
-  // The "Drop to attach" state. The depth is COUNTED, not toggled — see
-  // composerDrop.ts for why a single flag strobes.
-  let dragDepth = $state(0);
-  let dropping = $derived(isDropping(dragDepth));
-  function onDrag(kind: 'enter' | 'leave' | 'drop') { dragDepth = nextDepth(dragDepth, kind); }
+  function handleDragOver(e: DragEvent) { e.preventDefault(); drag.event('over'); }
+  // The "Drop to attach" state: a COUNTED depth plus every reset (composerDropIntake.ts).
+  let dropping = $state(false);
+  const drag = createDragState((v) => (dropping = v)); $effect(() => drag.destroy);
   function removeImage(id: number) {
     images = images.filter(img => img.id !== id);
     if (images.length === 0) pasteSessionId = null;
@@ -717,7 +712,7 @@
       slashCommands.some((c) => c.name.slice(1).toLowerCase() === name));
     if (route.kind === 'send') { onSend(route.args, route.command); return; }
     if (route.kind === 'host') {
-      vscode.postMessage({ type: 'slashCommand', command: route.command, args: route.args });
+      vscode.postMessage({ type: 'slashCommand', command: route.command, args: route.args, sessionId }); // t-xsufto: runs in THIS chat, not the host's selected one
       return;
     }
 
@@ -752,10 +747,10 @@
   class="input-area"
   class:dropping
   use:spotlight
-  ondragenter={() => onDrag('enter')}
-  ondragleave={() => onDrag('leave')}
+  ondragenter={() => drag.event('enter')}
+  ondragleave={() => drag.event('leave')}
   ondragover={handleDragOver}
-  ondrop={() => onDrag('drop')}
+  ondrop={handleDrop}
   role="presentation"
 >
   <!-- The scroll anchor lives INSIDE the composer: `.input-area` sits below the
@@ -942,7 +937,7 @@
            draws no scales and no pills. -->
       <ComposerUtilityRow sessionId={bare ? null : sessionId} {focused} {onToggleFocus}
         secondOpinionFor={bare || passthrough ? null : sessionId} busy={inFlight} />
-      <textarea bind:this={inputEl} data-session-id={sessionId ?? ''} bind:value={inputText} oninput={handleInput} onkeydown={handleKeydown} onpaste={imagesOn ? handlePaste : undefined} ondrop={handleDrop} ondragover={handleDragOver} rows="2" disabled={disabled || noConn} placeholder={placeholder || (inFlight ? 'Type to interrupt — Enter sends it into the running turn…' : 'Type a message or / for commands...')} class="input"></textarea>
+      <textarea bind:this={inputEl} data-session-id={sessionId ?? ''} bind:value={inputText} oninput={handleInput} onkeydown={handleKeydown} onpaste={imagesOn ? handlePaste : undefined} rows="2" disabled={disabled || noConn} placeholder={placeholder || (inFlight ? 'Type to interrupt — Enter sends it into the running turn…' : 'Type a message or / for commands...')} class="input"></textarea>
     </div>
     <!-- ONE control (CHANGES.md round 2, change 25): the arrow morphs to a
          stop square while a turn runs, and stopping is a 600ms HOLD so a

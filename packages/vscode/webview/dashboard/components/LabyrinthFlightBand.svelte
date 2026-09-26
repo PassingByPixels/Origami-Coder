@@ -24,7 +24,7 @@
 <line class="fl-gap" x1={chart.padLeft} y1={chart.gapY + 23} x2={chart.width - chart.padRight} y2={chart.gapY + 23} />
 <text class="fl-gap-label" x={chart.padLeft} y={chart.gapY + 15}>{chart.gapLabel}</text>
 
-{#each chart.spans as s (s.first)}
+{#each chart.spans as s, i (i)}<!-- by position: two spans can share `first` (t-vikozs) -->
   {@const laneDim = dimLanes.has(s.first)}
   <path class="fl-depart" class:dim={laneDim} d={s.depart} />
   <!-- The label and the bar share EXACTLY one y, so "the label is on its own

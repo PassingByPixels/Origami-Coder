@@ -9,7 +9,7 @@
 // synthetic trailing "Other".
 
 import { describe, expect, it } from 'vitest';
-import { questionsFromMeta, replyMeta, questionAnswers } from '../../../src/questionBatch';
+import { questionsFromMeta, replyMeta, questionAnswers, questionsPost } from '../../../src/questionBatch';
 
 const engineMeta = {
   questions: [
@@ -109,5 +109,42 @@ describe('questionAnswers', () => {
 
   it('keeps an entry that has ONLY typed text', () => {
     expect(questionAnswers([{ answerText: 'just this' }])).toEqual([{ optionId: '', answerText: 'just this' }]);
+  });
+});
+
+// t-xum9v2. "Tick all that apply": the flag must survive the host, and so must
+// every ticked id on the way back — a host that drops either makes the card single choice.
+describe('multi-select (t-xum9v2)', () => {
+  const multiMeta = { questions: [{ ...engineMeta.questions[0], multiple: true }, engineMeta.questions[1]] };
+
+  it('keeps multiple:true on a multi question and adds nothing to a single one', () => {
+    const parsed = questionsFromMeta(multiMeta)!;
+    expect(parsed[0]!.multiple).toBe(true);
+    expect(parsed[1]).not.toHaveProperty('multiple');
+  });
+
+  it('keeps every ticked id in a batch reply, and an empty tick list as a real answer', () => {
+    expect(questionAnswers([{ optionId: '0', optionIds: ['0', '1'] }, { optionIds: [] }])).toEqual([
+      { optionId: '0', optionIds: ['0', '1'] },
+      { optionId: '', optionIds: [] },
+    ]);
+  });
+
+  it('drops non-string ids rather than forwarding them', () => {
+    expect(questionAnswers([{ optionIds: ['1', 7, null] }])).toEqual([{ optionId: '', optionIds: ['1'] }]);
+  });
+
+  it('replyMeta carries the tick list to the engine unchanged', () => {
+    expect(replyMeta(undefined, [{ optionId: '0', optionIds: ['0', '1'], answerText: 'x' }])).toEqual({
+      answers: [{ optionId: '0', optionIds: ['0', '1'], answerText: 'x' }],
+    });
+  });
+});
+
+describe('questionsPost (t-xum9v2)', () => {
+  it('forwards every question with its multiple flag, and nothing at all for no batch', () => {
+    const parsed = questionsFromMeta({ questions: [{ ...engineMeta.questions[0], multiple: true }] })!;
+    expect(questionsPost(parsed)).toEqual({ questions: [{ title: 'Which parser?', options: parsed[0]!.options, multiple: true }] });
+    expect(questionsPost(undefined)).toEqual({});
   });
 });

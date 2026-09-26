@@ -278,10 +278,39 @@ export interface CatalogRow {
   readonly name: string
   readonly context: number
   readonly note?: string
+  /**
+   * t-ysudw8: the handshake's `supportsAdaptiveThinking`. Undefined when the CLI
+   * did not say (pinned rows, older CLI); the family rule decides then.
+   */
+  readonly adaptive?: boolean
 }
 
 /** The four families the CLI's picker offers; `default` and CLI modes (`opusplan`) are not models. */
 const FAMILIES = ["fable", "opus", "sonnet", "haiku"] as const
+
+/**
+ * The family of a picker value: an alias (`sonnet`, `opus[1m]`) or a full
+ * model id (`claude-fable-5-1[1m]`). t-xu5o64: CLI 2.1.282 on a Max plan lists
+ * Fable ONLY by its full id, and an alias-only match dropped it.
+ */
+const familyOf = (value: string) => {
+  const base = value.replace(/\[1m\]$/, "")
+  return FAMILIES.find((family) => base === family || base.startsWith(`claude-${family}-`))
+}
+
+const LABELS: Record<(typeof FAMILIES)[number], string> = { fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" }
+
+/**
+ * t-y5ecbj: the picker name of a value, never the raw CLI value. `label` (the
+ * CLI's displayName) wins; else the family's name. A `[1m]` value says
+ * "(1M context)" when its label does not already say 1M (the CLI names
+ * `opus[1m]` "Opus (1M context)" but `claude-fable-5-1[1m]` only "Fable").
+ */
+export const readableName = (value: string, label?: string) => {
+  const family = familyOf(value)
+  const base = (label && label !== value ? label : "") || (family ? LABELS[family] : value)
+  return value.endsWith("[1m]") && !/\b1M\b/i.test(base) ? `${base} (1M context)` : base
+}
 
 /** Shown when the handshake cannot run (logged out, below the floor). Aliases the CLI resolves itself. */
 export const PINNED: ReadonlyArray<CatalogRow> = [
@@ -294,9 +323,9 @@ export const PINNED: ReadonlyArray<CatalogRow> = [
 /**
  * The account's own picker, from the CLI's `initialize` control request: no
  * user message is written, and the process is killed as soon as the answer
- * arrives. Rows carry the CLI's alias (`sonnet`, `opus[1m]`) as the model id.
- * A `[1m]` alias gets a 1M window; everything else 200K, the safe side for
- * compaction.
+ * arrives. Rows carry the CLI's own value as the model id: an alias (`sonnet`,
+ * `opus[1m]`) or a full id (`claude-fable-5-1[1m]`). A `[1m]` value gets a 1M
+ * window; everything else 200K, the safe side for compaction.
  */
 export const catalogFromHandshake = (models: ReadonlyArray<unknown>, plan: string | undefined): CatalogRow[] => {
   const rows = new Map<string, CatalogRow>()
@@ -304,17 +333,19 @@ export const catalogFromHandshake = (models: ReadonlyArray<unknown>, plan: strin
     if (!raw || typeof raw !== "object") continue
     const row = raw as Record<string, unknown>
     const value = typeof row.value === "string" ? row.value : ""
-    const base = value.replace(/\[1m\]$/, "")
-    if (!(FAMILIES as ReadonlyArray<string>).includes(base)) continue
+    const family = familyOf(value)
+    if (!family) continue
     const description = typeof row.description === "string" ? row.description : ""
-    const label = (typeof row.displayName === "string" ? row.displayName : description.split("·")[0]?.trim()) || value
+    const label = typeof row.displayName === "string" ? row.displayName : description.split("·")[0]?.trim()
     // Fable on a non-Max plan bills usage credits from the first request (Hermes directsdk_setup.py:300).
-    const credits = /usage credit/i.test(description) || (base === "fable" && plan !== undefined && !/max/i.test(plan))
+    const credits = /usage credit/i.test(description) || (family === "fable" && plan !== undefined && !/max/i.test(plan))
     rows.set(value, {
       id: value,
-      name: label,
+      name: readableName(value, label),
       context: value.endsWith("[1m]") ? 1_000_000 : 200_000,
       ...(credits ? { note: "usage credits" } : {}),
+      // CLI 2.1.198 emits the flag only when true; a picker that sends none of them says nothing.
+      ...(typeof row.supportsAdaptiveThinking === "boolean" ? { adaptive: row.supportsAdaptiveThinking } : {}),
     })
   }
   return [...rows.values()]
@@ -379,6 +410,21 @@ const handshake = (command: ReadonlyArray<string>, env: NodeJS.ProcessEnv) =>
 
 const EFFORT_VARIANTS = Object.fromEntries(ClaudeCli.EFFORTS.map((effort) => [effort, { effort }]))
 
+// origami_change-start (t-ysudw8): "off" (`none`) is sent as thinking {type: "disabled"}.
+// Owner UAT of 0.4.180: Fable 5.1 and Opus 5.5 (1M) answer that with a 400 ("Use
+// thinking.type.adaptive and output_config.effort"); Haiku 4.5 takes it. The rule used:
+// a model that supports adaptive thinking gets no "off", so its lowest level is `low`
+// and a model switch lands there (acp/service.ts selectVariant takes the first). The
+// source is the row's handshake `supportsAdaptiveThinking` when the CLI sent it;
+// else (pinned rows, or a CLI that omits the flag, as 2.1.198 does when false) the
+// family rule `ClaudeCli.supportsAdaptiveThinking` (only Haiku 4.5 lacks it). This also drops "off" for Sonnet, whose answer to disabled thinking is
+// unverified: the safe side.
+const ADAPTIVE_VARIANTS = Object.fromEntries(Object.entries(EFFORT_VARIANTS).filter(([effort]) => effort !== "none"))
+
+const variantsOf = (row: CatalogRow) =>
+  (row.adaptive ?? ClaudeCli.supportsAdaptiveThinking(row.id)) ? ADAPTIVE_VARIANTS : EFFORT_VARIANTS
+// origami_change-end
+
 export const modelRow = (row: CatalogRow): Model => ({
   id: ModelV2.ID.make(row.id),
   providerID: ProviderV2.ID.make(PROVIDER_ID),
@@ -402,7 +448,7 @@ export const modelRow = (row: CatalogRow): Model => ({
   options: {},
   headers: {},
   release_date: "",
-  variants: { ...EFFORT_VARIANTS },
+  variants: { ...variantsOf(row) },
 })
 
 const MEMO_MS = 10 * 60_000
@@ -432,7 +478,9 @@ export async function providerInfo(
 
 const infoOf = (rows: ReadonlyArray<CatalogRow>): Info => ({
   id: ProviderV2.ID.make(PROVIDER_ID),
-  name: "Claude (subscription, experimental)",
+  // t-xu5o64: the picker row reads "Claude (Sub)/<model>" (acp/config-option.ts). The
+  // experimental notice is given once, at the connection step, not on every row.
+  name: "Claude (Sub)",
   source: "custom",
   env: [],
   options: { max_concurrent: DEFAULT_CONCURRENCY },

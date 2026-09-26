@@ -4,6 +4,8 @@ import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionStatusEvent } from "@origami/schema/session-status-event"
+import { ElasticActivity } from "@/elastic/activity"
+import { ElasticState } from "@/elastic/state"
 
 export const Info = SessionStatusEvent.Info
 export type Info = SessionStatusEvent.Info
@@ -31,9 +33,14 @@ const layer = Layer.effect(
     // The processor writes `{type:"busy"}` at every step of a turn, so a field
     // on the status itself would be erased by the next step of the same turn.
     const state = yield* InstanceState.make(
-      Effect.fn("SessionStatus.state")(() =>
-        Effect.succeed({ status: new Map<SessionID, Info>(), queued: new Map<SessionID, number>() }),
-      ),
+      Effect.fn("SessionStatus.state")(function* () {
+        const data = { status: new Map<SessionID, Info>(), queued: new Map<SessionID, number>() }
+        // origami_change (t-w2qlop): only non-idle sessions are kept here, so the
+        // keys are the sessions that are working - what the elastic class and the
+        // idle report read.
+        yield* ElasticActivity.probeScoped("session-busy", () => data.status.keys())
+        return data
+      }),
     )
 
     const get = Effect.fn("SessionStatus.get")(function* (sessionID: SessionID) {
@@ -59,9 +66,13 @@ const layer = Layer.effect(
       if (status.type === "idle") {
         yield* events.publish(Event.Idle, { sessionID })
         data.status.delete(sessionID)
+        ElasticState.recheck()
         return
       }
       data.status.set(sessionID, status)
+      // A turn that starts in an idle engine lifts it to `background` (never
+      // IDLE + EcoQoS under a turn), and the idle write above lowers it again.
+      ElasticState.recheck()
     })
 
     const bumpQueued = Effect.fn("SessionStatus.bumpQueued")(function* (sessionID: SessionID) {

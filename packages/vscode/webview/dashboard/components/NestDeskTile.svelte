@@ -59,7 +59,7 @@
     </div>
     <div class="meta">
       {#if renaming}Enter saves · Esc cancels · shown on every desk{:else}
-        <span class="dot" class:off={!desk.online}></span><span class="ell">{deskMeta(desk, now)}{#if tail}<span class="tail" data-tail> · {tail}</span>{/if}</span>
+        <span class="dot" class:off={!desk.online}></span><span class="ell">{deskMeta(desk, now)}{#if tail}<span class="tail" data-tail>{` · ${tail}`}</span>{/if}</span>
       {/if}
     </div>
   </div>

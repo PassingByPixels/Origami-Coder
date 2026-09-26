@@ -308,8 +308,10 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   // may never have seen. No-ops unless the session staged a draft, so the title
   // generator (`small`) and compaction never overwrite the turn.
   // `small` and `warm` alike must not overwrite the turn's captured prompt.
+  // t-vs5p1y: the digests are computed after the send (see `recordAfterSend`);
+  // `session/llm.ts` calls `settleSoon` once the provider answers.
   if (!input.small && !input.warm)
-    SessionPromptCapture.record({
+    SessionPromptCapture.recordAfterSend({
       sessionID: input.sessionID,
       capturedAt: new Date().toISOString(),
       model: `${input.model.providerID}/${input.model.id}`,
@@ -335,6 +337,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       }),
       warmedAt: SessionCacheWarm.warmedAt(input.sessionID),
       // origami_change-end
+      // t-wdyp7r: an agent switch after a restore is not an edit made while stopped.
+      agent: input.agent.name,
     })
 
   return {

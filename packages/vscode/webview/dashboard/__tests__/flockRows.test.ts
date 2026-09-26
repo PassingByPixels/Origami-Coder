@@ -84,7 +84,7 @@ describe('avatarTint — the colour that tells two rows apart', () => {
 
 describe('filterFriends — the search box over the address book', () => {
   const flock = [
-    friend({ name: 'chris' }),
+    friend({ name: 'robin' }),
     friend({ name: 'dana', displayName: 'Dana from the gym', handle: `dana@YWJj${FP.slice(4)}` }),
     friend({ name: 'dana', displayName: 'Dana at work', handle: `dana@ZGVm${FP.slice(4)}` }),
   ];
@@ -110,7 +110,7 @@ describe('filterFriends — the search box over the address book', () => {
 
   it('is case-insensitive on all three fields', () => {
     expect(names('GYM')).toEqual(['Dana from the gym']);
-    expect(names('CHRIS')).toEqual(['chris']);
+    expect(names('ROBIN')).toEqual(['robin']);
     expect(names(`DANA@YWJJ`)).toEqual(['Dana from the gym']);
   });
 
@@ -127,7 +127,7 @@ describe('filterFriends — the search box over the address book', () => {
 
 describe('policyChip — what a row says a contact may do', () => {
   it('names the answer mode and whether the scope is theirs or the default', () => {
-    expect(policyChip(friend({ name: 'chris' }))).toBe('waits for you · default scope');
+    expect(policyChip(friend({ name: 'robin' }))).toBe('waits for you · default scope');
     expect(policyChip(friend({ name: 'dana', effective: { autoAnswer: true } }))).toBe('auto · default scope');
     expect(
       policyChip(friend({ name: 'ivy', policy: { scope: { repos: ['a'], wiki: ['b', 'c'] } } })),

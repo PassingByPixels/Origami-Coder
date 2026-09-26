@@ -68,6 +68,9 @@ function makeFakeView() {
   return {
     webview,
     onDidDispose: vi.fn(() => ({ dispose() {} })),
+    // The real vscode.WebviewView has both; t-w2qv3o's visibility watch (elastic/elasticWindow.ts) reads them.
+    visible: true,
+    onDidChangeVisibility: vi.fn(() => ({ dispose() {} })),
   };
 }
 

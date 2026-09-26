@@ -3,6 +3,7 @@ import { Cause, Duration, Effect, Exit, ScopedCache, Scope } from "effect"
 import type { InstanceContext } from "@/project/instance-context"
 import { InstanceRef, WorkspaceRef } from "./instance-ref"
 import { registerDisposer } from "./instance-registry"
+import { detach } from "./detach"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
 
 const TypeId = "~origami/InstanceState"
@@ -42,10 +43,15 @@ export const make = <A, E = never, R = never>(
 
     const cache = yield* ScopedCache.makeWith<string, A, E, R>({
       capacity: Number.POSITIVE_INFINITY,
+      // Detached from the caller (t-w2u5vf): the value lives as long as the
+      // folder, and a bridge or fiber made in `init` would otherwise keep the
+      // span and arguments of whichever turn happened to read it first.
       lookup: () =>
-        Effect.gen(function* () {
-          return yield* init(yield* context)
-        }),
+        detach(
+          Effect.gen(function* () {
+            return yield* init(yield* context)
+          }),
+        ),
       // An interrupted or defective lookup describes that run, not the
       // folder's state: it expires at once, so the next `get` looks up again
       // (t-tc1tnk). A typed failure (a provider or MCP start that failed) is

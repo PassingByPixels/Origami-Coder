@@ -21,7 +21,7 @@ import { classifySection } from '../../sidebar/connectionSection';
 // The rows the HOST attaches to `modelOptions` — used as this file's fixture so
 // the picker is driven by what actually arrives on the wire.
 import { claudeCodeModelRows } from '../../../src/claudeCode/models';
-import { claudeSubscriptionModelRows } from '../../../src/claudeSubscription/models';
+import { claudeSubscriptionModelRows, mergeClaudeSubscriptionRows } from '../../../src/claudeSubscription/models';
 
 const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -311,7 +311,7 @@ describe('ModelPicker — per-chat model selection', () => {
     await fireEvent.click(screen.getByRole('button', { name: /Select model/i }));
     postFromHost({ type: 'providerStatus', providers: [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' }] });
     await fireEvent.click(await screen.findByText(/Eject/i));
-    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'modelPanel.unload' });
+    expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'modelPanel.unload', sessionId: SID }); // t-xsufto: the host reports the eject in THIS chat
   });
 
   it('remote vLLM (flavor other): switches live, NO context prompt, NO eject (lms ops do not apply)', async () => {
@@ -1597,7 +1597,7 @@ describe('ModelPicker — the Claude (subscription, experimental) group', () => 
   beforeEach(() => { globalThis.__vscodeApiMock.postMessage.mockReset(); });
 
   const PROVIDERS = [{ id: 'lmstudio', name: 'LM Studio', live: true, baseURL: 'http://127.0.0.1:1234/v1', flavor: 'lmstudio' as const }];
-  const GROUP = 'Claude (subscription, experimental)';
+  const GROUP = 'Claude (Sub)'; // t-xu5o64: short; the experimental notice is at the connection step
 
   async function open(rows: unknown[]) {
     render(ModelPicker, { props: { sessionId: SID, online: true } });
@@ -1616,7 +1616,7 @@ describe('ModelPicker — the Claude (subscription, experimental) group', () => 
     const tab = await screen.findByRole('tab', { name: GROUP });
     await fireEvent.click(tab);
     expect(await screen.findByText('Claude Code CLI not found. Install it, then reopen this panel.')).toBeInTheDocument();
-    expect(screen.queryByText('Fable')).toBeNull();
+    expect(screen.queryByText('Claude (Sub)/Fable')).toBeNull();
     expect(globalThis.__vscodeApiMock.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ type: 'setModel' }),
     );
@@ -1643,11 +1643,34 @@ describe('ModelPicker — the Claude (subscription, experimental) group', () => 
   it('ready: lists the four aliases and posts setModel with the claude-subscription prefix', async () => {
     await open(claudeSubscriptionModelRows(true, { state: 'ready' }));
     await fireEvent.click(await screen.findByRole('tab', { name: GROUP }));
-    for (const name of ['Fable', 'Opus', 'Sonnet', 'Haiku']) expect(screen.getByText(name)).toBeInTheDocument();
-    await fireEvent.click(screen.getByText('Opus'));
+    for (const name of ['Fable', 'Opus', 'Sonnet', 'Haiku']) expect(screen.getByText(`Claude (Sub)/${name}`)).toBeInTheDocument();
+    await fireEvent.click(screen.getByText('Claude (Sub)/Opus'));
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'setModel', modelId: 'claude-subscription/opus', sessionId: SID }),
     );
+  });
+
+  // t-y5ecbj: the chat's saved pick is the alias `fable`; the live catalog lists
+  // Fable as `claude-fable-5-1[1m]`. The host drops the alias row and the live row
+  // carries `covers` (claudeSubscription/models.ts), so the tick is on that row.
+  it('a saved alias pick is ticked on the live row that stands for it', async () => {
+    const live = mergeClaudeSubscriptionRows(
+      [
+        { value: 'claude-subscription/claude-fable-5-1[1m]', name: 'Claude (Sub)/Fable (1M context)' },
+        { value: 'claude-subscription/fable', name: 'Claude (Sub)/Fable' },
+        { value: 'claude-subscription/sonnet', name: 'Claude (Sub)/Sonnet' },
+      ],
+      claudeSubscriptionModelRows(true, { state: 'ready' }), { state: 'ready' }, new Set(['fable']),
+    );
+    await open(live);
+    await postAndFlush({ type: 'sessionModels', models: { [SID]: 'claude-subscription/fable' } });
+    await fireEvent.click(await screen.findByRole('tab', { name: GROUP }));
+    const options = screen.getAllByRole('option').filter((o) => /Claude \(Sub\)/.test(o.textContent ?? ''));
+    expect(options.map((o) => [o.getAttribute('title'), o.getAttribute('aria-selected')])).toEqual([
+      ['claude-subscription/claude-fable-5-1[1m]', 'true'],
+      ['claude-subscription/sonnet', 'false'],
+    ]);
+    expect(options[0]!.textContent).toContain('Fable (1M context)');
   });
 });
 

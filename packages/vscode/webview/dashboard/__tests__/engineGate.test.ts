@@ -99,7 +99,7 @@ describe('EngineGate — a prompt sent before the engine is up (t-v5qn37)', () =
     await expect(started).rejects.toThrow('ENOENT');
     await flush();
     expect(h.wire).toEqual([]);
-    expect(h.told.at(-1)).toEqual({ stage: 'failed', reason: 'spawn origami.exe ENOENT', held: 1, retry: true });
+    expect(h.told.at(-1)).toMatchObject({ stage: 'failed', reason: 'spawn origami.exe ENOENT', held: 1, retry: true });
     const retried = h.gate.retry();
     expect(h.told.at(-1)).toEqual({ stage: 'starting', reason: '', held: 1, retry: false });
     h.up();
@@ -143,7 +143,7 @@ describe('EngineGate — a prompt sent before the engine is up (t-v5qn37)', () =
     await started;
     h.gate.drop();
     await expect(turn).resolves.toBe('cancelled');
-    expect(h.told.at(-1)).toEqual({ stage: 'failed', reason: 'boom', held: 0, retry: true });
+    expect(h.told.at(-1)).toMatchObject({ stage: 'failed', reason: 'boom', held: 0, retry: true });
     const retried = h.gate.retry();
     h.up();
     await retried;
@@ -158,7 +158,7 @@ describe('EngineGate — a prompt sent before the engine is up (t-v5qn37)', () =
     expect(h.gate.exited('origami-acp exited (code=null, signal=SIGKILL)')).toBe(false); // the caller posts `closed`
     await expect(h.prompt('too late')).resolves.toBe('error');
     expect(h.wire).toEqual([]);
-    expect(h.told.at(-1)).toEqual({ stage: 'stopped', reason: 'origami-acp exited (code=null, signal=SIGKILL)', held: 0, retry: false });
+    expect(h.told.at(-1)).toMatchObject({ stage: 'stopped', reason: 'origami-acp exited (code=null, signal=SIGKILL)', held: 0, retry: false });
   });
 
   it('a second Retry click while the first is running starts nothing more', async () => {
@@ -207,7 +207,7 @@ describe('EngineGate — typing again while a prompt waits (lead review item 1)'
     await flush();
     h.down(new Error('boom'));
     await started;
-    expect(h.told.at(-1)).toEqual({ stage: 'failed', reason: 'boom', held: 2, retry: true });
+    expect(h.told.at(-1)).toMatchObject({ stage: 'failed', reason: 'boom', held: 2, retry: true });
     expect(redRows(h.posts)).toEqual([]);
     const retried = h.gate.retry();
     h.up();
@@ -294,7 +294,7 @@ describe('EngineGate — Retry on a failed /btw fork (lead review item 3)', () =
     await flush();
     h.down(new Error('ACP connection closed'));
     await started;
-    expect(h.told.at(-1)).toEqual({
+    expect(h.told.at(-1)).toMatchObject({
       stage: 'failed',
       reason: 'ACP connection closed · The fork did not open, and a new try could make a second copy. Close this tab and use the Fork button again.',
       held: 0,

@@ -266,7 +266,10 @@ const lowerToolCall = (part: ToolCallPart): OpenAIChatAssistantToolCall => ({
   },
 })
 
-const lowerMedia = Effect.fn("OpenAIChat.lowerMedia")(function* (part: MediaPart) {
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+const lowerMedia = Effect.fnUntraced(function* (part: MediaPart) {
   const media = yield* ProviderShared.validateMedia("OpenAI Chat", part, IMAGE_MIMES)
   return { type: "image_url" as const, image_url: { url: media.dataUrl } }
 })
@@ -284,7 +287,7 @@ const openAICompatibleReasoningContent = (native: unknown) =>
 const openAICompatibleReasoning = (native: unknown) =>
   isRecord(native) && typeof native.reasoning === "string" ? native.reasoning : undefined
 
-const lowerUserMessage = Effect.fn("OpenAIChat.lowerUserMessage")(function* (message: OpenAIChatRequestMessage) {
+const lowerUserMessage = Effect.fnUntraced(function* (message: OpenAIChatRequestMessage) {
   const content: Array<Schema.Schema.Type<typeof OpenAIChatUserContent>> = []
   for (const part of message.content) {
     if (part.type === "text") {
@@ -308,7 +311,7 @@ const lowerUserMessage = Effect.fn("OpenAIChat.lowerUserMessage")(function* (mes
   return { role: "user" as const, content }
 })
 
-const lowerAssistantMessage = Effect.fn("OpenAIChat.lowerAssistantMessage")(function* (
+const lowerAssistantMessage = Effect.fnUntraced(function* (
   message: OpenAIChatRequestMessage,
 ) {
   const content: TextPart[] = []
@@ -346,7 +349,7 @@ const lowerAssistantMessage = Effect.fn("OpenAIChat.lowerAssistantMessage")(func
   }
 })
 
-const lowerToolMessages = Effect.fn("OpenAIChat.lowerToolMessages")(function* (message: OpenAIChatRequestMessage) {
+const lowerToolMessages = Effect.fnUntraced(function* (message: OpenAIChatRequestMessage) {
   const messages: OpenAIChatMessage[] = []
   const images: Array<Schema.Schema.Type<typeof OpenAIChatUserContent>> = []
   for (const part of message.content) {
@@ -369,7 +372,7 @@ const lowerToolMessages = Effect.fn("OpenAIChat.lowerToolMessages")(function* (m
   return { messages, images }
 })
 
-const lowerMessage = Effect.fn("OpenAIChat.lowerMessage")(function* (message: OpenAIChatRequestMessage) {
+const lowerMessage = Effect.fnUntraced(function* (message: OpenAIChatRequestMessage) {
   if (message.role === "user") return [yield* lowerUserMessage(message)]
   if (message.role === "assistant") return [yield* lowerAssistantMessage(message)]
   return (yield* lowerToolMessages(message)).messages

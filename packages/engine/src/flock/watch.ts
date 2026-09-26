@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
+import { ElasticState } from "@/elastic/state"
 
 /**
  * WHO TELLS A WINDOW THAT THE MAILBOX MOVED.
@@ -123,20 +124,33 @@ export function start(options: Options): Watcher {
     reason = error instanceof Error ? error.message : String(error)
   }
 
+  // origami_change (t-w2qlop): the poll rests with the engine. While active it
+  // runs every `pollMs`; while background or idle every ElasticState.REST_MIN_MS
+  // at least - the directory watch still reports a write at once in either.
+  const period = (): number => ElasticState.period(pollMs)
   const tick = (): void => {
     if (stopped) return
     // Straight through `settle`, not through `bump`: the poll IS the settled
     // state, and debouncing it would only delay it by another beat.
     settle()
-    poll = deps.setTimer(tick, pollMs)
+    poll = deps.setTimer(tick, period())
   }
-  poll = deps.setTimer(tick, pollMs)
+  poll = deps.setTimer(tick, period())
+  // Back to the short poll the moment the engine is active again, with a
+  // settle first: a write the rest period hid is announced now.
+  const unfollow = ElasticState.onChange(() => {
+    if (stopped) return
+    deps.clearTimer(poll)
+    if (!ElasticState.resting()) settle()
+    poll = deps.setTimer(tick, period())
+  })
 
   return {
     kind: handle ? "watch+poll" : "poll",
     ...(reason ? { reason } : {}),
     stop: () => {
       stopped = true
+      unfollow()
       handle?.close()
       handle = undefined
       deps.clearTimer(debounce)

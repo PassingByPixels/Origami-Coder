@@ -13,19 +13,19 @@ import { badgeCount, bucket, labelOf, stateLabel, trayOf, type MailRow } from '.
 import { deliverMessage, deliverTargets, type MailSession } from '../panes/flockDeliverTargets';
 import FrontDeskSection from '../../chat/FrontDeskSection.svelte';
 
-const CHRIS = 'chris@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
+const ROBIN = 'robin@Zm9vYmFyYmF6cXV4MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG0';
 
 function row(over: Partial<MailRow> = {}): MailRow {
   return {
     id: 'thr_1',
-    contact: CHRIS,
+    contact: ROBIN,
     direction: 'out',
-    question: { text: 'what does the MOT check?', sentAt: '2026-09-05T07:00:00.000Z' },
+    question: { text: 'what does the tax form cover?', sentAt: '2026-09-05T07:00:00.000Z' },
     state: 'sent',
     unread: false,
-    name: 'chris',
+    name: 'robin',
     icon: 'crane',
-    handleShort: 'chris@Zm9vYmFy…',
+    handleShort: 'robin@Zm9vYmFy…',
     ...over,
   };
 }
@@ -105,8 +105,8 @@ describe('what a row says it is', () => {
   });
 
   it('falls back to the short handle when a contact has been revoked since', () => {
-    expect(labelOf(row({ name: '' }))).toBe('chris@Zm9vYmFy…');
-    expect(labelOf(row({ name: '   ' }))).toBe('chris@Zm9vYmFy…');
+    expect(labelOf(row({ name: '' }))).toBe('robin@Zm9vYmFy…');
+    expect(labelOf(row({ name: '   ' }))).toBe('robin@Zm9vYmFy…');
   });
 });
 

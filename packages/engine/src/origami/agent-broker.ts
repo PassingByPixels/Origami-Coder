@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { Global } from "@origami/core/global"
+import { ElasticState } from "@/elastic/state"
 
 /**
  * PEER AGENT BROKER - how one engine process finds the others.
@@ -27,6 +28,11 @@ export type Entry = {
   readonly kind: AgentKind
   readonly sessionIds: readonly string[]
   readonly lastSeen: number
+  /** origami_change (t-w2qlop): the writer's heartbeat period when it is not
+   *  REFRESH_MS. Readers scale their staleness bounds by it, so an idle engine
+   *  that beats slowly is neither listed as dead nor refused as detached.
+   *  Absent in an entry from an older build: REFRESH_MS applies. */
+  readonly refreshMs?: number
 }
 
 /** Heartbeat period. */
@@ -41,6 +47,19 @@ export const STALE_MS = 90_000
  * set the moment it changes, which is what makes the tighter bound affordable.
  */
 export const ATTACH_FRESH_MS = 2 * REFRESH_MS
+/** origami_change (t-w2qlop): the heartbeat period of an engine in the elastic
+ *  `idle` class. Hidden and quiet for minutes: nothing changes its set, and
+ *  `refresh()` still republishes the moment an attach or detach does. */
+export const IDLE_REFRESH_MS = 60_000
+
+/** The bounds a reader applies to one entry: the fixed ones, scaled up in the
+ *  same ratio when the writer said it beats more slowly than REFRESH_MS. */
+export function staleMs(entry: Pick<Entry, "refreshMs">): number {
+  return Math.max(STALE_MS, ((entry.refreshMs ?? REFRESH_MS) * STALE_MS) / REFRESH_MS)
+}
+export function attachFreshMs(entry: Pick<Entry, "refreshMs">): number {
+  return Math.max(ATTACH_FRESH_MS, ((entry.refreshMs ?? REFRESH_MS) * ATTACH_FRESH_MS) / REFRESH_MS)
+}
 
 /** `~/.origami/agents`. A function, not a const, so it honours ORIGAMI_TEST_HOME. */
 export function agentsDir(): string {
@@ -108,7 +127,16 @@ export function isLoopback(httpBase: string): boolean {
 // ------------------------------- the writer -------------------------------
 
 let sessions: () => readonly string[] = () => []
-let live: { entry: Entry; timer: ReturnType<typeof setInterval>; beat: () => void } | undefined
+let live:
+  | { entry: Entry; beat: () => void; stop: () => Promise<void>; withdraw: () => Promise<void>; register: () => void }
+  | undefined
+/** origami_change (t-wdybz9): the registration `park()` withdrew, so
+ *  `reregister()` can put the same entry back when the engine is kept up. */
+let withdrawn: (() => void) | undefined
+/** origami_change (t-wdybz9): the sessions this engine parked, from the moment
+ *  `park()` is called until `leaveParking()`. While set, a prompt_async for
+ *  one of them is kept in its mailbox and starts no turn. */
+let parked: { readonly ids: readonly string[] } | undefined
 
 /** Where the published session ids come from. The ACP session store is the only
  *  place that knows which sessions are INTERACTIVE - a sub-agent's session is
@@ -171,7 +199,12 @@ export function start(input: {
     // An engine that registers NOTHING looks, from the outside, exactly like
     // one whose write failed. Say which of the two it is.
     console.error(`[peer] skipped pid=${process.pid} kind=background — set ORIGAMI_AGENT_PEERS=true to be discoverable`)
-    return { stop: async () => {} }
+    // The final stop ends a park too (t-wdybz9), registered or not.
+    return {
+      stop: async () => {
+        parked = undefined
+      },
+    }
   }
   const now = input.now ?? Date.now
   const base: Entry = {
@@ -185,28 +218,65 @@ export function start(input: {
     lastSeen: now(),
   }
 
-  const beat = () => void write({ ...base, sessionIds: sessions(), lastSeen: now() }).catch(() => {})
-  beat()
-  const timer = setInterval(beat, REFRESH_MS)
-  // The heartbeat must never be the reason the process stays alive.
-  timer.unref?.()
-  live = { entry: base, timer, beat }
+  // origami_change (t-w2qlop): the period follows the elastic class - slower
+  // while the engine is `idle` - and the period in use is written into the
+  // entry, so a reader judges it by the right bounds.
+  const periodMs = () => (ElasticState.effectiveClass() === "idle" ? IDLE_REFRESH_MS : REFRESH_MS)
+  let period = periodMs()
+  const beat = () =>
+    void write({
+      ...base,
+      sessionIds: sessions(),
+      lastSeen: now(),
+      ...(period === REFRESH_MS ? {} : { refreshMs: period }),
+    }).catch(() => {})
+  let timer: ReturnType<typeof setInterval> | undefined
+  const arm = () => {
+    timer = setInterval(beat, period)
+    // The heartbeat must never be the reason the process stays alive.
+    timer.unref?.()
+  }
+  let unfollow = () => {}
+  // origami_change (t-wdybz9): registering is a step of its own, so an engine
+  // kept up after a park can register again with the same entry.
+  const register = () => {
+    period = periodMs()
+    beat()
+    arm()
+    // A new period is PUBLISHED at once, before the longer gap starts: a reader
+    // that still saw the old period would count the idle engine as missing.
+    unfollow = ElasticState.onChange(() => {
+      const next = periodMs()
+      if (next === period) return
+      period = next
+      clearInterval(timer)
+      beat()
+      arm()
+    })
+    live = { entry: base, beat, stop, withdraw, register }
+  }
+  const withdraw = async () => {
+    unfollow()
+    clearInterval(timer)
+    live = undefined
+    // Drain first: a write still queued behind this would land after the
+    // removal and put the entry back, advertising a cleanly exited engine.
+    await writes.catch(() => {})
+    await fs.rm(entryPath(base.pid), { force: true }).catch(() => {})
+  }
+  // The final stop (process exit, tests): nothing may register again after it.
+  const stop = async () => {
+    withdrawn = undefined
+    parked = undefined
+    await withdraw()
+  }
+  register()
   // The registration RECEIPT. A chat missing from a roster looks identical
   // whether its engine never registered, registered under an unexpected name,
   // or is the caller itself; stderr already reaches the VS Code output channel.
   console.error(`[peer] registered pid=${base.pid} name=${base.name} base=${base.httpBase} kind=${kind}`)
 
-  return {
-    entry: base,
-    stop: async () => {
-      clearInterval(timer)
-      live = undefined
-      // Drain first: a write still queued behind this would land after the
-      // removal and put the entry back, advertising a cleanly exited engine.
-      await writes.catch(() => {})
-      await fs.rm(entryPath(base.pid), { force: true }).catch(() => {})
-    },
-  }
+  return { entry: base, stop }
 }
 
 /** This engine's own entry, or undefined when it never registered. */
@@ -238,6 +308,11 @@ function parse(text: string): Entry | undefined {
     kind: value.kind === "background" ? "background" : "interactive",
     sessionIds: Array.isArray(value.sessionIds) ? value.sessionIds.filter((id) => typeof id === "string") : [],
     lastSeen: value.lastSeen,
+    // Bounded: a hand-edited or hostile entry must not buy itself an unbounded
+    // staleness window.
+    ...(typeof value.refreshMs === "number" && value.refreshMs > REFRESH_MS && value.refreshMs <= 10 * 60_000
+      ? { refreshMs: value.refreshMs }
+      : {}),
   }
 }
 
@@ -298,7 +373,7 @@ export async function readPeers(options?: {
           await fs.rm(file, { force: true }).catch(() => {})
           return undefined
         }
-        if (now - entry.lastSeen > STALE_MS) {
+        if (now - entry.lastSeen > staleMs(entry)) {
           await fs.rm(file, { force: true }).catch(() => {})
           return undefined
         }
@@ -372,8 +447,218 @@ export function replyAddress(entry: Entry): string {
  * close is not evidence of attachment, whatever it says.
  */
 export function attached(entry: Entry, sessionID: string, now = Date.now()): boolean {
-  if (now - entry.lastSeen > ATTACH_FRESH_MS) return false
+  if (now - entry.lastSeen > attachFreshMs(entry)) return false
   return entry.sessionIds.includes(sessionID)
+}
+
+/** The session ids this engine publishes now (the ACP store's list). */
+export function published(): readonly string[] {
+  return sessions()
+}
+
+/** Resolves when every heartbeat write queued so far is on disk. */
+export function settled(): Promise<void> {
+  return writes.catch(() => {})
+}
+
+// ---------------------------- parked chats (t-w2txb2) ----------------------------
+//
+// The extension stops a chat's engine after a long idle and starts it again on
+// the next use, on the same engine session id. While it is stopped the chat has
+// no heartbeat, so a STAND-IN file keeps it addressable: a message to it is kept
+// in `<agentsDir>/mailbox/<sessionId>/` (agent-mailbox.ts) and the extension,
+// which watches that folder, starts the chat again to read it. A stand-in has no
+// clock: a parked chat can sleep for hours. It lives while the extension host
+// that parked it lives, and is deleted as found once that host is gone.
+
+/** Folder names under agentsDir(). The extension mirrors both (drift-guarded). */
+export const PARKED_DIR = "parked"
+export const MAILBOX_DIR = "mailbox"
+
+export type Parked = {
+  readonly version: 1
+  readonly parked: true
+  readonly name: string
+  readonly cwd: string
+  readonly kind: AgentKind
+  readonly sessionId: string
+  readonly hostPid: number
+  readonly parkedAt: number
+}
+
+/** A session id is used as a file and folder name. The stand-in is ordinary
+ *  user-writable JSON, so an id that could leave its folder is refused. */
+export function safeSessionId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(id)
+}
+
+export function parkedPath(sessionId: string): string {
+  return path.join(agentsDir(), PARKED_DIR, `${sessionId}.json`)
+}
+
+/**
+ * Write a stand-in for every session this engine publishes, then WITHDRAW the
+ * live entry. The extension closes the engine's stdin next; until then a live
+ * entry would still win every lookup and take a message into an engine that is
+ * about to exit. An engine that never registered writes nothing. Returns the
+ * parked session ids.
+ *
+ * origami_change (t-wdybz9): two-phase and reversible. The PARKING flag is set
+ * synchronously, before the first await, so the caller's idle check and the
+ * flag are one step: from here on a prompt_async for these sessions goes to
+ * the mailbox (handlers/session.ts). `reregister()` + `leaveParking()` undo it
+ * when the extension keeps the engine up (acp/elastic.ts `_elastic_unpark`).
+ * A second call while parked answers the same ids and writes nothing.
+ */
+export async function park(input: { hostPid: number; now?: number }): Promise<string[]> {
+  if (parked) return [...parked.ids]
+  const me = self()
+  const current = live
+  const ids = me ? me.sessionIds.filter(safeSessionId) : []
+  parked = { ids }
+  if (!me || !current) return []
+  const parkedAt = input.now ?? Date.now()
+  await fs.mkdir(path.join(agentsDir(), PARKED_DIR), { recursive: true })
+  await Promise.all(
+    ids.map(async (sessionId) => {
+      const standIn: Parked = {
+        version: 1,
+        parked: true,
+        name: me.name,
+        cwd: me.cwd,
+        kind: me.kind,
+        sessionId,
+        hostPid: input.hostPid,
+        parkedAt,
+      }
+      const file = parkedPath(sessionId)
+      const tmp = `${file}.${process.pid}.tmp`
+      await fs.writeFile(tmp, JSON.stringify(standIn, null, 2), "utf8")
+      await fs.rename(tmp, file)
+    }),
+  )
+  withdrawn = current.register
+  await current.withdraw()
+  console.error(`[peer] parked pid=${process.pid} name=${me.name} sessions=${ids.join(",") || "(none)"}`)
+  return ids
+}
+
+/** The sessions this engine parked, while it is parking or parked; undefined
+ *  when it is not. Read by the prompt_async route on every POST. */
+export function parking(): readonly string[] | undefined {
+  return parked?.ids
+}
+
+/** Register the entry that `park()` withdrew, if any. The live entry is written
+ *  before this returns its promise chain (`settled()` waits for it). */
+export function reregister(): void {
+  const again = withdrawn
+  withdrawn = undefined
+  if (again && !live) again()
+}
+
+/** End parking. Returns the ids that were parked (empty when none were). */
+export function leaveParking(): readonly string[] {
+  const ids = parked?.ids ?? []
+  parked = undefined
+  return ids
+}
+
+function parseParked(text: string, fileId: string): Parked | undefined {
+  try {
+    const value = JSON.parse(text) as Record<string, unknown> | null
+    if (!value || typeof value !== "object" || value.parked !== true) return undefined
+    if (
+      typeof value.name !== "string" ||
+      typeof value.cwd !== "string" ||
+      typeof value.sessionId !== "string" ||
+      typeof value.hostPid !== "number"
+    ) {
+      return undefined
+    }
+    // The file name and the content must agree, or a hand-edited stand-in
+    // could route a message into another chat's mailbox.
+    if (value.sessionId !== fileId || !safeSessionId(value.sessionId)) return undefined
+    return {
+      version: 1,
+      parked: true,
+      name: value.name,
+      cwd: value.cwd,
+      kind: value.kind === "background" ? "background" : "interactive",
+      sessionId: value.sessionId,
+      hostPid: value.hostPid,
+      parkedAt: typeof value.parkedAt === "number" ? value.parkedAt : 0,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/** Every stand-in whose extension host is still running. A dead host's
+ *  stand-in is deleted as found: nothing would ever start that chat again. */
+export async function readParked(options?: { alive?: (pid: number) => boolean }): Promise<readonly Parked[]> {
+  const alive = options?.alive ?? processAlive
+  const dir = path.join(agentsDir(), PARKED_DIR)
+  const names = await fs.readdir(dir).catch(() => [] as string[])
+  const found = await Promise.all(
+    names
+      .filter((name) => name.endsWith(".json"))
+      .map(async (name) => {
+        const file = path.join(dir, name)
+        const text = await fs.readFile(file, "utf8").catch(() => undefined)
+        const standIn = text === undefined ? undefined : parseParked(text, name.slice(0, -".json".length))
+        if (!standIn) return undefined
+        if (!alive(standIn.hostPid)) {
+          await fs.rm(file, { force: true }).catch(() => {})
+          return undefined
+        }
+        return standIn
+      }),
+  )
+  return found.filter((item): item is Parked => !!item).toSorted((a, b) => b.parkedAt - a.parkedAt)
+}
+
+export async function removeParked(sessionId: string): Promise<void> {
+  if (!safeSessionId(sessionId)) return
+  await fs.rm(parkedPath(sessionId), { force: true }).catch(() => {})
+}
+
+/** The address of a parked chat. Always qualified: its engine is gone, so the
+ *  session id is the only part of the address that outlives it. */
+export function parkedAddress(standIn: Parked): string {
+  return `${standIn.name}#${standIn.sessionId}`
+}
+
+/**
+ * Resolve `to` against the parked chats, for an address NO live engine holds.
+ * A live engine always wins: undefined when a live peer carries the name (bare
+ * address) or the name and the session (qualified address), and when no
+ * stand-in matches at all - the caller then keeps its own live refusal.
+ */
+export function resolveParked(
+  peers: readonly Entry[],
+  parked: readonly Parked[],
+  to: string,
+): { standIn: Parked } | { error: string } | undefined {
+  const raw = to.trim()
+  const hash = raw.lastIndexOf("#")
+  const name = (hash === -1 ? raw : raw.slice(0, hash)).toLowerCase()
+  const wanted = hash === -1 ? undefined : raw.slice(hash + 1)
+  if (!name) return undefined
+  const liveNamed = peers.filter((entry) => entry.name.toLowerCase() === name)
+  if (wanted ? liveNamed.some((entry) => entry.sessionIds.includes(wanted)) : liveNamed.length) return undefined
+  const matches = parked.filter(
+    (standIn) => standIn.name.toLowerCase() === name && (!wanted || standIn.sessionId === wanted),
+  )
+  if (!matches.length) return undefined
+  if (matches.length > 1) {
+    return {
+      error:
+        `Refused: "${raw}" is ambiguous — ${matches.length} stopped chats share that name. ` +
+        `Address one of: ${matches.map(parkedAddress).join(", ")}.`,
+    }
+  }
+  return { standIn: matches[0] }
 }
 
 export * as AgentBroker from "./agent-broker"

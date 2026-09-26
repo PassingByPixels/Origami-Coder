@@ -6,6 +6,180 @@ It shows once, as one summary of everything since the last version the user saw:
 the curated `whats-new/<version>.md` when it exists, else the sections here since the
 previous public release, merged by their `###` headings. Dev builds show nothing.
 
+## 0.4.184
+
+Public release. The What's new window shows one summary of everything since 0.4.175.
+
+### Engines
+
+- "Park idle chats after" is 20 minutes by default, for every provider (was 60, and 120 for providers with no published cache life). A stored 60 or 120 from an earlier version moves to 20 once; a value you chose stays.
+- "Keep the prompt cache warm" is off by default. Each warm is billed as a cache read of the whole cached prompt; turn it on in Settings if you often come back to idle chats within the cache life. If you turned it on, it stays on.
+- The park and warm help texts say what happens: a chat parks at your time, and with warming on it wakes one minute before its warm, warms and parks again.
+
+### Agent map
+
+- The agent map opens as a centred panel, fitted to the width, at most a little larger than before. It no longer fills the whole chat panel.
+
+### Build
+
+- The shipped extension files carry no source-map reference.
+
+## 0.4.183
+
+Travel build 2 (parking, agent map, drop to attach, macOS).
+
+### Engines
+
+- An idle chat parks at your "Park idle chats after" time, whatever the provider's cache life. A park does not break the cache: the restored chat sends the same bytes.
+- With cache warming on, a parked chat wakes in the background one minute before its warm is due, sends that warm, and parks again. The log shows "woken to warm", "warmed" and "parked again".
+- Cache warming now really sends: before this build every warm failed ("InstanceRef not provided"), so warming costs what the setting says.
+- The Engines wording uses "park" and "parked", and the timeline shows the park at your time and a mark for each warm.
+- macOS: a refused memory trim logs once and is not asked again; the settings say trim is Windows-only and parking frees memory there.
+- A peer desk's closed chats no longer stay listed as open.
+
+### Agent map
+
+- The agent map follows the mockup: dot grid, one column per tier, each child on its parent's row with elbow wires, counts and background-shell chips, pan and zoom.
+- It updates live for sub-agents at every depth, and shows the background shells that sub-agents start.
+
+### Composer
+
+- The drop overlay always clears when a drag ends anywhere.
+- A file dropped from the VS Code explorer attaches (images and text). Any other file type puts its full path in the message as text.
+
+## 0.4.182
+
+Travel build (elastic engine + fixes + tool-elements redesign, first pass).
+
+### Plan mode
+
+- Plan mode works: the engine now really runs with plan mode on, so the plan agent writes a plan file and ends with the approve / revise review.
+- If a model answers in plain text, the engine reminds it once to finish the plan, and a "Review as plan" button turns the answer into the plan review.
+
+### Redesign (Round 8, first pass)
+
+- Tool rows share one look: line icons, a verdict badge, a moving line only while running; Edit shows an aligned split / unified diff; Grep groups hits by file with line links; Read and Shell show a file or command bar.
+- Questions open centred, one at a time, with "tick all that apply"; permission asks rise as one tray from the composer.
+- Sub-agents pull-out and agent map share one card; side quests and Browser pull-outs fold like rails, and Browser shows a film strip of its frames.
+
+### Settings and panels
+
+- Settings → Engines shows a timeline of one chat after you leave it (background, idle, trim, stop) that follows your values.
+- The Storage card shows this desk's sizes per class on the mother base.
+- The Connections strip arrows say how many tiles are hidden.
+
+### Fixes
+
+- Fable and Opus (1M) with a forced tool no longer fail; tile names do not break mid-word; paths keep their leading "/"; a finished bash card stops counting; Labyrinth no longer crashes on nested sub-agent steps.
+
+## 0.4.181
+
+UAT build 6 of the elastic engine (not a public release). Fixes from the owner's UAT of 0.4.180.
+
+### Claude subscription
+
+- Fable and Opus (1M context) no longer offer effort "off": they reject disabled thinking. A chat switched to them uses "low". Haiku keeps "off".
+
+### Elastic engine
+
+- The warm spare waits untrimmed (about 360 MB per window), so a new chat taking it over does not wait for its memory to load back in.
+
+## 0.4.180
+
+UAT build 5 of the elastic engine (not a public release). Fixes from the owner's UAT of 0.4.179.
+
+### Elastic engine
+
+- A new chat takes the warm spare over before its first call: the spare is back at full speed at once, and the chat's calls wait for the takeover, so the project is opened once (it was opened throttled, thrown away and opened again).
+- A new chat on the warm spare can use Claude (Sub): the cached provider list now follows the Claude (Sub) setting.
+
+### Chat
+
+- The chat header shows the chat's name again ("· Cortex-1234"; missing since 0.4.177).
+- The "Jump to the newest message" tooltip closes when you switch tabs or the view loses focus.
+- The plan-mode banner is gone; the composer's Plan chip shows plan mode.
+
+### Model picker
+
+- Each Claude (Sub) model shows once, with a readable name ("Fable (1M context)").
+- A new chat's model picker shows the models at once instead of "Loading models…" while its engine starts.
+
+## 0.4.179
+
+UAT build 4 of the elastic engine (not a public release). Fixes from the owner's UAT of 0.4.178.
+
+### Elastic engine
+
+- A chat counts as on screen only where a view shows it: its own editor tab while that tab has focus, or the sidebar while the sidebar displays it. The newest or recalled chat no longer stays active (normal priority, never trimmed) while you work elsewhere.
+- A window reload reopens hidden chats without their engine. Each one shows "Loading chat history…" and starts on first focus, a message, a peer message or a /loop run.
+- Calls the extension makes on its own (a provider refresh, a settings push, a host read) no longer pull idle chats back to background.
+- The Origami Elastic log says "closed" when you close a chat, and every lifecycle line names the kind, pid and engine session.
+- Turning the warm spare back on starts one at once when no chat is working. The drop line names the real pid.
+- A new chat builds the provider state and the environment block side by side while its session starts, so the first message waits less on a slow provider. The engine log times the first project open after a spare is taken over ("adoption timings", "boot timings").
+
+### Chat
+
+- A slash command runs in the chat it was typed in, also in a chat in its own tab (it used the sidebar's selected chat, so /bypass could switch another chat).
+- The "Jump to the newest message" pill goes away when a content change puts you at the bottom.
+
+### Nests
+
+- The desk-to-desk link comes back by itself after VS Code restarts (it waited for the previous window's claim and never tried again). One window holds the phone link and the desk links together.
+- Chats open in a window, stopped ones too, show as open on the other desks.
+
+### Claude subscription
+
+- The usage line resolves instead of "Checking claude-subscription…".
+- The picker lists Fable from your account (the CLI names it by its full id) and shows each model once, as "Claude (Sub)/<model>".
+
+### Settings
+
+- Settings that are fixed when a chat starts say so: new chats get the change at once, open chats keep their value. The code-mode notice no longer asks for a reload.
+
+## 0.4.178
+
+UAT build 3 of the elastic engine (not a public release). Same engine as 0.4.177.
+
+### Settings
+
+- The Settings view has an Engines group: elastic engines on/off, warm spare on/off, and the idle, stop and trim times. All but the warm spare apply at once; the warm spare applies from the next new chat.
+
+## 0.4.177
+
+UAT build 2 of the elastic engine (not a public release).
+
+### Fixed
+
+- A chat's first message could hang for good when the chat uses a local (stdio) MCP server: the git snapshot helper waited for a pipe the MCP server had inherited. Fixed in both directions (one process-start lock), with a 10 s fallback.
+- A failed request no longer keeps about 180 MB after its chat closes.
+
+### Elastic engines
+
+- The chat you work in is the active one: in the sidebar grid, tiles you only see are treated as hidden (they idle, trim and stop as usual) and a stopped chat restores when you click or focus it, so the restart overlaps your typing.
+- When a start or restore fails, the card says why (exit code, no answer in 60 s, or the engine's error), when, and has Copy details and Open engine log.
+
+### Faster
+
+- A new chat's first word: 1.3-2.3 s -> 0.24-0.40 s. The on-screen chat's first word with five busy chats: p95 806 -> 446 ms.
+
+## 0.4.176
+
+UAT build of the elastic engine (not a public release). Each chat keeps its own engine; hidden and idle chats now cost close to nothing.
+
+### Elastic engines
+
+- Each chat engine is told whether its chat is on screen, in the background or idle. Background chats run at a lower CPU priority; idle chats are trimmed from memory (measured: 6 idle big chats 2.63 GB -> 0.57 GB working set; idle CPU 28-51 -> 5-14 ms per second).
+- A chat that is hidden and quiet for 60 minutes (120 for providers with no published cache lifetime) has its engine stopped; the next message, peer handoff or Folds prompt starts it again in the same chat with byte-identical requests. A change you made while it was stopped shows in Labyrinth as "changed while stopped". Settings: `origamicoder.elastic.*`.
+- A warm spare engine is kept per window, so a new chat is ready in about 0.5 s instead of 1.3 s.
+- A closed chat's engine memory is freed (about 200 MB less kept per closed big chat).
+- Finished Folds agents stop their engine once hidden; the Chat button restores it.
+
+### Faster inside a busy chat
+
+- The git snapshot and the Storage scans run off the engine's main thread. With five busy chats, the longest freeze of the on-screen chat fell from 172-468 ms to 25-51 ms.
+- The request is built once per step instead of three times.
+- Tool-result aging and other request decisions are saved per chat, so a restart keeps the prompt cache.
+
 ## 0.4.175
 
 ### Nests and Artifacts

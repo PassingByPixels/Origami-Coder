@@ -29,11 +29,11 @@ beforeAll(() => {
     JSON.stringify({
       version: 1,
       repos: [
-        { root: 'C:/Repos/Origami Labs/site', name: 'site', workspace: true, addedAt: 1 },
+        { root: 'C:/Repos/acme/site', name: 'site', workspace: true, addedAt: 1 },
         // A board display-name override. The picker must show what the BOARD
         // shows: two lists naming one repo differently are two lists the owner
         // has to reconcile by hand.
-        { root: 'C:/Repos/Projects/learning-apps', name: 'learning-apps', displayName: 'Learning apps', workspace: false, addedAt: 2 },
+        { root: 'C:/Repos/Projects/demo-app', name: 'demo-app', displayName: 'Demo app', workspace: false, addedAt: 2 },
       ],
     }),
   );
@@ -49,8 +49,8 @@ afterAll(() => {
 describe('repoOptions — the Folds board registry, not a second list', () => {
   it('offers every registered repo, preferring the board display name', () => {
     expect(repoOptions(home)).toEqual([
-      { root: 'C:/Repos/Origami Labs/site', name: 'site' },
-      { root: 'C:/Repos/Projects/learning-apps', name: 'Learning apps' },
+      { root: 'C:/Repos/acme/site', name: 'site' },
+      { root: 'C:/Repos/Projects/demo-app', name: 'Demo app' },
     ]);
   });
 

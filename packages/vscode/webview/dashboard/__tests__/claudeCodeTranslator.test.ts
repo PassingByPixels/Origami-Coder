@@ -264,7 +264,7 @@ describe('this session\'s own / commands reach the palette', () => {
       .commands as Array<{ name: string; description: string; category: string }>;
     expect(rows).toHaveLength(53);
     expect(new Set(rows.map((r) => r.category))).toEqual(new Set(['Claude Code']));
-    expect(rows.map((r) => r.name)).toContain('/delegate');
+    expect(rows.map((r) => r.name)).toContain('/review-code');
     // The names carry the leading slash the palette inserts verbatim.
     expect(rows.every((r) => r.name.startsWith('/'))).toBe(true);
   });
@@ -300,7 +300,7 @@ describe('this session\'s own / commands reach the palette', () => {
   it('still lists a command the initialize frame said nothing about', () => {
     const rows = run(PROBE_SYSTEM_INIT).find((p) => p.type === 'passthroughCommands')!
       .commands as Array<{ name: string; description: string }>;
-    expect(rows.find((r) => r.name === '/delegate')!.description).toBe('');
+    expect(rows.find((r) => r.name === '/review-code')!.description).toBe('');
   });
 
   it('sends no palette rows at all when the setting is off', () => {

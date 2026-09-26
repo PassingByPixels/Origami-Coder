@@ -17,14 +17,31 @@
 /** MIRROR of webview/dashboard/panes/engineNotice.ts EngineStage — engineNotice.test.ts reads
  *  both files. `stopped` = the engine was up and has exited; nothing here starts it again. */
 export type EngineStage = 'starting' | 'ready' | 'failed' | 'stopped';
+/** `parked` (t-w2txb2) = the engine was stopped ON PURPOSE after a long idle (elastic/park.ts); the next
+ *  held work starts it again with the restore park() was given. The pane is never told it (t-wdyi2t):
+ *  a parked chat shows nothing, and its next message opens the ordinary "Starting" card. t-wypna7: a chat reopened
+ *  at a window reload while not on screen is `parked` too, before its first start (defer()). */
+export type GateStage = EngineStage | 'parked';
 
 /** What the pane is told. `held` = the messages (prompts and interjections) waiting now.
- *  `retry` = the card may offer Retry: a failed start that is safe to run again. */
+ *  `retry` = the card may offer Retry: a failed start that is safe to run again.
+ *  t-x3a89j: `at` = when the start failed or the engine stopped (ms since epoch); `details` = the text the
+ *  card's Copy details puts on the clipboard. Both only on `failed` and `stopped`. */
 export interface EngineStatePost {
   stage: EngineStage;
   reason: string;
   held: number;
   retry: boolean;
+  at?: number;
+  details?: string;
+}
+
+/** t-x3a89j: what the gate reports a failure to, beyond the pane. */
+export interface GateOptions {
+  /** One line per failed start or restore, and per stop ("Origami Elastic"). */
+  log?(line: string): void;
+  /** Lines for Copy details that name the chat (its number, its engine session). */
+  describe?(): string[];
 }
 
 /** hold()'s answer for a prompt that will not be sent: the stop reason for its `turnDone`. */
@@ -61,7 +78,7 @@ export function routeTurnMessage(gate: EngineGate | undefined, m: { type?: strin
 }
 
 export class EngineGate {
-  private stage: EngineStage = 'starting';
+  private stage: GateStage = 'starting';
   private reason = '';
   private retryable = true;
   private run: (() => Promise<void>) | null = null;
@@ -73,10 +90,18 @@ export class EngineGate {
   private startNotes: string[] = [];
   /** The pane has an open card for this start, so every later state goes to it. */
   private shown = false;
+  /** t-x3a89j: when the start failed or the engine stopped; the run that failed was a restore of a parked chat. */
+  private at = 0;
+  private restoring = false;
+  /** t-xoenz1: the chat was closed. Its engine's exit is the one the close asked for, not a loss. */
+  private closed = false;
+  /** t-xoenz1: `describe()` as it read when the engine stopped. The client drops its engine session id as the exit
+   *  lands, so the Copy details asked for later still name the session that stopped. */
+  private stoppedAs: string[] | null = null;
 
-  constructor(private readonly tell: (post: EngineStatePost) => void) {}
+  constructor(private readonly tell: (post: EngineStatePost) => void, private readonly opts: GateOptions = {}) {}
 
-  get current(): EngineStage {
+  get current(): GateStage {
     return this.stage;
   }
 
@@ -98,11 +123,50 @@ export class EngineGate {
       this.stage = 'failed';
       this.retryable = !why;
       this.reason = [this.startNotes.length > 0 ? `${msg} (${this.startNotes.join('; ')})` : msg, why].filter(Boolean).join(' · ');
-      this.notify();
+      this.failed();
       throw e;
     }
     this.stage = 'ready';
+    this.restoring = false;
     this.notify();
+    this.pump();
+  }
+
+  /** t-w2txb2: the engine is about to be stopped on purpose. Only an engine that is up with no
+   *  turn in it and nothing waiting can be parked (false = it was not). From now on the next
+   *  hold(), follow() or whenUp() runs `restore` as a start, and the work waits for it in order. */
+  park(restore: () => Promise<void>): boolean {
+    if (this.stage !== 'ready' || this.inTurn > 0 || this.queue.length > 0) return false;
+    this.stage = 'parked';
+    this.run = restore;
+    this.shown = false;
+    this.restoring = true;
+    return true;
+  }
+
+  /** t-wypna7: a chat reopened at a window reload while it is not on screen. Its first start is kept, not run:
+   *  the gate is `parked`, and the first hold(), follow() or whenUp() runs it (elastic/reloadDefer.ts). `after`
+   *  runs once, when that first start has ended (resolved or failed). Only a gate that never started can defer. */
+  defer(run: () => Promise<void>, refusal?: () => string, after?: () => void): Promise<void> {
+    if (this.stage !== 'starting' || this.run) return this.start(run, refusal).finally(() => after?.());
+    let first = true;
+    this.run = async () => {
+      try {
+        await run();
+      } finally {
+        if (first) { first = false; after?.(); }
+      }
+    };
+    if (refusal) this.refusal = refusal;
+    this.stage = 'parked';
+    return Promise.resolve();
+  }
+
+  /** The park did not go ahead (the engine refused it): back to ready, unless work already
+   *  started the restore, which ends in ready by itself. */
+  unpark(): void {
+    if (this.stage !== 'parked') return;
+    this.stage = 'ready';
     this.pump();
   }
 
@@ -140,6 +204,15 @@ export class EngineGate {
     return new Promise((resolve) => this.enqueue('call', (go) => resolve(go)));
   }
 
+  /** t-xoenz1: the chat is closing (DashboardPanel.closeSession, or the window). Everything held is released, one line
+   *  says it was closed (with the engine it had), and the engine exit that follows is not logged as a loss. */
+  close(why = ''): void {
+    if (this.closed) return;
+    this.opts.log?.(`[engine] ${this.who()}: ${this.stage === 'parked' ? 'closed while parked' : 'closed'}${why ? ` (${why})` : ''}`);
+    this.closed = true;
+    this.drop(true);
+  }
+
   /** Stop: every waiting message is released unsent. `all` (the chat closed) releases the
    *  session calls too — this chat's engine will never answer them. */
   drop(all = false): void {
@@ -155,14 +228,28 @@ export class EngineGate {
    *  failure reason, and true tells the caller to post nothing. After the engine was up it is
    *  a real loss: waiting work is refused, and false leaves the report to the caller. */
   exited(reason: string): boolean {
+    if (this.closed) return true; // t-xoenz1: the close asked for this exit
     if (this.stage === 'starting') {
       this.startNotes.push(reason);
       return true;
     }
-    if (this.stage === 'failed') return true;
+    if (this.stage === 'failed') {
+      // t-x3a89j: the connection can close (and the start fail) before the exit event arrives. The exit code
+      // still belongs to that failure, so the card and the log get it.
+      if (!this.reason.includes(reason)) {
+        this.reason = `${this.reason} (${reason})`;
+        this.opts.log?.(`[engine] ${this.who()}: ${reason}`);
+        this.notify(true);
+      }
+      return true;
+    }
+    if (this.stage === 'parked') return true; // parked: the exit was asked for
     if (this.stage === 'ready') {
+      this.stoppedAs = this.opts.describe?.() ?? null;
       this.stage = 'stopped';
       this.reason = reason;
+      this.at = Date.now();
+      this.opts.log?.(`[engine] ${this.who()}: the engine stopped: ${reason}`);
       const release = this.queue;
       this.queue = [];
       for (const w of release) w.settle(false, 'error');
@@ -174,6 +261,13 @@ export class EngineGate {
     if (this.stage === 'stopped') {
       this.notify(true); // the refusal is a card under what the user just did
       settle(false, 'error');
+      return;
+    }
+    // t-w2txb2: parked — this work is what starts the engine again. It waits in the queue like
+    // work sent before a first start, and start() releases it in order.
+    if (this.stage === 'parked' && this.run) {
+      this.queue.push({ kind, settle });
+      void this.start(this.run).catch(() => { /* start() told the pane; Retry runs it again */ });
       return;
     }
     // Nothing ahead of it: go now. This is the ordinary case, and it keeps an interjection into
@@ -225,11 +319,34 @@ export class EngineGate {
     return this.queue.filter((w) => w.kind !== 'call').length;
   }
 
+  /** t-x3a89j: a failed start: stamp the time, log it, tell the pane. */
+  private failed(): void {
+    this.at = Date.now();
+    this.opts.log?.(`[engine] ${this.who()}: the engine did not start${this.restoring ? ' again (restore of a stopped chat)' : ''}: ${this.reason}`);
+    this.notify();
+  }
+
+  private who(): string {
+    return this.described()[0] ?? 'chat';
+  }
+
+  /** The describe() lines: as they read when the engine stopped, once it has (t-xoenz1). */
+  private described(): string[] {
+    return (this.stage === 'stopped' ? this.stoppedAs : null) ?? this.opts.describe?.() ?? [];
+  }
+
+  /** t-x3a89j: the Copy details text. */
+  private details(): string {
+    const title = this.stage === 'stopped' ? 'The engine stopped' : this.restoring ? 'The engine did not start again (restore of a stopped chat)' : 'The engine did not start';
+    return [`Origami: ${title}`, `When: ${new Date(this.at).toISOString()}`, `Why: ${this.reason}`, ...this.described()].join('\n');
+  }
+
   /** Tell the pane when there is something to show: a failure, a held message, or a card
    *  already open. A start nobody waits on posts nothing. */
   private notify(force = false): void {
-    if (!force && !this.shown && this.stage !== 'failed' && this.held() === 0) return;
-    this.tell({ stage: this.stage, reason: this.reason, held: this.held(), retry: this.stage === 'failed' && this.retryable });
+    if (this.stage === 'parked' || (!force && !this.shown && this.stage !== 'failed' && this.held() === 0)) return;
+    const end = this.stage === 'failed' || this.stage === 'stopped';
+    this.tell({ stage: this.stage, reason: this.reason, held: this.held(), retry: this.stage === 'failed' && this.retryable, ...(end ? { at: this.at, details: this.details() } : {}) });
     this.shown = this.stage === 'starting' || this.stage === 'failed';
   }
 }

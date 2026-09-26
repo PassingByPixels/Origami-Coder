@@ -70,3 +70,24 @@ describe('makeSessionStatusHandler — routes origami/sessionStatus under the LO
     expect(posts).toEqual([]);
   });
 });
+
+// t-w2qv3o: the HOST keeps its own copy of the engine's busy/idle, so a hidden chat whose engine
+// started a turn by itself (an injected background result) is never classed idle and trimmed mid-turn.
+describe('makeSessionStatusHandler — the host copy for the elastic tracker', () => {
+  it('records every status this connection owns, in order, and nothing for a foreign session', () => {
+    const recorded: string[] = [];
+    const handler = makeSessionStatusHandler({
+      engineSessionId: () => 'ses_abc123',
+      localSessionId: 'session-7',
+      post: () => undefined,
+      record: (status) => recorded.push(status),
+    });
+
+    handler({ sessionId: 'ses_abc123', status: 'busy' });
+    handler({ sessionId: 'ses_someone_else', status: 'idle' });
+    handler({ sessionId: 'ses_abc123', status: 'retry' });
+    handler({ sessionId: 'ses_abc123', status: 'idle' });
+
+    expect(recorded).toEqual(['busy', 'retry', 'idle']);
+  });
+});

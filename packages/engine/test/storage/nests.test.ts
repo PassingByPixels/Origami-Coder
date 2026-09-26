@@ -384,6 +384,22 @@ describe("nest apply index", () => {
       }),
     ))
 
+  // t-z6nt1b: the owner's first export compacts the journal and LOWERS its seq
+  // (owner index seq 21 -> journal 15, PC store 2026-09-26). A full index is the
+  // desk's current truth, so a lower seq in it must not freeze the held row.
+  test("a full index with a lower seq (compacted journal) still replaces the row", () =>
+    withStores((_, b) =>
+      Effect.gen(function* () {
+        const apply = (rows: unknown[], replace: boolean) =>
+          on(b, StorageNests.applyIndex({ deviceId: DESK_B, desk: DESK_A, rows, replace }))
+        yield* apply([row({ seq: 21, state: "open" })], true)
+        expect(yield* apply([row({ seq: 15, state: "closed" })], true)).toMatchObject({ updated: 1, stale: 0 })
+        expect(yield* on(b, StorageNests.foreignIndex({ deviceId: DESK_B }))).toEqual([row({ seq: 15, state: "closed" })])
+        // A partial (non-full) message with a lower seq is still a late one and is dropped.
+        expect(yield* apply([row({ seq: 9, state: "open" })], false)).toMatchObject({ stale: 1 })
+      }),
+    ))
+
   // t-sj2qkr: a row an older desk already stored (before this rule existed)
   // is hidden on READ, not migrated or deleted — a later read of the raw
   // table still finds it.
@@ -687,6 +703,75 @@ describe("nest storage and retention", () => {
         const after = yield* Effect.promise(() => ArtifactStore.open(dir))
         expect(after.sizeReport()).toMatchObject({ artifacts: 2, versions: 4 })
         after.close()
+      }),
+    ))
+
+  // t-vs5krz: the artifact folder was summed with readdirSync + statSync, in one
+  // block before the first range: 284-439 ms at 30,000 blobs (soak, store copy).
+  // A macrotask chain counts the loop turns before the first range is read: the
+  // blocking walk left none.
+  test("the artifact folder is summed without holding the event loop", () =>
+    withStores((a) =>
+      Effect.gen(function* () {
+        yield* on(a, write())
+        const dir = nextDir("artifacts")
+        mkdirSync(path.join(dir, "blobs", "incoming"), { recursive: true })
+        writeFileSync(path.join(dir, "artifacts.db"), "x".repeat(300))
+        for (let i = 0; i < 400; i++) writeFileSync(path.join(dir, "blobs", `b${i}`), "y".repeat(10))
+        writeFileSync(path.join(dir, "blobs", "incoming", "part"), "z".repeat(7))
+        let turns = 0
+        let spinning = true
+        const spin = () => {
+          turns++
+          if (spinning) setImmediate(spin)
+        }
+        setImmediate(spin)
+        let beforeFirstRange = -1
+        const result = yield* on(
+          a,
+          StorageNests.storage({
+            deviceId: DESK_A,
+            artifactsDir: dir,
+            onPartial: () => {
+              if (beforeFirstRange < 0) beforeFirstRange = turns
+            },
+          }),
+        )
+        spinning = false
+        expect(result.classes.artifacts).toBe(300 + 400 * 10 + 7)
+        expect(beforeFirstRange).toBeGreaterThan(0)
+      }),
+    ))
+
+  // t-vs5krz: the artifact dry run listed and stat'ed every blob in one block
+  // (+0.3-0.5 s at 30,000 blobs in the soak). Only the dry run: an Apply keeps
+  // its one pass (t-veeliu).
+  test("the artifact dry run counts blobs without holding the event loop", () =>
+    withStores((a) =>
+      Effect.gen(function* () {
+        const dir = nextDir("artifacts")
+        const made = yield* Effect.promise(() => ArtifactStore.open(dir))
+        made.close()
+        // Blobs no version names: all of them are what a prune frees.
+        for (let i = 0; i < 300; i++)
+          writeFileSync(path.join(dir, "blobs", i.toString(16).padStart(64, "0")), "b".repeat(i % 7))
+        // Not a blob: a publish that died mid-write. Never counted.
+        writeFileSync(path.join(dir, "blobs", `${"f".repeat(64)}.123.tmp`), "t".repeat(50))
+        let turns = 0
+        let spinning = true
+        const spin = () => {
+          turns++
+          if (spinning) setImmediate(spin)
+        }
+        setImmediate(spin)
+        const result = yield* on(
+          a,
+          StorageNests.retention({ apply: { dryRun: true, windows: { artifacts: 30 } }, artifactsDir: dir }),
+        )
+        spinning = false
+        const bytes = Array.from({ length: 300 }, (_, i) => i % 7).reduce((sum, n) => sum + n, 0)
+        expect(result.applied?.artifacts).toEqual({ dryRun: true, olderThanDays: 30, blobs: 300, bytes })
+        expect(turns).toBeGreaterThan(0)
       }),
     ))
 

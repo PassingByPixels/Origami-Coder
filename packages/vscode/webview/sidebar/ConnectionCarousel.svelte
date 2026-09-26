@@ -15,6 +15,8 @@
   // that arithmetic is connectionCarouselFit.ts, where it can be tested —
   // jsdom has no layout, so nothing here can be.
   import ConnectionPill from './ConnectionPill.svelte';
+  import ConnectionArrow from './ConnectionArrow.svelte';
+  import { hiddenTiles, type Hidden } from './connectionHidden';
   import { tip } from '../shared/warmTip';
   import {
     CONN_GAP, fitTiles, nameLines, pageTarget, settleTarget, type ConnFit,
@@ -36,11 +38,14 @@
 
   let trackEl: HTMLDivElement | undefined = $state();
   let fit = $state<ConnFit>(fitTiles(0));
+  let hidden = $state<Hidden>({ before: 0, after: 0 });
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
   function measure(): void {
     if (!trackEl) return;
-    fit = fitTiles(trackEl.clientWidth);
+    const next = fitTiles(trackEl.clientWidth); // a local: reading `fit` here would loop the effect
+    fit = next;
+    hidden = hiddenTiles(trackEl.scrollLeft, trackEl.clientWidth, next, tiles.length);
   }
 
   // Re-measure whenever the track exists or the tile count changes; a resize
@@ -63,6 +68,7 @@
   // A manual drag can rest anywhere; pull it back to a tile start once it has
   // stopped, or the strip shows a cut tile the arrows would never leave it on.
   function onScroll(): void {
+    measure();
     clearTimeout(settleTimer);
     settleTimer = setTimeout(() => {
       if (!trackEl) return;
@@ -76,7 +82,7 @@
 
 {#if tiles.length > 0}
   <div class="conn-carousel" style="--conn-tile-w: {fit.width.toFixed(2)}px; --conn-gap: {CONN_GAP}px;">
-    <button class="conn-arrow" type="button" aria-label="Previous connections" onclick={() => page(-1)}>&lsaquo;</button>
+    <ConnectionArrow dir={-1} hidden={hidden.before} onclick={() => page(-1)} />
     <div class="conn-track provider-grid" role="list" aria-label="Providers" bind:this={trackEl} onscroll={onScroll}>
       {#each tiles as t (t.id)}
         <ConnectionPill
@@ -91,7 +97,7 @@
         />
       {/each}
     </div>
-    <button class="conn-arrow" type="button" aria-label="Next connections" onclick={() => page(1)}>&rsaquo;</button>
+    <ConnectionArrow dir={1} hidden={hidden.after} onclick={() => page(1)} />
   </div>
   <!-- Outside the track on purpose: a scrolled-away Add is an Add nobody
        finds. Icon-only, because the strip's room belongs to the connections. -->
@@ -133,23 +139,6 @@
     padding: 2px 0;
   }
   .conn-track::-webkit-scrollbar { display: none; }
-  .conn-arrow {
-    flex: 0 0 auto;
-    width: 20px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--og-border);
-    border-radius: 6px;
-    background: var(--og-btn-bg);
-    color: var(--og-text-secondary);
-    cursor: pointer;
-    font-size: 12px;
-    line-height: 1;
-    font-family: inherit;
-  }
-  .conn-arrow:hover { background: var(--og-btn-hover); color: var(--og-text); }
 
   .add-provider {
     display: inline-flex;

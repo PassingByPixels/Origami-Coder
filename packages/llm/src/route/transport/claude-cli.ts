@@ -251,7 +251,11 @@ export const prepareRequest = Effect.fn("ClaudeCli.prepare")(function* (
     manifest.push({ name: tool.name, description: tool.description, inputSchema: schema })
     tools.push({ name: TOOL_PREFIX + tool.name, description: tool.description, input_schema: schema })
   }
-  const forced = body.tool_choice !== undefined && body.tool_choice.type !== "auto"
+  // A forced tool choice is refused with thinking on, and adaptive-thinking models
+  // refuse thinking disabled (t-ytsf8q). Those models keep the choice unforced
+  // (auto) and their thinking; only models without adaptive thinking are forced.
+  const forced =
+    body.tool_choice !== undefined && body.tool_choice.type !== "auto" && !supportsAdaptiveThinking(body.model)
   const extraBody: Record<string, unknown> = {
     tools,
     max_tokens: body.max_tokens,
@@ -259,7 +263,6 @@ export const prepareRequest = Effect.fn("ClaudeCli.prepare")(function* (
     ...(forced
       ? {
           tool_choice: body.tool_choice,
-          // A forced tool choice is refused with thinking on.
           thinking: { type: "disabled" },
           context_management: { edits: [] },
         }

@@ -46,19 +46,21 @@ const bands = (c: HTMLElement) =>
     rows: [...g.querySelectorAll('.sa-name')].map((n) => n.textContent ?? ''),
   }));
 
-describe('SubagentDrawer — Running and Complete', () => {
-  it('puts a live agent under Running and a settled one under Complete', async () => {
+// t-yyz57i: the settled band is "Done" now, and failed/errored rows have their own
+// "Failed" band between Running and Done (mockup R3, same groups as the map).
+describe('SubagentDrawer — Running, Failed and Done', () => {
+  it('puts a live agent under Running and a settled one under Done', async () => {
     const c = await open([
       row({ key: 'a', ordinal: 1, description: 'still going', state: 'running' }),
       row({ key: 'b', ordinal: 3, description: 'finished', state: 'done', settled: true }),
     ]);
     expect(bands(c)).toEqual([
       { label: 'Running', rows: ['T1 · still going'] },
-      { label: 'Complete', rows: ['T3 · finished'] },
+      { label: 'Done', rows: ['T3 · finished'] },
     ]);
   });
 
-  it('a queued agent is Running and an errored one is Complete', async () => {
+  it('a queued agent is Running; an errored one and a failed spawn are Failed', async () => {
     // The two states that are easy to get backwards: `queued` has not started
     // (still out), `error` has stopped (finished, badly).
     const c = await open([
@@ -68,13 +70,13 @@ describe('SubagentDrawer — Running and Complete', () => {
     ]);
     expect(bands(c)).toEqual([
       { label: 'Running', rows: ['T1 · waiting'] },
-      { label: 'Complete', rows: ['T2 · blew up', 'T3 · never spawned'] },
+      { label: 'Failed', rows: ['T2 · blew up', 'T3 · never spawned'] },
     ]);
   });
 
   it('draws NO heading for a band with no rows', async () => {
     const c = await open([row({ state: 'done', settled: true })]);
-    expect(bands(c).map((b) => b.label)).toEqual(['Complete']);
+    expect(bands(c).map((b) => b.label)).toEqual(['Done']);
   });
 
   it('counts only the RUNNING ones on the collapsed tab', async () => {
@@ -128,8 +130,9 @@ describe('SubagentDrawer — the Complete band folds, Running does not', () => {
     ]);
     // Both bands still draw their HEADING — the count is the point of a fold —
     // but only the running ones' rows are in the DOM.
-    expect(bands(c).map((b) => b.label)).toEqual(['Running', 'Complete']);
-    expect(names(c)).toEqual(['T1 · still going', 'T2 · waiting']);
+    // Failed does not fold: a failure stays in view.
+    expect(bands(c).map((b) => b.label)).toEqual(['Running', 'Failed', 'Done']);
+    expect(names(c)).toEqual(['T1 · still going', 'T2 · waiting', 'T4 · blew up']);
     expect(c.querySelector('.sa-group-fold')?.getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -140,7 +143,7 @@ describe('SubagentDrawer — the Complete band folds, Running does not', () => {
     const c = await list([row({ key: 'a', state: 'running' }), row({ key: 'b', state: 'done', settled: true })]);
     const folds = [...c.querySelectorAll('.sa-group-fold')];
     expect(folds).toHaveLength(1);
-    expect(folds[0].querySelector('.sa-group-label')?.textContent).toBe('Complete');
+    expect(folds[0].querySelector('.sa-group-label')?.textContent).toBe('Done');
   });
 
   it('expands and re-collapses on the heading, and SURVIVES a re-render', async () => {
@@ -178,8 +181,8 @@ describe('SubagentDrawer — no bulk clear', () => {
     ]);
     // The band itself is there, with its settled row in it.
     const complete = [...c.querySelectorAll('.sa-group')]
-      .find((g) => g.querySelector('.sa-group-label')?.textContent === 'Complete');
-    expect(complete, 'the Complete band still lists the finished row').not.toBeUndefined();
+      .find((g) => g.querySelector('.sa-group-label')?.textContent === 'Done');
+    expect(complete, 'the Done band still lists the finished row').not.toBeUndefined();
     expect(c.querySelector('.sa-group-clear')).toBeNull();
   });
 });
@@ -201,5 +204,26 @@ describe('SubagentDrawer — the agent-map button', () => {
     if (!container.querySelector('.sa-groups')) await fireEvent.click(container.querySelector('.sa-head') as HTMLElement); // t-ru13hb: a running row may have unfolded it already
     await fireEvent.click(container.querySelector('.sa-map-btn') as HTMLElement);
     expect(container.querySelector('.sa-head')?.getAttribute('aria-expanded')).toBe('true');
+  });
+});
+
+// t-yyz57i: the head shows three dot counts (running / done / failed) in place of
+// the old text summary. Queued is not running; error and failed are both failed.
+describe('SubagentDrawer — the head counts', () => {
+  it('counts running, done and failed, each once', () => {
+    const { container } = render(SubagentDrawer, drawerProps([
+      row({ key: 'a', state: 'running' }),
+      row({ key: 'q', state: 'queued' }),
+      row({ key: 'b', state: 'done', settled: true }),
+      row({ key: 'c', state: 'error', settled: true }),
+      row({ key: 'd', state: 'failed', settled: true }),
+    ]));
+    const cnt = [...container.querySelectorAll('.sa-cnt')].map((e) => [e.getAttribute('data-tip'), e.textContent]);
+    expect(cnt).toEqual([['Running', '1 running'], ['Done', '1 done'], ['Failed', '2 failed']]);
+  });
+
+  it('the running dot pulses only while something runs', () => {
+    const { container } = render(SubagentDrawer, drawerProps([row({ key: 'b', state: 'done', settled: true })]));
+    expect(container.querySelector('.sa-cd-run')?.classList.contains('sa-cd-live')).toBe(false);
   });
 });

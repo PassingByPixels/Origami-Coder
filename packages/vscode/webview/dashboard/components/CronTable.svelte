@@ -1,7 +1,7 @@
 <script lang="ts">
   // CronTable — the Crons view as an OPS TABLE rather than a stack of cards.
   // Cards cost a screenful for four crons; this has to stay readable at forty,
-  // which is the state Passing's machine is heading for now that crons work.
+  // which is the state the owner's machine is heading for now that crons work.
   //
   // JOB is three tiers of decreasing emphasis — name, then the model/agent it
   // runs as, then the log path — so a scan down the first column reads as names

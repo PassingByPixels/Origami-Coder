@@ -16,7 +16,7 @@
 
 <div class="srow" data-setting={id} hidden={!rowMatches(row, filter)}>
   <div class="stext">
-    <div class="sname">{row.name}{#if row.reload}<span class="pill" use:tip={row.reload}>reload</span>{/if}</div>
+    <div class="sname">{row.name}{#if row.reload}<span class="pill" use:tip={row.reload}>{row.pill ?? 'reload'}</span>{/if}</div>
     <div class="shelp">{row.help}</div>
     {#if extra}{@render extra()}{/if}
   </div>

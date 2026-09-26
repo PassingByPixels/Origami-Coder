@@ -221,3 +221,66 @@ describe('InputBar — sending folds text attachments into the outgoing prompt',
     expect(seen).toEqual([['just words']]);
   });
 });
+
+// t-z69b8m: the overlay stuck on with nothing dragged, and explorer drops
+// never attached. Real DOM shapes: an explorer drag carries URIs only (the
+// webview has no fs), so the composer must ask the host for the bytes.
+describe('InputBar — t-z69b8m drop overlay resets and host-read attach', () => {
+  const area = (c: HTMLElement) => c.querySelector('.input-area') as HTMLElement;
+  const hint = (c: HTMLElement) => c.querySelector('.drop-hint');
+
+  it('a drag that enters and then ends outside the webview (window blur) clears the overlay', async () => {
+    const { container } = mount();
+    await fireEvent.dragEnter(area(container));
+    expect(hint(container)).not.toBeNull();
+    await fireEvent(window, new Event('blur'));
+    await waitFor(() => expect(hint(container)).toBeNull());
+  });
+
+  it('a drop elsewhere in the webview (window drop) clears the overlay', async () => {
+    const { container } = mount();
+    await fireEvent.dragEnter(area(container));
+    await fireEvent.dragEnter(box(container));
+    await fireEvent(window, new Event('drop'));
+    await waitFor(() => expect(hint(container)).toBeNull());
+  });
+
+  it('a file dropped on the composer box but not on the textarea still attaches', async () => {
+    const { container } = mount();
+    const file = new File(['hi'], 'notes.txt', { type: 'text/plain' });
+    await fireEvent.drop(area(container), { dataTransfer: makeDataTransfer({ files: [file] }) });
+    await waitFor(() => expect(container.querySelector('.text-attachment-chip')).not.toBeNull());
+  });
+
+  it('an explorer drop asks the host to read the file, and the reply attaches it as a chip', async () => {
+    const { container } = mount();
+    const dtx = { getData: (k: string) => (k.toLowerCase() === 'resourceurls' ? JSON.stringify(['file:///C:/w/a.ts']) : ''), files: [] };
+    await fireEvent.drop(box(container), { dataTransfer: dtx });
+    const req = globalThis.__vscodeApiMock.postMessage.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>).find((m) => m.type === 'readDroppedFiles');
+    expect(req).toBeTruthy();
+    expect(req!.uris).toEqual(['file:///C:/w/a.ts']);
+    expect(box(container).value).toBe(' C:\\w\\a.ts ');
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'droppedFiles', dropId: req!.dropId, files: [{ name: 'a.ts', mime: 'text/plain', base64: btoa('export {}') }] } }));
+    await waitFor(() => expect(container.querySelector('.text-attachment-chip')).not.toBeNull());
+    expect(box(container).value).toBe(' C:\\w\\a.ts '); // the path is not inserted twice
+  });
+
+  it('an explorer drop of an unsupported (binary) file leaves only its full path as text: no chip, no error', async () => {
+    const { container } = mount();
+    const dtx = { getData: (k: string) => (k.toLowerCase() === 'resourceurls' ? JSON.stringify(['file:///C:/w/tool.exe']) : ''), files: [] };
+    await fireEvent.drop(box(container), { dataTransfer: dtx });
+    const req = globalThis.__vscodeApiMock.postMessage.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>).find((m) => m.type === 'readDroppedFiles' && (m.uris as string[])[0].endsWith('tool.exe'));
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'droppedFiles', dropId: req!.dropId, files: [{ name: 'tool.exe', mime: 'text/plain', base64: btoa('MZ\u0000\u0000') }] } }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(box(container).value).toBe(' C:\\w\\tool.exe ');
+    expect(container.querySelector('.text-attachment-chip')).toBeNull();
+    expect(imageErrors()).toEqual([]);
+  });
+
+  it('a host reply for ANOTHER composer\'s drop is ignored', async () => {
+    const { container } = mount();
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'droppedFiles', dropId: 'not-mine', files: [{ name: 'a.ts', mime: 'text/plain', base64: btoa('x') }] } }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(container.querySelector('.text-attachment-chip')).toBeNull();
+  });
+});

@@ -163,7 +163,7 @@ const OPENCODE_GO_MODEL = "deepseek-v4-flash"
 // name (see the note at the top of src/plugin/openai/codex.ts). `gpt-5.4-mini`
 // is in that plugin's ALLOWED_MODELS and is the cheapest of them.
 const OPENAI_MODEL = "gpt-5.4-mini"
-// grok-4.6-fast is refused for Passing's team ("does not exist or your team does
+// grok-4.6-fast is refused for the owner's team ("does not exist or your team does
 // not have access"); grok-4.5 is his catalog entry and the one he picked.
 const XAI_MODEL = "grok-4.5"
 // The Haiku id the shipped catalog declares (test/tool/fixtures/models-api.json,
@@ -424,7 +424,7 @@ export const PROVIDERS: ReadonlyArray<ParityProvider> = [
   // responses are real, but the recorded REQUEST bodies were built by the
   // native runtime of that day, not by the AI SDK, so the recorded-vs-sent
   // request diff is not a baseline for it — the native-vs-ai-sdk request diff
-  // is. It cannot record: the api.openai.com key path is not what Passing uses.
+  // is. It cannot record: the api.openai.com key path is not what the owner uses.
   {
     id: "openai-api",
     npm: "@ai-sdk/openai",

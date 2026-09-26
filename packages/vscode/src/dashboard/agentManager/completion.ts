@@ -28,4 +28,9 @@ export async function completeRun(
   // has reached main yet (apply.ts stamps merged on a clean apply).
   stampFold(root, id, 'done', `fold finished (${stopReason})`);
   ctx.patch(id, { state: 'idle', stopReason });
+  // t-w2txb2 (owner decision 2026-09-24): a finished fold's engine closes instead of idling until
+  // Cancel / Delete / window close; t-wdyi2t: as soon as no view shows the chat (ParkHost.finished). The session stays, so Chat opens the same transcript and its next
+  // message starts the engine again. Refused while the engine still runs work (a background sub-agent or
+  // job); the elastic tracker parks it later. Never fails the run.
+  void ctx.host.parkSession?.(sessionId).catch(() => undefined);
 }

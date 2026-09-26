@@ -38,7 +38,7 @@ describe('SubagentRow — per-row collapse (t-f9jxl1: every row starts COLLAPSED
     expect(activity(container)?.textContent).toBe('reading file.ts');
     expect(fold(container).getAttribute('aria-expanded')).toBe('true');
     expect(fold(container).textContent).toBe('▾');
-    expect(screen.getByText('T1 · Worker-crane')).toBeInTheDocument();
+    expect(container.querySelector('.sa-name')?.textContent).toBe('T1 · Worker-crane');
   });
 
   it('clicking again re-collapses — the activity text was never discarded, just re-derived from the row', async () => {
@@ -67,7 +67,7 @@ describe('SubagentRow — the token figure', () => {
     expect(container.querySelector('.sa-age')?.textContent).toBe('2m 05s');
     const spend = container.querySelector('.sa-tokens');
     expect(spend?.textContent).toBe('14.5k tokens');
-    expect(spend?.getAttribute('title')).toBe('Input 12,400 · Output 2,100 · Cost $0.0421');
+    expect(spend?.getAttribute('data-tip')).toBe('Input 12,400 · Output 2,100 · Cost $0.0421');
   });
 
   // t-ffziaz. The owner read a child's 38k beside a chat's 19k and concluded the
@@ -85,8 +85,8 @@ describe('SubagentRow — the token figure', () => {
     expect(spend?.textContent).toBe('38.5k tokens · 2 steps · 19.1k context');
     // The sum and the context are DIFFERENT numbers on the same row — the whole
     // point — and the tooltip names which context it means.
-    expect(spend?.getAttribute('title')).toContain('Last step context 19,100');
-    expect(spend?.getAttribute('title')).toContain('Steps 2');
+    expect(spend?.getAttribute('data-tip')).toContain('Last step context 19,100');
+    expect(spend?.getAttribute('data-tip')).toContain('Steps 2');
   });
 
   it('says "1 step" and not "1 steps" for a child that answered in one call', () => {
@@ -122,7 +122,7 @@ describe('SubagentRow — the time-limit warning', () => {
       limitMs: FOUR_HOURS,
     }));
     expect(dot(container).className).toContain('sa-warn');
-    expect(dot(container).getAttribute('title')).toBe('Approaching the 4 h sub-agent time limit — about 48m 00s left');
+    expect(dot(container).getAttribute('data-tip')).toBe('Approaching the 4 h sub-agent time limit — about 48m 00s left');
   });
 
   it('leaves a row one millisecond short of the threshold alone, with no stray title', () => {
@@ -131,7 +131,7 @@ describe('SubagentRow — the time-limit warning', () => {
       limitMs: FOUR_HOURS,
     }));
     expect(dot(container).className).not.toContain('sa-warn');
-    expect(dot(container).getAttribute('title')).toBe('');
+    expect(dot(container).getAttribute('data-tip')).toBe('');
   });
 
   it('keeps the RUNNING state class as well as the warning — it has not stopped', () => {
@@ -158,7 +158,8 @@ describe('SubagentRow — the time-limit warning', () => {
 // was never about the count — identity on line 1, every figure on line 2, in
 // order, as DISTINCT nodes rather than one wrapping line.
 describe('SubagentRow — the two-row layout', () => {
-  it('renders identity+buttons, then tokens+elapsed+model, as two separate lines', () => {
+  // t-yyz57i: the model left the face for the row's tooltip (mockup R3).
+  it('renders identity+buttons, then tokens+elapsed, as two separate lines; the model is in the tooltip', () => {
     const { container } = render(SubagentRow, rowProps({
       row: row({ elapsedMs: 125_000, tokens: tokens(), model: 'openrouter/qwen3-coder' }),
     }));
@@ -167,7 +168,8 @@ describe('SubagentRow — the two-row layout', () => {
     expect(line1.querySelector('.sa-name')).not.toBeNull();
     expect(line2.querySelector('.sa-tokens')?.textContent).toBe('14.5k tokens');
     expect(line2.querySelector('.sa-age')?.textContent).toBe('2m 05s');
-    expect(line2.querySelector('.sa-model')?.textContent).toBe('openrouter/qwen3-coder');
+    expect(line2.querySelector('.sa-model')).toBeNull();
+    expect(container.querySelector('.sa-row')?.getAttribute('data-tip')).toContain('openrouter/qwen3-coder');
     expect(new Set([line1, line2]).size).toBe(2);
     expect(container.querySelector('.sa-line3')).toBeNull();
   });
@@ -195,7 +197,7 @@ describe('SubagentRow — what the row CALLS the agent (t-f6u661)', () => {
 
   it('hovers the SAME identity, so a clipped row stays addressable', () => {
     const { container } = render(SubagentRow, rowProps({ row: row({ ordinal: 2, agentType: 'Explore' }) }));
-    expect(name(container).getAttribute('title')).toBe('Explore · T2 · audit the bundle');
+    expect(name(container).getAttribute('data-tip')).toBe('Explore · T2 · audit the bundle');
   });
 
   it('drops the parts the engine did not send rather than padding them', () => {
@@ -208,5 +210,21 @@ describe('SubagentRow — what the row CALLS the agent (t-f6u661)', () => {
       row: row({ ordinal: 4, description: undefined, agentType: undefined }),
     }));
     expect(name(bare).textContent).toBe('T4');
+  });
+});
+
+// t-yyz57i: line 2 is the live activity while running, the reason when failed.
+describe('SubagentRow — line 2 by state (t-yyz57i)', () => {
+  it('a running row with output shows its latest line in the activity slot', () => {
+    const { container } = render(SubagentRow, rowProps({ row: row({ activity: 'read a.ts\nedit b.ts' }) }));
+    expect(container.querySelector('.sa-line2 .sa-act')?.textContent).toBe('edit b.ts');
+  });
+
+  it('a failed row shows its reason in red, not its totals', () => {
+    const { container } = render(SubagentRow, rowProps({ row: row({ state: 'error', settled: true, activity: 'Error: 429', tokens: tokens() }) }));
+    const line2 = container.querySelector('.sa-line2') as HTMLElement;
+    expect(line2.classList.contains('sa-line2-fail')).toBe(true);
+    expect(line2.querySelector('.sa-reason')?.textContent).toBe('Error: 429');
+    expect(line2.querySelector('.sa-tokens')).toBeNull();
   });
 });

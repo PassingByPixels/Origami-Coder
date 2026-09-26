@@ -399,7 +399,10 @@ const lowerReasoning = (part: ReasoningPart): OpenAIResponsesReasoningInput | un
 
 const hostedToolItemID = (part: ToolResultPart) => metadataItemID(part)
 
-const lowerUserContent = Effect.fn("OpenAIResponses.lowerUserContent")(function* (
+// t-vs5p1y: the lowering functions that run once per message or part are
+// untraced. A named span copies the fiber's whole context, and a big chat's
+// request lowers 1,400-2,800 messages per step. Request-level spans stay.
+const lowerUserContent = Effect.fnUntraced(function* (
   part: LLMRequest["messages"][number]["content"][number],
 ) {
   if (part.type === "text") return { type: "input_text" as const, text: part.text }
@@ -416,7 +419,7 @@ const lowerUserContent = Effect.fn("OpenAIResponses.lowerUserContent")(function*
 
 // Tool results may carry structured text/images. Keep media as provider-native
 // content instead of JSON-stringifying base64 into a prompt string.
-const lowerToolResultContentItem = Effect.fn("OpenAIResponses.lowerToolResultContentItem")(function* (
+const lowerToolResultContentItem = Effect.fnUntraced(function* (
   item: ToolContent,
 ) {
   if (item.type === "text") return { type: "input_text" as const, text: item.text }
@@ -428,7 +431,7 @@ const lowerToolResultContentItem = Effect.fn("OpenAIResponses.lowerToolResultCon
   return { type: "input_image" as const, image_url: media.dataUrl }
 })
 
-const lowerToolResultOutput = Effect.fn("OpenAIResponses.lowerToolResultOutput")(function* (part: ToolResultPart) {
+const lowerToolResultOutput = Effect.fnUntraced(function* (part: ToolResultPart) {
   // Text/json/error results encode as a plain string, as existing cassettes and providers expect.
   if (part.result.type !== "content") return ProviderShared.toolResultText(part)
   // Preserve the narrowed array element type when compiled through a consumer package.

@@ -101,6 +101,10 @@ function openAppend(file: string, mode?: number) {
  * fd another engine is still holding. Only the engine whose fd's identity
  * still matches -- and whose file is still over the cap -- performs the
  * rename; everyone else just follows along and reopens what is there.
+ *
+ * origami_change (t-wdybz9): only the reopen can throw, and it throws AFTER
+ * `fd` was closed. A caller that catches must not use `fd` again (-1 is what
+ * the file logger keeps then; this function reopens from -1 next time).
  */
 export function rotateIfOwned(file: string, fd: number, maxBytes: number, maxFiles: number, mode?: number): number {
   let held: fsSync.Stats
@@ -114,7 +118,14 @@ export function rotateIfOwned(file: string, fd: number, maxBytes: number, maxFil
   }
   if (held.size < maxBytes) return fd
 
-  const atPath = fsSync.statSync(file, { throwIfNoEntry: false })
+  // A stat that fails for another reason than "not there" (EPERM, EBUSY) means
+  // we cannot prove we own the file: do not rotate, reopen.
+  let atPath: fsSync.Stats | undefined
+  try {
+    atPath = fsSync.statSync(file, { throwIfNoEntry: false })
+  } catch {
+    atPath = undefined
+  }
   const owns = atPath !== undefined && atPath.dev === held.dev && atPath.ino === held.ino && atPath.size >= maxBytes
   try {
     fsSync.closeSync(fd)
@@ -126,8 +137,9 @@ export function rotateIfOwned(file: string, fd: number, maxBytes: number, maxFil
 /**
  * A file logger that rotates `file` by size (finding 23: one 187 MB
  * `origami.log`, appended since 2026-06-25, never rotated). Rotation is
- * checked at flush time (every `batchWindow`, default 1s) rather than on a
- * timer, so a quiet server never rotates and a chatty one rotates promptly.
+ * checked at flush time (`batchWindow` after the first line of a burst,
+ * default 1s) rather than on a timer of its own, so a quiet server never
+ * rotates and a chatty one rotates promptly.
  */
 export function rotatingFileLogger(
   file = path.join(Global.Path.log, "origami.log"),
@@ -148,20 +160,52 @@ export function rotatingFileLogger(
   // Effect defect, not a synchronous throw at layer construction.
   return Effect.gen(function* () {
     let fd = yield* Effect.sync(() => openAppend(file, options.mode))
+    const format = formatter(options.id)
+    // Do not set batchWindow to 0: every line would then arm its own timer.
+    const window = options.batchWindow ?? 1000
 
-    return yield* Logger.batched(formatter(options.id), {
-      // Do not set batchWindow to 0; it causes high idle CPU usage.
-      window: options.batchWindow ?? 1000,
-      flush: (messages) =>
-        Effect.sync(() => {
-          const text = messages.join("\n") + "\n"
-          fd = rotateIfOwned(file, fd, maxBytes, maxFiles, options.mode)
-          try {
-            fsSync.writeSync(fd, text)
-          } catch {
-            // Logging must never crash the process it is trying to explain.
-          }
-        }),
+    // origami_change (t-w2qlop): a flush timer ARMED BY THE FIRST LINE of a
+    // burst, not Effect's `Logger.batched`. That one is `sleep(window) -> flush`
+    // in a `forever` loop, so every engine woke once a second for life, with
+    // nothing to write - the wake-up that kept an idle engine from staying idle.
+    let buffer: string[] = []
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const flush = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+      if (buffer.length === 0) return
+      const text = buffer.join("\n") + "\n"
+      buffer = []
+      // origami_change (t-wdybz9): this runs from a raw timer and from `exit`.
+      // A throw here is an uncaught exception that ends the engine, so the
+      // reopen is caught. It throws after the old fd was closed: the logger
+      // then holds -1, never a closed number the process may have reused for
+      // something else (SQLite, a pipe, a socket). The next flush reopens.
+      try {
+        fd = rotateIfOwned(file, fd, maxBytes, maxFiles, options.mode)
+      } catch {
+        fd = -1
+        return
+      }
+      try {
+        fsSync.writeSync(fd, text)
+      } catch {
+        // Logging must never crash the process it is trying to explain.
+      }
+    }
+    // The write is synchronous, so a pending batch survives `process.exit()`,
+    // which runs `exit` listeners but never an Effect finalizer.
+    process.on("exit", flush)
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        process.off("exit", flush)
+        flush()
+      }),
+    )
+
+    return Logger.make((entry) => {
+      buffer.push(format.log(entry))
+      timer ??= setTimeout(flush, window)
     })
   })
 }

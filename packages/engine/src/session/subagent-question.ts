@@ -1,4 +1,3 @@
-import { AgentBroker } from "@/origami/agent-broker"
 import { renderPeerMessage } from "@/tool/agents"
 import { AgentPost } from "./agent-post"
 import { peerMessageId, peerMessageMetadata } from "./peer-message"
@@ -128,32 +127,27 @@ export interface DeliverInput extends EnvelopeInput {
  * wait is not.
  */
 export async function deliver(input: DeliverInput, deps: AgentPost.PostDeps = {}): Promise<Outcome> {
-  const locate = deps.locate ?? AgentPost.locateSession
   const text = renderSubagentQuestion(input)
   for (const sessionID of input.ancestors) {
     if (!sessionID) continue
-    const entry = await locate(sessionID)
-    if (!entry) continue
-    if (!AgentBroker.isLoopback(entry.httpBase)) continue
     const id = peerMessageId({ from: `subagent:${input.sessionID}`, to: sessionID, text })
-    const posted = await (deps.post ?? AgentPost.postPrompt)({
-      url: AgentPost.promptUrl(entry, sessionID),
-      body: JSON.stringify({
-        parts: [
-          {
-            type: "text",
-            text,
-            metadata: peerMessageMetadata({
-              from: input.label,
-              replyTo: input.sessionID,
-              id,
-              subagent: { label: input.label, requestID: input.requestID, sessionID: input.sessionID },
-            }),
-          },
-        ],
-      }),
+    const body = JSON.stringify({
+      parts: [
+        {
+          type: "text",
+          text,
+          metadata: peerMessageMetadata({
+            from: input.label,
+            replyTo: input.sessionID,
+            id,
+            subagent: { label: input.label, requestID: input.requestID, sessionID: input.sessionID },
+          }),
+        },
+      ],
     })
-    if (posted) return { ok: true, sessionID }
+    // t-w2txb2: a live engine first; a PARKED ancestor chat keeps it in its mailbox.
+    const sent = await AgentPost.send({ sessionID, messageId: id, body }, deps)
+    if (sent.ok) return { ok: true, sessionID }
   }
   return {
     ok: false,

@@ -20,9 +20,11 @@
     open: boolean;
     commands: SlashCommand[];
     onClose: () => void;
+    /** t-xsufto: the chat this palette runs in; the host falls back to its selected chat only without it. */
+    sessionId?: string | null;
   }
 
-  let { open, commands, onClose }: Props = $props();
+  let { open, commands, onClose, sessionId = null }: Props = $props();
 
   const vscode = getVsCodeApi();
 
@@ -44,7 +46,7 @@
 
   function dispatch(cmd: SlashCommand) {
     const stripped = cmd.name.replace(/^\//, '');
-    vscode.postMessage({ type: 'slashCommand', command: stripped, args: '' });
+    vscode.postMessage({ type: 'slashCommand', command: stripped, args: '', sessionId });
     onClose();
   }
 

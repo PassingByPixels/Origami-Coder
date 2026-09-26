@@ -3,6 +3,7 @@ import { ThinkTags } from "@origami/llm/protocols"
 import { Effect, Schema } from "effect"
 import { type LogWarningsFunction, type Warning, type streamText } from "ai"
 import { errorMessage } from "@/util/error"
+import type { EffectBridge } from "@/effect/bridge"
 
 /**
  * One line of prose for an AI SDK warning.
@@ -38,19 +39,26 @@ export function warningMessage(warning: Warning): string {
  * before both `= false` assignments run, so a module-level install would be
  * overwritten by them.
  *
- * `fork` carries the calling turn's fiber context, so a line lands with that
+ * `bridge` carries the calling turn's fiber context, so a line lands with that
  * session's instance and loggers. Provider and model come from the SDK's own
  * arguments rather than the closure, so a line is never wrong about which model
  * warned when two turns overlap.
+ *
+ * The logger stays on the global until the next request replaces it, so it
+ * must hold nothing of the request (t-w2u5vf): it is made here, where the only
+ * captured value is `bridge`, and the caller makes that bridge detached from
+ * its span and its scope (`EffectDetach.detachRun`): the span keeps the turn's
+ * arguments, and so does the scope once a failed request closes it
+ * (t-x3admf).
  *
  * Reading `streamText`'s `result.warnings` instead is not an option: its getter
  * calls `consumeStream()`, which would start draining the stream behind the lazy
  * `fullStream` consumption in llm.ts.
  */
-export function installWarningLogger(fork: (effect: Effect.Effect<void>) => void): void {
+export function installWarningLogger(bridge: EffectBridge.Shape): void {
   const logger: LogWarningsFunction = ({ warnings, provider, model }) => {
     for (const warning of warnings)
-      fork(
+      bridge.fork(
         Effect.logWarning("provider warning", {
           message: warningMessage(warning),
           provider,

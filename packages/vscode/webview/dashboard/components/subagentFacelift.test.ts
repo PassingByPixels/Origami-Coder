@@ -26,13 +26,14 @@ describe('a drawer row is TWO lines, not three', () => {
   // Supersedes t-f9jxl1's three-line contract (SubagentRow.test.ts): the middle
   // line was a run of unlabelled numbers and the model sat alone under it, so a
   // fan-out of six agents cost eighteen lines of a 280px rail.
-  it('the model rides the metadata line, and there is no third line', () => {
+  // t-yyz57i: the model moved again, into the row's tooltip (mockup R3).
+  it('the model is in the tooltip, and there is no third line', () => {
     const { container } = render(SubagentRow, rowProps({
       row: row({ elapsedMs: 125_000, model: 'openrouter/qwen3-coder' }),
     }));
     expect(container.querySelector('.sa-line3')).toBeNull();
     const line2 = container.querySelector('.sa-line2') as HTMLElement;
-    expect(line2.querySelector('.sa-model')?.textContent).toBe('openrouter/qwen3-coder');
+    expect(container.querySelector('.sa-row')?.getAttribute('data-tip')).toContain('openrouter/qwen3-coder');
     expect(line2.querySelector('.sa-age')?.textContent).toBe('2m 05s');
   });
 

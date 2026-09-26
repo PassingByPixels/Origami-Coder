@@ -132,6 +132,51 @@ describe('remote owner lease — the claim', () => {
     expect(stored(store).heartbeatAt).toBe(clock);
   });
 
+  // t-xum9r8: the phone pairing and the desk group link are TWO rids in ONE
+  // window. A single `held` slot beat only the rid claimed last, so the other
+  // record went stale and the two took turns being refused at each restart.
+  it('one window holds and renews the phone rid AND the group rid at the same time', async () => {
+    const store = machineStore();
+    let clock = 1_000;
+    registerOwnerLease(store, 'window-a', { now: () => clock });
+    expect(await claimLease('rid-phone')).toBe(true);
+    expect(await claimLease('rid-group')).toBe(true);
+    for (let i = 0; i < 4; i++) {
+      clock += HEARTBEAT_MS;
+      await leaseHeartbeat();
+    }
+    expect(stored(store, 'rid-phone')).toEqual({ windowId: 'window-a', heartbeatAt: clock });
+    expect(stored(store, 'rid-group')).toEqual({ windowId: 'window-a', heartbeatAt: clock });
+
+    // A second window at this moment is refused on BOTH, not on one of them.
+    resetOwnerLease();
+    registerOwnerLease(store, 'window-b', { now: () => clock + 1_000 });
+    expect(await claimLease('rid-phone')).toBe(false);
+    expect(await claimLease('rid-group')).toBe(false);
+  });
+
+  it('a refused claim is retried on the heartbeat and granted once the record expires', async () => {
+    const store = machineStore();
+    let clock = 1_000;
+    registerOwnerLease(store, 'window-a', { now: () => clock });
+    await claimLease(RID);
+    // Restart: window A's release is lost; B activates 1 s after A's last beat.
+    resetOwnerLease();
+    clock += 1_000;
+    registerOwnerLease(store, 'window-b', { now: () => clock });
+    let freed = 0;
+    expect(await claimLease(RID, () => freed++)).toBe(false);
+    clock += HEARTBEAT_MS;
+    await leaseHeartbeat();
+    expect(freed).toBe(0); // A's record is still live: keep waiting
+    clock += STALE_MS;
+    await leaseHeartbeat();
+    expect(freed).toBe(1);
+    expect(await claimLease(RID)).toBe(true);
+    await leaseHeartbeat();
+    expect(freed).toBe(1); // granted: the wait is over, no second call
+  });
+
   it('a window with no store — Remote never activated — never claims another window owns it', () => {
     expect(ownedElsewhere(RID)).toBe(false);
     expect(ownedElsewhere(null)).toBe(false);

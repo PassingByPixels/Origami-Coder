@@ -201,7 +201,24 @@ describe('Kill button — reachable on a COLLAPSED running bash card', () => {
   it('never offers Kill on a command that already finished', () => {
     render(ToolCard, runningCard({ status: 'completed', shell: { exit: 0 }, startedAt: Date.now() - 600_000 }));
     expect(screen.queryByRole('button', { name: 'Kill' })).toBeNull();
-    expect(screen.getByText(/600s elapsed/)).toBeInTheDocument();
+    // t-vikozs: a card mounted ALREADY finished never saw the end, so "now - start"
+    // is not the duration: it grew on every remount. It states no elapsed at all.
+    expect(screen.queryByText(/s elapsed/)).toBeNull();
+  });
+
+  // t-vikozs: a completed bash card's elapsed kept counting.
+  it('a card that watches its command finish freezes elapsed at completion', async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(ToolCard, runningCard({ startedAt: Date.now() }));
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(screen.getByText('5s elapsed')).toBeInTheDocument();
+      await rerender(runningCard({ startedAt: Date.now() - 5_000, status: 'completed', shell: { exit: 0 } }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(screen.getByText('5s elapsed')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never offers Kill on a non-shell tool, however long it has been going', () => {

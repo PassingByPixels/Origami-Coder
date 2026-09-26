@@ -66,7 +66,7 @@
          alongside the trunk steps that ran while it was still working, and
          merges where it really returned. No merge is drawn for a sub-agent
          that never came back — that open end is the fact. -->
-    {#each branches as b (b.first)}<LabyrinthRail rail={b} dim={fade.branches.has(b.first)} />{/each}
+    {#each branches as b, i (i)}<LabyrinthRail rail={b} dim={fade.branches.has(b.first)} />{/each}<!-- by position: a nested spawn opens two spans on one step (t-vikozs) -->
   {:else if mode === 'flight'}
     <line class="spine" x1="16" y1={FLIGHT_BASE_Y} x2={box.width - 16} y2={FLIGHT_BASE_Y} />
     {#each frame.lanes as lane (lane.label)}

@@ -11,7 +11,10 @@
 // VS Code's really is.
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  HEARTBEAT_MS,
+  STALE_MS,
   claimLease,
+  leaseHeartbeat,
   registerOwnerLease,
   releaseLease,
   resetOwnerLease,
@@ -83,7 +86,7 @@ class FakeSocket implements RemoteSocket {
 
 /** A window, wired the way activate.ts wires one: the same secrets, the same
  *  lease store, and `claim` on the path to every socket. */
-function openWindow(store: LeaseStore, secrets: SecretStore, id: string, gated = true): Window {
+function openWindow(store: LeaseStore, secrets: SecretStore, id: string, gated = true, now?: () => number): Window {
   const urls: string[] = [];
   const sockets: FakeSocket[] = [];
   const statuses: string[] = [];
@@ -99,7 +102,7 @@ function openWindow(store: LeaseStore, secrets: SecretStore, id: string, gated =
     setTimer: () => 0,
     clearTimer: () => {},
   };
-  registerOwnerLease(store, id);
+  registerOwnerLease(store, id, now ? { now } : {});
   const controller = new RemoteController({
     config: () => ({ enabled: true, relayUrl: 'wss://relay.test' }),
     secrets,
@@ -109,7 +112,7 @@ function openWindow(store: LeaseStore, secrets: SecretStore, id: string, gated =
       statuses.push(text);
       noteRemoteStatus(text);
     },
-    ...(gated ? { claim: (rid: string) => claimLease(rid) } : {}),
+    ...(gated ? { claim: claimLease } : {}), // as activate.ts wires it (t-xum9r8: the retry rides along)
   });
   registerRemoteControl({ target: () => controller, enabled: () => true });
   return { controller, urls, sockets, statuses };
@@ -188,6 +191,33 @@ describe('two windows, one pairing', () => {
     await b.controller.restore();
     expect(b.urls).toHaveLength(1);
     expect(remoteSnapshot().connection).toBe('connecting');
+  });
+
+  // t-xum9r8: the EXTENSION-HOST RESTART. The new host activates before the old
+  // one exits and the old one's release is lost, so the new window's claim finds
+  // a live record and is refused. With both rids beaten (the lease's set), the
+  // phone's record is ALWAYS live at that moment, so a refusal that never asks
+  // again would lose the phone at every restart.
+  it('after a restart with the release lost, the phone reconnects on the heartbeat once the old record expires', async () => {
+    const store = machineStore();
+    const secrets = pairedSecrets();
+    let clock = 1_000_000;
+    const a = openWindow(store, secrets, 'old-window', true, () => clock);
+    await a.controller.restore();
+    expect(a.urls).toHaveLength(1);
+
+    clock += 1_000; // no releaseLease(): the channel was already closed
+    const b = openWindow(store, secrets, 'new-window', true, () => clock);
+    await b.controller.restore();
+    expect(b.urls).toEqual([]);
+    clock += HEARTBEAT_MS;
+    await leaseHeartbeat();
+    expect(b.urls).toEqual([]); // still live: keep waiting
+
+    clock += STALE_MS;
+    await leaseHeartbeat();
+    for (let i = 0; i < 20 && b.urls.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(b.urls).toEqual(a.urls);
   });
 
   // MUTATION PROOF for the gate itself. Build the second window WITHOUT the

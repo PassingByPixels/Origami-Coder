@@ -306,6 +306,47 @@ describe("plugin.openai.ws-pool", () => {
     fetch.close()
   })
 
+  // t-w2qlop: the prune interval was armed at creation and ran for the life of
+  // the engine, so an engine that once used ChatGPT OAuth woke every 60 s with an
+  // empty pool. It runs only while an entry exists that it could remove.
+  test("arms the prune interval only while the pool holds a prunable socket", async () => {
+    const idleTimeout = 23
+    const realSet = globalThis.setInterval
+    const realClear = globalThis.clearInterval
+    const live = new Set<unknown>()
+    globalThis.setInterval = ((fn: () => void, ms?: number) => {
+      const handle = realSet(fn, ms)
+      if (ms === idleTimeout) live.add(handle)
+      return handle
+    }) as typeof setInterval
+    globalThis.clearInterval = ((handle?: Parameters<typeof clearInterval>[0]) => {
+      live.delete(handle)
+      return realClear(handle)
+    }) as typeof clearInterval
+    try {
+      let closed = 0
+      await using server = await createWebSocketServer((socket) => {
+        socket.once("close", () => closed++)
+        socket.once("message", () => {
+          socket.send(JSON.stringify({ type: "response.completed", response: { id: "resp_1" } }))
+        })
+      })
+      const fetch = OpenAIWebSocketPool.createWebSocketFetch({ url: server.url, idleTimeout })
+      expect(live.size).toBe(0)
+
+      const first = await fetch(server.url, streamRequest())
+      expect(await first.text()).toContain("data: [DONE]")
+      expect(live.size).toBe(1)
+
+      await waitFor(() => closed === 1, "idle websocket was not pruned")
+      await waitFor(() => live.size === 0, "the prune interval kept running with an empty pool")
+      fetch.close()
+    } finally {
+      globalThis.setInterval = realSet
+      globalThis.clearInterval = realClear
+    }
+  })
+
   test("invalidates but does not reuse a socket after terminal failure frames", async () => {
     let connections = 0
     await using server = await createWebSocketServer((socket) => {

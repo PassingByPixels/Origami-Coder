@@ -131,3 +131,25 @@ describe('AcpClient.connect never waits for Claude Code discovery (t-vd9s7z)', (
     expect(lastSpawn()[2].env.ORIGAMI_CLAUDE_CLI).toBeUndefined();
   });
 });
+
+describe('the spawn env of a warm spare and of every chat engine (t-w2u2ki)', () => {
+  beforeEach(() => { spawnMock.mockClear(); });
+
+  it('a spare is spawned with ORIGAMI_SPARE=1; a chat engine is not', async () => {
+    await new AcpClient(noopHandlers()).connect('/tmp/ws', false, { ORIGAMI_SPARE: '1' });
+    expect(lastSpawn()[2].env.ORIGAMI_SPARE).toBe('1');
+    await new AcpClient(noopHandlers()).start('/tmp/ws');
+    expect(lastSpawn()[2].env.ORIGAMI_SPARE).toBeUndefined();
+  });
+
+  it('every engine gets the host time zone as TZ, so a spare and a fresh engine print the same date', async () => {
+    const saved = process.env.TZ;
+    delete process.env.TZ;
+    try {
+      await new AcpClient(noopHandlers()).start('/tmp/ws');
+      expect(lastSpawn()[2].env.TZ).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    } finally {
+      if (saved !== undefined) process.env.TZ = saved;
+    }
+  });
+});

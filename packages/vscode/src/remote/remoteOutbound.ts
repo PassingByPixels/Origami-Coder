@@ -48,6 +48,8 @@ export interface RemoteOutboundOptions {
   clock: OutboundClock;
   flushMs?: number;
   flushBytes?: number;
+  /** t-w2qv3o: `focus` moved (the elastic tracker: a chat on the phone is active). */
+  onFocus?: (focus: string | null) => void;
 }
 
 /** The DESKTOP socket's outbound shaper; what it knows about the phone is dropped on hydration. */
@@ -70,7 +72,7 @@ export class RemoteOutbound {
   }
 
   /** A hydration is a page with NOTHING. Called before the burst. */
-  public forget(): void { this.lastModelOptions = ''; this.confirmed = null; this.adoptNext = false; }
+  public forget(): void { this.lastModelOptions = ''; this.adoptNext = false; this.moveFocus(() => { this.confirmed = null; }); }
 
   /** Every message the PHONE sent, read for one fact: a verb naming a session
    *  names the chat the owner is acting in. */
@@ -81,7 +83,7 @@ export class RemoteOutbound {
     const sessionId = field(m, 'sessionId');
     if (!sessionId) return;
     if (type !== 'closeSession') this.setFocus(sessionId);
-    else if (this.confirmed === sessionId) this.confirmed = null;
+    else if (this.confirmed === sessionId) this.moveFocus(() => { this.confirmed = null; });
   }
 
   /** Host -> phone. Resolves on the wire, or at once if buffered or dropped. */
@@ -123,7 +125,7 @@ export class RemoteOutbound {
   /** The host messages mountPick.ts mounts from, mirrored here. */
   private readFocusFrom(type: string, id: string | undefined): void {
     if (!id) return;
-    if (type === 'restoreActiveSession') this.hostActive = id;
+    if (type === 'restoreActiveSession') this.moveFocus(() => { this.hostActive = id; });
     else if (type === 'sessionCreated' && this.adoptNext) {
       this.adoptNext = false;
       this.setFocus(id);
@@ -134,7 +136,14 @@ export class RemoteOutbound {
     if (this.confirmed === sessionId) return;
     // Flush BEFORE the switch, or the old chat's last words hit the new chat's focus.
     void this.flushAll();
-    this.confirmed = sessionId;
+    this.moveFocus(() => { this.confirmed = sessionId; });
+  }
+
+  /** One focus write; `onFocus` hears only a real move. */
+  private moveFocus(write: () => void): void {
+    const was = this.focus;
+    write();
+    if (this.focus !== was) this.opts.onFocus?.(this.focus);
   }
 
   private buffer(type: string, streamField: string | null, sessionId: string, m: Record<string, unknown>): Promise<void> {

@@ -41,7 +41,7 @@ export async function promptCapturePayload(
  *  client's currentSessionId. An absent id is the ordinary case, not a fault; the caller separates
  *  "never took a turn" from "evicted" since only it knows which applies. */
 export async function promptCaptureForSession(
-  client: PromptCaptureSource | null | undefined,
+  client: Pick<PromptCaptureSource, 'extMethod'> | null | undefined, // t-w2qv3o: the id is named here, so any engine client will do
   sessionId: string | undefined,
 ): Promise<PromptCapturePayload> {
   if (!client) return { capture: null, error: NO_SESSION };

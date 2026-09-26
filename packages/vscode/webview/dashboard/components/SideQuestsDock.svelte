@@ -81,6 +81,7 @@
     onToggle();
   }}
   onOpen={(id) => (openId = id)}
+  selectedId={openId}
 />
 {#if selected}
   <SideQuestPopup

@@ -18,6 +18,7 @@ export type CacheCause =
   | 'cold'
   | 'model'
   | 'compaction'
+  | 'stopped'
   | 'idle'
   | 'system'
   | 'tools'
@@ -33,6 +34,7 @@ export interface CacheFacts {
   idleMs?: number;
   ttlSeconds?: number;
   warmed?: boolean;
+  stopped?: Array<'system' | 'tools' | 'history'>;
 }
 
 /** The part of a step the usage rules read. `LayoutStep` satisfies it. */

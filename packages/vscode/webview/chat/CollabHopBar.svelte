@@ -73,7 +73,7 @@
        question from opposite sides. Its rules are its own — see the component.
        ABSENT in a COUNCIL: a council round dispatches every member at once by
        construction, so "how many turns run at once" has no answer to set
-       there, and drawing the control anyway is what sent Passing asking what
+       there, and drawing the control anyway is what sent the owner asking what
        it was for. Gated on the RESOLVED flavor from the poll, same as
        CollabFlavorControl below — never shown or hidden ahead of the engine. -->
   {#if flavor !== 'council'}

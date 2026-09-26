@@ -95,7 +95,7 @@ describe('rule 3 — order, History, search', () => {
       'Coder: Cron sweep for the board', 'Element: Agent message', 'Element: Peer message',
       '|History|',
       'Spark: DFlash acceptance sweep', 'iOS: TestFlight notes', 'Aetheron: snow shader pass',
-      'Coder: relay heartbeat bug', 'Relay: phone page CSP', 'WH3: Shenzoo unit table',
+      'Coder: relay heartbeat bug', 'Relay: phone page CSP', 'WH3: dwarf unit table',
     ]);
   });
   it('search filters both parts, says how many match, and Esc clears it', async () => {

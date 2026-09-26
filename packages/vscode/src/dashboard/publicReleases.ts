@@ -14,4 +14,4 @@
 // To see the pop-up before release: command palette, "Origami: Preview What's New".
 //
 // Oldest first. 0.4.155 was the last version users received before 0.4.175 (owner, 2026-09-24).
-export const PUBLIC_RELEASES: readonly string[] = ['0.4.155', '0.4.175'];
+export const PUBLIC_RELEASES: readonly string[] = ['0.4.155', '0.4.175', '0.4.184'];

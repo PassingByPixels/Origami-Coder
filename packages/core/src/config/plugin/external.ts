@@ -9,7 +9,7 @@ import { Config } from "../../config"
 import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
 import { Npm } from "../../npm"
-import { define } from "../../plugin/internal"
+import { define } from "../../plugin/define"
 import { PluginPromise } from "../../plugin/promise"
 
 const PluginModule = Schema.Struct({

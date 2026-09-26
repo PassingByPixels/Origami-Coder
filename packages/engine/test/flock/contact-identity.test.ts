@@ -54,31 +54,31 @@ const raw = (directory: string) => JSON.parse(fs.readFileSync(fileOf(directory),
 describe("the owner's own display name and icon", () => {
   test("round trip through flock.json, and the handle does not follow the name", () => {
     const directory = tmp()
-    const before = FlockStore.Store.open({ directory, name: "passing" })
+    const before = FlockStore.Store.open({ directory, name: "jane" })
     const handle = before.identity().handle
 
     // A fresh identity already shows SOMETHING: there is no "no icon" state.
     expect(before.identity().icon).toBe(FlockIdentity.ICON_DEFAULT)
 
-    before.setIdentity({ name: "Passing by Pixels", icon: "fox" })
+    before.setIdentity({ name: "Jane Doe", icon: "fox" })
 
     // Re-opened from disk, not read back off the object that wrote it.
     const after = FlockStore.Store.open({ directory })
-    expect(after.identity().name).toBe("Passing by Pixels")
+    expect(after.identity().name).toBe("Jane Doe")
     expect(after.identity().icon).toBe("fox")
     // THE POINT OF THE WHOLE DESIGN. Every contact stored `handle` when they
     // accepted the invite and matches on it; a rename that moved it would make
     // this Origami a stranger to all of them.
     expect(after.identity().handle).toBe(handle)
-    expect(FlockIdentity.handleName(after.identity().handle, "")).toBe("passing")
+    expect(FlockIdentity.handleName(after.identity().handle, "")).toBe("jane")
   })
 
   test("either field alone, and a blank name is refused rather than stored", () => {
     const directory = tmp()
-    const store = FlockStore.Store.open({ directory, name: "passing" })
+    const store = FlockStore.Store.open({ directory, name: "jane" })
 
     store.setIdentity({ icon: "wolf" })
-    expect(store.identity().name).toBe("passing")
+    expect(store.identity().name).toBe("jane")
     expect(store.identity().icon).toBe("wolf")
 
     store.setIdentity({ name: "Dana" })
@@ -93,7 +93,7 @@ describe("the owner's own display name and icon", () => {
 
   test("an icon that is not a short id is refused, wherever it came from", () => {
     const directory = tmp()
-    const store = FlockStore.Store.open({ directory, name: "passing" })
+    const store = FlockStore.Store.open({ directory, name: "jane" })
 
     // Each of these is a way somebody else's machine could try to decide what
     // this one fetches or renders. They all become the brand mark instead.
@@ -114,7 +114,7 @@ describe("the owner's own display name and icon", () => {
 describe("a flock.json written before icons existed", () => {
   test("reads as the default and is migrated in place, keeping the handle it had", () => {
     const directory = tmp()
-    const seed = FlockStore.Store.open({ directory, name: "passing" })
+    const seed = FlockStore.Store.open({ directory, name: "jane" })
     const handle = seed.identity().handle
 
     // Strip the field back out, which is exactly what an older build left.
@@ -133,7 +133,7 @@ describe("a flock.json written before icons existed", () => {
 
   test("a renamed owner is not re-handled by the fingerprint migration", () => {
     const directory = tmp()
-    const store = FlockStore.Store.open({ directory, name: "passing" })
+    const store = FlockStore.Store.open({ directory, name: "jane" })
     const handle = store.identity().handle
     store.setIdentity({ name: "Somebody Else" })
 
@@ -149,7 +149,7 @@ describe("an invite", () => {
   test("carries the sender's name and icon, and accepting one stores both", () => {
     const sender = FlockStore.Store.open({ directory: tmp(), name: "dana" })
     sender.setIdentity({ name: "Dana at the garage", icon: "deer" })
-    const receiver = FlockStore.Store.open({ directory: tmp(), name: "passing" })
+    const receiver = FlockStore.Store.open({ directory: tmp(), name: "jane" })
 
     const contact = receiver.accept(sender.invite().invite)
 
@@ -196,7 +196,7 @@ describe("an invite", () => {
 
   test("that names no icon at all is accepted, and the contact shows the default", () => {
     const sender = FlockStore.Store.open({ directory: tmp(), name: "dana" })
-    const receiver = FlockStore.Store.open({ directory: tmp(), name: "passing" })
+    const receiver = FlockStore.Store.open({ directory: tmp(), name: "jane" })
 
     expect(receiver.accept(sender.invite().invite).icon).toBe(FlockIdentity.ICON_DEFAULT)
   })
@@ -223,7 +223,7 @@ const echo = (store: FlockStore.Store): FlockPeer.Serve => ({
     const identity = store.identity()
     return FlockCard.build({
       identity,
-      specialties: ["MOT rules"],
+      specialties: ["tax rules"],
       policy: FlockPolicy.resolve({ config: { model: "test/fake", dailyBudgetTokens: 200_000 } }),
       signPrivateKey: identity.sign.privateKey,
     })
@@ -233,7 +233,7 @@ const echo = (store: FlockStore.Store): FlockPeer.Serve => ({
 describe("a contact who renames themselves", () => {
   test("their new name and icon arrive on their next signed frame, and the row keeps its handle", async () => {
     const transport = new FlockTransport.LoopbackTransport()
-    const ownerStore = FlockStore.Store.open({ directory: tmp(), name: "passing" })
+    const ownerStore = FlockStore.Store.open({ directory: tmp(), name: "jane" })
     const danaStore = FlockStore.Store.open({ directory: tmp(), name: "dana" })
     ownerStore.accept(danaStore.invite().invite)
     danaStore.accept(ownerStore.invite().invite)
@@ -265,7 +265,7 @@ describe("a contact who renames themselves", () => {
   test("a frame whose signature does not check changes NOTHING", async () => {
     const transport = new FlockTransport.LoopbackTransport()
     const dana = FlockStore.Store.open({ directory: tmp(), name: "dana" })
-    const owner = FlockStore.Store.open({ directory: tmp(), name: "passing" })
+    const owner = FlockStore.Store.open({ directory: tmp(), name: "jane" })
     owner.accept(dana.invite().invite)
     const peer = new FlockPeer.Peer(owner, transport, echo(owner))
     peers.push(peer)
@@ -313,7 +313,7 @@ describe("a contact who renames themselves", () => {
   test("a card fetch carries it too, and a card that does not verify is refused whole", async () => {
     const transport = new FlockTransport.LoopbackTransport()
     const danaStore = FlockStore.Store.open({ directory: tmp(), name: "dana" })
-    const ownerStore = FlockStore.Store.open({ directory: tmp(), name: "passing" })
+    const ownerStore = FlockStore.Store.open({ directory: tmp(), name: "jane" })
     ownerStore.accept(danaStore.invite().invite)
     danaStore.accept(ownerStore.invite().invite)
     const dana = new FlockPeer.Peer(danaStore, transport, echo(danaStore))

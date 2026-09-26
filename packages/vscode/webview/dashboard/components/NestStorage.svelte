@@ -46,6 +46,9 @@
   let tabs = $derived(solo ? [self ?? { id: '', name: selfName, self: true, online: true, motherBase: false, os: '' as const, lastSeen: 0 }] : desks);
   let current = $derived(tabs.find((d) => d.id === sel) ?? tabs.find((d) => d.self) ?? tabs[0]!);
   let kind = $derived(!solo && current.motherBase ? 'home' : current.self ? 'self' : 'other');
+  // t-xum9go: Held sizes are this desk's own scan; show them whenever current IS
+  // this desk, home or not ("home" only fixes the Keep column to "Everything").
+  let isSelf = $derived(current.self);
   let dirty = $derived(stored ? dirtyWindows(stored, chosen) : {});
   let nDirty = $derived(Object.keys(dirty).length);
 
@@ -97,7 +100,7 @@
     return () => { window.removeEventListener('message', onMsg); clock.answered(); };
   });
 
-  const skeleton = $derived(measuring && kind === 'self' && !stats);
+  const skeleton = $derived(measuring && isSelf && !stats);
   const total = $derived(stats ? totalBytes(stats) : 0);
 </script>
 
@@ -115,24 +118,24 @@
         <button class="mtab" class:is-sel={d.id === current.id} role="tab" aria-selected={d.id === current.id} onclick={() => (sel = d.id)}>
           <span class="dot" class:off={!d.online}></span>
           <span class="mtab-main">
-            <span class="mtab-name">{deskLabel(d)}{#if !solo && d.motherBase}<span class="home-mark" use:tip={HOME_WORD}><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h8V6.5"/></svg></span>{/if}{#if d.self}<span class="muted"> · this desk</span>{/if}</span>
+            <span class="mtab-name">{deskLabel(d)}{#if !solo && d.motherBase}<span class="home-mark" use:tip={HOME_WORD}><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 7.5 8 3l5.5 4.5M4 6.5V13h8V6.5"/></svg></span>{/if}{#if d.self}<span class="muted">{' · this desk'}</span>{/if}</span>
             <span class="mtab-size">{#if d.self && skeleton}<span class="skel"></span>{:else if d.self && stats}{formatBytes(total)}{:else}—{/if}</span>
           </span>
         </button>
       {/each}
     </div>
     <div class="stack" aria-hidden="true">
-      {#each CLASSES as c (c.key)}<i class={`sw-${c.key}`} style:flex={kind === 'self' && stats && total ? String(stats.classes[c.key] / total) : '1'}></i>{/each}
+      {#each CLASSES as c (c.key)}<i class={`sw-${c.key}`} style:flex={isSelf && stats && total ? String(stats.classes[c.key] / total) : '1'}></i>{/each}
     </div>
     <div class="classes">
       <span class="ch">Class</span><span class="ch right">Held</span><span class="ch right">Keep</span>
       {#each CLASSES as c (c.key)}
         {@const isDirty = c.key !== 'journal' && c.key in dirty}
         <span class="cl" class:is-dirty={isDirty}><span class={`swatch sw-${c.key}`}></span><span>{c.label}</span></span>
-        <span class="cs">{#if skeleton}<span class="skel"></span>{:else if kind === 'self' && stats}{formatBytes(stats.classes[c.key])}{:else}—{/if}</span>
+        <span class="cs">{#if skeleton}<span class="skel"></span>{:else if isSelf && stats}{formatBytes(stats.classes[c.key])}{:else}—{/if}</span>
         <span class="ck">
           {#if c.key === 'journal'}
-            {#if kind === 'self' && stats}<span class="pill" class:ok={stats.journalCompact} class:warn={!stats.journalCompact}
+            {#if isSelf && stats}<span class="pill" class:ok={stats.journalCompact} class:warn={!stats.journalCompact}
               use:tip={`${stats.perPart.toFixed(1)} events per part. ` + (stats.journalCompact ? 'The journal is the sync base; it follows the chats window.' : 'Every streamed word is a full copy of the part. Compacting keeps one event per part.')}>{stats.journalCompact ? 'compact' : 'not compact'}</span>{/if}
             <span class="fixed">follows chats</span>
           {:else if kind === 'home'}<span class="fixed">Everything</span>
@@ -153,7 +156,8 @@
     {:else if kind === 'home'}
       <p class="foot">{deskLabel(current)} is the {HOME_WORD}, so it keeps every class in full. To change this, choose another {HOME_WORD} in Desks.</p>
     {:else if kind === 'other'}
-      <p class="foot">Set on {deskLabel(current)}. Its figures arrive with the nest index.</p>
+      <!-- t-xum9go: no verb sends another desk's figures over the nest wire. -->
+      <p class="foot">Set on {deskLabel(current)}. Sizes are not shared between desks; open Storage on {deskLabel(current)} to see them.</p>
     {:else if confirming}
       <div class="pop" role="dialog" aria-label="Apply the new windows">
         <div class="pop-title">Remove {frees === null ? 'the older content' : formatBytes(frees)} from {deskLabel(current)}?</div>

@@ -8,7 +8,9 @@
 // reads (packages/vscode/src/claudeCode/childFailure.ts).
 //
 // FAKE_SCENARIO points at a JSON file:
-//   { lines: [...], second?: { afterMs, lines }, replayBad?, keepMcp?, models?, version?, auth? }
+//   { lines: [...], second?: { afterMs, lines }, replayBad?, keepMcp?, models?, version?, auth?, rejectDisabled? }
+// rejectDisabled (t-ysudw8): --model values that answer thinking {type: "disabled"} with the
+// API's own 400, as Fable 5.1 and Opus 5.5 did in owner UAT of 0.4.180.
 // A line `{ "__sleep": ms }` pauses.
 import { appendFileSync, existsSync, readFileSync, writeFileSync, writeSync } from "node:fs"
 import { spawn } from "node:child_process"
@@ -126,6 +128,23 @@ async function main() {
       out({ type: "result", subtype: "success", is_error: false, num_turns: scenario.replayBad ? 1 : 0, result: "" })
   }
   if (!scenario.lines) return
+  if (Array.isArray(scenario.rejectDisabled) && scenario.rejectDisabled.includes(flag("--model"))) {
+    const settings = flag("--settings")
+    const env = settings ? (JSON.parse(readFileSync(settings, "utf8")).env ?? {}) : {}
+    const extra = env.CLAUDE_CODE_EXTRA_BODY ? JSON.parse(env.CLAUDE_CODE_EXTRA_BODY) : {}
+    if (extra.thinking?.type === "disabled") {
+      upstream("first")
+      out({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 400,
+        result:
+          'API Error: 400 "thinking.type.disabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.',
+      })
+      process.exit(1)
+    }
+  }
   upstream("first")
   emit(scenario.lines)
   if (scenario.second) {

@@ -16,16 +16,18 @@
   import ToolRunGroup from './ToolRunGroup.svelte';
   import MessageRow from './MessageRow.svelte';
   import { tip } from '../../shared/warmTip';
-  import TodoStrip from './TodoStrip.svelte';
+  import TodoSummaryRow from './TodoSummaryRow.svelte';
   import ThoughtPill from './ThoughtPill.svelte';
   import PeerMessageRow from './PeerMessageRow.svelte';
   import SystemAlertRow from './SystemAlertRow.svelte';
-  import { engineAlert } from '../panes/engineNotice';
+  import { engineAlert } from '../panes/engineNotice'; import { copy } from '../panes/flockCopy'; // t-x3a89j: the engine card's Copy details
   import { getVsCodeApi } from '../../shared/vscodeApi';
   import VerdictRow from './VerdictRow.svelte';
   import SecondOpinionCard from './SecondOpinionCard.svelte';
   import FocusGapRow from './FocusGap.svelte';
-  import CraneMark from '../../shared/CraneMark.svelte';
+  import CompactionMarker from './CompactionMarker.svelte';
+  import ConnectedRow from './ConnectedRow.svelte';
+  import { connectedSessionId } from './connectedLine';
   import { isThoughtOpen, withThoughtOpen } from '../panes/thoughtOpenState';
   import { foldForFocus, isFocusGap } from './focusGaps';
   import { groupToolRuns } from './toolRuns';
@@ -141,8 +143,9 @@
   {:else if msg.kind === 'todoSummary' && msg.summaryTodos}
     <!-- The collapsed task-list snapshot left after the overlay closes. `interactive`
          makes its header a toggle, so the finished one-liner can be re-opened. -->
+    <!-- t-yyz5yk (Round 8 I): drawn as a todo ROW (TodoSummaryRow.svelte). -->
     <div class="todo-summary-msg">
-      <TodoStrip todos={msg.summaryTodos} source="" interactive />
+      <TodoSummaryRow todos={msg.summaryTodos} />
     </div>
   {:else if msg.kind === 'thought'}
     <!-- Reasoning-model thoughts. Open state is user-owned, so a manual expand survives. -->
@@ -154,20 +157,8 @@
       onToggle={(v: boolean) => onThoughtOpenIds(withThoughtOpen(openThoughtIds, msg.id, v))}
     />
   {:else if msg.kind === 'compacted'}
-    <!-- /compact result. A collapsed native <details> keeps the carried-forward summary
-         out of the transcript but available on demand. Reuses the thought-block styling. -->
-    <details class="compaction-block" class:live={msg.compacting}>
-      <summary class="compaction-summary">
-        <span class="compaction-crane" aria-hidden="true"><CraneMark size={13} /></span>
-        {#if msg.compacting}
-          <span class="compaction-title">Compacting context…</span>
-        {:else}
-          <span class="compaction-title">Compaction Completed</span>
-          <span class="compaction-sub">— frees space on your next message</span>
-        {/if}
-      </summary>
-      <pre class="compaction-text">{msg.text || (msg.compacting ? '' : '(nothing beyond the recent turns needed carrying forward)')}</pre>
-    </details>
+    <!-- /compact result: CompactionMarker.svelte (t-yyz5yk, Round 8 A). -->
+    <CompactionMarker text={msg.text} compacting={msg.compacting} />
   {:else if msg.kind === 'streamDrop' && msg.streamDrop}
     <!-- The ENGINE dropped a stream. NOT a MessageRow: this is the system
          speaking, so the agent's name stays off it (t-q90gj9). -->
@@ -178,7 +169,8 @@
   {:else if msg.kind === 'engine' && msg.engine}
     <!-- This chat's OWN engine is starting, failed or stopped: the same card (engineNotice.ts). -->
     {@const alert = engineAlert(msg.engine)}
-    <SystemAlertRow {alert} onRetry={readOnly || !alert.retry ? undefined : () => getVsCodeApi().postMessage({ type: 'engineRetry', sessionId })} />
+    <SystemAlertRow {alert} onRetry={readOnly || !alert.retry ? undefined : () => getVsCodeApi().postMessage({ type: 'engineRetry', sessionId })}
+      onCopy={readOnly || alert.details === undefined ? undefined : () => copy(alert.details ?? '')} onOpenLog={readOnly || alert.details === undefined ? undefined : () => getVsCodeApi().postMessage({ type: 'openEngineLog' })} />
   {:else if msg.kind === 'peer'}
     <!-- NOT a MessageRow: the badge + provenance are the whole point. -->
     <PeerMessageRow from={msg.label} replyTo={msg.peerReplyTo || ''} text={msg.text} timestamp={msg.timestamp} flock={msg.peerFlock} subagent={msg.peerSubagent} />
@@ -198,6 +190,9 @@
         {/if}
       </div>
     {/if}
+  {:else if msg.kind === 'system' && connectedSessionId(msg.text)}
+    <!-- t-yyz5yk (Round 8 E): the host's "session is up" line as a handshake row. -->
+    <ConnectedRow sessionId={connectedSessionId(msg.text) ?? ''} />
   {:else}
     <MessageRow kind={msg.kind} label={msg.label} text={msg.text} images={msg.images} timestamp={msg.timestamp} tokensAtTurn={msg.tokensAtTurn} tokensThisTurn={msg.tokensThisTurn} ctxPctAtTurn={msg.ctxPctAtTurn} onImageClick={onImageClick} />
   {/if}
@@ -208,19 +203,6 @@
   /* The per-turn verdict row's rules left WITH its markup (VerdictRow.svelte) —
      Svelte scopes <style> per component, so a rule kept here would have stopped
      matching silently. The same is true of the second-opinion card. */
-  /* /compact status row. Flitters into the transcript as a compaction event;
-     the Origami crane pulses while the turn is live, then settles. Its collapsed
-     body used to borrow .thought-text; that rule left with the pill, so the
-     block carries its own copy rather than reaching into another component. */
-  .compaction-text {
-    margin: 0;
-    padding: 2px 12px 8px 20px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: var(--vscode-editor-font-family, monospace);
-    color: var(--og-text-muted);
-    line-height: 1.5;
-  }
   /* Rewind affordance — a hover-reveal control under each agent turn. Kept
      unobtrusive (transparent, dim) so it never competes with the transcript;
      warms to a warning tint on hover because it's a destructive-ish action. */
@@ -242,57 +224,8 @@
   .agent-row:hover .rewind-btn { opacity: 0.65; }
   .rewind-btn:hover { opacity: 1; color: var(--og-warning); border-color: var(--og-warning); }
   .rewind-btn:focus-visible { opacity: 1; outline: 1px solid var(--og-chat); outline-offset: 1px; }
-  .compaction-block {
-    margin: 6px 0;
-    border-left: 3px solid var(--og-crane);
-    border-radius: 4px;
-    background: var(--og-surface);
-    font-size: 11px;
-    opacity: 0.92;
-    animation: compaction-flitter 0.34s ease both;
-  }
-  @keyframes compaction-flitter {
-    from { opacity: 0; transform: translateY(-4px); }
-    to { opacity: 0.92; transform: translateY(0); }
-  }
-  .compaction-summary {
-    cursor: pointer;
-    padding: 5px 8px;
-    color: var(--og-text-muted);
-    user-select: none;
-    list-style: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .compaction-summary::-webkit-details-marker { display: none; }
-  .compaction-summary::before {
-    content: '\25B8'; /* chevron, rotates when open */
-    display: inline-block;
-    transition: transform 0.12s ease;
-    color: var(--og-text-muted);
-  }
-  .compaction-block[open] .compaction-summary::before { transform: rotate(90deg); }
-  .compaction-crane {
-    display: inline-flex;
-    color: var(--og-crane);
-  }
-  .compaction-block.live .compaction-crane { animation: compaction-pulse 1s ease-in-out infinite; }
-  @keyframes compaction-pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 1; }
-  }
-  .compaction-title { color: var(--og-text); font-weight: 500; }
-  .compaction-block.live .compaction-title { color: var(--og-crane); }
-  .compaction-sub { color: var(--og-text-muted); font-style: italic; }
-  /* The collapsed snapshot left inline in the transcript after the overlay
-     closes — TodoStrip self-collapses to a one-liner when all done. Drop
-     its sticky so it scrolls with the history. */
+  /* The todo snapshot left inline in the transcript (TodoSummaryRow). */
   .todo-summary-msg {
     margin: 4px 0 8px 0;
-  }
-  .todo-summary-msg :global(.todo-strip) {
-    position: static;
-    margin: 0;
   }
 </style>

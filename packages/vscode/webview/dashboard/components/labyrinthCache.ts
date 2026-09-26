@@ -100,6 +100,8 @@ export interface CacheLossFacts {
   ttlSeconds?: number;
   warmed?: boolean;
   divergence?: { message: number; role: string; source?: 'tool-aging' | 'reminder' | 'plugin' | 'unknown' };
+  /** The halves that changed while the engine was stopped (a restore). */
+  stopped?: Array<'system' | 'tools' | 'history'>;
 }
 
 export interface CacheLoss {
@@ -175,6 +177,7 @@ export function cacheLosses(steps: readonly UsageStep[], claudeRun = false): Cac
         ...(step.cache.idleMs === undefined ? {} : { idleMs: step.cache.idleMs }),
         ...(step.cache.ttlSeconds === undefined ? {} : { ttlSeconds: step.cache.ttlSeconds }),
         ...(step.cache.warmed === undefined ? {} : { warmed: step.cache.warmed }),
+        ...(step.cache.stopped === undefined || step.cache.stopped.length === 0 ? {} : { stopped: [...step.cache.stopped] }),
         ...(step.cache.divergence === undefined ? {} : {
           divergence: {
             message: step.cache.divergence.message, role: step.cache.divergence.role,

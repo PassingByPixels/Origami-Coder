@@ -8,7 +8,6 @@ import { Cause, Effect, FiberSet, Queue } from "effect"
 import * as Stream from "effect/Stream"
 import { FetchHttpClient } from "effect/unstable/http"
 import {
-  LLMRequest,
   Tool as NativeTool,
   ToolFailure,
   ToolRuntime,
@@ -184,10 +183,17 @@ export function stream(input: StreamInput): StreamResult {
     providerOptions: options.providerOptions,
     http: options.http,
     headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
+    // t-vs5p1y: the declared tools go in at construction. They used to be added
+    // by `LLMRequest.update`, a second full construction that re-validated every
+    // message of the window (31-65 ms per step in a big chat).
+    definitions: toDefinitions(declared),
   })
   const stream = Stream.scoped(
     Stream.unwrap(
       Effect.gen(function* () {
+        // t-vs5p1y: the request was constructed just above; lowering it is the
+        // next phase, in its own turn of the event loop.
+        yield* Effect.yieldNow
         const settlements = yield* FiberSet.make<void>()
         const results = yield* Queue.unbounded<LLMEvent, Cause.Done>()
         // t-gw71a9. Calls parsed on this step and not yet launched.
@@ -213,11 +219,7 @@ export function stream(input: StreamInput): StreamResult {
           )
         const launch = Effect.suspend(() => Effect.forEach(parsed.splice(0), settle, { discard: true }))
         const provider = input.llmClient
-          .stream(
-            LLMRequest.update(request, {
-              tools: [...request.tools, ...toDefinitions(declared)],
-            }),
-          )
+          .stream(request)
           .pipe(
             Stream.flatMap((event) => {
               if (event.type === "tool-call" && !event.providerExecuted) {

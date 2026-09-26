@@ -423,3 +423,97 @@ describe("the engine's own rewriters name themselves", () => {
     expect(facts?.divergence?.source).toBe("plugin")
   })
 })
+
+// t-w2txb2: the first request of a new engine process is compared with the last
+// PERSISTED request of the session (the seed), not read as `cold`.
+describe("a restore compares with the persisted request", () => {
+  /** Record a request in "the old process", then lose every process store and
+   *  hand the new one what the step-finish part persisted. */
+  function restart(at: string, messages: { role: "user" | "assistant"; content: string }[], system?: string) {
+    const persisted = request({ at, messages, ...(system === undefined ? {} : { system }) })!
+    SessionPromptCapture.reset()
+    expect(SessionPromptCapture.needsSeed("ses_cause")).toBe(true)
+    SessionPromptCapture.seed("ses_cause", { prefix: persisted.prefix, at: persisted.at, model: persisted.model })
+    expect(SessionPromptCapture.needsSeed("ses_cause")).toBe(false)
+  }
+
+  test("stopped is below cold, compaction and model, above every other cause", () => {
+    const moved = { ...steady, stopped: ["system"] as const, systemChanged: true }
+    expect(SessionCachePolicy.cause({ ...moved, first: true })).toBe("cold")
+    expect(SessionCachePolicy.cause({ ...moved, compacted: true })).toBe("compaction")
+    expect(SessionCachePolicy.cause({ ...moved, modelChanged: true })).toBe("model")
+    expect(
+      SessionCachePolicy.cause({ ...moved, toolsChanged: true, preserved: false, idleMs: 4_000_000, ttlSeconds: 300 }),
+    ).toBe("stopped")
+  })
+
+  test("nothing changed: a continuation, measured against the persisted request", () => {
+    restart("2026-09-22T10:00:00.000Z", [{ role: "user", content: "hello" }])
+    const facts = request({
+      at: "2026-09-22T10:07:00.000Z",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+        { role: "user", content: "again" },
+      ],
+      ttlSeconds: 300,
+    })
+    expect(facts?.first).toBe(false)
+    expect(facts?.preserved).toBe(true)
+    expect(facts?.idleMs).toBe(420_000)
+    expect(facts?.stopped).toBeUndefined()
+    expect(SessionCachePolicy.cause({ ...facts! })).toBe("idle")
+  })
+
+  test("an unexplained rewrite of the stored history is a change while stopped", () => {
+    restart("2026-09-22T10:00:00.000Z", [{ role: "user", content: "hello" }])
+    const facts = request({
+      at: "2026-09-22T10:00:01.000Z",
+      messages: [
+        { role: "user", content: "hello, rewritten" },
+        { role: "assistant", content: "hi" },
+      ],
+    })
+    expect(facts?.preserved).toBe(false)
+    expect(facts?.stopped).toEqual(["history"])
+    expect(SessionCachePolicy.cause({ ...facts! })).toBe("stopped")
+  })
+
+  test("a rewrite an engine rewriter named is its own `history` cause, restart or not", () => {
+    restart("2026-09-22T10:00:00.000Z", [{ role: "user", content: "hello" }])
+    SessionPromptCapture.markRewrite("ses_cause", "tool-aging")
+    const facts = request({ at: "2026-09-22T10:00:01.000Z", messages: [{ role: "user", content: "aged" }] })
+    expect(facts?.stopped).toBeUndefined()
+    expect(SessionCachePolicy.cause({ ...facts! })).toBe("history")
+  })
+
+  test("a changed system prompt names the system half", () => {
+    restart("2026-09-22T10:00:00.000Z", [{ role: "user", content: "hello" }], "old system")
+    const facts = request({
+      at: "2026-09-22T10:00:01.000Z",
+      system: "new system",
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ],
+    })
+    expect(facts?.stopped).toEqual(["system"])
+  })
+
+  test("the seed is compared with once; the next request compares in process", () => {
+    restart("2026-09-22T10:00:00.000Z", [{ role: "user", content: "hello" }], "old system")
+    request({ at: "2026-09-22T10:00:01.000Z", system: "new system" })
+    const next = request({ at: "2026-09-22T10:00:02.000Z", system: "new system" })
+    expect(next?.stopped).toBeUndefined()
+    expect(next?.systemChanged).toBe(false)
+    expect(SessionPromptCapture.needsSeed("ses_cause")).toBe(false)
+  })
+
+  test("no seed: the first request is cold, as before", () => {
+    SessionPromptCapture.seed("ses_cause", undefined)
+    const facts = request({ at: "2026-09-22T10:00:00.000Z" })
+    expect(facts?.first).toBe(true)
+    expect(facts?.stopped).toBeUndefined()
+    expect(SessionCachePolicy.cause({ ...facts! })).toBe("cold")
+  })
+})

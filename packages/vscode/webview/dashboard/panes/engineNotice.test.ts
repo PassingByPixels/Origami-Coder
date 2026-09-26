@@ -37,6 +37,10 @@ describe('the mirror with src/dashboard/engineGate.ts', () => {
     expect(stages(web)).toEqual(stages(host));
     expect(stages(web).length).toBe(4);
   });
+  it('t-wdyi2t (review #10): no `parked` card: the host never posts it (a parked chat shows nothing; its next message opens the "Starting" card)', () => {
+    expect(stages(host)).not.toContain('parked');
+    expect(asEngineNotice({ stage: 'parked', reason: '', held: 0 })).toBeUndefined();
+  });
   it('reads the same fields the host posts', () => {
     expect(fields(web, 'EngineNotice')).toEqual(fields(host, 'EngineStatePost'));
   });
@@ -73,5 +77,26 @@ describe('which card the pane shows', () => {
   it('an engine loss always gets its own card, under the prompt it answers', () => {
     expect(foldEngineNotice([card(n('failed', 1, 'boom'))], n('stopped', 0, 'gone'))).toBeUndefined();
     expect(opensEngineCard(n('stopped'))).toBe(true);
+  });
+});
+
+describe('t-x3a89j: a failed start or a stopped engine says WHEN, and carries the text Copy details copies', () => {
+  const at = new Date(2026, 8, 25, 14, 3, 7).getTime(); // local time
+  it('keeps a finite `at` and a string `details` off the wire, and drops anything else', () => {
+    expect(asEngineNotice({ stage: 'failed', reason: 'x', held: 0, retry: true, at, details: 'Why: x' })).toMatchObject({ at, details: 'Why: x' });
+    const junk = asEngineNotice({ stage: 'failed', reason: 'x', held: 0, at: 'soon', details: 42 });
+    expect(junk && 'at' in junk).toBe(false);
+    expect(junk && 'details' in junk).toBe(false);
+  });
+  it('the failed card shows the time it failed, next to the reason', () => {
+    const a = engineAlert({ ...n('failed', 1, 'origami-acp exited (code=3, signal=null)'), at, details: 'd' });
+    expect(a.detail).toContain('origami-acp exited (code=3, signal=null)');
+    expect(a.detail).toContain('at 14:03:07');
+    expect(a.details).toBe('d');
+  });
+  it('the stopped card shows its time too; a starting or ready card has none', () => {
+    expect(engineAlert({ ...n('stopped', 0, 'gone'), at }).detail).toContain('at 14:03:07');
+    expect(engineAlert(n('starting', 1)).detail).not.toMatch(/\bat \d/);
+    expect(engineAlert(n('starting', 1)).details).toBeUndefined();
   });
 });

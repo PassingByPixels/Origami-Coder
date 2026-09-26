@@ -11,19 +11,24 @@
 // after touching webview/remote/*, src/remote/* or the relay:
 //
 //   cd packages/vscode && npm run build
-//   copy this file and remote-desktop-driver.mjs into a checkout that has
-//   Playwright installed (C:/Repos/Origami Folio/origami-webmcp), then:
-//   node remote-interop-e2e.mjs
+//   copy this file into any folder that has Playwright installed, then:
+//   ORIGAMI_REPO=<path to this repo's checkout> node remote-interop-e2e.mjs
+//   (optional: SHOTS_DIR=<folder for the screenshots>; default is a temp folder)
 //
 // Loopback only (127.0.0.1), ephemeral port, no TLS.
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-const REPO = 'C:/Repos/Origami Coder/origami-coder.wt/remote-integration';
+const REPO = process.env.ORIGAMI_REPO;
+if (!REPO) {
+  console.error('Set ORIGAMI_REPO to the root of an Origami Code checkout (the folder that holds packages/).');
+  process.exit(2);
+}
 const VSCODE = `${REPO}/packages/vscode`;
-const SHOTS = 'C:/Users/dev/AppData/Local/Temp/claude/c--Users-dev-Desktop-Workspace/86d82c38-23ee-4d0d-87e9-b6a9d26d7537/scratchpad/remote-integration';
+const SHOTS = process.env.SHOTS_DIR || path.join(os.tmpdir(), 'origami-remote-interop-e2e');
 const SID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 fs.mkdirSync(SHOTS, { recursive: true });

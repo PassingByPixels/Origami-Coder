@@ -7,7 +7,9 @@ import { EventV2 } from "@origami/core/event"
 import { TodoTable } from "@origami/core/session/sql"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import { SessionRequestMemoryRows } from "@/session/request-memory-rows"
 import { StorageNests } from "./nests"
+import { ElasticActivity } from "@/elastic/activity"
 
 /**
  * Nests L5 (t-sb9tlk): a chat changes desks. Design: cloud_sessions_design
@@ -324,11 +326,32 @@ export const reconcile = Effect.fn("StorageNestsHandover.reconcile")(function* (
       data: JSON.parse(event.data) as Record<string, unknown>,
     }),
   )
+  // t-wdyp7r: the cascade below also takes the session request memory (tool
+  // aging, tool_search, refused knobs, "always allow" answers), which no
+  // journal carries, while the engine that holds the chat keeps its copy. Read
+  // here and put back once the replay has made the session row again. Rows of
+  // parts that went to the fork are pruned on the next read (request-memory.ts).
+  const memory = yield* SessionRequestMemoryRows.load(db, input.sessionId).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("nests reconcile: request memory not read", { "session.id": input.sessionId, cause }).pipe(
+        Effect.as([] as SessionRequestMemoryRows.Row[]),
+      ),
+    ),
+  )
   // The session row's delete cascades to its messages, parts, todos and the V2
   // tables; the replay below rebuilds them from the prefix.
   yield* db.run(sql`DELETE FROM ${sql.identifier("session")} WHERE id = ${input.sessionId}`).pipe(Effect.orDie)
   yield* events.remove(input.sessionId)
   if (prefix.length > 0) yield* events.replayAll(prefix, { ownerID: owner, strictOwner: true })
+  if (memory.length > 0 && (yield* sessionRow(input.sessionId)))
+    yield* SessionRequestMemoryRows.write(db, input.sessionId, memory).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("nests reconcile: request memory not written back", {
+          "session.id": input.sessionId,
+          cause,
+        }),
+      ),
+    )
   const after = yield* StorageNests.ownerRow(input.sessionId)
   return {
     result: "forked",
@@ -487,6 +510,12 @@ const drop = Effect.fnUntraced(function* (sessionID: string, holder: string) {
   yield* db.run(sql`DELETE FROM ${RUN} WHERE session_id = ${sessionID} AND holder = ${holder}`).pipe(Effect.orDie)
 })
 
+/** origami_change (t-w2qlop): the run leases this process holds now, for the
+ *  elastic idle report. A stop while one is held leaves another engine's
+ *  release waiting out RUN_TTL_MS. */
+const heldLeases = new Set<string>()
+ElasticActivity.probe("nest-lease", () => heldLeases)
+
 /** A lease write never fails or stops the turn: a store error is logged. */
 const quiet = <A>(fallback: A) =>
   Effect.catchCause((cause: Cause.Cause<never>) =>
@@ -509,6 +538,7 @@ export function withRunLease<A, E, R>(sessionID: string, work: Effect.Effect<A, 
     const open = Effect.gen(function* () {
       yield* ensureRunTable()
       leased = true
+      heldLeases.add(holder)
       return yield* beat(sessionID, holder)
     }).pipe(quiet<boolean | undefined>(undefined))
     const beating = (stopped: boolean | undefined) =>
@@ -536,6 +566,7 @@ export function withRunLease<A, E, R>(sessionID: string, work: Effect.Effect<A, 
         Effect.gen(function* () {
           if (woken) waiting.delete(woken)
           yield* Fiber.interrupt(fiber)
+          heldLeases.delete(holder)
           if (leased) yield* drop(sessionID, holder).pipe(quiet(undefined))
         }),
       ),

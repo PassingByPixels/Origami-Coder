@@ -1,7 +1,15 @@
 import { Effect, Schema } from "effect"
 import { ServerAuth } from "@/server/auth"
 import { AgentBroker } from "@/origami/agent-broker"
-import { claimPeerMessage, peerMessageId, peerMessageMetadata, PEER_DEDUPE_WINDOW_MS } from "@/session/peer-message"
+import { AgentMailbox } from "@/origami/agent-mailbox"
+import {
+  claimPeerMessage,
+  peerMessageId,
+  peerMessageMetadata,
+  PEER_DEDUPE_WINDOW_MS,
+  releasePeerMessage,
+} from "@/session/peer-message"
+import { AgentPost } from "@/session/agent-post"
 import * as Tool from "./tool"
 
 /**
@@ -24,6 +32,8 @@ const MAX_MESSAGE_CHARS = 10_000
 
 type AgentsMetadata = {
   peers?: number
+  /** t-w2txb2: stopped (parked) chats listed, or `true` when a send was kept for one. */
+  parked?: number | boolean
   probed?: boolean
   to?: string
   sessionID?: string
@@ -89,8 +99,17 @@ export const ListAgentsTool = Tool.define<typeof ListParameters, AgentsMetadata,
               return checked.filter((entry): entry is AgentBroker.Entry => !!entry)
             })
           : found
+        // t-w2txb2: a chat whose engine the extension stopped after a long idle.
+        // It stays addressable: a message to it starts it again. An address a
+        // live engine also holds is left out, because the live engine wins it.
+        const parked = (yield* Effect.promise(() => AgentBroker.readParked()))
+          .filter((standIn) => params.include_background === true || standIn.kind === "interactive")
+          .filter(
+            (standIn) =>
+              !found.some((entry) => entry.name === standIn.name && entry.sessionIds.includes(standIn.sessionId)),
+          )
 
-        if (!peers.length) {
+        if (!peers.length && !parked.length) {
           return {
             title: "list_agents: none",
             metadata: { peers: 0, probed: probe },
@@ -105,11 +124,11 @@ export const ListAgentsTool = Tool.define<typeof ListParameters, AgentsMetadata,
         }
 
         return {
-          title: `list_agents: ${peers.length}`,
-          metadata: { peers: peers.length, probed: probe },
+          title: `list_agents: ${peers.length + parked.length}`,
+          metadata: { peers: peers.length, probed: probe, ...(parked.length ? { parked: parked.length } : {}) },
           output: [
             ...(you ? [you] : []),
-            `${peers.length} agent session${peers.length > 1 ? "s" : ""} reachable:`,
+            `${peers.length} agent session${peers.length === 1 ? "" : "s"} reachable:`,
             ...peers.map((entry) =>
               [
                 AgentBroker.replyAddress(entry),
@@ -118,6 +137,20 @@ export const ListAgentsTool = Tool.define<typeof ListParameters, AgentsMetadata,
                 `sessions=${entry.sessionIds.length}`,
               ].join("  "),
             ),
+            ...(parked.length
+              ? [
+                  `${parked.length} stopped chat${parked.length === 1 ? "" : "s"} (stopped to save memory;` +
+                    " send_message starts it again to read the message):",
+                  ...parked.map((standIn) =>
+                    [
+                      AgentBroker.parkedAddress(standIn),
+                      `kind=${standIn.kind}`,
+                      `cwd=${standIn.cwd}`,
+                      "status=stopped",
+                    ].join("  "),
+                  ),
+                ]
+              : []),
           ].join("\n"),
         }
       }),
@@ -184,7 +217,15 @@ export const SendMessageTool = Tool.define<typeof SendParameters, AgentsMetadata
 
         const peers = yield* Effect.promise(() => AgentBroker.readPeers({ includeBackground: true }))
         const target = AgentBroker.resolve(peers, params.to)
-        if ("error" in target) return refusal(target.error)
+        if ("error" in target) {
+          // t-w2txb2: no live engine holds this address. A PARKED chat does not
+          // refuse: the message is kept in its mailbox and the chat starts again.
+          const parked = yield* Effect.promise(() => AgentBroker.readParked())
+          const sleeping = AgentBroker.resolveParked(peers, parked, params.to)
+          if (!sleeping) return refusal(target.error)
+          if ("error" in sleeping) return refusal(sleeping.error)
+          return yield* keepForParked({ standIn: sleeping.standIn, from: from.name, text: params.message, ctx })
+        }
         // Security boundary: loopback-only, asserted where the request is made.
         // The broker file is ordinary user-writable JSON, so a tampered entry
         // must not be able to aim this POST at a LAN address.
@@ -207,36 +248,24 @@ export const SendMessageTool = Tool.define<typeof SendParameters, AgentsMetadata
         // Claimed here as well as at the receiver: this is the end that can
         // explain itself to the model.
         const messageId = peerMessageId({ from: replyTo, to: `${target.entry.name}#${target.sessionID}`, text: params.message })
-        if (!claimPeerMessage(`out:${ctx.sessionID}`, messageId)) {
-          return refusal(
-            `Refused: this exact message already went to ${target.entry.name} in the last` +
-              ` ${Math.round(PEER_DEDUPE_WINDOW_MS / 60_000)} minutes and was not a failure — re-sending it would` +
-              " deliver it twice. It answers on its own turn boundary; carry on with your own work, or send" +
-              " something that says more than the message it already has.",
-          )
-        }
+        if (!claimPeerMessage(`out:${ctx.sessionID}`, messageId)) return refusal(alreadySent(target.entry.name))
         const posted = yield* Effect.promise(() =>
           fetch(`${target.entry.httpBase}/session/${encodeURIComponent(target.sessionID)}/prompt_async`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeaders() },
             signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
-            body: JSON.stringify({
-              parts: [
-                {
-                  type: "text",
-                  text: renderPeerMessage({ from: from.name, replyTo, text: params.message }),
-                  // The provenance the receiver's UI badges from. It rides the
-                  // part rather than the text so a client can tell a peer message
-                  // from its own human without parsing prose (acp/event.ts).
-                  metadata: peerMessageMetadata({ from: from.name, replyTo, id: messageId }),
-                },
-              ],
-            }),
+            body: promptBody({ from: from.name, replyTo, text: params.message, id: messageId }),
           })
             .then((response) => ({ ok: response.ok, status: response.status }))
             .catch(() => ({ ok: false, status: 0 })),
         )
         if (!posted.ok) {
+          // origami_change (t-wdybz9): nothing arrived, so the claim goes back
+          // (a retry is not "already went"). The engine may have parked and
+          // exited since we read its entry: then its stand-in is the address.
+          releasePeerMessage(`out:${ctx.sessionID}`, messageId)
+          const standIn = yield* Effect.promise(() => AgentPost.locateParked(target.sessionID))
+          if (standIn) return yield* keepForParked({ standIn, from: from.name, text: params.message, ctx })
           return refusal(
             `Refused: "${target.entry.name}" did not accept the message (status ${posted.status || "unreachable"}).` +
               " Call list_agents again — it may have closed.",
@@ -287,6 +316,73 @@ export function renderPeerMessage(input: {
 
 function escapeAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+}
+
+/** The exact prompt_async body a peer handoff carries, live or kept. */
+function promptBody(input: { from: string; replyTo: string; text: string; id: string }): string {
+  return JSON.stringify({
+    parts: [
+      {
+        type: "text",
+        text: renderPeerMessage({ from: input.from, replyTo: input.replyTo, text: input.text }),
+        // The provenance the receiver's UI badges from. It rides the part
+        // rather than the text so a client can tell a peer message from its own
+        // human without parsing prose (acp/event.ts).
+        metadata: peerMessageMetadata({ from: input.from, replyTo: input.replyTo, id: input.id }),
+      },
+    ],
+  })
+}
+
+function alreadySent(name: string): string {
+  return (
+    `Refused: this exact message already went to ${name} in the last` +
+    ` ${Math.round(PEER_DEDUPE_WINDOW_MS / 60_000)} minutes and was not a failure — re-sending it would` +
+    " deliver it twice. It answers on its own turn boundary; carry on with your own work, or send" +
+    " something that says more than the message it already has."
+  )
+}
+
+/**
+ * t-w2txb2: the send to a PARKED chat. Its engine was stopped after a long idle,
+ * so there is nothing to POST to: the same body is kept in the chat's mailbox,
+ * and the extension starts the chat again, which admits it (agent-mailbox.ts).
+ */
+function keepForParked(input: { standIn: AgentBroker.Parked; from: string; text: string; ctx: Tool.Context }) {
+  return Effect.promise(async () => {
+    const { standIn, ctx } = input
+    const replyTo = `${input.from}#${ctx.sessionID}`
+    const messageId = peerMessageId({ from: replyTo, to: AgentBroker.parkedAddress(standIn), text: input.text })
+    if (!claimPeerMessage(`out:${ctx.sessionID}`, messageId)) return refusal(alreadySent(standIn.name))
+    // origami_change (t-wdybz9): looked at again after the write; a chat closed
+    // meanwhile gets the body taken back (agent-mailbox.ts `keep`).
+    const stillThere = async () =>
+      !!(await AgentPost.locateParked(standIn.sessionId)) || !!(await AgentPost.locateSession(standIn.sessionId))
+    const kept = await AgentMailbox.keep(
+      standIn.sessionId,
+      promptBody({ from: input.from, replyTo, text: input.text, id: messageId }),
+      messageId,
+      stillThere,
+    ).then(
+      (result) => result,
+      () => "failed" as const,
+    )
+    if (kept !== "kept") releasePeerMessage(`out:${ctx.sessionID}`, messageId)
+    if (kept === "withdrawn") {
+      return refusal(`Refused: "${standIn.name}" was closed while it was stopped. Nothing was delivered.`)
+    }
+    if (kept === "failed") {
+      return refusal(`Refused: the message for stopped chat "${standIn.name}" could not be kept. Try again.`)
+    }
+    return {
+      title: `send_message: ${standIn.name}`,
+      metadata: { to: standIn.name, sessionID: standIn.sessionId, delivered: true, parked: true } as AgentsMetadata,
+      output:
+        `Delivered to ${standIn.name} (session ${standIn.sessionId}). That chat was stopped to save memory;` +
+        " it starts again to read your message, so its reply can take longer than usual." +
+        ` Do NOT wait or poll for a reply — carry on, and it will message you back at ${replyTo}.`,
+    }
+  })
 }
 
 /** A refusal is an answer, not a failure: the model must be able to fix its

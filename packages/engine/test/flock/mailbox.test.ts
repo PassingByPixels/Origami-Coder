@@ -92,7 +92,7 @@ describe("flock_ask sends and returns", () => {
   test("the thread exists the moment post resolves, and no answer is waited for", async () => {
     const { alice, alicePeer, bobHandle } = pair()
     const started = Date.now()
-    const sent = await alicePeer.post(bobHandle, "how does the MOT check work?")
+    const sent = await alicePeer.post(bobHandle, "how does the tax refund work?")
 
     // The whole point: the caller is back with a receipt, not an answer. The
     // old `ask` sat here for up to sixty seconds.
@@ -104,7 +104,7 @@ describe("flock_ask sends and returns", () => {
       contact: bobHandle,
       unread: false,
     })
-    expect(thread!.question.text).toBe("how does the MOT check work?")
+    expect(thread!.question.text).toBe("how does the tax refund work?")
     expect(thread!.reply).toBeUndefined()
   })
 
@@ -179,7 +179,7 @@ describe("a question remembers the chat it was asked from", () => {
 describe("when the front desk model refuses", () => {
   test("the failure names the model and carries the engine's own text", async () => {
     const { alicePeer, bobDeps, bobHandle } = pair()
-    const sent = await alicePeer.post(bobHandle, "how does the MOT check work?")
+    const sent = await alicePeer.post(bobHandle, "how does the tax refund work?")
     await until("bob's inbox row", () => bobDeps.store.thread(sent.thread) !== undefined)
 
     const refused = await FlockMailbox.decide(
@@ -194,7 +194,7 @@ describe("when the front desk model refuses", () => {
 
   test("the row goes back to PENDING and unread, so Answer works again", async () => {
     const { alicePeer, bob, bobDeps, bobHandle } = pair({ answer: { text: "second time lucky", tokens: 7 } })
-    const sent = await alicePeer.post(bobHandle, "how does the MOT check work?")
+    const sent = await alicePeer.post(bobHandle, "how does the tax refund work?")
     await until("bob's inbox row", () => bob.thread(sent.thread) !== undefined)
 
     await FlockMailbox.decide(
@@ -223,7 +223,7 @@ describe("an inbound question waits for the owner and then answers", () => {
     const { alice, bob, alicePeer, bobDeps, bobHandle, aliceHandle } = pair({
       answer: { text: "section 4 covers it", tokens: 210 },
     })
-    const sent = await alicePeer.post(bobHandle, "how does the MOT check work?")
+    const sent = await alicePeer.post(bobHandle, "how does the tax refund work?")
 
     // BOB'S SIDE: a row waiting on a person, under the SAME id Alice holds.
     await until("bob's inbox row", () => bob.thread(sent.thread) !== undefined)

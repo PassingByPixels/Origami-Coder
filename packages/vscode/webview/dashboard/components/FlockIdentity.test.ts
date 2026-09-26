@@ -20,9 +20,9 @@ import type { FlockIdentityRow } from '../panes/flockTypes';
 afterEach(() => cleanup());
 
 const IDENTITY: FlockIdentityRow = {
-  handle: 'passing@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5',
-  handleShort: 'passing@QUJDREVG',
-  name: 'passing',
+  handle: 'jane@QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5',
+  handleShort: 'jane@QUJDREVG',
+  name: 'jane',
   fingerprint: 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5',
   signPublicKey: 'sign-pub',
   boxPublicKey: 'box-pub',
@@ -63,13 +63,13 @@ describe('FlockIdentity — the avatar is the owner’s own sigil', () => {
 
   it('shows the HANDLE’s own label, not the display name plus an @', () => {
     // A renamed owner: the name moved, the handle did not. Composing `name@`
-    // here would print "Passing by Pixels@", which no contact ever stored.
-    const { container } = mount({ ...IDENTITY, name: 'Passing by Pixels' });
+    // here would print "Jane Doe@", which no contact ever stored.
+    const { container } = mount({ ...IDENTITY, name: 'Jane Doe' });
 
     expect((container.querySelector('input[aria-label="Your display name"]') as HTMLInputElement).value).toBe(
-      'Passing by Pixels',
+      'Jane Doe',
     );
-    expect(container.querySelector('.fk-mono')!.textContent!.trim()).toBe('passing@QUJDREVG…');
+    expect(container.querySelector('.fk-mono')!.textContent!.trim()).toBe('jane@QUJDREVG…');
     expect(container.querySelector('.fk-fp')!.textContent).toBe(IDENTITY.fingerprint);
   });
 });

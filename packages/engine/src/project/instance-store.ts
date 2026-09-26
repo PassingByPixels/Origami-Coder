@@ -10,6 +10,8 @@ import { Context, Deferred, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { InstanceBootstrap } from "./bootstrap-service"
 import * as Project from "./project"
+import { ElasticBootTrace } from "@/elastic/boot-trace" // origami_change (t-xnvp72)
+import { ElasticSpare } from "@/elastic/spare" // origami_change (t-xnvp72)
 
 export interface LoadInput {
   directory: string
@@ -62,6 +64,60 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         return ctx
       }).pipe(Effect.withSpan("InstanceStore.boot"))
 
+    // origami_change-start (t-xnvp72): which boots log their step timings. An
+    // ordinary engine: its first boot (for comparison). A warm spare: every boot
+    // that ends after the adoption started, until the first boot that started
+    // after it (the chat's own) has been logged. A boot that started and ended
+    // while the spare waited (the window's probe) is recorded and dropped. The
+    // first boot after an adoption took 5-8 s in the owner's UAT, cause unknown.
+    let firstBootSeen = false
+    let adoptedBootSeen = false
+    type BootKind = "first" | "before-adoption" | "after-adoption"
+    const bootKind = (): BootKind | undefined => {
+      const spare = ElasticSpare.state()
+      if (spare.spare || (!spare.adopted && ElasticSpare.isSpare())) return "before-adoption"
+      if (spare.adopted) {
+        if (adoptedBootSeen) return undefined
+        adoptedBootSeen = true
+        return "after-adoption"
+      }
+      if (firstBootSeen) return undefined
+      firstBootSeen = true
+      return "first"
+    }
+    const logBoot = (kind: BootKind, directory: string, record: ElasticBootTrace.BootRecord) =>
+      Effect.gen(function* () {
+        const steps = ElasticBootTrace.shown(record.steps)
+        for (const step of steps)
+          yield* Effect.logInfo("boot step", {
+            boot: kind,
+            step: step.path,
+            startMs: Math.round(step.startMs),
+            ms: Math.round(step.ms),
+          })
+        yield* Effect.logInfo("boot timings", {
+          boot: kind,
+          directory,
+          totalMs: Math.round(record.totalMs),
+          fromDirectoryMs: ElasticBootTrace.spanMs(record.steps, "Project.fromDirectory"),
+          bootstrapMs: ElasticBootTrace.spanMs(record.steps, "InstanceBootstrap"),
+          mainThreadMaxBlockMs: record.mainThreadMaxBlockMs,
+          spans: record.steps.length,
+          logged: steps.length,
+        })
+      })
+    const traced = (directory: string, work: Effect.Effect<InstanceContext>) =>
+      Effect.gen(function* () {
+        const kind = bootKind()
+        if (!kind) return yield* work
+        const recorder = ElasticBootTrace.recorder()
+        const exit = yield* Effect.exit(work.pipe(Effect.withTracer(recorder.tracer(yield* Effect.tracer))))
+        const record = recorder.finish()
+        if (kind !== "before-adoption" || ElasticSpare.state().adopted) yield* logBoot(kind, directory, record)
+        return yield* exit
+      })
+    // origami_change-end
+
     const removeEntry = (directory: string, entry: Entry) =>
       Effect.sync(() => {
         if (cache.get(directory) !== entry) return false
@@ -71,7 +127,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const completeLoad = (directory: string, input: LoadInput, entry: Entry) =>
       Effect.gen(function* () {
-        const exit = yield* Effect.exit(boot({ ...input, directory }))
+        const exit = yield* Effect.exit(traced(directory, boot({ ...input, directory }))) // origami_change (t-xnvp72)
         if (Exit.isFailure(exit)) yield* removeEntry(directory, entry)
         yield* Deferred.done(entry.deferred, exit).pipe(Effect.asVoid)
       })

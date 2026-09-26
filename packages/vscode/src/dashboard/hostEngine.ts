@@ -3,11 +3,10 @@
 // with no chat open. Design: docs/decisions/host-engine-connection.md.
 //
 // A chat's client comes first; the host client is the fallback. It is started
-// by `ensure()` only, never by `current()`: the panel's request gate and the
-// Nests adapter below call ensure(), background timers call current(). A bare
-// window therefore spawns nothing. The client is spawned by `connect()` alone
-// (no session/new), so it writes no stored session. Pure: the window singleton
-// with the real AcpClient is hostEngineWindow.ts.
+// by `ensure()` / `ensureOwn()` only, never by `current()`. t-w2qv3o: the chat source
+// is the ON-SCREEN chat, so a host read never wakes a hidden chat (hostReads.ts). A bare
+// window spawns nothing. `connect()` alone (no session/new) writes no stored session.
+// Pure: the window singleton with the real AcpClient is hostEngineWindow.ts.
 
 import type { NestEngine, NestView } from './nestHub';
 
@@ -38,15 +37,13 @@ export class HostEngine<C extends HostClient> {
 
   constructor(private readonly deps: HostEngineDeps<C>) {}
 
-  /** The panel's chat clients, active chat first. */
+  /** The chat a host read may use: the panel's on-screen chat (elastic/sessionSignals.ts onScreenClient). */
   public setChats(owner: object, source: () => C | undefined): void {
     this.chats = { owner, source };
   }
 
   /** The panel is gone; a newer panel's source stays. */
-  public releaseChats(owner: object): void {
-    if (this.chats?.owner === owner) this.chats = null;
-  }
+  public releaseChats(owner: object): void { if (this.chats?.owner === owner) this.chats = null; }
 
   /** A chat's client, else the host client if it runs. Never spawns. */
   public current(): C | undefined {
@@ -54,14 +51,20 @@ export class HostEngine<C extends HostClient> {
   }
 
   /** The host client alone, never a chat's. Flock routes to it when it holds the lease (flockRoute.ts). */
-  public ownClient(): C | undefined {
-    return this.own ?? undefined;
-  }
+  public ownClient(): C | undefined { return this.own ?? undefined; }
+
+  /** t-wdyi2t: the idle host engine is stopped (elastic/hostPark.ts); the next ensure() / ensureOwn() starts a new one. */
+  public stopOwn(client: C): void { if (this.own === client) { this.own = null; client.dispose(); } }
 
   /** current(), else start the host client once; undefined when it cannot start. */
   public ensure(): Promise<C | undefined> {
     const now = this.current();
-    if (now || this.disposed) return Promise.resolve(now);
+    return now ? Promise.resolve(now) : this.ensureOwn();
+  }
+
+  /** The host client alone, started once if it is not running (t-w2qv3o: collabs and host timers, hostReads.ts). */
+  public ensureOwn(): Promise<C | undefined> {
+    if (this.own || this.disposed) return Promise.resolve(this.own ?? undefined);
     this.starting ??= this.spawn().finally(() => { this.starting = null; });
     return this.starting;
   }

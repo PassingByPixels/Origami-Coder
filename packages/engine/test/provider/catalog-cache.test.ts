@@ -149,6 +149,32 @@ describe("provider catalog cache", () => {
     expect(two).not.toBe(one)
   })
 
+  // t-y579wi: the provider build reads two runtime flags (provider.ts). An engine started
+  // with the Claude (Sub) setting off lists `offInfo` rows (or none); one started with it on
+  // lists the CLI's live catalog. With the same key, a chat started after the setting moved
+  // was shown the other engine's rows for up to an hour (store copy: a flag-off engine
+  // showed the live catalog while it refused every request as "off for this chat").
+  test("the runtime flags the provider build reads change the key", () => {
+    for (const name of ["ORIGAMI_EXPERIMENTAL_CLAUDE_SUBSCRIPTION", "ORIGAMI_ENABLE_EXPERIMENTAL_MODELS"]) {
+      const saved = process.env[name]
+      delete process.env[name]
+      const off = ProviderCatalogCache.key({ directory: "/d", config: {} })
+      process.env[name] = "true"
+      const on = ProviderCatalogCache.key({ directory: "/d", config: {} })
+      if (saved === undefined) delete process.env[name]
+      else process.env[name] = saved
+      expect(on, name).not.toBe(off)
+    }
+  })
+
+  // t-y579wi: the list above must follow provider.ts. A new flag read there without its
+  // env name in the key would serve rows built under the other value.
+  test("every runtime flag provider.ts reads is one the key covers", () => {
+    const source = fs.readFileSync(path.join(import.meta.dir, "../../src/provider/provider.ts"), "utf8")
+    const read = [...new Set([...source.matchAll(/runtimeFlags\.(\w+)/g)].map((match) => match[1]))].toSorted()
+    expect(read).toEqual(Object.keys(ProviderCatalogCache.PROVIDER_FLAGS).toSorted())
+  })
+
   // t-ttmo5w: the key cannot see a provider's REMOTE model list, so age is the bound.
   // An entry older than MAX_AGE_MS is a miss: the next chat builds fresh (and runs
   // live discovery) instead of serving a list from whenever the file was last written.

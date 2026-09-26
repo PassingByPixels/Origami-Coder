@@ -14,6 +14,9 @@ export interface CollabWatchHost {
   post(msg: Record<string, unknown>): void;
   cwd(): string;
   collabClient(): CollabSource | undefined;
+  /** t-w2qv3o: the engine a background tick may read without starting one or waking a hidden chat
+   *  (hostReads.ts). Absent = collabClient. */
+  collabWatchClient?(): CollabSource | undefined;
 }
 
 /** Slower than the pane's idle cadence by design — see the header. */
@@ -60,7 +63,7 @@ async function tick(): Promise<void> {
 }
 
 async function pollOne(host: CollabWatchHost, collabId: string): Promise<void> {
-  const client = host.collabClient();
+  const client = host.collabWatchClient ? host.collabWatchClient() : host.collabClient();
   // No engine yet is NOT a failure worth reporting. `collabState` would answer
   // "Open a chat first", and posting that would paint an error banner over a
   // collab nobody is even looking at.

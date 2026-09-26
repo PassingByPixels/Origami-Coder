@@ -1,5 +1,5 @@
 // Origami Remote — crypto leaf. Every assertion here is against a sentence of
-// the wire spec (reports/remote_wire_spec_v1.md, "Keys and ids" / "Frame"),
+// the wire spec (docs/remote_wire_spec_v1.md, "Keys and ids" / "Frame"),
 // not against the implementation: sizes, derivation independence, and the
 // three ways an open() must fail.
 import { describe, expect, it } from 'vitest';

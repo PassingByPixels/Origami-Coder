@@ -1,5 +1,5 @@
 // W7-L2: the per-tool checklist draws one row per gate the engine reports —
-// ~28 today, per BotContractFields.svelte's own docstring — and Passing
+// ~28 today, per BotContractFields.svelte's own docstring — and the owner
 // flagged that the list only grows as tools ship: "should probably be within
 // a scroll box... would look cleaner" once it does. Fix: wrap the tick GRID
 // itself in its own scrollable container, and leave everything else — the

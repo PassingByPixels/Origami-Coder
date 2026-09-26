@@ -79,6 +79,7 @@ export type RunStepCacheCause =
   | 'cold'
   | 'model'
   | 'compaction'
+  | 'stopped'
   | 'idle'
   | 'system'
   | 'tools'
@@ -88,8 +89,8 @@ export type RunStepCacheCause =
 
 export interface RunStepCache {
   /** Present only on a MISS, and then exactly one: the precedence is fixed at
-   *  cold > compaction > model > system > tools > history > idle > small >
-   *  provider. `provider` is the residue — the prefix was byte-identical, inside
+   *  cold > compaction > model > stopped > system > tools > history > idle >
+   *  small > provider. `provider` is the residue — the prefix was byte-identical, inside
    *  the window, on the same model, and the provider missed anyway. */
   cause?: RunStepCacheCause;
   /** Whether the previous request's whole array survived as a byte-identical
@@ -110,6 +111,9 @@ export interface RunStepCache {
   ttlSeconds?: number;
   /** A cache warm succeeded inside the gap before this request. */
   warmed?: boolean;
+  /** Only on the first request after an engine restart: the halves of the
+   *  prefix that changed against the last request stored before it. */
+  stopped?: Array<'system' | 'tools' | 'history'>;
 }
 
 export interface RunStepsResult {

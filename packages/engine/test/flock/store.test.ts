@@ -222,7 +222,7 @@ describe("the flock store", () => {
 /**
  * THE 32-BIT HANDLES ON DISK.
  *
- * Passing's own box has a `flock.json` written by 0.4.81, so this is a real
+ * The owner's own box has a `flock.json` written by 0.4.81, so this is a real
  * file and not a hypothetical one. Both halves are asserted separately because
  * they fail differently: an un-upgraded IDENTITY hands friends a handle nobody
  * will recognise, and an un-upgraded FRIEND is a row whose handle no longer
@@ -253,12 +253,12 @@ describe("upgrading a flock.json written before the fingerprint grew", () => {
 
   test("recomputes the OWNER's handle on load and writes it back", () => {
     const directory = tmp()
-    const self = FlockIdentity.generate("passing")
-    const friend = FlockIdentity.generate("chris")
+    const self = FlockIdentity.generate("jane")
+    const friend = FlockIdentity.generate("robin")
     legacyFile(directory, self, friend)
 
     const opened = FlockStore.Store.open({ directory })
-    const want = `passing@${FlockIdentity.fingerprint(self.signPublicKey)}`
+    const want = `jane@${FlockIdentity.fingerprint(self.signPublicKey)}`
     expect(opened.identity().handle).toBe(want)
     // The keys are untouched: an upgrade that minted a new identity would
     // orphan every friend holding the old key.
@@ -272,12 +272,12 @@ describe("upgrading a flock.json written before the fingerprint grew", () => {
 
   test("upgrades a FRIEND by their public key, keeping their policy", () => {
     const directory = tmp()
-    const self = FlockIdentity.generate("passing")
-    const friend = FlockIdentity.generate("chris")
+    const self = FlockIdentity.generate("jane")
+    const friend = FlockIdentity.generate("robin")
     legacyFile(directory, self, friend)
 
     const opened = FlockStore.Store.open({ directory })
-    const want = `chris@${FlockIdentity.fingerprint(friend.signPublicKey)}`
+    const want = `robin@${FlockIdentity.fingerprint(friend.signPublicKey)}`
     expect(opened.friends().map((f) => f.handle)).toEqual([want])
     // The match is by KEY, which is the only thing that survived the change.
     expect(opened.findByKey(friend.signPublicKey)?.handle).toBe(want)

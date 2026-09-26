@@ -55,3 +55,57 @@ index f2920365cf0328146523ce2e2dba04d6a8809a4a..5482d635cdf01a72063ff683d244fab8
  /**
   * Creates a streaming `Uint8Array` success response schema.
   *
+diff --git a/dist/internal/effect.js b/dist/internal/effect.js
+--- a/dist/internal/effect.js
++++ b/dist/internal/effect.js
+@@ -777,6 +777,10 @@
+   configurable: true
+ });
+ const fnStackCleaner = /*#__PURE__*/makeStackCleaner(2);
++// origami patch (t-x3admf): the frame's stack thunk is built here, not inside
++// the call, so a kept frame (every failure is annotated with one) does not keep
++// the call's arguments, nor those of every Effect.fn call above it.
++const fnStackOf = error => fnStackCleaner(() => error.stack);
+ /** @internal */
+ export const fn = function () {
+   const nameFirst = typeof arguments[0] === "string";
+@@ -810,10 +814,10 @@
+     globalThis.Error.stackTraceLimit = prevLimit;
+     return updateService(addSpan ? useSpan(name, spanOptions, span => provideParentSpan(result, span)) : result, CurrentStackFrame, prev => ({
+       name,
+-      stack: fnStackCleaner(() => callError.stack),
++      stack: fnStackOf(callError),
+       parent: {
+         name: `${name} (definition)`,
+-        stack: fnStackCleaner(() => defError.stack),
++        stack: fnStackOf(defError),
+         parent: prev
+       }
+     }));
+diff --git a/src/internal/effect.ts b/src/internal/effect.ts
+--- a/src/internal/effect.ts
++++ b/src/internal/effect.ts
+@@ -1131,6 +1131,10 @@
+   })
+ 
+ const fnStackCleaner = makeStackCleaner(2)
++// origami patch (t-x3admf): the frame's stack thunk is built here, not inside
++// the call, so a kept frame (every failure is annotated with one) does not keep
++// the call's arguments, nor those of every Effect.fn call above it.
++const fnStackOf = (error: Error) => fnStackCleaner(() => error.stack)
+ 
+ /** @internal */
+ export const fn: typeof Effect.fn = function() {
+@@ -1192,10 +1196,10 @@
+       CurrentStackFrame,
+       (prev) => ({
+         name,
+-        stack: fnStackCleaner(() => callError.stack),
++        stack: fnStackOf(callError),
+         parent: {
+           name: `${name} (definition)`,
+-          stack: fnStackCleaner(() => defError.stack),
++          stack: fnStackOf(defError),
+           parent: prev
+         }
+       })

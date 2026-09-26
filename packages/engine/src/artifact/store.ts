@@ -595,6 +595,49 @@ export class ArtifactStore {
    *  so nothing in the sidebar can turn into a broken page. `dryRun` counts
    *  what would go and removes nothing (the Nests Storage card, t-vb87lt). */
   pruneByWindow(days: number, options: { dryRun?: boolean } = {}): PruneReport {
+    const keep = this.keptByWindow(days)
+    let removedBlobs = 0
+    let removedBytes = 0
+    for (const sha of this.blobs.list()) {
+      if (keep.has(sha)) continue
+      removedBytes += options.dryRun ? (this.blobs.size(sha) ?? 0) : this.blobs.remove(sha)
+      removedBlobs++
+    }
+    return { removedBlobs, removedBytes }
+  }
+
+  /** t-vs5krz: the dry run of `pruneByWindow` (same counts) with async listing
+   *  and stats, in batches, so a large blob folder does not hold the engine's
+   *  event loop (+0.3-0.5 s at 30,000 blobs in the soak). It removes nothing;
+   *  the Apply keeps its one pass (t-veeliu). */
+  async pruneByWindowDry(days: number): Promise<PruneReport> {
+    const keep = this.keptByWindow(days)
+    const names = (await fs.promises.readdir(this.blobs.directory)).filter(
+      (name) => BlobStore.isBlobName(name) && !keep.has(name),
+    )
+    let removedBytes = 0
+    for (let at = 0; at < names.length; at += STAT_BATCH) {
+      const sizes = await Promise.all(
+        names.slice(at, at + STAT_BATCH).map((name) =>
+          fs.promises.stat(this.blobs.pathFor(name)).then(
+            (stat) => stat.size,
+            (error: NodeJS.ErrnoException) => {
+              if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return 0
+              throw error
+            },
+          ),
+        ),
+      )
+      for (const size of sizes) removedBytes += size
+      // Bun can finish a whole batch of stats in one loop turn: give one back.
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    return { removedBlobs: names.length, removedBytes }
+  }
+
+  /** The blobs a window keeps: every file of a version inside it, and every
+   *  file of the latest version of each artifact. */
+  private keptByWindow(days: number): Set<string> {
     const cutoff = this.now() - days * 86_400_000
     const keep = new Set<string>()
     const recent = this.db
@@ -613,17 +656,12 @@ export class ArtifactStore {
       )
       .all() as { sha: string }[]
     for (const row of latest) keep.add(row.sha)
-
-    let removedBlobs = 0
-    let removedBytes = 0
-    for (const sha of this.blobs.list()) {
-      if (keep.has(sha)) continue
-      removedBytes += options.dryRun ? (this.blobs.size(sha) ?? 0) : this.blobs.remove(sha)
-      removedBlobs++
-    }
-    return { removedBlobs, removedBytes }
+    return keep
   }
 }
+
+/** Stats in flight at once in `pruneByWindowDry`. */
+const STAT_BATCH = 256
 
 function readBodies(files: PublishFile[]): { path: string; bytes: Uint8Array; mediaType?: string }[] {
   return files.map((file) => {

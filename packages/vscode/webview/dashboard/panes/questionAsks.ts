@@ -8,10 +8,11 @@
 
 export type QuestionAskOption = { optionId: string; name: string; kind: string };
 
-export type QuestionAskQuestion = { title: string; options: QuestionAskOption[] };
+/** `multiple` (t-xum9v2): "tick all that apply"; absent on a single-choice question. */
+export type QuestionAskQuestion = { title: string; options: QuestionAskOption[]; multiple?: boolean };
 
 /** What the user has entered for one question. Both fields may be empty. */
-export type QuestionAskDraft = { optionId: string; answerText: string };
+export type QuestionAskDraft = { optionId: string; answerText: string; optionIds?: string[] };
 
 /** A whole batch, plus the user's progress through it. */
 export type QuestionAskEntry = {
@@ -91,8 +92,11 @@ export function visibleAsk(
  */
 export function answerPost(
   ask: QuestionAskEntry,
-  answers: ReadonlyArray<{ optionId: string; answerText?: string }>,
+  answers: ReadonlyArray<{ optionId: string; answerText?: string; optionIds?: string[] }>,
 ): Record<string, unknown> {
+  // A tick list only travels in `answers` (t-xum9v2), so a one-question multi ask
+  // sends the array too; a single-choice one keeps the bare shape.
+  const batch = answers.length > 1 || answers.some((a) => a.optionIds);
   const head = answers[0];
   return {
     type: 'permission',
@@ -100,7 +104,7 @@ export function answerPost(
     sessionId: ask.sessionId,
     optionId: head?.optionId ?? '',
     ...(head?.answerText ? { answerText: head.answerText } : {}),
-    ...(answers.length > 1 ? { answers: answers.map((a) => ({ ...a })) } : {}),
+    ...(batch ? { answers: answers.map((a) => ({ ...a })) } : {}),
   };
 }
 

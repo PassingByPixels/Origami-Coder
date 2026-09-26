@@ -46,6 +46,8 @@
   <div class="sqp-panel">
     <div class="sqp-head">
       <span class="sqp-head-text">Suggested side quest · {quest.id}</span>
+      <!-- t-yyz5je: the host lists only open quests (sideQuestsPane.ts). -->
+      <span class="sqp-status">open</span>
       <button class="sqp-close" title="Close (Esc)" aria-label="Close this side quest" onclick={onClose}>&times;</button>
     </div>
     <div class="sqp-body">
@@ -53,7 +55,7 @@
       {#if quest.summary}<p class="sqp-summary">{quest.summary}</p>{/if}
       {#if quest.rationale}<p class="sqp-rationale">{quest.rationale}</p>{/if}
       <button class="sqp-fold" aria-expanded={showInstructions} onclick={() => (showInstructions = !showInstructions)}>
-        <span aria-hidden="true">{showInstructions ? '▾' : '▸'}</span> Instructions
+        {showInstructions ? 'Hide instructions ‹' : 'Show instructions ›'}
       </button>
       {#if showInstructions}<pre class="sqp-instructions">{quest.instructions}</pre>{/if}
     </div>
@@ -63,6 +65,7 @@
       {:else}
         <button class="sqp-btn sqp-primary" onclick={onStart}>Start in a new session</button>
         <button class="sqp-btn" onclick={onExport}>Export</button>
+        <span class="sqp-gap"></span>
         <button class="sqp-btn" onclick={onDismiss}>Dismiss</button>
       {/if}
     </div>
@@ -70,25 +73,25 @@
 </div>
 
 <style>
-  .sqp-scrim {
-    position: absolute; inset: 0; z-index: 14;
-    display: flex; align-items: center; justify-content: center;
-    /* Literal rgba, on SubagentMap.svelte's precedent: no --og-* scrim var. */
-    background: rgba(0, 0, 0, 0.55);
-  }
+  /* t-yyz5je: opened BESIDE the drawer (the drawer's top, 72px), no scrim. The
+     layer is click-through; only the panel takes clicks. `left` clamps: 264px
+     (past the 240px drawer) on a wide cell, 3% on a 390px phone mount. */
+  .sqp-scrim { position: absolute; inset: 0; z-index: 14; pointer-events: none; }
   /* 94% of the cell, so the panel still fits a 390px phone mount with the
      16px gutter the remote page keeps. */
   .sqp-panel {
+    position: absolute; top: 72px; left: clamp(3%, calc(97% - 400px), 264px); pointer-events: auto;
     display: flex; flex-direction: column; min-height: 0;
-    width: min(440px, 94%); max-height: 88%;
+    width: min(400px, 94%); max-height: calc(100% - 86px);
     background: var(--og-surface);
     border: 1px solid var(--og-border);
     border-radius: 8px;
     box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
   }
   .sqp-head { display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto; padding: 8px 10px; border-bottom: 1px solid var(--og-border); }
-  .sqp-head-text { flex: 1 1 auto; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--og-text-muted); }
-  .sqp-close { flex: 0 0 auto; background: none; border: none; color: var(--og-text-muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 3px; border-radius: 3px; font-family: inherit; }
+  .sqp-status { font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--og-text-muted); }
+  .sqp-head-text { flex: 0 1 auto; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--og-text-muted); }
+  .sqp-close { margin-left: auto; flex: 0 0 auto; background: none; border: none; color: var(--og-text-muted); cursor: pointer; font-size: 15px; line-height: 1; padding: 0 3px; border-radius: 3px; font-family: inherit; }
   .sqp-close:hover { color: var(--og-text); background: var(--og-btn-bg); }
 
   .sqp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 9px 10px; }
@@ -130,5 +133,6 @@
   }
   .sqp-btn:hover { color: var(--og-text); border-color: var(--og-accent); }
   .sqp-primary { color: var(--og-text); border-color: var(--og-accent); }
+  .sqp-gap { flex: 1 1 auto; }
   .sqp-phone-note { font-size: 9.5px; color: var(--og-text-muted); }
 </style>

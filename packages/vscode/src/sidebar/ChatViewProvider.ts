@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import { DashboardPanel, type WebviewHost } from '../dashboard/DashboardPanel';
 import { chatResourceRoots } from '../dashboard/toolImageUri';
+import { watchChatView } from '../elastic/elasticWindow';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** Matches the view id contributed in package.json (`contributes.views`). */
@@ -25,6 +26,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // (toolImageUri.ts) — a webview may load a local file from nowhere else.
       localResourceRoots: chatResourceRoots(this.context.extensionUri),
     };
+
+    // t-w2qv3o: this view on screen is what makes its chat "active" (elastic/sessionSignals.ts).
+    watchChatView(webviewView);
 
     const host: WebviewHost = {
       webview: webviewView.webview,

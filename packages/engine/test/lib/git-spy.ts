@@ -1,6 +1,7 @@
 import { AppProcess } from "@origami/core/process"
 import { LayerNode } from "@origami/core/effect/layer-node"
 import { Effect, Layer } from "effect"
+import { SnapshotGit } from "../../src/snapshot/git-runner"
 
 /**
  * A real AppProcess that records every `git` command it runs, and lets a test
@@ -44,6 +45,12 @@ export const gitSpyLayer = Layer.effect(
   AppProcess.Service,
   Effect.gen(function* () {
     const real = yield* AppProcess.Service
+    // t-w2r1kf: the snapshot starts git on its Worker, which this spy cannot
+    // see. While the spy is in place the snapshot runs git inline, through it.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => SnapshotGit.testing.setMode("inline")),
+      () => Effect.sync(() => SnapshotGit.testing.setMode("auto")),
+    )
     return AppProcess.Service.of({
       ...real,
       run: (command, options) => {

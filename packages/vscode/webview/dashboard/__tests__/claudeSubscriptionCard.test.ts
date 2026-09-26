@@ -44,7 +44,8 @@ vi.mock('../../../src/dashboard/claudeCodeDetect', () => ({
 import { handleClaudeSubscriptionCardMessage } from '../../../src/dashboard/claudeSubscriptionCard';
 import { CLAUDE_SUBSCRIPTION_SETTING } from '../../../src/claudeSubscriptionFlag';
 import { resetClaudeSubscriptionStatusCache } from '../../../src/claudeSubscription/engineStatus';
-import ClaudeSubscriptionCard from '../../sidebar/ClaudeSubscriptionCard.svelte';
+import ClaudeSubscriptionCard, { claudeSubscriptionTiles } from '../../sidebar/ClaudeSubscriptionCard.svelte';
+import { nameLines } from '../../sidebar/connectionCarouselFit';
 
 function makeContext(consented?: boolean) {
   const store: Record<string, unknown> = consented === undefined ? {} : { 'origami.claudeSubscriptionDisclosure.v1': consented };
@@ -235,5 +236,24 @@ describe('ClaudeSubscriptionCard.svelte — renders exactly what the host sends'
     globalThis.__vscodeApiMock.postMessage.mockClear();
     render(ClaudeSubscriptionCard);
     expect(globalThis.__vscodeApiMock.postMessage).toHaveBeenCalledWith({ type: 'requestClaudeSubscriptionStatus' });
+  });
+});
+
+// t-xu5o64, owner UAT of 0.4.178: the strip's tile read "Claude (subscri..." and,
+// unlike a provider tile, it has no "Pill name" to shorten it. It gets the short
+// name by default; the experimental notice stays at the connection step.
+describe('the connection strip tile', () => {
+  it('reads "Claude (Sub)" on two whole lines', async () => {
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'claudeSubscriptionStatus', enabled: true, ready: true, label: 'Ready', fixLine: '' } }));
+    const [tile] = claudeSubscriptionTiles(false, false);
+    expect(tile?.title).toBe('Claude (Sub)');
+    expect(nameLines(tile!.title)).toEqual(['Claude', '(Sub)']);
+  });
+
+  it('keeps the reason in the tooltip when not ready', async () => {
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'claudeSubscriptionStatus', enabled: true, ready: false, label: 'Not signed in', fixLine: 'Not logged in.' } }));
+    const [tile] = claudeSubscriptionTiles(false, false);
+    expect(tile?.title).toBe('Claude (Sub) — Not logged in.');
+    expect(nameLines(tile!.title)).toEqual(['Claude', '(Sub)']);
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Duration, Effect, Exit, Fiber, Scope, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Credential } from "@origami/core/credential"
@@ -346,4 +346,50 @@ describe("Integration", () => {
         }),
     )
   })
+})
+
+// t-w2qlop: the scrub loop used to be forked at service build, so every engine
+// that built the location layer woke every 30 s for an hour with no attempt to
+// scrub. Real clock on purpose: the question is which timers reach the process.
+test("t-w2qlop: the attempt scrub arms no timer until an OAuth attempt exists", async () => {
+  const scrubMs = 30_000
+  const real = globalThis.setTimeout
+  const seen = { count: 0 }
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, delay?: number, ...rest: unknown[]) => {
+    if (delay === scrubMs) seen.count++
+    return real(fn, delay, ...rest)
+  }) as typeof setTimeout
+  try {
+    const layer = AppNodeBuilder.build(LayerNode.group([Integration.node, Credential.node, EventV2.node]))
+    const counts = await Effect.runPromise(
+      Effect.gen(function* () {
+        const integrations = yield* Integration.Service
+        yield* Effect.promise(() => new Promise((resolve) => real(resolve, 20)))
+        const idle = seen.count
+        const integrationID = Integration.ID.make("openai")
+        const methodID = Integration.MethodID.make("browser")
+        yield* integrations.transform((editor) =>
+          editor.method.update({
+            integrationID,
+            method: { id: methodID, type: "oauth", label: "Browser" },
+            authorize: () =>
+              Effect.succeed({
+                mode: "auto" as const,
+                url: "https://example.com/authorize",
+                instructions: "Sign in",
+                callback: Effect.never,
+              }),
+          }),
+        )
+        yield* integrations.connection.oauth({ integrationID, methodID, inputs: {} })
+        yield* integrations.connection.oauth({ integrationID, methodID, inputs: {} })
+        yield* Effect.promise(() => new Promise((resolve) => real(resolve, 20)))
+        return { idle, pending: seen.count }
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    )
+    // None while nothing is pending; ONE loop for two attempts, not one each.
+    expect(counts).toEqual({ idle: 0, pending: 1 })
+  } finally {
+    globalThis.setTimeout = real
+  }
 })

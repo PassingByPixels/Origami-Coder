@@ -278,7 +278,7 @@ describe("a shared folder OUTSIDE the worktree", () => {
     const sibling = make("shared-old")
     for (const [dir, name] of [
       [shared, "top.md"],
-      [inner, "mot.md"],
+      [inner, "tax.md"],
       [sibling, "secret.md"],
       [base, "above.md"],
       [worktree, "own.md"],
@@ -289,7 +289,7 @@ describe("a shared folder OUTSIDE the worktree", () => {
       base,
       worktree,
       shared,
-      sharedFile: path.join(inner, "mot.md"),
+      sharedFile: path.join(inner, "tax.md"),
       sharedTop: path.join(shared, "top.md"),
       inner,
       sibling,
@@ -461,7 +461,7 @@ describe("a shared folder OUTSIDE the worktree", () => {
       })
       // Named through the junction — the spelling the model would use after
       // reading the shared list.
-      const throughLink = path.join(junction, "notes", "mot.md")
+      const throughLink = path.join(junction, "notes", "tax.md")
       expect(act(rules, "external_directory", externalAsk(throughLink, "file"))).toBe("allow")
       expect(act(rules, "read", readAsk(w.worktree, throughLink))).toBe("allow")
       // ...and the sibling is still refused when reached the same way.

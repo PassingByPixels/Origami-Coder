@@ -476,7 +476,6 @@ const disabledSearch = ToolSearch.Service.of({
   settings: () => Effect.succeed(ToolSearch.settings({ enabled: false })),
   loaded: () => Effect.succeed(new Set<string>() as ReadonlySet<string>),
   load: () => Effect.void,
-  clear: () => Effect.void,
 })
 
 const resolveOnce = (agent: Agent.Info) =>

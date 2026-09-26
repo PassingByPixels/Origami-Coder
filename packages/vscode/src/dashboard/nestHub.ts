@@ -13,8 +13,7 @@
 //   tail    L6 (t-selspn, nestTail.ts): after each index merge the mother base
 //           pulls every live chat; a local change sends the index within 2 s.
 //   artifacts  t-sj39jx (nestArtifacts.ts): the artifact index rides every sync; bodies pull on open.
-//   away   t-t7lfho (nestAway.ts): a release records the chat as continued on the new desk and
-//          posts it at once; Take back here is continueHere on this desk, which clears it.
+//   away   t-t7lfho (nestAway.ts): a release records the chat as continued on the new desk and posts it at once; Take back here is continueHere on this desk, which clears it.
 //
 // Two attach points: the group (activateGroup.ts, when the controller exists)
 // and the view (nestSidebar.ts, the panel's engine client and its broadcast).
@@ -51,6 +50,7 @@ export interface NestView {
   engine(): NestEngine | undefined;
   post(msg: Record<string, unknown>): void;
   open(sessionId: string): void | Promise<void>;
+  openSessionIds?(): string[]; // t-xsrtml: engine session ids of every chat open in this window (live or parked)
 }
 export interface NestHubDeps {
   enabled(): boolean;
@@ -150,7 +150,7 @@ export class NestHub {
   /** nest_index; send this desk's rows to `to` (default: every online desk); push the view. */
   public async sync(to: string[] = this.peers()): Promise<void> {
     if (!this.deps.enabled() || !this.group) return;
-    const r = await this.call<NestIndexResult>('nest_index', { deskName: this.group.deskName, open: [] });
+    const r = await this.call<NestIndexResult>('nest_index', { deskName: this.group.deskName, open: this.view?.openSessionIds?.() ?? [] });
     this.others = Array.isArray(r.others) ? r.others : [];
     this.mine = Array.isArray(r.rows) ? r.rows : [];
     for (const peer of to) this.sendTo(peer, { type: NEST_INDEX, rows: this.mine });

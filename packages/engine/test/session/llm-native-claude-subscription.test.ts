@@ -252,7 +252,8 @@ describe("claude-subscription: catalog from the initialize handshake", () => {
     expect(info.models.sonnet!.limit.context).toBe(200_000)
     expect(info.models.fable!.name).toBe("Fable 5.1 (usage credits)")
     expect(info.models.sonnet!.cost).toEqual({ input: 0, output: 0, cache: { read: 0, write: 0 } })
-    expect(Object.keys(info.models.sonnet!.variants!)).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
+    // t-ysudw8: no "off" for a model that supports adaptive thinking (family rule here: no handshake flag).
+    expect(Object.keys(info.models.sonnet!.variants!)).toEqual(["low", "medium", "high", "xhigh", "max"])
     expect(info.options.max_concurrent).toBe(2)
     // The handshake asked for the picker and wrote no user message.
     const frames = JSON.parse(readFileSync(path.join(log, "frames.json"), "utf8"))
@@ -313,6 +314,116 @@ describe("claude-subscription: one engine step through the fake CLI", () => {
     expect(extra.thinking).toBeUndefined()
     expect(extra.tools.map((tool: any) => tool.name)).toEqual(["mcp__origami__get_weather"])
     expect(readFileSync(path.join(log, "requests.log"), "utf8").trim().split("\n")).toHaveLength(1)
+  })
+})
+
+// t-ysudw8. Owner UAT of 0.4.180: Fable (`claude-fable-5-1[1m]`) and Opus (`opus[1m]`)
+// answered effort "off" (thinking disabled) with a 400; Haiku answered it. The fake
+// CLI enforces that rule per --model. The handshake rows carry `supportsAdaptiveThinking`
+// the way CLI 2.1.198 emits it (only when true); Haiku 4.5 does not support it.
+describe("claude-subscription: effort off per family (t-ysudw8)", () => {
+  beforeEach(() => ClaudeSubscription.resetMemo())
+
+  const PICKER = [
+    { value: "claude-fable-5-1[1m]", displayName: "Fable", supportsAdaptiveThinking: true },
+    { value: "opus[1m]", displayName: "Opus (1M context)", supportsAdaptiveThinking: true },
+    { value: "sonnet", displayName: "Sonnet", supportsAdaptiveThinking: true },
+    { value: "haiku", displayName: "Haiku" },
+  ]
+  const REJECTS = ["claude-fable-5-1[1m]", "opus[1m]"]
+
+  const ask = async (
+    id: string,
+    row: Provider.Model,
+    effort: string | undefined,
+    forced?: "required",
+  ) => {
+    const log = useScenario({ lines: wrap(SSE.toolAnswer!), rejectDisabled: REJECTS })
+    ClaudeSubscription.setReadiness({ type: "ready", command: FAKE, version: "2.1.263" })
+    const native = LLMNativeRuntime.stream({
+      model: row,
+      provider: { ...provider, models: { [id]: row } },
+      auth: undefined,
+      llmClient: client,
+      messages: [{ role: "user", content: "Good morning what model are you" }],
+      tools: forced ? FORCED_TOOLS : {},
+      ...(forced ? { toolChoice: forced } : {}),
+      headers: {},
+      abort: new AbortController().signal,
+      providerOptions: effort ? { effort } : {},
+    })
+    if (native.type !== "supported") throw new Error("native route declined")
+    const exit = await Effect.runPromiseExit(Stream.runCollect(native.stream) as Effect.Effect<any>)
+    const extra = JSON.parse(
+      JSON.parse(readFileSync(path.join(log, "settings.json"), "utf8")).env.CLAUDE_CODE_EXTRA_BODY,
+    )
+    return { ok: Exit.isSuccess(exit), failure: Exit.isFailure(exit) ? String(exit.cause) : "", extra }
+  }
+
+  test("the fake CLI enforces the rule: disabled thinking on Fable is a 400", async () => {
+    const row = ClaudeSubscription.modelRow({ id: "claude-fable-5-1[1m]", name: "Fable", context: 1_000_000 })
+    const result = await ask("claude-fable-5-1[1m]", row, "none")
+    expect(result.ok).toBe(false)
+    expect(result.failure).toContain('"thinking.type.disabled" is not supported')
+  })
+
+  test("Fable and Opus (1M) offer no 'off'; a switch lands on 'low' and every offered level answers", async () => {
+    useScenario({ models: PICKER, account: { subscriptionType: "Claude Max" } })
+    const info = await ClaudeSubscription.providerInfo({ command: FAKE, env: { ...cleanEnv(), ...pick() } })
+    for (const id of REJECTS) {
+      const row = info.models[id]!
+      const levels = Object.keys(row.variants!)
+      expect({ id, levels }).toEqual({ id, levels: ["low", "medium", "high", "xhigh", "max"] })
+      // A model switch takes the first variant (acp/service.ts selectVariant): the lowest allowed.
+      for (const level of levels) {
+        const result = await ask(id, row, row.variants![level]!.effort as string)
+        expect({ id, level, ok: result.ok, failure: result.failure }).toEqual({ id, level, ok: true, failure: "" })
+        expect(result.extra.thinking).toEqual({ type: "adaptive" })
+      }
+    }
+  })
+
+  test("Haiku keeps 'off', and off reaches the CLI as disabled thinking and answers", async () => {
+    useScenario({ models: PICKER, account: { subscriptionType: "Claude Max" } })
+    const info = await ClaudeSubscription.providerInfo({ command: FAKE, env: { ...cleanEnv(), ...pick() } })
+    const row = info.models.haiku!
+    expect(Object.keys(row.variants!)).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
+    const result = await ask("haiku", row, "none")
+    expect(result.ok).toBe(true)
+    expect(result.extra.thinking).toEqual({ type: "disabled" })
+  })
+
+  // t-ytsf8q: a forced tool choice (structured output sends `required`,
+  // prompt.ts json_schema) sent thinking disabled on every model, so Fable / Opus (1M) answered 400.
+  const FORCED_TOOLS: Record<string, Tool> = {
+    get_weather: {
+      description: "Get the current weather for a city.",
+      inputSchema: jsonSchema({ type: "object", properties: { city: { type: "string" } }, required: ["city"] }),
+      execute: async () => "sunny",
+    },
+  }
+
+  test("a forced tool choice on Fable / Opus (1M) sends no disabled thinking and answers (t-ytsf8q)", async () => {
+    for (const id of REJECTS) {
+      const row = ClaudeSubscription.modelRow({ id, name: id, context: 1_000_000 })
+      const result = await ask(id, row, "low", "required")
+      expect({ id, ok: result.ok, failure: result.failure }).toEqual({ id, ok: true, failure: "" })
+      expect(result.extra.thinking).toEqual({ type: "adaptive" })
+      expect(result.extra.output_config).toEqual({ effort: "low" })
+      expect(result.extra.tool_choice).toBeUndefined()
+    }
+  })
+
+  test("a forced tool choice on Haiku is unchanged: tool_choice forced, thinking disabled (t-ytsf8q)", async () => {
+    const result = await ask("haiku", model, "low", "required")
+    expect(result.ok).toBe(true)
+    expect(result.extra.thinking).toEqual({ type: "disabled" })
+    expect(result.extra.tool_choice).toEqual({ type: "any" })
+  })
+
+  test("with no handshake flags (pinned rows, older CLI) the family rule decides: only Haiku keeps 'off'", () => {
+    const off = ClaudeSubscription.PINNED.map((row) => [row.id, "none" in ClaudeSubscription.modelRow(row).variants!])
+    expect(Object.fromEntries(off)).toEqual({ sonnet: false, opus: false, haiku: true, fable: false })
   })
 })
 

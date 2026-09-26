@@ -23,6 +23,7 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
+import { detachRun } from "@/effect/detach"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
@@ -30,10 +31,14 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMNativeRoute } from "./llm/native-route"
 import { SessionImageCap } from "./image-cap"
+import { SessionRequestMemory } from "./request-memory"
+import { SessionRestorePrefix } from "./restore-prefix"
+import { Database } from "@origami/core/database/database"
 import { LLMRequestPrep } from "./llm/request"
 import { SessionCachePolicy } from "./cache-policy"
 import { SessionCacheState } from "./cache-state"
 import { SessionCacheWarm } from "./cache-warm"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 // The offered-tools rule lives beside the transparency capture so the set the
 // model is really given and the set the shell REPORTS cannot drift apart.
 import { SessionPromptCapture } from "./prompt-capture"
@@ -83,6 +88,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | Database.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -94,6 +100,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const database = yield* Database.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -104,6 +111,18 @@ const live: Layer.Layer<
         agent: input.agent.name,
         mode: input.agent.mode,
       })
+
+      // t-w2qb1x: before anything reads the session's request memory (the
+      // refused knobs and the window-fit ratio in `prepare`, the image cap
+      // below), load it if this process does not hold it, and write what this
+      // process decided since the last request. So every decision this request
+      // carries is on disk before it goes out.
+      yield* SessionRequestMemory.ensure(database.db, input.sessionID)
+      yield* SessionRequestMemory.flush(database.db, input.sessionID)
+      // t-w2txb2: the first request of a session in this process is compared
+      // with the last one the database holds, so a restore names what changed
+      // while the engine was stopped. One read per session per process.
+      yield* SessionRestorePrefix.ensure(database.db, input.sessionID)
 
       const [language, cfg, item, info] = yield* Effect.all(
         [
@@ -133,6 +152,11 @@ const live: Layer.Layer<
               ...(freqPenalty !== undefined ? { frequencyPenalty: freqPenalty } : {}),
             }
           : input.agent
+      // t-vs5p1y: the request of a big chat is built in phases of 10-50 ms
+      // each (conversion, prepare, construction, lowering, serialise). A yield
+      // between phases lets other chats and the health probe run in between,
+      // instead of one block of 150-370 ms.
+      yield* Effect.yieldNow
       const prepared = yield* LLMRequestPrep.prepare({
         ...input,
         agent,
@@ -147,16 +171,26 @@ const live: Layer.Layer<
       // from the workflow service are executed via origami's tool system
       // and results sent back over the WebSocket.
       const bridge = yield* EffectBridge.make()
+      // For what outlives this request and only logs (the warning logger on a
+      // global, an armed cache warm): without the request's span, frames and
+      // Scope, which a failed request closes with its error (t-x3admf).
+      const logBridge = yield* detachRun(EffectBridge.make())
       // The AI SDK's warnings are the only notice it gives that it dropped part of
       // the request it was about to send. Two modules silence that channel at
       // import time; this puts it back on the engine log rather than on stdout.
-      LLMAISDK.installWarningLogger((effect) => void bridge.fork(effect))
+      LLMAISDK.installWarningLogger(logBridge)
 
       // Arm the next cache warm off THIS request (t-ntmmvh). Here rather than at
       // the call site because this is where the resolved options exist, and the
       // options decide whether the prefix carries a cache breakpoint at all.
       // A title generation (`small`) never arms: it is a different, tiny prefix.
       if (!input.small && !input.warm) {
+        // t-z6ytkw: the folder instance and workspace this request ran in. The warm
+        // fires later from a bare timer, where neither is provided: without them it
+        // failed with "InstanceRef not provided" (owner engine log 2026-09-26).
+        const instance = yield* InstanceRef
+        const workspace = yield* WorkspaceRef
+        const directory = instance?.directory
         // The window the composer's warm badge counts against (t-rylyhm).
         // RECORDED HERE for the same reason the warm is armed here: the inline
         // cache hint is what separates Anthropic's 1-hour form from its
@@ -178,6 +212,12 @@ const live: Layer.Layer<
           model: input.model,
           options: prepared.messageTransformOptions,
           messages: input.messages,
+          // t-z6ytkw: what a park persists so a woken engine sends this same warm
+          // (elastic/park-warm.ts). The abort signal is this request's own.
+          recipe: () => {
+            const { abort: _abort, ...rest } = input
+            return { input: rest, directory }
+          },
           // The warm goes out through this same service, so `prepare` rebuilds a
           // byte-identical prefix; only `warm` differs, and that buys one output
           // token. The stream is DRAINED here, which is what keeps the warm out
@@ -196,9 +236,9 @@ const live: Layer.Layer<
                     cacheRead: event.usage?.cacheReadInputTokens,
                   })
                 return Effect.void
-              }),
+              }).pipe(Effect.provideService(InstanceRef, instance), Effect.provideService(WorkspaceRef, workspace)),
             ).then(() => undefined),
-          log: (message, fields) => void bridge.fork(Effect.logInfo(message, fields)),
+          log: (message, fields) => void logBridge.fork(Effect.logInfo(message, fields)),
         })
       }
       if (language instanceof GitLabWorkflowLanguageModel) {
@@ -310,6 +350,7 @@ const live: Layer.Layer<
       // already refused this session applied to it. Identity until an endpoint has
       // said "at most N images"; only `limit.images` ever differs.
       const capped = SessionImageCap.clamp(input.sessionID, input.model)
+      yield* Effect.yieldNow
 
       // Runtime seam: native is a per-family route over @origami/llm (see
       // native-route.ts for the table). It either returns a ready LLMEvent
@@ -471,7 +512,14 @@ const live: Layer.Layer<
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            if (result.type === "native") return result.stream
+            // t-vs5p1y: the prompt capture of this request is computed once the
+            // provider answers (or the stream ends), off the path to the send.
+            const settle = Effect.sync(SessionPromptCapture.settleSoon)
+            if (result.type === "native")
+              return result.stream.pipe(
+                Stream.tap(() => settle),
+                Stream.ensuring(settle),
+              )
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
@@ -489,6 +537,8 @@ const live: Layer.Layer<
               Stream.flatMap((events) => Stream.fromIterable(events)),
               Stream.concat(Stream.suspend(drained)),
               Stream.catchCause((cause) => drained().pipe(Stream.concat(Stream.failCause(cause)))),
+              Stream.tap(() => settle),
+              Stream.ensuring(settle),
             )
           }),
         ),
@@ -512,6 +562,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    Database.node,
   ],
 })
 

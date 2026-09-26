@@ -23,6 +23,7 @@
   import type { BrowserFrame } from '../panes/browserFrames';
   import BrowserFilmFrame from './BrowserFilmFrame.svelte';
   import BrowserViewportRow from './BrowserViewportRow.svelte';
+  import RailFoldHead from './RailFoldHead.svelte';
 
   interface Props {
     /** Oldest first. The strip is only mounted when this is non-empty, so the
@@ -43,6 +44,9 @@
   let { frames, collapsed, onToggleCollapse, onOpen, onReveal }: Props = $props();
 
   const newest = $derived(frames[frames.length - 1]);
+  // t-yyz5je: the header FOLDS the strip (the header stays, with a mini of the
+  // newest frame); the tab HIDES the pull-out. Fold is view state, held here.
+  let folded = $state(false);
 
   /** Where the agent is, and what it just did there. The url is the load-
    *  bearing half — an action alone does not say which page it acted on — so it
@@ -89,23 +93,27 @@
       onclick={onToggleCollapse}
     >
       <span class="browser-tab-glyph" aria-hidden="true">{collapsed ? '⟨' : '⟩'}</span>
+      {#if collapsed}<span class="rail-tab-count">{frames.length}</span>{/if}
     </button>
     <div class="browser-panel">
+      <!-- t-yyz5je: where the agent is + what it just did, as the rail's folding header. -->
       <div class="browser-header">
-        <span class="browser-icon" aria-hidden="true">◱</span>
-        <span class="browser-title">Browser</span>
-        <span class="browser-count">{frames.length}</span>
-        <!-- The verb is a STATE, so it rides the header line as a chip. On its
-             own line under the url it read as a second caption. -->
-        {#if newest}<span class="browser-action">{newest.action}</span>{/if}
+        <RailFoldHead open={!folded} onToggle={() => { folded = !folded; drawn = 0; }}>
+          <span class="browser-icon" aria-hidden="true">◱</span>
+          <span class="browser-caption" title={caption}>{caption}</span>
+          <!-- The verb is a STATE, so it rides the header line as a chip. -->
+          {#if newest}<span class="browser-action">{newest.action}</span>{/if}
+          {#snippet peek()}<span class="browser-mini"><img src={newest.imageDataUrl} alt="" /></span>{/snippet}
+        </RailFoldHead>
       </div>
-      <div class="browser-caption" title={caption}>{caption}</div>
-      <div class="browser-film" bind:this={stripEl}>
-        {#each frames as frame, i (frame.seq)}
-          <BrowserFilmFrame {frame} seq={i + 1} newest={i === frames.length - 1} label={label(frame)} {onOpen} />
-        {/each}
-      </div>
-      <BrowserViewportRow {frames} {onReveal} />
+      {#if !folded}
+        <div class="browser-film" bind:this={stripEl}>
+          {#each frames as frame, i (frame.seq)}
+            <BrowserFilmFrame {frame} seq={i + 1} newest={i === frames.length - 1} label={label(frame)} {onOpen} />
+          {/each}
+        </div>
+        <BrowserViewportRow {frames} {onReveal} />
+      {/if}
     </div>
   </div>
 </aside>
@@ -187,13 +195,9 @@
     color: var(--og-accent);
     opacity: 0.7;
   }
-  .browser-title {
-    flex: 0 0 auto;
-  }
-  .browser-count {
-    font-weight: 400;
-    color: var(--og-text-muted);
-  }
+  .rail-tab-count { position: absolute; bottom: 3px; font-size: 8.5px; font-weight: 600; color: var(--og-accent); }
+  .browser-mini { flex: 0 0 auto; width: 30px; height: 19px; border: 1px solid var(--og-border); border-radius: 3px; overflow: hidden; line-height: 0; }
+  .browser-mini img { width: 100%; height: 100%; object-fit: cover; }
   /* ONE LINE, ellipsised from the LEFT. A url is long and the panel is 280px,
      and the end of a path is what tells one frame from another — `direction:
      rtl` puts the ellipsis at the front, where the scheme and host are the
@@ -205,9 +209,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    margin-top: 2px;
-    font-size: 9.5px;
-    color: var(--og-text-muted);
+    flex: 0 1 auto;
+    min-width: 0;
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--og-text);
   }
   /* A chip, not a word: the verb is the page's STATE after the agent acted. */
   .browser-action {

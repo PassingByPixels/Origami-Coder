@@ -4,6 +4,7 @@ import net from "net"
 import { spawn } from "child_process"
 import { Global } from "@origami/core/global"
 import { isDebuggerUp } from "./cdp"
+import { ElasticOs } from "@/elastic/os"
 
 /**
  * FINDING AND STARTING A DEBUGGABLE CHROMIUM.
@@ -267,6 +268,9 @@ export async function ensureBrowser(
   // Detached and unref'd on purpose: the browser has to outlive the tool call
   // that opened it, or the page would close before the model could call it.
   child.unref()
+  // origami_change (t-w2qlop): still a child in the OS process tree, but a window
+  // the owner may be using - the engine's elastic class and trim leave it alone.
+  ElasticOs.excludeTree(child.pid)
   let spawnError: Error | undefined
   child.on("error", (error) => (spawnError = error))
 

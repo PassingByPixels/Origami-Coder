@@ -51,13 +51,13 @@ describe('the host attaches the size the capture was taken at', () => {
 describe('the viewport caption', () => {
   it('names which frame it describes and the size of it', () => {
     expect(viewportCaption([frame({ seq: 0 }), frame({ seq: 1 }), frame({ seq: 2, width: 320, height: 180 })]))
-      .toBe('frame 3 of 3 · 320 × 180 px');
+      .toBe('frame 3 of 3 · screenshot · 320 × 180 px');
   });
 
   // A frame from an older host, or one whose viewport could not be set, has no
   // size. Saying "frame 2 of 2" alone is honest; inventing 0 × 0 is not.
   it('drops the size rather than printing a made-up one', () => {
-    expect(viewportCaption([frame({ seq: 0 }), frame({ seq: 1 })])).toBe('frame 2 of 2');
+    expect(viewportCaption([frame({ seq: 0 }), frame({ seq: 1 })])).toBe('frame 2 of 2 · screenshot');
   });
 
   it('no frames, no caption', () => {
@@ -87,7 +87,7 @@ describe('the strip draws the facelift', () => {
   it('the caption prints the size and the reveal asks for the newest frame', async () => {
     const onReveal = vi.fn();
     const { container } = draw([frame({ seq: 0 }), frame({ seq: 1, width: 320, height: 180 })], onReveal);
-    expect(container.querySelector('.browser-viewport-size')?.textContent).toBe('frame 2 of 2 · 320 × 180 px');
+    expect(container.querySelector('.browser-viewport-size')?.textContent).toBe('frame 2 of 2 · screenshot · 320 × 180 px');
     await fireEvent.click(container.querySelector('.browser-reveal') as HTMLElement);
     expect(onReveal).toHaveBeenCalledTimes(1);
     expect(onReveal.mock.calls[0][0]).toMatchObject({ seq: 1 });
